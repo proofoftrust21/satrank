@@ -12,7 +12,8 @@ export function runMigrations(db: Database.Database): void {
       source TEXT NOT NULL CHECK(source IN ('observer_protocol', '4tress', 'lightning_graph', 'manual')),
       total_transactions INTEGER NOT NULL DEFAULT 0,
       total_attestations_received INTEGER NOT NULL DEFAULT 0,
-      avg_score REAL NOT NULL DEFAULT 0
+      avg_score REAL NOT NULL DEFAULT 0,
+      capacity_sats INTEGER DEFAULT NULL
     );
 
     CREATE TABLE IF NOT EXISTS transactions (
@@ -59,6 +60,13 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_snapshots_computed ON score_snapshots(computed_at);
     CREATE INDEX IF NOT EXISTS idx_agents_alias ON agents(alias);
   `);
+
+  // v0.2: add capacity_sats column for Lightning graph nodes
+  try {
+    db.exec('ALTER TABLE agents ADD COLUMN capacity_sats INTEGER DEFAULT NULL');
+  } catch {
+    // Column already exists (fresh schema includes it, or already migrated)
+  }
 
   logger.info('Migrations executed successfully');
 }

@@ -1,7 +1,7 @@
 // HTTP client for the Observer Protocol API
 // Handles retries with exponential backoff and timeouts
 import { logger } from '../logger';
-import type { ObserverClient, ObserverHealthResponse, ObserverTrendsResponse } from './types';
+import type { ObserverClient, ObserverHealthResponse, ObserverTransactionsResponse } from './types';
 
 const DEFAULT_BASE_URL = 'https://api.observerprotocol.org';
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -29,8 +29,8 @@ export class HttpObserverClient implements ObserverClient {
     return this.request<ObserverHealthResponse>('/api/v1/health');
   }
 
-  async fetchTrends(page: number, limit: number): Promise<ObserverTrendsResponse> {
-    return this.request<ObserverTrendsResponse>(`/observer/trends?page=${page}&limit=${limit}`);
+  async fetchTransactions(): Promise<ObserverTransactionsResponse> {
+    return this.request<ObserverTransactionsResponse>('/observer/transactions');
   }
 
   // HTTP request with retry and exponential backoff
@@ -40,7 +40,6 @@ export class HttpObserverClient implements ObserverClient {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       if (attempt > 0) {
-        // Exponential backoff: 1s, 2s, 4s...
         const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
         logger.warn({ url, attempt, delayMs: delay }, 'Retrying after failure');
         await new Promise(resolve => setTimeout(resolve, delay));

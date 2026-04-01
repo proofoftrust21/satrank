@@ -1,7 +1,6 @@
 // Scoring engine and anti-gaming tests
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import crypto from 'crypto';
 import { v4 as uuid } from 'uuid';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
@@ -9,11 +8,8 @@ import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
+import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction, Attestation } from '../types';
-
-function sha256(input: string): string {
-  return crypto.createHash('sha256').update(input).digest('hex');
-}
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -28,6 +24,7 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,
+    capacity_sats: null,
     ...overrides,
   };
 }
@@ -284,6 +281,88 @@ describe('ScoringService', () => {
 
       const result = scoring.computeScore(agent.public_key_hash);
       expect(result.confidence).toBe('high');
+    });
+  });
+
+  describe('lightning_graph scoring', () => {
+    it('computes volume from channels with capacity bonus', () => {
+      const node = makeAgent('ln-node', {
+        source: 'lightning_graph',
+        total_transactions: 500,
+        capacity_sats: 5_000_000_000,
+      });
+      agentRepo.insert(node);
+
+      const result = scoring.computeScore(node.public_key_hash);
+
+      // Volume should use channels (500), not tx table (0 verified tx)
+      expect(result.components.volume).toBeGreaterThan(0);
+
+      // Capacity bonus: 5 BTC = log10(5000+1)*10 ≈ 37 → capped at 20
+      // So volume > computeVolume(500) alone
+      const nodeNoCapacity = makeAgent('ln-no-cap', {
+        source: 'lightning_graph',
+        total_transactions: 500,
+        capacity_sats: null,
+      });
+      agentRepo.insert(nodeNoCapacity);
+      const resultNoCapacity = scoring.computeScore(nodeNoCapacity.public_key_hash);
+      expect(result.components.volume).toBeGreaterThan(resultNoCapacity.components.volume);
+    });
+
+    it('computes regularity from recency of last_seen', () => {
+      const recent = makeAgent('ln-recent', {
+        source: 'lightning_graph',
+        last_seen: NOW - DAY,
+      });
+      const stale = makeAgent('ln-stale', {
+        source: 'lightning_graph',
+        last_seen: NOW - 90 * DAY,
+      });
+      agentRepo.insert(recent);
+      agentRepo.insert(stale);
+
+      const scoreRecent = scoring.computeScore(recent.public_key_hash);
+      const scoreStale = scoring.computeScore(stale.public_key_hash);
+
+      expect(scoreRecent.components.regularity).toBeGreaterThan(scoreStale.components.regularity);
+      // 1 day old should be close to 100
+      expect(scoreRecent.components.regularity).toBeGreaterThan(90);
+      // 90 days old with 30-day decay → exp(-3) ≈ 0.05 → ~5
+      expect(scoreStale.components.regularity).toBeLessThan(10);
+    });
+
+    it('computes diversity from channel count', () => {
+      const manyChannels = makeAgent('ln-diverse', {
+        source: 'lightning_graph',
+        total_transactions: 40,
+      });
+      const fewChannels = makeAgent('ln-few', {
+        source: 'lightning_graph',
+        total_transactions: 3,
+      });
+      agentRepo.insert(manyChannels);
+      agentRepo.insert(fewChannels);
+
+      const scoreMany = scoring.computeScore(manyChannels.public_key_hash);
+      const scoreFew = scoring.computeScore(fewChannels.public_key_hash);
+
+      expect(scoreMany.components.diversity).toBeGreaterThan(scoreFew.components.diversity);
+    });
+
+    it('does not query tx table for lightning_graph agents', () => {
+      // A lightning_graph agent with 0 rows in transactions table
+      // should still get volume > 0 from channels
+      const node = makeAgent('ln-no-tx', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+      });
+      agentRepo.insert(node);
+
+      const result = scoring.computeScore(node.public_key_hash);
+      expect(result.components.volume).toBeGreaterThan(0);
+      expect(result.components.diversity).toBeGreaterThan(0);
     });
   });
 });

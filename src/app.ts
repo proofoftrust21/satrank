@@ -61,7 +61,15 @@ export function createApp() {
   app.set('trust proxy', 1);
 
   // Global middleware
-  app.use(helmet());
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+      },
+    },
+  }));
   app.use(cors({ origin: config.CORS_ORIGIN }));
   app.use(express.json());
   app.use(requestIdMiddleware);

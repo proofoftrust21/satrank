@@ -1,15 +1,12 @@
 // Realistic data generator for SatRank
 // 50 agents, 2000 transactions, 800 attestations, including suspect agents
-import crypto from 'crypto';
 import { v4 as uuid } from 'uuid';
 import { getDatabase } from './connection';
 import { runMigrations } from './migrations';
+import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction, Attestation, AgentSource, AmountBucket, TransactionStatus, PaymentProtocol } from '../types';
 
 // Utilities
-function sha256(input: string): string {
-  return crypto.createHash('sha256').update(input).digest('hex');
-}
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -127,6 +124,7 @@ function generateAgents(): Agent[] {
       total_transactions: 0,
       total_attestations_received: 0,
       avg_score: 0,
+      capacity_sats: null,
     };
   });
 }

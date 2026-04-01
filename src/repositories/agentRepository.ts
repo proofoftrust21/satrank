@@ -45,9 +45,9 @@ export class AgentRepository {
 
   insert(agent: Agent): void {
     this.db.prepare(`
-      INSERT INTO agents (public_key_hash, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(agent.public_key_hash, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score);
+      INSERT INTO agents (public_key_hash, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(agent.public_key_hash, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats);
   }
 
   avgScore(): number {
@@ -55,10 +55,28 @@ export class AgentRepository {
     return row.avg ?? 0;
   }
 
-  updateStats(hash: string, totalTx: number, totalAttestations: number, avgScore: number, lastSeen: number): void {
+  updateAlias(hash: string, alias: string): void {
+    this.db.prepare('UPDATE agents SET alias = ? WHERE public_key_hash = ?').run(alias, hash);
+  }
+
+  updateStats(hash: string, totalTx: number, totalAttestations: number, avgScore: number, firstSeen: number, lastSeen: number): void {
     this.db.prepare(`
-      UPDATE agents SET total_transactions = ?, total_attestations_received = ?, avg_score = ?, last_seen = ?
+      UPDATE agents SET total_transactions = ?, total_attestations_received = ?, avg_score = ?, first_seen = ?, last_seen = ?
       WHERE public_key_hash = ?
-    `).run(totalTx, totalAttestations, avgScore, lastSeen, hash);
+    `).run(totalTx, totalAttestations, avgScore, firstSeen, lastSeen, hash);
+  }
+
+  updateCapacity(hash: string, capacitySats: number, lastSeen: number): void {
+    this.db.prepare(`
+      UPDATE agents SET capacity_sats = ?, last_seen = MAX(last_seen, ?)
+      WHERE public_key_hash = ?
+    `).run(capacitySats, lastSeen, hash);
+  }
+
+  updateLightningStats(hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number): void {
+    this.db.prepare(`
+      UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?
+      WHERE public_key_hash = ?
+    `).run(channels, capacitySats, alias, lastSeen, hash);
   }
 }

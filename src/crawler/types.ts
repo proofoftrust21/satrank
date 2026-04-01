@@ -1,4 +1,4 @@
-// Observer Protocol types — API response format
+// Observer Protocol types — real API response format
 
 // GET /api/v1/health response
 export interface ObserverHealthResponse {
@@ -7,33 +7,36 @@ export interface ObserverHealthResponse {
   uptime?: number;
 }
 
-// Transaction as returned by GET /observer/trends
-export interface ObserverTransaction {
-  transaction_id: string;
-  timestamp: number;
-  payment_rail: string;
-  sender_public_key_hash: string;
-  receiver_public_key_hash: string;
+// Event as returned by GET /observer/transactions
+export interface ObserverEvent {
+  event_id: string;
+  event_type: string;
+  protocol: string;
+  transaction_hash: string;
+  time_window: string;
   amount_bucket: string;
-  settlement_reference: string | null;  // Lightning preimage (null if not yet settled)
-  receipt_hash: string;
-  signature: string;
-  status: string;
+  amount_sats: number;
+  direction: 'inbound' | 'outbound';
+  service_description: string | null;
+  preimage: string | null;
+  counterparty_id: string | null;
+  verified: boolean;
+  created_at: string;
+  agent_alias: string | null;
 }
 
-// GET /observer/trends response
-export interface ObserverTrendsResponse {
-  transactions: ObserverTransaction[];
+// GET /observer/transactions response
+export interface ObserverTransactionsResponse {
+  transactions: ObserverEvent[];
+  events: ObserverEvent[];
   total: number;
-  page: number;
-  has_more: boolean;
 }
 
 // Crawl run result
 export interface CrawlResult {
   startedAt: number;
   finishedAt: number;
-  transactionsFetched: number;
+  eventsFetched: number;
   newTransactions: number;
   newAgents: number;
   errors: string[];
@@ -42,5 +45,5 @@ export interface CrawlResult {
 // HTTP client interface — allows mock injection for tests
 export interface ObserverClient {
   fetchHealth(): Promise<ObserverHealthResponse>;
-  fetchTrends(page: number, limit: number): Promise<ObserverTrendsResponse>;
+  fetchTransactions(): Promise<ObserverTransactionsResponse>;
 }

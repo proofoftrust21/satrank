@@ -1,50 +1,41 @@
 // Observer Protocol crawler tests with mocked client
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import crypto from 'crypto';
-import { v4 as uuid } from 'uuid';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { Crawler } from '../crawler/crawler';
-import type { ObserverClient, ObserverHealthResponse, ObserverTrendsResponse, ObserverTransaction } from '../crawler/types';
+import { sha256 } from '../utils/crypto';
+import type { ObserverClient, ObserverHealthResponse, ObserverTransactionsResponse, ObserverEvent } from '../crawler/types';
 
-function sha256(input: string): string {
-  return crypto.createHash('sha256').update(input).digest('hex');
-}
-
-const NOW = Math.floor(Date.now() / 1000);
-
-function makeObserverTx(id: string, sender: string, receiver: string): ObserverTransaction {
+function makeEvent(overrides: Partial<ObserverEvent> = {}): ObserverEvent {
   return {
-    transaction_id: id,
-    timestamp: NOW - 3600,
-    payment_rail: 'lightning',
-    sender_public_key_hash: sender,
-    receiver_public_key_hash: receiver,
+    event_id: `evt-${Math.random().toString(36).slice(2, 10)}`,
+    event_type: 'payment.executed',
+    protocol: 'lightning',
+    transaction_hash: `txhash-${Math.random().toString(36).slice(2, 14)}`,
+    time_window: '2026-03-28',
     amount_bucket: 'small',
-    settlement_reference: sha256(`preimage-${id}`),
-    receipt_hash: sha256(`receipt-${id}`),
-    signature: sha256(`sig-${id}`),
-    status: 'VERIFIED',
+    amount_sats: 1000,
+    direction: 'outbound',
+    service_description: null,
+    preimage: sha256('preimage'),
+    counterparty_id: 'counterparty-bob',
+    verified: true,
+    created_at: '2026-03-28T12:00:00Z',
+    agent_alias: 'alice-agent',
+    ...overrides,
   };
-}
-
-// Generate stable UUIDs by test name for tx_ids
-const txIds: Record<string, string> = {};
-function txId(name: string): string {
-  if (!txIds[name]) txIds[name] = uuid();
-  return txIds[name];
 }
 
 // Mock Observer Protocol client
 class MockObserverClient implements ObserverClient {
   healthResponse: ObserverHealthResponse = { status: 'ok' };
-  trendsPages: ObserverTrendsResponse[] = [];
+  transactionsResponse: ObserverTransactionsResponse = { transactions: [], events: [], total: 0 };
   healthCalls = 0;
-  trendsCalls = 0;
+  transactionsCalls = 0;
   shouldFailHealth = false;
-  shouldFailTrends = false;
+  shouldFailTransactions = false;
 
   async fetchHealth(): Promise<ObserverHealthResponse> {
     this.healthCalls++;
@@ -52,10 +43,10 @@ class MockObserverClient implements ObserverClient {
     return this.healthResponse;
   }
 
-  async fetchTrends(page: number, _limit: number): Promise<ObserverTrendsResponse> {
-    this.trendsCalls++;
-    if (this.shouldFailTrends) throw new Error('Server error');
-    return this.trendsPages[page - 1] ?? { transactions: [], total: 0, page, has_more: false };
+  async fetchTransactions(): Promise<ObserverTransactionsResponse> {
+    this.transactionsCalls++;
+    if (this.shouldFailTransactions) throw new Error('Server error');
+    return this.transactionsResponse;
   }
 }
 
@@ -88,234 +79,204 @@ describe('Crawler', () => {
 
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]).toContain('Health check');
-    expect(result.transactionsFetched).toBe(0);
-    expect(mockClient.trendsCalls).toBe(0);
+    expect(result.eventsFetched).toBe(0);
+    expect(mockClient.transactionsCalls).toBe(0);
   });
 
-  it('indexes new transactions and creates agents', async () => {
-    const sender = sha256('sender-1');
-    const receiver = sha256('receiver-1');
-    const id1 = txId('tx-001');
-    const id2 = txId('tx-002');
+  it('indexes events and creates agents from aliases', async () => {
+    const ev1 = makeEvent({ transaction_hash: 'tx-001', agent_alias: 'alice', counterparty_id: 'bob', direction: 'outbound' });
+    const ev2 = makeEvent({ transaction_hash: 'tx-002', agent_alias: 'alice', counterparty_id: 'charlie', direction: 'inbound' });
 
-    mockClient.trendsPages = [{
-      transactions: [
-        makeObserverTx(id1, sender, receiver),
-        makeObserverTx(id2, sender, receiver),
-      ],
+    mockClient.transactionsResponse = {
+      transactions: [ev1, ev2],
+      events: [],
       total: 2,
-      page: 1,
-      has_more: false,
-    }];
+    };
 
     const result = await crawler.run();
 
-    expect(result.transactionsFetched).toBe(2);
+    expect(result.eventsFetched).toBe(2);
     expect(result.newTransactions).toBe(2);
-    expect(result.newAgents).toBe(2); // sender + receiver created
+    expect(result.newAgents).toBe(3); // alice, bob, charlie
 
-    // Verify agents exist in database
-    const senderAgent = agentRepo.findByHash(sender);
-    expect(senderAgent).toBeDefined();
-    expect(senderAgent!.source).toBe('observer_protocol');
-    expect(senderAgent!.total_transactions).toBe(2);
+    // Alice agent has alias set, timestamps from created_at
+    const alice = agentRepo.findByHash(sha256('alice'));
+    expect(alice).toBeDefined();
+    expect(alice!.alias).toBe('alice');
+    expect(alice!.source).toBe('observer_protocol');
+    expect(alice!.total_transactions).toBe(2);
+    const expectedTs = Math.floor(new Date('2026-03-28T12:00:00Z').getTime() / 1000);
+    expect(alice!.first_seen).toBe(expectedTs);
+    expect(alice!.last_seen).toBe(expectedTs);
 
-    const receiverAgent = agentRepo.findByHash(receiver);
-    expect(receiverAgent).toBeDefined();
-    expect(receiverAgent!.total_transactions).toBe(2);
+    // Bob agent (counterparty) has no alias
+    const bob = agentRepo.findByHash(sha256('bob'));
+    expect(bob).toBeDefined();
+    expect(bob!.alias).toBeNull();
 
-    // Verify the transaction in database
-    const tx = txRepo.findById(id1);
-    expect(tx).toBeDefined();
-    expect(tx!.status).toBe('verified');
-    expect(tx!.sender_hash).toBe(sender);
+    // Transaction stored with correct sender/receiver
+    const storedTx = txRepo.findById('tx-001');
+    expect(storedTx).toBeDefined();
+    expect(storedTx!.sender_hash).toBe(sha256('alice')); // outbound = alice is sender
+    expect(storedTx!.receiver_hash).toBe(sha256('bob'));
+    expect(storedTx!.status).toBe('verified');
   });
 
-  it('avoids duplicates via tx_id', async () => {
-    const sender = sha256('dup-sender');
-    const receiver = sha256('dup-receiver');
-    const dupId = txId('tx-dup');
-
-    mockClient.trendsPages = [{
-      transactions: [makeObserverTx(dupId, sender, receiver)],
-      total: 1,
-      page: 1,
-      has_more: false,
-    }];
-
-    // First crawl
-    const first = await crawler.run();
-    expect(first.newTransactions).toBe(1);
-
-    // Second crawl with the same transaction
-    mockClient.healthCalls = 0;
-    mockClient.trendsCalls = 0;
-    const second = await crawler.run();
-    expect(second.newTransactions).toBe(0);
-    expect(second.transactionsFetched).toBe(1); // Fetched but not inserted
-  });
-
-  it('does not recreate existing agents', async () => {
-    const sender = sha256('existing-sender');
-    const receiver = sha256('existing-receiver');
-    const existId = txId('tx-existing');
-
-    // Pre-insert an agent
-    agentRepo.insert({
-      public_key_hash: sender,
-      alias: 'already-here',
-      first_seen: NOW - 86400,
-      last_seen: NOW - 86400,
-      source: 'manual',
-      total_transactions: 5,
-      total_attestations_received: 0,
-      avg_score: 0,
+  it('maps direction correctly (inbound = agent is receiver)', async () => {
+    const ev = makeEvent({
+      transaction_hash: 'tx-inbound',
+      agent_alias: 'alice',
+      counterparty_id: 'bob',
+      direction: 'inbound',
     });
 
-    mockClient.trendsPages = [{
-      transactions: [makeObserverTx(existId, sender, receiver)],
-      total: 1,
-      page: 1,
-      has_more: false,
-    }];
-
-    const result = await crawler.run();
-
-    expect(result.newAgents).toBe(1); // Only receiver created
-    expect(result.newTransactions).toBe(1);
-
-    // Existing agent keeps its alias and source
-    const agent = agentRepo.findByHash(sender);
-    expect(agent!.alias).toBe('already-here');
-    expect(agent!.source).toBe('manual');
-    // But total_transactions is incremented
-    expect(agent!.total_transactions).toBe(6);
-  });
-
-  it('handles multi-page pagination', async () => {
-    const s1 = sha256('page-sender-1');
-    const r1 = sha256('page-receiver-1');
-    const s2 = sha256('page-sender-2');
-    const r2 = sha256('page-receiver-2');
-    const p1Id = txId('tx-p1');
-    const p2Id = txId('tx-p2');
-
-    mockClient.trendsPages = [
-      {
-        transactions: [makeObserverTx(p1Id, s1, r1)],
-        total: 2,
-        page: 1,
-        has_more: true,
-      },
-      {
-        transactions: [makeObserverTx(p2Id, s2, r2)],
-        total: 2,
-        page: 2,
-        has_more: false,
-      },
-    ];
-
-    const result = await crawler.run();
-
-    expect(result.transactionsFetched).toBe(2);
-    expect(result.newTransactions).toBe(2);
-    expect(result.newAgents).toBe(4);
-    expect(mockClient.trendsCalls).toBe(2);
-  });
-
-  it('correctly maps Observer statuses to SatRank', async () => {
-    const sender = sha256('status-sender');
-    const receiver = sha256('status-receiver');
-    const statusId = txId('tx-status');
-
-    const tx = makeObserverTx(statusId, sender, receiver);
-    tx.status = 'PENDING';
-    tx.payment_rail = 'l402';
-    tx.amount_bucket = 'large';
-
-    mockClient.trendsPages = [{
-      transactions: [tx],
-      total: 1,
-      page: 1,
-      has_more: false,
-    }];
+    mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
 
     await crawler.run();
 
-    const stored = txRepo.findById(statusId);
-    expect(stored!.status).toBe('pending');
-    expect(stored!.protocol).toBe('l402');
-    expect(stored!.amount_bucket).toBe('large');
+    const tx = txRepo.findById('tx-inbound');
+    expect(tx!.sender_hash).toBe(sha256('bob'));      // bob sent
+    expect(tx!.receiver_hash).toBe(sha256('alice'));   // alice received
   });
 
-  it('continues despite an error on an individual transaction', async () => {
-    const sender = sha256('error-sender');
-    const receiver = sha256('error-receiver');
-    const goodSender = sha256('good-sender');
-    const conflictId = txId('tx-conflict');
-    const goodId = txId('tx-good');
+  it('deduplicates by transaction_hash', async () => {
+    const ev = makeEvent({ transaction_hash: 'tx-dup', agent_alias: 'alice', counterparty_id: 'bob' });
 
-    // First tx = duplicate tx_id with the second (triggers SQLite error)
-    // We manually insert first to force the conflict
+    mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
+
+    const first = await crawler.run();
+    expect(first.newTransactions).toBe(1);
+
+    // Second crawl with same transaction_hash
+    const second = await crawler.run();
+    expect(second.newTransactions).toBe(0);
+    expect(second.eventsFetched).toBe(1);
+  });
+
+  it('deduplicates across transactions and events arrays', async () => {
+    const ev = makeEvent({ transaction_hash: 'tx-both', agent_alias: 'alice', counterparty_id: 'bob' });
+
+    // Same event in both arrays
+    mockClient.transactionsResponse = {
+      transactions: [ev],
+      events: [{ ...ev, event_id: 'evt-different' }],
+      total: 1,
+    };
+
+    const result = await crawler.run();
+    expect(result.eventsFetched).toBe(1); // Deduped to 1
+    expect(result.newTransactions).toBe(1);
+  });
+
+  it('does not recreate existing agents', async () => {
+    const aliceHash = sha256('alice');
+
     agentRepo.insert({
-      public_key_hash: sender,
-      alias: null,
-      first_seen: NOW,
-      last_seen: NOW,
-      source: 'observer_protocol',
-      total_transactions: 0,
+      public_key_hash: aliceHash,
+      alias: 'alice-custom',
+      first_seen: 1000000,
+      last_seen: 1000000,
+      source: 'manual',
+      total_transactions: 5,
       total_attestations_received: 0,
-      avg_score: 0,
-    });
-    agentRepo.insert({
-      public_key_hash: receiver,
-      alias: null,
-      first_seen: NOW,
-      last_seen: NOW,
-      source: 'observer_protocol',
-      total_transactions: 0,
-      total_attestations_received: 0,
-      avg_score: 0,
-    });
-    // Manually insert a tx so the same tx_id triggers an error
-    txRepo.insert({
-      tx_id: conflictId,
-      sender_hash: sender,
-      receiver_hash: receiver,
-      amount_bucket: 'small',
-      timestamp: NOW,
-      payment_hash: sha256('ph'),
-      preimage: null,
-      status: 'verified',
-      protocol: 'bolt11',
+      avg_score: 42,
+      capacity_sats: null,
     });
 
-    // The crawler will: 1) skip tx-conflict (duplicate detected), 2) index tx-good
-    const goodTx = makeObserverTx(goodId, goodSender, receiver);
-
-    mockClient.trendsPages = [{
-      transactions: [
-        makeObserverTx(conflictId, sender, receiver), // sera skipé (doublon)
-        goodTx,
-      ],
-      total: 2,
-      page: 1,
-      has_more: false,
-    }];
+    const ev = makeEvent({ transaction_hash: 'tx-existing', agent_alias: 'alice', counterparty_id: 'dave' });
+    mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
 
     const result = await crawler.run();
 
-    expect(result.newTransactions).toBe(1); // Only tx-good
-    expect(result.transactionsFetched).toBe(2);
-    expect(result.errors.length).toBe(0); // No error, just a skip
+    expect(result.newAgents).toBe(1); // Only dave
+    expect(result.newTransactions).toBe(1);
+
+    const alice = agentRepo.findByHash(aliceHash);
+    expect(alice!.alias).toBe('alice-custom'); // Keeps existing alias
+    expect(alice!.source).toBe('manual');
+    expect(alice!.total_transactions).toBe(6);
   });
 
-  it('stops pagination if fetchTrends fails', async () => {
-    mockClient.shouldFailTrends = true;
+  it('sets first_seen/last_seen from earliest/latest created_at', async () => {
+    const early = makeEvent({
+      transaction_hash: 'tx-early',
+      agent_alias: 'alice',
+      counterparty_id: 'bob',
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    const late = makeEvent({
+      transaction_hash: 'tx-late',
+      agent_alias: 'alice',
+      counterparty_id: 'bob',
+      created_at: '2026-06-15T00:00:00Z',
+    });
+
+    mockClient.transactionsResponse = { transactions: [late, early], events: [], total: 2 };
+
+    await crawler.run();
+
+    const alice = agentRepo.findByHash(sha256('alice'));
+    expect(alice!.first_seen).toBe(Math.floor(new Date('2026-01-01T00:00:00Z').getTime() / 1000));
+    expect(alice!.last_seen).toBe(Math.floor(new Date('2026-06-15T00:00:00Z').getTime() / 1000));
+  });
+
+  it('maps protocol values correctly', async () => {
+    const tests: Array<{ protocol: string; expected: string }> = [
+      { protocol: 'lightning', expected: 'bolt11' },
+      { protocol: 'L402', expected: 'l402' },
+      { protocol: 'x402', expected: 'l402' },
+      { protocol: 'x402_stacks', expected: 'l402' },
+      { protocol: 'x402_stripe', expected: 'l402' },
+    ];
+
+    for (const { protocol, expected } of tests) {
+      const ev = makeEvent({
+        transaction_hash: `tx-proto-${protocol}`,
+        agent_alias: `agent-${protocol}`,
+        counterparty_id: `cp-${protocol}`,
+        protocol,
+      });
+      mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
+
+      await crawler.run();
+
+      const tx = txRepo.findById(`tx-proto-${protocol}`);
+      expect(tx!.protocol).toBe(expected);
+    }
+  });
+
+  it('maps verified boolean to status', async () => {
+    const verified = makeEvent({ transaction_hash: 'tx-v', agent_alias: 'a1', counterparty_id: 'c1', verified: true });
+    const pending = makeEvent({ transaction_hash: 'tx-p', agent_alias: 'a2', counterparty_id: 'c2', verified: false });
+
+    mockClient.transactionsResponse = { transactions: [verified, pending], events: [], total: 2 };
+
+    await crawler.run();
+
+    expect(txRepo.findById('tx-v')!.status).toBe('verified');
+    expect(txRepo.findById('tx-p')!.status).toBe('pending');
+  });
+
+  it('stops if fetchTransactions fails', async () => {
+    mockClient.shouldFailTransactions = true;
 
     const result = await crawler.run();
 
     expect(result.errors.length).toBeGreaterThan(0);
-    expect(mockClient.trendsCalls).toBe(1); // Single attempt
+    expect(result.errors[0]).toContain('Fetch failed');
+    expect(mockClient.transactionsCalls).toBe(1);
+  });
+
+  it('skips events without agent_alias', async () => {
+    const noAlias = makeEvent({ transaction_hash: 'tx-no-alias', agent_alias: null, counterparty_id: 'bob' });
+    const withAlias = makeEvent({ transaction_hash: 'tx-ok', agent_alias: 'alice', counterparty_id: 'bob' });
+
+    mockClient.transactionsResponse = { transactions: [noAlias, withAlias], events: [], total: 2 };
+
+    const result = await crawler.run();
+
+    expect(result.newTransactions).toBe(1);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toContain('Missing agent_alias');
   });
 });

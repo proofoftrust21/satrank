@@ -15,6 +15,7 @@ export interface Agent {
   total_transactions: number;
   total_attestations_received: number;
   avg_score: number;
+  capacity_sats: number | null;
 }
 
 export interface Transaction {

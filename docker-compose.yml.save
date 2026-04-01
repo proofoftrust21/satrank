@@ -27,6 +27,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     tmpfs:
       - /tmp
     deploy:
@@ -58,6 +59,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     tmpfs:
       - /tmp
     deploy:
@@ -65,6 +67,24 @@ services:
         limits:
           cpus: "0.5"
           memory: 256M
+
+  seed:
+    build:
+      context: .
+    entrypoint: ["node", "dist/database/seed.js"]
+    env_file:
+      - .env.production
+    volumes:
+      - satrank-data:/app/data
+    network_mode: "none"
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
 
 volumes:
   satrank-data:

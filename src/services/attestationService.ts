@@ -83,6 +83,7 @@ export class AttestationService {
         subject.total_transactions,
         newCount,
         subject.avg_score,
+        subject.first_seen,
         subject.last_seen,
       );
     };

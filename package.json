@@ -15,6 +15,8 @@
     "crawl:cron": "tsx src/crawler/run.ts --cron",
     "mcp": "tsx src/mcp/server.ts",
     "mcp:prod": "node dist/mcp/server.js",
+    "purge": "tsx src/database/purge.ts",
+    "purge:prod": "node dist/database/purge.js",
     "lint": "tsc --noEmit",
     "sdk:build": "cd sdk && npx tsc"
   },

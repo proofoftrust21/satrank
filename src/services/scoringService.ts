@@ -93,14 +93,21 @@ export class ScoringService {
       return { total: 0, components: { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 }, confidence: 'very_low', computedAt: now };
     }
 
-    const verifiedTxCount = this.txRepo.countVerifiedByAgent(agentHash);
+    const isLightningGraph = agent.source === 'lightning_graph';
+    const verifiedTxCount = isLightningGraph ? 0 : this.txRepo.countVerifiedByAgent(agentHash);
 
     const components: ScoreComponents = {
-      volume: this.computeVolume(verifiedTxCount),
+      volume: isLightningGraph
+        ? this.computeLightningVolume(agent.total_transactions, agent.capacity_sats)
+        : this.computeVolume(verifiedTxCount),
       reputation: this.computeReputation(agentHash, now),
       seniority: this.computeSeniority(agent.first_seen, now),
-      regularity: this.computeRegularity(agentHash),
-      diversity: this.computeDiversity(agentHash),
+      regularity: isLightningGraph
+        ? this.computeLightningRegularity(agent.last_seen, now)
+        : this.computeRegularity(agentHash),
+      diversity: isLightningGraph
+        ? this.computeLightningDiversity(agent.total_transactions)
+        : this.computeDiversity(agentHash),
     };
 
     let total = Math.round(
@@ -131,11 +138,38 @@ export class ScoringService {
     });
 
     // Update the denormalized score in the agents table
-    this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, total, agent.last_seen);
+    this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, total, agent.first_seen, agent.last_seen);
 
     logger.debug({ agentHash, total, components }, 'Score computed');
 
     return { total, components, confidence, computedAt: now };
+  }
+
+  // --- Lightning graph scoring ---
+
+  private computeLightningVolume(channels: number, capacitySats: number | null): number {
+    if (channels === 0) return 0;
+    // Channel count on same log scale as transaction volume
+    const channelScore = this.computeVolume(channels);
+    // Capacity bonus: up to +20 points for high-capacity nodes (10 BTC+ = max bonus)
+    const capacityBonus = capacitySats
+      ? Math.min(20, Math.round(Math.log10(capacitySats / 1_000_000 + 1) * 10))
+      : 0;
+    return Math.min(100, channelScore + capacityBonus);
+  }
+
+  private computeLightningRegularity(lastSeen: number, now: number): number {
+    // Score based on recency of node update — 30-day decay
+    const daysSinceUpdate = (now - lastSeen) / 86400;
+    if (daysSinceUpdate <= 0) return 100;
+    return Math.min(100, Math.round(100 * Math.exp(-daysSinceUpdate / 30)));
+  }
+
+  private computeLightningDiversity(channels: number): number {
+    // Each channel is with a unique peer — channels = diversity proxy
+    if (channels === 0) return 0;
+    const score = (Math.log(channels + 1) / Math.log(51)) * 100;
+    return Math.min(100, Math.round(score));
   }
 
   private computeVolume(count: number): number {

@@ -1,30 +1,30 @@
 // Orchestrates transaction indexing from Observer Protocol
-// Pulls new transactions, creates unknown agents, avoids duplicates
-import { v4 as uuid } from 'uuid';
+// Pulls events, creates agents from aliases, avoids duplicates
 import { z } from 'zod';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
-import type { ObserverClient, ObserverTransaction, CrawlResult } from './types';
+import type { ObserverClient, ObserverEvent, CrawlResult } from './types';
 import type { AmountBucket, TransactionStatus, PaymentProtocol } from '../types';
+import { sha256 } from '../utils/crypto';
 import { logger } from '../logger';
 
-const HEX64 = /^[a-f0-9]{64}$/;
-
-// Validate critical fields before database insertion
-const observerTxSchema = z.object({
-  transaction_id: z.string().uuid(),
-  sender_public_key_hash: z.string().regex(HEX64, 'sender_hash must be a SHA256 hex (64 chars)'),
-  receiver_public_key_hash: z.string().regex(HEX64, 'receiver_hash must be a SHA256 hex (64 chars)'),
-  receipt_hash: z.string().regex(HEX64, 'receipt_hash must be a SHA256 hex (64 chars)'),
-  settlement_reference: z.string().max(128).nullable(),
-  timestamp: z.number().int().positive(),
-  amount_bucket: z.string().min(1).max(20),
-  status: z.string().min(1).max(20),
-  payment_rail: z.string().min(1).max(50),
-  signature: z.string().min(1).max(512),
+// Validate critical fields before processing
+const observerEventSchema = z.object({
+  event_id: z.string().min(1),
+  event_type: z.string().min(1),
+  protocol: z.string().min(1),
+  transaction_hash: z.string().min(1),
+  time_window: z.string().min(1),
+  amount_bucket: z.string().min(1),
+  amount_sats: z.number().nonnegative(),
+  direction: z.enum(['inbound', 'outbound']),
+  service_description: z.string().nullable(),
+  preimage: z.string().nullable(),
+  counterparty_id: z.string().nullable(),
+  verified: z.boolean(),
+  created_at: z.string().min(1),
+  agent_alias: z.string().nullable(),
 });
-
-const BATCH_SIZE = 100; // Transactions per page
 
 export class Crawler {
   constructor(
@@ -33,13 +33,12 @@ export class Crawler {
     private txRepo: TransactionRepository,
   ) {}
 
-  // Runs a complete crawl
   async run(): Promise<CrawlResult> {
     const startedAt = Math.floor(Date.now() / 1000);
     const result: CrawlResult = {
       startedAt,
       finishedAt: 0,
-      transactionsFetched: 0,
+      eventsFetched: 0,
       newTransactions: 0,
       newAgents: 0,
       errors: [],
@@ -57,40 +56,42 @@ export class Crawler {
       return result;
     }
 
-    // Paginate transactions until exhaustion
-    let page = 1;
-    let hasMore = true;
+    try {
+      const response = await this.client.fetchTransactions();
 
-    while (hasMore) {
-      try {
-        const trends = await this.client.fetchTrends(page, BATCH_SIZE);
-        result.transactionsFetched += trends.transactions.length;
-
-        for (const observerTx of trends.transactions) {
-          try {
-            const indexed = this.indexTransaction(observerTx, startedAt);
-            if (indexed.newTx) result.newTransactions++;
-            result.newAgents += indexed.newAgents;
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            result.errors.push(`tx ${observerTx.transaction_id}: ${msg}`);
-          }
+      // Combine transactions + events arrays, dedup by transaction_hash
+      const allEvents = [...response.transactions, ...response.events];
+      const seen = new Set<string>();
+      const dedupedEvents: ObserverEvent[] = [];
+      for (const ev of allEvents) {
+        if (!seen.has(ev.transaction_hash)) {
+          seen.add(ev.transaction_hash);
+          dedupedEvents.push(ev);
         }
-
-        hasMore = trends.has_more;
-        page++;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        result.errors.push(`Page ${page}: ${msg}`);
-        logger.error({ page, error: msg }, 'Error fetching trends');
-        break; // Stop pagination on error
       }
+
+      result.eventsFetched = dedupedEvents.length;
+
+      for (const event of dedupedEvents) {
+        try {
+          const indexed = this.indexEvent(event);
+          if (indexed.newTx) result.newTransactions++;
+          result.newAgents += indexed.newAgents;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          result.errors.push(`event ${event.event_id}: ${msg}`);
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`Fetch failed: ${msg}`);
+      logger.error({ error: msg }, 'Error fetching transactions');
     }
 
     result.finishedAt = Math.floor(Date.now() / 1000);
     logger.info({
       duration: result.finishedAt - result.startedAt,
-      fetched: result.transactionsFetched,
+      fetched: result.eventsFetched,
       newTx: result.newTransactions,
       newAgents: result.newAgents,
       errors: result.errors.length,
@@ -99,111 +100,119 @@ export class Crawler {
     return result;
   }
 
-  // Indexes an Observer Protocol transaction into SatRank
-  private indexTransaction(
-    observerTx: ObserverTransaction,
-    now: number,
+  private indexEvent(
+    event: ObserverEvent,
   ): { newTx: boolean; newAgents: number } {
-    // Validate field format before any insertion
-    const validated = observerTxSchema.safeParse(observerTx);
+    const validated = observerEventSchema.safeParse(event);
     if (!validated.success) {
       throw new Error(`Invalid Observer data: ${validated.error.errors.map(e => e.message).join(', ')}`);
     }
 
-    let newAgents = 0;
+    const ev = validated.data;
 
-    const tx = validated.data;
+    // Must have agent_alias to identify the agent
+    if (!ev.agent_alias) {
+      throw new Error('Missing agent_alias');
+    }
 
-    // Check if the transaction already exists (deduplication by tx_id)
-    const existing = this.txRepo.findById(tx.transaction_id);
+    // Deduplicate by transaction_hash (our tx_id)
+    const existing = this.txRepo.findById(ev.transaction_hash);
     if (existing) {
       return { newTx: false, newAgents: 0 };
     }
 
-    // Create unknown agents
-    newAgents += this.ensureAgent(tx.sender_public_key_hash, now);
-    newAgents += this.ensureAgent(tx.receiver_public_key_hash, now);
+    // Parse timestamp from created_at (ISO datetime) — used for first_seen/last_seen
+    const timestamp = Math.floor(new Date(ev.created_at).getTime() / 1000);
 
-    // Map and insert the transaction — uses Zod-validated data
+    let newAgents = 0;
+
+    // Derive agent hash from alias
+    const agentHash = sha256(ev.agent_alias);
+    newAgents += this.ensureAgent(agentHash, ev.agent_alias, timestamp);
+
+    // Derive counterparty hash
+    const counterpartyHash = ev.counterparty_id
+      ? sha256(ev.counterparty_id)
+      : sha256(`unknown-${ev.transaction_hash}`);
+    newAgents += this.ensureAgent(counterpartyHash, null, timestamp);
+
+    // Direction determines sender/receiver
+    const senderHash = ev.direction === 'outbound' ? agentHash : counterpartyHash;
+    const receiverHash = ev.direction === 'outbound' ? counterpartyHash : agentHash;
+
     this.txRepo.insert({
-      tx_id: tx.transaction_id,
-      sender_hash: tx.sender_public_key_hash,
-      receiver_hash: tx.receiver_public_key_hash,
-      amount_bucket: this.mapAmountBucket(tx.amount_bucket),
-      timestamp: tx.timestamp,
-      payment_hash: tx.receipt_hash,
-      preimage: tx.settlement_reference ?? null,
-      status: this.mapStatus(tx.status),
-      protocol: this.mapProtocol(tx.payment_rail),
+      tx_id: ev.transaction_hash,
+      sender_hash: senderHash,
+      receiver_hash: receiverHash,
+      amount_bucket: this.mapAmountBucket(ev.amount_bucket),
+      timestamp,
+      payment_hash: sha256(ev.transaction_hash),
+      preimage: ev.preimage,
+      status: ev.verified ? 'verified' : 'pending',
+      protocol: this.mapProtocol(ev.protocol),
     });
 
-    // Update agents' last_seen and total_transactions
-    this.updateAgentActivity(tx.sender_public_key_hash, tx.timestamp);
-    this.updateAgentActivity(tx.receiver_public_key_hash, tx.timestamp);
+    this.updateAgentActivity(senderHash, timestamp);
+    this.updateAgentActivity(receiverHash, timestamp);
 
     return { newTx: true, newAgents };
   }
 
-  // Creates an agent if it doesn't exist yet — returns 1 if created, 0 otherwise
-  private ensureAgent(publicKeyHash: string, now: number): number {
+  private ensureAgent(publicKeyHash: string, alias: string | null, eventTimestamp: number): number {
     const existing = this.agentRepo.findByHash(publicKeyHash);
-    if (existing) return 0;
+    if (existing) {
+      // Update alias if we now have one and the agent didn't before
+      if (alias && !existing.alias) {
+        this.agentRepo.updateAlias(publicKeyHash, alias);
+      }
+      return 0;
+    }
 
     this.agentRepo.insert({
       public_key_hash: publicKeyHash,
-      alias: null,
-      first_seen: now,
-      last_seen: now,
+      alias,
+      first_seen: eventTimestamp,
+      last_seen: eventTimestamp,
       source: 'observer_protocol',
       total_transactions: 0,
       total_attestations_received: 0,
       avg_score: 0,
+      capacity_sats: null,
     });
 
-    logger.debug({ publicKeyHash }, 'New agent created from Observer Protocol');
+    logger.debug({ publicKeyHash, alias }, 'New agent created from Observer Protocol');
     return 1;
   }
 
-  // Updates last_seen and increments total_transactions
   private updateAgentActivity(agentHash: string, timestamp: number): void {
     const agent = this.agentRepo.findByHash(agentHash);
     if (!agent) return;
 
+    const newFirstSeen = Math.min(agent.first_seen, timestamp);
     const newLastSeen = Math.max(agent.last_seen, timestamp);
     this.agentRepo.updateStats(
       agentHash,
       agent.total_transactions + 1,
       agent.total_attestations_received,
       agent.avg_score,
+      newFirstSeen,
       newLastSeen,
     );
   }
 
-  // Maps Observer amount_bucket -> SatRank
   private mapAmountBucket(bucket: string): AmountBucket {
     const normalized = bucket.toLowerCase();
     if (['micro', 'small', 'medium', 'large'].includes(normalized)) {
       return normalized as AmountBucket;
     }
-    return 'small'; // Default if unknown format
+    return 'small';
   }
 
-  // Maps Observer status -> SatRank
-  private mapStatus(status: string): TransactionStatus {
-    const map: Record<string, TransactionStatus> = {
-      'VERIFIED': 'verified',
-      'PENDING': 'pending',
-      'FAILED': 'failed',
-      'DISPUTED': 'disputed',
-    };
-    return map[status.toUpperCase()] ?? 'pending';
-  }
-
-  // Maps Observer payment_rail -> SatRank protocol
-  private mapProtocol(rail: string): PaymentProtocol {
-    const normalized = rail.toLowerCase();
-    if (normalized.includes('l402')) return 'l402';
+  private mapProtocol(protocol: string): PaymentProtocol {
+    const normalized = protocol.toLowerCase();
+    if (normalized === 'lightning') return 'bolt11';
+    if (normalized.includes('l402') || normalized.includes('x402')) return 'l402';
     if (normalized.includes('keysend')) return 'keysend';
-    return 'bolt11'; // Lightning default
+    return 'bolt11';
   }
 }

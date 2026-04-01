@@ -1,18 +1,14 @@
 // Attestation service tests
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import crypto from 'crypto';
 import { v4 as uuid } from 'uuid';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { AttestationService } from '../services/attestationService';
+import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
-
-function sha256(input: string): string {
-  return crypto.createHash('sha256').update(input).digest('hex');
-}
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -26,6 +22,7 @@ function makeAgent(alias: string): Agent {
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,
+    capacity_sats: null,
   };
 }
 
