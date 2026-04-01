@@ -1,0 +1,52 @@
+# Stage 1 — Build TypeScript
+FROM node:20-alpine3.21 AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+
+# Stage 2 — Install production deps with native modules (better-sqlite3)
+FROM node:20-alpine3.21 AS deps
+
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+# Stage 3 — Minimal runtime (no build tools)
+FROM node:20-alpine3.21 AS runtime
+
+WORKDIR /app
+
+RUN addgroup -g 1001 -S satrank && adduser -S satrank -u 1001 -G satrank
+
+COPY --from=builder --chown=satrank:satrank /app/dist ./dist
+COPY --from=deps    --chown=satrank:satrank /app/node_modules ./node_modules
+COPY --chown=satrank:satrank package.json ./
+COPY --chown=satrank:satrank public/ ./public/
+
+RUN mkdir -p /app/data && chown satrank:satrank /app/data
+
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV BUILD_DATE=${BUILD_DATE}
+ENV NODE_ENV=production
+
+USER satrank
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://localhost:3000/api/v1/health').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"
+
+STOPSIGNAL SIGTERM
+
+CMD ["node", "dist/index.js"]

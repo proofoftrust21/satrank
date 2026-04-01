@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg GIT_COMMIT=${{ github.sha }} \
+            --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+            -t satrank:${{ github.sha }} \
+            .
+      - name: Verify container starts
+        run: |
+          docker run -d --name satrank-test \
+            -e NODE_ENV=development \
+            -e DB_PATH=./data/satrank.db \
+            -p 3000:3000 \
+            satrank:${{ github.sha }}
+          sleep 5
+          curl -sf http://localhost:3000/api/v1/health || (docker logs satrank-test && exit 1)
+          docker stop satrank-test

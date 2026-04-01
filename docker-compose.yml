@@ -1,0 +1,91 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    container_name: satrank-api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env.production
+    environment:
+      - GIT_COMMIT=${GIT_COMMIT:-dev}
+      - BUILD_DATE=${BUILD_DATE:-unknown}
+    volumes:
+      - satrank-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/v1/health').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  crawler:
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    container_name: satrank-crawler
+    restart: unless-stopped
+    entrypoint: ["node", "dist/crawler/run.js", "--cron"]
+    env_file:
+      - .env.production
+    environment:
+      - GIT_COMMIT=${GIT_COMMIT:-dev}
+      - BUILD_DATE=${BUILD_DATE:-unknown}
+    volumes:
+      - satrank-data:/app/data
+    depends_on:
+      api:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  seed:
+    build:
+      context: .
+    entrypoint: ["node", "dist/database/seed.js"]
+    env_file:
+      - .env.production
+    volumes:
+      - satrank-data:/app/data
+    network_mode: "none"
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  satrank-data:
+    driver: local

@@ -1,0 +1,50 @@
+{
+  "name": "satrank",
+  "version": "0.1.0",
+  "description": "Score de confiance pour agents IA sur Bitcoin Lightning",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "seed": "tsx src/database/seed.ts",
+    "seed:prod": "node dist/database/seed.js",
+    "crawl": "tsx src/crawler/run.ts",
+    "crawl:cron": "tsx src/crawler/run.ts --cron",
+    "mcp": "tsx src/mcp/server.ts",
+    "mcp:prod": "node dist/mcp/server.js",
+    "lint": "tsc --noEmit",
+    "sdk:build": "cd sdk && npx tsc"
+  },
+  "keywords": [
+    "lightning",
+    "l402",
+    "trust-score",
+    "agents"
+  ],
+  "license": "AGPL-3.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^11.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "uuid": "^11.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/uuid": "^10.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  }
+}

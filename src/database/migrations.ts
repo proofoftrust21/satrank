@@ -1,0 +1,64 @@
+// Schema and index creation
+import type Database from 'better-sqlite3';
+import { logger } from '../logger';
+
+export function runMigrations(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agents (
+      public_key_hash TEXT PRIMARY KEY,
+      alias TEXT,
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL,
+      source TEXT NOT NULL CHECK(source IN ('observer_protocol', '4tress', 'lightning_graph', 'manual')),
+      total_transactions INTEGER NOT NULL DEFAULT 0,
+      total_attestations_received INTEGER NOT NULL DEFAULT 0,
+      avg_score REAL NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS transactions (
+      tx_id TEXT PRIMARY KEY,
+      sender_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+      receiver_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+      amount_bucket TEXT NOT NULL CHECK(amount_bucket IN ('micro', 'small', 'medium', 'large')),
+      timestamp INTEGER NOT NULL,
+      payment_hash TEXT NOT NULL,
+      preimage TEXT,
+      status TEXT NOT NULL CHECK(status IN ('verified', 'pending', 'failed', 'disputed')),
+      protocol TEXT NOT NULL CHECK(protocol IN ('l402', 'keysend', 'bolt11'))
+    );
+
+    CREATE TABLE IF NOT EXISTS attestations (
+      attestation_id TEXT PRIMARY KEY,
+      tx_id TEXT NOT NULL REFERENCES transactions(tx_id),
+      attester_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+      subject_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+      score INTEGER NOT NULL CHECK(score >= 0 AND score <= 100),
+      tags TEXT,
+      evidence_hash TEXT,
+      timestamp INTEGER NOT NULL,
+      UNIQUE(tx_id, attester_hash)
+    );
+
+    CREATE TABLE IF NOT EXISTS score_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      agent_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+      score REAL NOT NULL,
+      components TEXT NOT NULL,
+      computed_at INTEGER NOT NULL
+    );
+
+    -- Indexes for frequent queries
+    CREATE INDEX IF NOT EXISTS idx_transactions_sender ON transactions(sender_hash);
+    CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON transactions(receiver_hash);
+    CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
+    CREATE INDEX IF NOT EXISTS idx_attestations_subject ON attestations(subject_hash);
+    CREATE INDEX IF NOT EXISTS idx_attestations_attester ON attestations(attester_hash);
+    CREATE INDEX IF NOT EXISTS idx_attestations_timestamp ON attestations(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_agent ON score_snapshots(agent_hash);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_computed ON score_snapshots(computed_at);
+    CREATE INDEX IF NOT EXISTS idx_agents_alias ON agents(alias);
+  `);
+
+  logger.info('Migrations executed successfully');
+}

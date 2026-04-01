@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SatRank — Lightning Trust Score</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e8;
+      line-height: 1.6;
+    }
+    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+    /* Header */
+    header {
+      padding: 80px 0 48px;
+      text-align: center;
+      border-bottom: 1px solid #1a1a2e;
+    }
+    header h1 {
+      font-size: 3rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #f7931a, #ffd93d);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    header p {
+      font-size: 1.2rem;
+      color: #8888a0;
+      margin-top: 12px;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    header .badge {
+      display: inline-block;
+      margin-top: 20px;
+      padding: 6px 16px;
+      border: 1px solid #f7931a40;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      color: #f7931a;
+      background: #f7931a10;
+    }
+
+    /* Stats grid */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      padding: 48px 0;
+    }
+    .stat-card {
+      background: #12121e;
+      border: 1px solid #1e1e30;
+      border-radius: 12px;
+      padding: 24px;
+      text-align: center;
+    }
+    .stat-card .value {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #f7931a;
+    }
+    .stat-card .label {
+      font-size: 0.85rem;
+      color: #6666a0;
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stat-card .value.loading { color: #333; }
+
+    /* Top agents */
+    .section { padding: 32px 0; }
+    .section h2 {
+      font-size: 1.4rem;
+      margin-bottom: 20px;
+      color: #c0c0d8;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #12121e;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    th, td { padding: 12px 16px; text-align: left; }
+    th {
+      background: #1a1a2e;
+      color: #6666a0;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+    td { border-top: 1px solid #1a1a2e; font-size: 0.95rem; }
+    tr:hover td { background: #16162a; }
+    .score-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .score-high { background: #00c85320; color: #00c853; }
+    .score-mid { background: #f7931a20; color: #f7931a; }
+    .score-low { background: #ff525220; color: #ff5252; }
+    .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; color: #8888a0; }
+
+    /* API docs */
+    .endpoints { list-style: none; }
+    .endpoints li {
+      padding: 12px 16px;
+      background: #12121e;
+      border: 1px solid #1e1e30;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .method {
+      font-family: monospace;
+      font-weight: 700;
+      font-size: 0.8rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      min-width: 48px;
+      text-align: center;
+    }
+    .method-get { background: #00c85320; color: #00c853; }
+    .method-post { background: #f7931a20; color: #f7931a; }
+    .endpoint-path { font-family: monospace; color: #c0c0d8; }
+    .endpoint-desc { color: #6666a0; font-size: 0.85rem; margin-left: auto; }
+
+    /* Footer */
+    footer {
+      padding: 48px 0 32px;
+      text-align: center;
+      color: #444460;
+      font-size: 0.85rem;
+      border-top: 1px solid #1a1a2e;
+      margin-top: 32px;
+    }
+    footer a { color: #f7931a; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>SatRank</h1>
+    <p>The PageRank of the agentic economy on Bitcoin Lightning. The trust score agents check before every transaction.</p>
+    <span class="badge">L402-ready</span>
+  </div>
+</header>
+
+<main class="container">
+  <!-- Live stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="value loading" id="stat-agents">--</div>
+      <div class="label">Agents Indexed</div>
+    </div>
+    <div class="stat-card">
+      <div class="value loading" id="stat-transactions">--</div>
+      <div class="label">Transactions</div>
+    </div>
+    <div class="stat-card">
+      <div class="value loading" id="stat-attestations">--</div>
+      <div class="label">Attestations</div>
+    </div>
+    <div class="stat-card">
+      <div class="value loading" id="stat-avg-score">--</div>
+      <div class="label">Avg Score</div>
+    </div>
+  </div>
+
+  <!-- Top agents -->
+  <div class="section">
+    <h2>Top Agents</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Agent</th>
+          <th>Score</th>
+          <th>Transactions</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody id="top-agents">
+        <tr><td colspan="5" style="text-align:center;color:#444">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- API -->
+  <div class="section">
+    <h2>API Endpoints</h2>
+    <ul class="endpoints">
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agent/:hash</span>
+        <span class="endpoint-desc">Detailed agent score</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agent/:hash/history</span>
+        <span class="endpoint-desc">Score history</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agent/:hash/attestations</span>
+        <span class="endpoint-desc">Received attestations</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agents/top</span>
+        <span class="endpoint-desc">Leaderboard by score</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agents/search?alias=...</span>
+        <span class="endpoint-desc">Search by alias</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/v1/attestation</span>
+        <span class="endpoint-desc">Submit an attestation</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/health</span>
+        <span class="endpoint-desc">Service status</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/stats</span>
+        <span class="endpoint-desc">Network statistics</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/version</span>
+        <span class="endpoint-desc">Build commit and date</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/openapi.json</span>
+        <span class="endpoint-desc">OpenAPI specification</span>
+      </li>
+    </ul>
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    SatRank &mdash; Trust score for AI agents on Bitcoin Lightning
+    <br>
+    <a href="/api/v1/stats">Stats</a> &middot; <a href="/api/v1/health">Health</a> &middot; <a href="/api/v1/openapi.json">API Spec</a>
+  </div>
+</footer>
+
+<script>
+(function() {
+  function fmt(n) {
+    return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+  }
+
+  function scoreClass(score) {
+    if (score >= 60) return 'score-high';
+    if (score >= 35) return 'score-mid';
+    return 'score-low';
+  }
+
+  fetch('/api/v1/stats')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var s = d.data;
+      document.getElementById('stat-agents').textContent = fmt(s.totalAgents);
+      document.getElementById('stat-agents').classList.remove('loading');
+      document.getElementById('stat-transactions').textContent = fmt(s.totalTransactions);
+      document.getElementById('stat-transactions').classList.remove('loading');
+      document.getElementById('stat-attestations').textContent = fmt(s.totalAttestations);
+      document.getElementById('stat-attestations').classList.remove('loading');
+      document.getElementById('stat-avg-score').textContent = s.avgScore;
+      document.getElementById('stat-avg-score').classList.remove('loading');
+    })
+    .catch(function() {});
+
+  fetch('/api/v1/agents/top?limit=10')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var tbody = document.getElementById('top-agents');
+      tbody.innerHTML = '';
+      d.data.forEach(function(a, i) {
+        var tr = document.createElement('tr');
+        var hash = a.publicKeyHash.slice(0, 8) + '...' + a.publicKeyHash.slice(-6);
+
+        var rankCell = tr.insertCell();
+        rankCell.textContent = String(i + 1);
+
+        var aliasCell = tr.insertCell();
+        if (a.alias) {
+          aliasCell.textContent = a.alias;
+        } else {
+          var span = document.createElement('span');
+          span.className = 'mono';
+          span.textContent = hash;
+          aliasCell.appendChild(span);
+        }
+
+        var scoreCell = tr.insertCell();
+        var badge = document.createElement('span');
+        badge.className = 'score-badge ' + scoreClass(a.score);
+        badge.textContent = String(a.score);
+        scoreCell.appendChild(badge);
+
+        var txCell = tr.insertCell();
+        txCell.textContent = String(a.totalTransactions);
+
+        var sourceCell = tr.insertCell();
+        sourceCell.className = 'mono';
+        sourceCell.textContent = a.source;
+
+        tbody.appendChild(tr);
+      });
+    })
+    .catch(function() {});
+})();
+</script>
+
+</body>
+</html>

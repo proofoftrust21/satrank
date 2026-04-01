@@ -1,0 +1,20 @@
+{
+  "name": "@satrank/sdk",
+  "version": "0.1.0",
+  "description": "Client SDK pour l'API SatRank — zero dependencies",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist/"],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["satrank", "lightning", "l402", "trust-score", "agents"],
+  "license": "AGPL-3.0",
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
