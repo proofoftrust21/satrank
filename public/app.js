@@ -9,8 +9,20 @@
     return 'score-low';
   }
 
+  function setStatError() {
+    ['stat-agents', 'stat-transactions', 'stat-attestations', 'stat-avg-score'].forEach(function(id) {
+      var el = document.getElementById(id);
+      el.textContent = 'API unavailable';
+      el.classList.remove('loading');
+      el.style.fontSize = '0.9rem';
+    });
+  }
+
   fetch('/api/v1/stats')
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    })
     .then(function(d) {
       var s = d.data;
       document.getElementById('stat-agents').textContent = fmt(s.totalAgents);
@@ -22,10 +34,13 @@
       document.getElementById('stat-avg-score').textContent = s.avgScore;
       document.getElementById('stat-avg-score').classList.remove('loading');
     })
-    .catch(function() {});
+    .catch(setStatError);
 
   fetch('/api/v1/agents/top?limit=10')
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    })
     .then(function(d) {
       var tbody = document.getElementById('top-agents');
       tbody.innerHTML = '';
@@ -62,5 +77,8 @@
         tbody.appendChild(tr);
       });
     })
-    .catch(function() {});
+    .catch(function() {
+      var tbody = document.getElementById('top-agents');
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ff5252">Unable to load agents</td></tr>';
+    });
 })();

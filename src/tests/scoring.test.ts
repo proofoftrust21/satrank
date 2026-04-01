@@ -285,29 +285,28 @@ describe('ScoringService', () => {
   });
 
   describe('lightning_graph scoring', () => {
-    it('computes volume from channels with capacity bonus', () => {
-      const node = makeAgent('ln-node', {
+    it('computes volume relative to network max channels', () => {
+      // Top node sets the reference for the network
+      const topNode = makeAgent('ln-top', {
         source: 'lightning_graph',
-        total_transactions: 500,
-        capacity_sats: 5_000_000_000,
+        total_transactions: 2000, // channels
+        capacity_sats: 10_000_000_000,
       });
-      agentRepo.insert(node);
-
-      const result = scoring.computeScore(node.public_key_hash);
-
-      // Volume should use channels (500), not tx table (0 verified tx)
-      expect(result.components.volume).toBeGreaterThan(0);
-
-      // Capacity bonus: 5 BTC = log10(5000+1)*10 ≈ 37 → capped at 20
-      // So volume > computeVolume(500) alone
-      const nodeNoCapacity = makeAgent('ln-no-cap', {
+      const midNode = makeAgent('ln-mid', {
         source: 'lightning_graph',
-        total_transactions: 500,
-        capacity_sats: null,
+        total_transactions: 120, // channels
+        capacity_sats: 500_000_000,
       });
-      agentRepo.insert(nodeNoCapacity);
-      const resultNoCapacity = scoring.computeScore(nodeNoCapacity.public_key_hash);
-      expect(result.components.volume).toBeGreaterThan(resultNoCapacity.components.volume);
+      agentRepo.insert(topNode);
+      agentRepo.insert(midNode);
+
+      const scoreTop = scoring.computeScore(topNode.public_key_hash);
+      const scoreMid = scoring.computeScore(midNode.public_key_hash);
+
+      // Top node (2000ch, max=2000) → ~96, mid node (120ch) → ~31
+      expect(scoreTop.components.volume).toBeGreaterThan(90);
+      expect(scoreMid.components.volume).toBeLessThan(40);
+      expect(scoreTop.components.volume).toBeGreaterThan(scoreMid.components.volume);
     });
 
     it('computes regularity from recency of last_seen', () => {
@@ -332,25 +331,30 @@ describe('ScoringService', () => {
       expect(scoreStale.components.regularity).toBeLessThan(10);
     });
 
-    it('computes diversity from channel count', () => {
-      const manyChannels = makeAgent('ln-diverse', {
+    it('computes diversity from capacity in BTC', () => {
+      const highCap = makeAgent('ln-high-cap', {
         source: 'lightning_graph',
-        total_transactions: 40,
+        total_transactions: 100,
+        capacity_sats: 5_900_000_000, // 59 BTC
       });
-      const fewChannels = makeAgent('ln-few', {
+      const lowCap = makeAgent('ln-low-cap', {
         source: 'lightning_graph',
-        total_transactions: 3,
+        total_transactions: 100,
+        capacity_sats: 5_000_000, // 0.05 BTC
       });
-      agentRepo.insert(manyChannels);
-      agentRepo.insert(fewChannels);
+      agentRepo.insert(highCap);
+      agentRepo.insert(lowCap);
 
-      const scoreMany = scoring.computeScore(manyChannels.public_key_hash);
-      const scoreFew = scoring.computeScore(fewChannels.public_key_hash);
+      const scoreHigh = scoring.computeScore(highCap.public_key_hash);
+      const scoreLow = scoring.computeScore(lowCap.public_key_hash);
 
-      expect(scoreMany.components.diversity).toBeGreaterThan(scoreFew.components.diversity);
+      // 59 BTC → high diversity (~92), 0.05 BTC → low diversity (~6)
+      expect(scoreHigh.components.diversity).toBeGreaterThan(80);
+      expect(scoreLow.components.diversity).toBeLessThan(15);
+      expect(scoreHigh.components.diversity).toBeGreaterThan(scoreLow.components.diversity);
     });
 
-    it('does not query tx table for lightning_graph agents', () => {
+    it('does not query tx table for lightning_graph volume', () => {
       // A lightning_graph agent with 0 rows in transactions table
       // should still get volume > 0 from channels
       const node = makeAgent('ln-no-tx', {
@@ -363,6 +367,51 @@ describe('ScoringService', () => {
       const result = scoring.computeScore(node.public_key_hash);
       expect(result.components.volume).toBeGreaterThan(0);
       expect(result.components.diversity).toBeGreaterThan(0);
+    });
+
+    it('verified transaction bonus boosts observer_protocol agents above small LN nodes', () => {
+      // Large LN node to set the network max
+      const topNode = makeAgent('ln-top-ref', {
+        source: 'lightning_graph',
+        total_transactions: 2000,
+        capacity_sats: 10_000_000_000,
+        first_seen: NOW - 365 * DAY,
+        last_seen: NOW - DAY,
+      });
+      // Small LN node — few channels, low capacity, no verified tx
+      const smallLn = makeAgent('ln-small', {
+        source: 'lightning_graph',
+        total_transactions: 30,
+        capacity_sats: 50_000_000, // 0.5 BTC
+        first_seen: NOW - 90 * DAY,
+        last_seen: NOW - DAY,
+      });
+      // Observer Protocol agent with 30 verified transactions
+      const obsAgent = makeAgent('obs-agent', {
+        source: 'observer_protocol',
+        total_transactions: 30,
+        first_seen: NOW - 90 * DAY,
+        last_seen: NOW - DAY,
+      });
+      agentRepo.insert(topNode);
+      agentRepo.insert(smallLn);
+      agentRepo.insert(obsAgent);
+
+      // Create 30 verified transactions for obsAgent with diverse counterparties
+      for (let i = 0; i < 10; i++) {
+        const peer = makeAgent(`obs-peer-${i}`);
+        agentRepo.insert(peer);
+        for (let j = 0; j < 3; j++) {
+          txRepo.insert(makeTx(obsAgent.public_key_hash, peer.public_key_hash));
+        }
+      }
+
+      const scoreSmallLn = scoring.computeScore(smallLn.public_key_hash);
+      const scoreObs = scoring.computeScore(obsAgent.public_key_hash);
+
+      // Observer agent: volume from 30 real tx + diversity from 10 counterparties + bonus (+15)
+      // Small LN node: low volume (30ch vs 2000 max) + low diversity (0.5 BTC)
+      expect(scoreObs.total).toBeGreaterThan(scoreSmallLn.total);
     });
   });
 });

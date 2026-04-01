@@ -95,10 +95,11 @@ export class ScoringService {
 
     const isLightningGraph = agent.source === 'lightning_graph';
     const verifiedTxCount = isLightningGraph ? 0 : this.txRepo.countVerifiedByAgent(agentHash);
+    const maxNetworkChannels = isLightningGraph ? this.agentRepo.maxChannels() : 0;
 
     const components: ScoreComponents = {
       volume: isLightningGraph
-        ? this.computeLightningVolume(agent.total_transactions, agent.capacity_sats)
+        ? this.computeLightningVolume(agent.total_transactions, maxNetworkChannels)
         : this.computeVolume(verifiedTxCount),
       reputation: this.computeReputation(agentHash, now),
       seniority: this.computeSeniority(agent.first_seen, now),
@@ -106,7 +107,7 @@ export class ScoringService {
         ? this.computeLightningRegularity(agent.last_seen, now)
         : this.computeRegularity(agentHash),
       diversity: isLightningGraph
-        ? this.computeLightningDiversity(agent.total_transactions)
+        ? this.computeLightningDiversity(agent.capacity_sats)
         : this.computeDiversity(agentHash),
     };
 
@@ -124,6 +125,14 @@ export class ScoringService {
       const penaltyMultiplier = MANUAL_SOURCE_MIN_MULTIPLIER + (1 - MANUAL_SOURCE_MIN_MULTIPLIER) * ratio;
       total = Math.round(total * penaltyMultiplier);
       logger.debug({ agentHash, source: agent.source, verifiedTxCount, penaltyMultiplier }, 'Manual source penalty applied');
+    }
+
+    // Verified transaction bonus — real Observer Protocol tx boost any agent's score
+    const verifiedForBonus = isLightningGraph
+      ? this.txRepo.countVerifiedByAgent(agentHash)
+      : verifiedTxCount;
+    if (verifiedForBonus > 0) {
+      total = Math.min(100, total + Math.min(15, Math.round(verifiedForBonus * 0.5)));
     }
 
     const confidence = this.deriveConfidence(agent.total_transactions, agent.total_attestations_received);
@@ -147,15 +156,13 @@ export class ScoringService {
 
   // --- Lightning graph scoring ---
 
-  private computeLightningVolume(channels: number, capacitySats: number | null): number {
-    if (channels === 0) return 0;
-    // Channel count on same log scale as transaction volume
-    const channelScore = this.computeVolume(channels);
-    // Capacity bonus: up to +20 points for high-capacity nodes (10 BTC+ = max bonus)
-    const capacityBonus = capacitySats
-      ? Math.min(20, Math.round(Math.log10(capacitySats / 1_000_000 + 1) * 10))
-      : 0;
-    return Math.min(100, channelScore + capacityBonus);
+  private computeLightningVolume(channels: number, maxNetworkChannels: number): number {
+    if (channels === 0 || maxNetworkChannels === 0) return 0;
+    // Network-relative: score proportional to max, with power curve for spread
+    // ACINQ (1988ch, max ~2000) → ~95, 120ch → ~30
+    const reference = maxNetworkChannels * 1.1; // 10% headroom so top node ≈ 95
+    const ratio = Math.min(1, channels / reference);
+    return Math.min(100, Math.round(Math.pow(ratio, 0.4) * 100));
   }
 
   private computeLightningRegularity(lastSeen: number, now: number): number {
@@ -165,10 +172,12 @@ export class ScoringService {
     return Math.min(100, Math.round(100 * Math.exp(-daysSinceUpdate / 30)));
   }
 
-  private computeLightningDiversity(channels: number): number {
-    // Each channel is with a unique peer — channels = diversity proxy
-    if (channels === 0) return 0;
-    const score = (Math.log(channels + 1) / Math.log(51)) * 100;
+  private computeLightningDiversity(capacitySats: number | null): number {
+    // Capacity as diversity proxy — more BTC locked = broader network participation
+    // 59 BTC → ~92, 5 BTC → ~57, 0.05 BTC → ~6
+    if (!capacitySats || capacitySats <= 0) return 0;
+    const btc = capacitySats / 100_000_000;
+    const score = (Math.log10(btc * 10 + 1) / Math.log10(1001)) * 100;
     return Math.min(100, Math.round(score));
   }
 

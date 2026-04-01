@@ -23,6 +23,10 @@ export class AgentRepository {
     return this.db.prepare('SELECT * FROM agents ORDER BY avg_score DESC LIMIT ? OFFSET ?').all(limit, offset) as Agent[];
   }
 
+  findTopByActivity(limit: number): Agent[] {
+    return this.db.prepare('SELECT * FROM agents ORDER BY total_transactions DESC LIMIT ?').all(limit) as Agent[];
+  }
+
   searchByAlias(alias: string, limit: number, offset: number): Agent[] {
     const escaped = alias.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
     return this.db.prepare(
@@ -48,6 +52,13 @@ export class AgentRepository {
       INSERT INTO agents (public_key_hash, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(agent.public_key_hash, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats);
+  }
+
+  maxChannels(): number {
+    const row = this.db.prepare(
+      "SELECT MAX(total_transactions) as max FROM agents WHERE source = 'lightning_graph'"
+    ).get() as { max: number | null };
+    return row.max ?? 0;
   }
 
   avgScore(): number {

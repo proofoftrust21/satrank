@@ -7,6 +7,9 @@ import { getDatabase, closeDatabase } from '../database/connection';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
+import { AttestationRepository } from '../repositories/attestationRepository';
+import { SnapshotRepository } from '../repositories/snapshotRepository';
+import { ScoringService } from '../services/scoringService';
 import { HttpObserverClient } from './observerClient';
 import { Crawler } from './crawler';
 import { HttpMempoolClient } from './mempoolClient';
@@ -14,7 +17,7 @@ import { MempoolCrawler } from './mempoolCrawler';
 
 const CRON_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler): Promise<void> {
+async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler, agentRepo: AgentRepository, scoringService: ScoringService): Promise<void> {
   // Observer Protocol
   logger.info('Starting Observer Protocol crawl');
   const obsResult = await observerCrawler.run();
@@ -46,6 +49,13 @@ async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler
   if (memResult.errors.length > 0) {
     logger.warn({ errors: memResult.errors }, 'Errors during mempool.space crawl');
   }
+
+  // Pre-compute scores for the top 50 agents by activity
+  const topAgents = agentRepo.findTopByActivity(50);
+  for (const agent of topAgents) {
+    scoringService.computeScore(agent.public_key_hash);
+  }
+  logger.info({ count: topAgents.length }, 'Scores pre-computed for top agents');
 }
 
 async function main(): Promise<void> {
@@ -54,6 +64,10 @@ async function main(): Promise<void> {
 
   const agentRepo = new AgentRepository(db);
   const txRepo = new TransactionRepository(db);
+  const attestationRepo = new AttestationRepository(db);
+  const snapshotRepo = new SnapshotRepository(db);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+
   const observerClient = new HttpObserverClient({
     baseUrl: config.OBSERVER_BASE_URL,
     timeoutMs: config.OBSERVER_TIMEOUT_MS,
@@ -68,10 +82,10 @@ async function main(): Promise<void> {
   if (isCron) {
     logger.info({ intervalMs: CRON_INTERVAL_MS }, 'Cron mode enabled');
 
-    await runCrawl(observerCrawler, mempoolCrawlerInstance);
+    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService);
 
     const interval = setInterval(() => {
-      runCrawl(observerCrawler, mempoolCrawlerInstance).catch(err => {
+      runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService).catch(err => {
         logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Fatal cron crawl error');
       });
     }, CRON_INTERVAL_MS);
@@ -85,7 +99,7 @@ async function main(): Promise<void> {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } else {
-    await runCrawl(observerCrawler, mempoolCrawlerInstance);
+    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService);
     closeDatabase();
   }
 }
