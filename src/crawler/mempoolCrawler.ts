@@ -76,6 +76,10 @@ export class MempoolCrawler {
     const existing = this.agentRepo.findByHash(publicKeyHash);
 
     if (existing) {
+      // Always store/refresh the original pubkey for LN+ lookups
+      if (!existing.public_key) {
+        this.agentRepo.updatePublicKey(publicKeyHash, node.publicKey);
+      }
       if (existing.source === 'lightning_graph') {
         // Full update for Lightning nodes: channels, capacity, alias, lastSeen
         this.agentRepo.updateLightningStats(
@@ -104,6 +108,7 @@ export class MempoolCrawler {
 
     this.agentRepo.insert({
       public_key_hash: publicKeyHash,
+      public_key: node.publicKey,
       alias: node.alias,
       first_seen: node.firstSeen,
       last_seen: node.updatedAt,
@@ -112,6 +117,10 @@ export class MempoolCrawler {
       total_attestations_received: 0,
       avg_score: 0,
       capacity_sats: node.capacity,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     });
 
     logger.debug({ publicKeyHash, alias: node.alias, channels: node.channels }, 'New Lightning node indexed');

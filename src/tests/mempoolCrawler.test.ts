@@ -26,7 +26,7 @@ class MockMempoolClient implements MempoolClient {
   calls = 0;
   shouldFail = false;
 
-  async fetchTopNodes(_limit?: number): Promise<MempoolNode[]> {
+  async fetchTopNodes(): Promise<MempoolNode[]> {
     this.calls++;
     if (this.shouldFail) throw new Error('Connection refused');
     return this.nodes;
@@ -173,6 +173,7 @@ describe('MempoolCrawler', () => {
     const observerHash = sha256('ACINQ');
     agentRepo.insert({
       public_key_hash: observerHash,
+      public_key: null,
       alias: 'ACINQ',
       first_seen: 1500000000,
       last_seen: 1600000000,
@@ -181,6 +182,10 @@ describe('MempoolCrawler', () => {
       total_attestations_received: 3,
       avg_score: 60,
       capacity_sats: null,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     });
 
     // Lightning node with same alias but different pubkey hash
@@ -216,6 +221,7 @@ describe('MempoolCrawler', () => {
     // Pre-existing agent with different alias
     agentRepo.insert({
       public_key_hash: sha256('other-agent'),
+      public_key: null,
       alias: 'OtherNode',
       first_seen: 1500000000,
       last_seen: 1600000000,
@@ -224,6 +230,10 @@ describe('MempoolCrawler', () => {
       total_attestations_received: 0,
       avg_score: 0,
       capacity_sats: null,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     });
 
     mockClient.nodes = [makeNode({
@@ -245,6 +255,7 @@ describe('MempoolCrawler', () => {
     const hash = sha256(pubkey);
     agentRepo.insert({
       public_key_hash: hash,
+      public_key: null,
       alias: 'observer-agent',
       first_seen: 1500000000,
       last_seen: 1600000000,
@@ -253,6 +264,10 @@ describe('MempoolCrawler', () => {
       total_attestations_received: 5,
       avg_score: 75,
       capacity_sats: null,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     });
 
     mockClient.nodes = [makeNode({

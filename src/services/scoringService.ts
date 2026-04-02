@@ -7,6 +7,7 @@ import type { AttestationRepository } from '../repositories/attestationRepositor
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoreComponents, ConfidenceLevel } from '../types';
 import { logger } from '../logger';
+import { computePopularityBonus } from '../utils/scoring';
 
 // Weight of each component in the final score
 const WEIGHTS = {
@@ -101,7 +102,9 @@ export class ScoringService {
       volume: isLightningGraph
         ? this.computeLightningVolume(agent.total_transactions, maxNetworkChannels)
         : this.computeVolume(verifiedTxCount),
-      reputation: this.computeReputation(agentHash, now),
+      reputation: isLightningGraph
+        ? this.computeLightningReputation(agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank)
+        : this.computeReputation(agentHash, now),
       seniority: this.computeSeniority(agent.first_seen, now),
       regularity: isLightningGraph
         ? this.computeLightningRegularity(agent.last_seen, now)
@@ -133,6 +136,12 @@ export class ScoringService {
       : verifiedTxCount;
     if (verifiedForBonus > 0) {
       total = Math.min(100, total + Math.min(15, Math.round(verifiedForBonus * 0.5)));
+    }
+
+    // Popularity bonus — agents that are queried more often get a small boost
+    const popularityBonus = computePopularityBonus(agent.query_count);
+    if (popularityBonus > 0) {
+      total = Math.min(100, total + popularityBonus);
     }
 
     const confidence = this.deriveConfidence(agent.total_transactions, agent.total_attestations_received);
@@ -179,6 +188,15 @@ export class ScoringService {
     const btc = capacitySats / 100_000_000;
     const score = (Math.log10(btc * 10 + 1) / Math.log10(1001)) * 100;
     return Math.min(100, Math.round(score));
+  }
+
+  // LN+ ratings-based reputation for Lightning nodes
+  // positive / (positive + negative + 1) gives a 0-1 ratio, scaled to 60
+  // lnplus_rank (1-10) adds up to 40 points
+  private computeLightningReputation(positive: number, negative: number, lnplusRank: number): number {
+    if (positive === 0 && negative === 0 && lnplusRank === 0) return 0;
+    const ratio = positive / (positive + negative + 1);
+    return Math.min(100, Math.round(ratio * 60 + lnplusRank * 4));
   }
 
   private computeVolume(count: number): number {

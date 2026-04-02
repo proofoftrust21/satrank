@@ -65,7 +65,23 @@ export function runMigrations(db: Database.Database): void {
   try {
     db.exec('ALTER TABLE agents ADD COLUMN capacity_sats INTEGER DEFAULT NULL');
   } catch {
-    // Column already exists (fresh schema includes it, or already migrated)
+    // Column already exists
+  }
+
+  // v0.3: LN+ ratings, original pubkey, query count
+  const v03Columns: [string, string][] = [
+    ['public_key', 'TEXT DEFAULT NULL'],
+    ['positive_ratings', 'INTEGER NOT NULL DEFAULT 0'],
+    ['negative_ratings', 'INTEGER NOT NULL DEFAULT 0'],
+    ['lnplus_rank', 'INTEGER NOT NULL DEFAULT 0'],
+    ['query_count', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [col, def] of v03Columns) {
+    try {
+      db.exec(`ALTER TABLE agents ADD COLUMN ${col} ${def}`);
+    } catch {
+      // Column already exists
+    }
   }
 
   logger.info('Migrations executed successfully');

@@ -53,6 +53,12 @@ export class TransactionRepository {
     return rows.map(r => r.timestamp);
   }
 
+  findRecentByAgent(agentHash: string, limit: number): Transaction[] {
+    return this.db.prepare(
+      'SELECT * FROM transactions WHERE sender_hash = ? OR receiver_hash = ? ORDER BY timestamp DESC LIMIT ?'
+    ).all(agentHash, agentHash, limit) as Transaction[];
+  }
+
   totalCount(): number {
     const row = this.db.prepare('SELECT COUNT(*) as count FROM transactions').get() as { count: number };
     return row.count;

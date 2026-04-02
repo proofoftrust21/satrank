@@ -8,6 +8,7 @@ export type PaymentProtocol = 'l402' | 'keysend' | 'bolt11';
 // Database entities
 export interface Agent {
   public_key_hash: string;
+  public_key: string | null;
   alias: string | null;
   first_seen: number;
   last_seen: number;
@@ -16,6 +17,10 @@ export interface Agent {
   total_attestations_received: number;
   avg_score: number;
   capacity_sats: number | null;
+  positive_ratings: number;
+  negative_ratings: number;
+  lnplus_rank: number;
+  query_count: number;
 }
 
 export interface Transaction {
@@ -82,6 +87,39 @@ export interface AgentScoreResponse {
     uniqueCounterparties: number;
     attestationsReceived: number;
     avgAttestationScore: number;
+  };
+  evidence: ScoreEvidence;
+}
+
+export interface TransactionSample {
+  txId: string;
+  protocol: PaymentProtocol;
+  amountBucket: AmountBucket;
+  verified: boolean;
+  timestamp: number;
+}
+
+export interface ScoreEvidence {
+  transactions: {
+    count: number;
+    verifiedCount: number;
+    sample: TransactionSample[];
+  };
+  lightningGraph: {
+    publicKey: string;
+    channels: number;
+    capacitySats: number;
+    sourceUrl: string;
+  } | null;
+  reputation: {
+    positiveRatings: number;
+    negativeRatings: number;
+    lnplusRank: number;
+    sourceUrl: string;
+  } | null;
+  popularity: {
+    queryCount: number;
+    bonusApplied: number;
   };
 }
 

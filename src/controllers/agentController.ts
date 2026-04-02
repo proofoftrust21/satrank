@@ -29,6 +29,10 @@ export class AgentController {
       if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
 
       const result = this.agentService.getAgentScore(parsed.data);
+
+      // Track popularity: each successful query is a demand signal
+      this.agentRepo.incrementQueryCount(parsed.data);
+
       res.json({ data: result });
     } catch (err) {
       next(err);

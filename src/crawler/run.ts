@@ -14,10 +14,12 @@ import { HttpObserverClient } from './observerClient';
 import { Crawler } from './crawler';
 import { HttpMempoolClient } from './mempoolClient';
 import { MempoolCrawler } from './mempoolCrawler';
+import { HttpLnplusClient } from './lnplusClient';
+import { LnplusCrawler } from './lnplusCrawler';
 
 const CRON_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler, agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
+async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler, lnplusCrawler: LnplusCrawler, agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
   // Observer Protocol
   logger.info('Starting Observer Protocol crawl');
   const obsResult = await observerCrawler.run();
@@ -48,6 +50,27 @@ async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler
 
   if (memResult.errors.length > 0) {
     logger.warn({ errors: memResult.errors }, 'Errors during mempool.space crawl');
+  }
+
+  // LightningNetwork.plus ratings
+  logger.info('Starting LN+ ratings crawl');
+  try {
+    const lnpResult = await lnplusCrawler.run();
+
+    logger.info({
+      duration: lnpResult.finishedAt - lnpResult.startedAt,
+      queried: lnpResult.queried,
+      updated: lnpResult.updated,
+      notFound: lnpResult.notFound,
+      errors: lnpResult.errors.length,
+    }, 'LN+ crawl result');
+
+    if (lnpResult.errors.length > 0) {
+      logger.warn({ errors: lnpResult.errors }, 'Errors during LN+ crawl');
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
   }
 
   // Pre-compute scores for the top 50 agents by activity
@@ -83,15 +106,18 @@ async function main(): Promise<void> {
   const mempoolClient = new HttpMempoolClient();
   const mempoolCrawlerInstance = new MempoolCrawler(mempoolClient, agentRepo);
 
+  const lnplusClient = new HttpLnplusClient();
+  const lnplusCrawlerInstance = new LnplusCrawler(lnplusClient, agentRepo);
+
   const isCron = process.argv.includes('--cron');
 
   if (isCron) {
     logger.info({ intervalMs: CRON_INTERVAL_MS }, 'Cron mode enabled');
 
-    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService, snapshotRepo);
+    await runCrawl(observerCrawler, mempoolCrawlerInstance, lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo);
 
     const interval = setInterval(() => {
-      runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService, snapshotRepo).catch(err => {
+      runCrawl(observerCrawler, mempoolCrawlerInstance, lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo).catch(err => {
         logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Fatal cron crawl error');
       });
     }, CRON_INTERVAL_MS);
@@ -105,7 +131,7 @@ async function main(): Promise<void> {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } else {
-    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService, snapshotRepo);
+    await runCrawl(observerCrawler, mempoolCrawlerInstance, lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo);
     closeDatabase();
   }
 }

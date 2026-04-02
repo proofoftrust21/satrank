@@ -336,6 +336,68 @@ export const openapiSpec = {
               avgAttestationScore: { type: 'number' },
             },
           },
+          evidence: { $ref: '#/components/schemas/ScoreEvidence' },
+        },
+      },
+      TransactionSample: {
+        type: 'object',
+        properties: {
+          txId: { type: 'string', format: 'uuid' },
+          protocol: { type: 'string', enum: ['l402', 'keysend', 'bolt11'] },
+          amountBucket: { type: 'string', enum: ['micro', 'small', 'medium', 'large'] },
+          verified: { type: 'boolean' },
+          timestamp: { type: 'integer' },
+        },
+      },
+      ScoreEvidence: {
+        type: 'object',
+        description: "Don't trust, verify. All data sources used to compute the score, with links to verify independently.",
+        properties: {
+          transactions: {
+            type: 'object',
+            properties: {
+              count: { type: 'integer', description: 'Total transactions involving this agent' },
+              verifiedCount: { type: 'integer', description: 'Verified transactions count' },
+              sample: { type: 'array', items: { $ref: '#/components/schemas/TransactionSample' }, description: '5 most recent transactions' },
+            },
+          },
+          lightningGraph: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  publicKey: { type: 'string', description: 'Original Lightning node public key' },
+                  channels: { type: 'integer' },
+                  capacitySats: { type: 'integer' },
+                  sourceUrl: { type: 'string', format: 'uri', description: 'Verify on mempool.space' },
+                },
+              },
+              { type: 'null' },
+            ],
+            description: 'Lightning Network graph data. Null for non-Lightning agents.',
+          },
+          reputation: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  positiveRatings: { type: 'integer' },
+                  negativeRatings: { type: 'integer' },
+                  lnplusRank: { type: 'integer', minimum: 0, maximum: 10 },
+                  sourceUrl: { type: 'string', format: 'uri', description: 'Verify on LightningNetwork.plus' },
+                },
+              },
+              { type: 'null' },
+            ],
+            description: 'LN+ community ratings. Null if no ratings exist.',
+          },
+          popularity: {
+            type: 'object',
+            properties: {
+              queryCount: { type: 'integer', description: 'Number of times this agent has been queried via the API' },
+              bonusApplied: { type: 'integer', minimum: 0, maximum: 10, description: 'Score bonus from popularity (0-10)' },
+            },
+          },
         },
       },
       ScoreSnapshot: {

@@ -15,6 +15,7 @@ const NOW = Math.floor(Date.now() / 1000);
 function makeAgent(alias: string): Agent {
   return {
     public_key_hash: sha256(alias),
+    public_key: null,
     alias,
     first_seen: NOW - 90 * 86400,
     last_seen: NOW - 86400,
@@ -23,6 +24,10 @@ function makeAgent(alias: string): Agent {
     total_attestations_received: 0,
     avg_score: 0,
     capacity_sats: null,
+    positive_ratings: 0,
+    negative_ratings: 0,
+    lnplus_rank: 0,
+    query_count: 0,
   };
 }
 

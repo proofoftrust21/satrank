@@ -173,6 +173,7 @@ describe('Crawler', () => {
 
     agentRepo.insert({
       public_key_hash: aliceHash,
+      public_key: null,
       alias: 'alice-custom',
       first_seen: 1000000,
       last_seen: 1000000,
@@ -181,6 +182,10 @@ describe('Crawler', () => {
       total_attestations_received: 0,
       avg_score: 42,
       capacity_sats: null,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     });
 
     const ev = makeEvent({ transaction_hash: 'tx-existing', agent_alias: 'alice', counterparty_id: 'dave' });

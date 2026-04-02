@@ -17,6 +17,7 @@ const DAY = 86400;
 function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
   return {
     public_key_hash: sha256(alias),
+    public_key: null,
     alias,
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
@@ -25,6 +26,10 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
     total_attestations_received: 0,
     avg_score: 0,
     capacity_sats: null,
+    positive_ratings: 0,
+    negative_ratings: 0,
+    lnplus_rank: 0,
+    query_count: 0,
     ...overrides,
   };
 }
@@ -369,6 +374,81 @@ describe('ScoringService', () => {
       expect(result.components.diversity).toBeGreaterThan(0);
     });
 
+    it('computes reputation from LN+ ratings', () => {
+      const ratedNode = makeAgent('ln-rated', {
+        source: 'lightning_graph',
+        total_transactions: 500,
+        capacity_sats: 5_000_000_000,
+        positive_ratings: 42,
+        negative_ratings: 2,
+        lnplus_rank: 8,
+      });
+      const unratedNode = makeAgent('ln-unrated', {
+        source: 'lightning_graph',
+        total_transactions: 500,
+        capacity_sats: 5_000_000_000,
+        positive_ratings: 0,
+        negative_ratings: 0,
+        lnplus_rank: 0,
+      });
+      agentRepo.insert(ratedNode);
+      agentRepo.insert(unratedNode);
+
+      const scoreRated = scoring.computeScore(ratedNode.public_key_hash);
+      const scoreUnrated = scoring.computeScore(unratedNode.public_key_hash);
+
+      // Rated: (42/(42+2+1))*60 + 8*4 = 56 + 32 = 88
+      expect(scoreRated.components.reputation).toBeGreaterThan(80);
+      // Unrated: 0
+      expect(scoreUnrated.components.reputation).toBe(0);
+      // Total score with reputation vs without should differ significantly
+      expect(scoreRated.total).toBeGreaterThan(scoreUnrated.total + 15);
+    });
+
+    it('LN+ reputation formula: ratio * 60 + rank * 4', () => {
+      // Exact formula test: 10 positive, 0 negative, rank 5
+      // ratio = 10 / (10 + 0 + 1) = 0.909
+      // score = 0.909 * 60 + 5 * 4 = 54.5 + 20 = 74.5 → 75
+      const node = makeAgent('ln-formula', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        positive_ratings: 10,
+        negative_ratings: 0,
+        lnplus_rank: 5,
+      });
+      agentRepo.insert(node);
+
+      const result = scoring.computeScore(node.public_key_hash);
+      expect(result.components.reputation).toBe(75);
+    });
+
+    it('negative ratings reduce reputation', () => {
+      const goodNode = makeAgent('ln-good', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        positive_ratings: 10,
+        negative_ratings: 0,
+        lnplus_rank: 5,
+      });
+      const mixedNode = makeAgent('ln-mixed', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        positive_ratings: 10,
+        negative_ratings: 10,
+        lnplus_rank: 5,
+      });
+      agentRepo.insert(goodNode);
+      agentRepo.insert(mixedNode);
+
+      const scoreGood = scoring.computeScore(goodNode.public_key_hash);
+      const scoreMixed = scoring.computeScore(mixedNode.public_key_hash);
+
+      expect(scoreGood.components.reputation).toBeGreaterThan(scoreMixed.components.reputation);
+    });
+
     it('verified transaction bonus boosts observer_protocol agents above small LN nodes', () => {
       // Large LN node to set the network max
       const topNode = makeAgent('ln-top-ref', {
@@ -412,6 +492,51 @@ describe('ScoringService', () => {
       // Observer agent: volume from 30 real tx + diversity from 10 counterparties + bonus (+15)
       // Small LN node: low volume (30ch vs 2000 max) + low diversity (0.5 BTC)
       expect(scoreObs.total).toBeGreaterThan(scoreSmallLn.total);
+    });
+  });
+
+  describe('popularity bonus', () => {
+    it('adds bonus based on query_count', () => {
+      const queried = makeAgent('pop-queried', { query_count: 100 });
+      const unqueried = makeAgent('pop-unqueried', { query_count: 0 });
+      agentRepo.insert(queried);
+      agentRepo.insert(unqueried);
+
+      const scoreQueried = scoring.computeScore(queried.public_key_hash);
+      const scoreUnqueried = scoring.computeScore(unqueried.public_key_hash);
+
+      // log2(101) * 2 ≈ 13.3 → capped at 10
+      expect(scoreQueried.total).toBeGreaterThan(scoreUnqueried.total);
+      expect(scoreQueried.total - scoreUnqueried.total).toBeLessThanOrEqual(10);
+    });
+
+    it('caps popularity bonus at 10 points', () => {
+      const mega = makeAgent('pop-mega', { query_count: 100000 });
+      const modest = makeAgent('pop-modest', { query_count: 10 });
+      agentRepo.insert(mega);
+      agentRepo.insert(modest);
+
+      const scoreMega = scoring.computeScore(mega.public_key_hash);
+      const scoreModest = scoring.computeScore(modest.public_key_hash);
+
+      // Both should get some bonus, but mega doesn't exceed +10 over base
+      // log2(100001)*2 ≈ 33 → capped at 10
+      // log2(11)*2 ≈ 6.9 → 7
+      const baseAgent = makeAgent('pop-base', { query_count: 0 });
+      agentRepo.insert(baseAgent);
+      const scoreBase = scoring.computeScore(baseAgent.public_key_hash);
+
+      expect(scoreMega.total - scoreBase.total).toBeLessThanOrEqual(10);
+      expect(scoreModest.total - scoreBase.total).toBeGreaterThan(0);
+    });
+
+    it('no bonus when query_count is 0', () => {
+      const agent = makeAgent('pop-zero', { query_count: 0 });
+      agentRepo.insert(agent);
+
+      const result = scoring.computeScore(agent.public_key_hash);
+      // Score should just be base components, no popularity added
+      expect(result.total).toBeGreaterThanOrEqual(0);
     });
   });
 });

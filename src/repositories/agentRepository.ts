@@ -53,9 +53,9 @@ export class AgentRepository {
 
   insert(agent: Agent): void {
     this.db.prepare(`
-      INSERT INTO agents (public_key_hash, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(agent.public_key_hash, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats);
+      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats, positive_ratings, negative_ratings, lnplus_rank, query_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(agent.public_key_hash, agent.public_key, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats, agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.query_count);
   }
 
   maxChannels(): number {
@@ -93,5 +93,26 @@ export class AgentRepository {
       UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?
       WHERE public_key_hash = ?
     `).run(channels, capacitySats, alias, lastSeen, hash);
+  }
+
+  updatePublicKey(hash: string, publicKey: string): void {
+    this.db.prepare('UPDATE agents SET public_key = ? WHERE public_key_hash = ?').run(publicKey, hash);
+  }
+
+  updateLnplusRatings(hash: string, positiveRatings: number, negativeRatings: number, lnplusRank: number): void {
+    this.db.prepare(`
+      UPDATE agents SET positive_ratings = ?, negative_ratings = ?, lnplus_rank = ?
+      WHERE public_key_hash = ?
+    `).run(positiveRatings, negativeRatings, lnplusRank, hash);
+  }
+
+  findLightningAgentsWithPubkey(): Agent[] {
+    return this.db.prepare(
+      "SELECT * FROM agents WHERE source = 'lightning_graph' AND public_key IS NOT NULL"
+    ).all() as Agent[];
+  }
+
+  incrementQueryCount(hash: string): void {
+    this.db.prepare('UPDATE agents SET query_count = query_count + 1 WHERE public_key_hash = ?').run(hash);
   }
 }

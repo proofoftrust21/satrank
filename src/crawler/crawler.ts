@@ -170,6 +170,7 @@ export class Crawler {
 
     this.agentRepo.insert({
       public_key_hash: publicKeyHash,
+      public_key: null,
       alias,
       first_seen: eventTimestamp,
       last_seen: eventTimestamp,
@@ -178,6 +179,10 @@ export class Crawler {
       total_attestations_received: 0,
       avg_score: 0,
       capacity_sats: null,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     });
 
     logger.debug({ publicKeyHash, alias }, 'New agent created from Observer Protocol');

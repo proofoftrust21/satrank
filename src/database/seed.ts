@@ -117,6 +117,7 @@ function generateAgents(): Agent[] {
 
     return {
       public_key_hash: sha256(`agent-${i}-${p.alias || 'anon'}`),
+      public_key: null,
       alias: p.alias || null,
       first_seen: firstSeen,
       last_seen: lastSeen,
@@ -125,6 +126,10 @@ function generateAgents(): Agent[] {
       total_attestations_received: 0,
       avg_score: 0,
       capacity_sats: null,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     };
   });
 }

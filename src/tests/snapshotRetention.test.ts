@@ -12,6 +12,7 @@ function ensureAgent(agentRepo: AgentRepository, hash: string): void {
   if (!agentRepo.findByHash(hash)) {
     agentRepo.insert({
       public_key_hash: hash,
+      public_key: null,
       alias: `agent-${hash.slice(0, 8)}`,
       first_seen: 1500000000,
       last_seen: 1700000000,
@@ -20,6 +21,10 @@ function ensureAgent(agentRepo: AgentRepository, hash: string): void {
       total_attestations_received: 0,
       avg_score: 0,
       capacity_sats: null,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      query_count: 0,
     });
   }
 }

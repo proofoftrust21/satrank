@@ -18,7 +18,7 @@ export interface MempoolNode {
 }
 
 export interface MempoolClient {
-  fetchTopNodes(limit?: number): Promise<MempoolNode[]>;
+  fetchTopNodes(): Promise<MempoolNode[]>;
 }
 
 export interface MempoolClientOptions {
@@ -35,22 +35,10 @@ export class HttpMempoolClient implements MempoolClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async fetchTopNodes(limit: number = 500): Promise<MempoolNode[]> {
-    // mempool.space returns 100 nodes per page; paginate to reach the requested limit
-    const perPage = 100;
-    const pages = Math.ceil(limit / perPage);
-    const allNodes: MempoolNode[] = [];
-
-    for (let page = 1; page <= pages; page++) {
-      const nodes = await this.request<MempoolNode[]>(
-        `/api/v1/lightning/nodes/rankings/connectivity?page=${page}`,
-      );
-      allNodes.push(...nodes);
-      // API returned fewer than a full page — no more data
-      if (nodes.length < perPage) break;
-    }
-
-    return allNodes.slice(0, limit);
+  // mempool.space hardcodes LIMIT 100 server-side with no pagination support.
+  // ?page=N is silently ignored — all pages return the same 100 nodes.
+  async fetchTopNodes(): Promise<MempoolNode[]> {
+    return this.request<MempoolNode[]>('/api/v1/lightning/nodes/rankings/connectivity');
   }
 
   private async request<T>(path: string): Promise<T> {
