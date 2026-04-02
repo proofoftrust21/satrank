@@ -9,7 +9,6 @@ import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
 import { sha256 } from '../utils/crypto';
-import { ATTESTATION_CONCENTRATION_THRESHOLD, ATTESTATION_CONCENTRATION_PENALTY } from '../config/scoring';
 import type { Agent, Transaction, Attestation } from '../types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -271,16 +270,6 @@ describe('Scoring properties', () => {
     const oneway = scoring.computeScore(cHash);
 
     expect(mutual.components.reputation).toBeLessThan(oneway.components.reputation);
-  });
-
-  it('concentration penalty constants are configured', () => {
-    // With UNIQUE(attester_hash, subject_hash), concentration ratio for a single subject
-    // is always 1.0 (one attestation per attester). The penalty targets Observer Protocol
-    // agents where the same attester attests multiple subjects via different tx.
-    // Verify the constants are set correctly.
-    expect(ATTESTATION_CONCENTRATION_THRESHOLD).toBeGreaterThan(1);
-    expect(ATTESTATION_CONCENTRATION_PENALTY).toBeGreaterThan(0);
-    expect(ATTESTATION_CONCENTRATION_PENALTY).toBeLessThan(1);
   });
 
   // --- Popularity ---

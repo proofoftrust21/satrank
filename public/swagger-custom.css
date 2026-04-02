@@ -253,3 +253,260 @@ html, body {
   box-shadow: none;
   border-bottom: 1px solid #1a1a2e;
 }
+
+/* ===== Authorize modal dialog ===== */
+.swagger-ui .dialog-ux .backdrop-ux {
+  background: rgba(0, 0, 0, 0.7);
+}
+.swagger-ui .dialog-ux .modal-ux {
+  background: #12121e;
+  border: 1px solid #1e1e30;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+.swagger-ui .dialog-ux .modal-ux-header {
+  border-bottom: 1px solid #1a1a2e;
+}
+.swagger-ui .dialog-ux .modal-ux-header h3 {
+  color: #e0e0e8;
+}
+.swagger-ui .dialog-ux .modal-ux-header .close-modal {
+  filter: invert(0.8);
+}
+.swagger-ui .dialog-ux .modal-ux-content {
+  background: #12121e;
+  color: #c0c0d8;
+}
+.swagger-ui .dialog-ux .modal-ux-content p,
+.swagger-ui .dialog-ux .modal-ux-content label,
+.swagger-ui .dialog-ux .modal-ux-content h4 {
+  color: #c0c0d8;
+}
+.swagger-ui .dialog-ux .modal-ux-content code {
+  background: #0d0d18;
+  color: #f7931a;
+}
+.swagger-ui .auth-container {
+  border-bottom: 1px solid #1a1a2e;
+}
+.swagger-ui .auth-container input[type=text],
+.swagger-ui .auth-container input[type=password] {
+  background: #0d0d18;
+  border: 1px solid #1e1e30;
+  color: #e0e0e8;
+}
+.swagger-ui .auth-container .wrapper {
+  background: transparent;
+}
+.swagger-ui .auth-container .errors {
+  color: #ff5252;
+}
+.swagger-ui .dialog-ux .modal-ux .btn.modal-btn {
+  background: #1a1a2e;
+  border: 1px solid #333350;
+  color: #e0e0e8;
+}
+.swagger-ui .dialog-ux .modal-ux .btn.modal-btn.auth {
+  background: #00c853;
+  border-color: #00c853;
+  color: #0a0a0f;
+}
+.swagger-ui .dialog-ux .modal-ux .btn.modal-btn:hover {
+  background: #222240;
+}
+.swagger-ui .scopes h2 {
+  color: #c0c0d8;
+}
+.swagger-ui .auth-btn-wrapper {
+  display: flex;
+  gap: 8px;
+}
+
+/* ===== Schema / Models section ===== */
+.swagger-ui section.models {
+  border: 1px solid #1e1e30;
+  border-radius: 6px;
+}
+.swagger-ui section.models h4 {
+  border-bottom: 1px solid #1a1a2e;
+}
+.swagger-ui section.models h4 span {
+  color: #c0c0d8;
+}
+.swagger-ui section.models h4 svg {
+  fill: #8888a0;
+}
+.swagger-ui section.models h5 {
+  color: #c0c0d8;
+}
+.swagger-ui section.models .model-container {
+  background: #0d0d18;
+  border: 1px solid #1a1a2e;
+  border-radius: 4px;
+  margin: 0 12px 12px;
+}
+
+/* Model box and display */
+.swagger-ui .model-box {
+  background: transparent;
+}
+.swagger-ui .model {
+  color: #c0c0d8;
+  font-size: 0.9rem;
+}
+.swagger-ui .model-title {
+  color: #e0e0e8;
+  font-weight: 600;
+}
+.swagger-ui .model-title__text {
+  color: #e0e0e8;
+}
+.swagger-ui .model-toggle::after {
+  color: #8888a0;
+}
+.swagger-ui .model-hint {
+  color: #6666a0;
+  background: #1a1a2e;
+  border: 1px solid #333350;
+}
+
+/* Model properties — key readability fix */
+.swagger-ui .model .property,
+.swagger-ui .model .property.primitive {
+  color: #c0c0d8;
+}
+.swagger-ui .model .prop-type {
+  color: #aa88ff;
+}
+.swagger-ui .model .prop-format {
+  color: #6666a0;
+}
+.swagger-ui .model span.prop-enum {
+  color: #f7931a;
+}
+.swagger-ui table.model tr.property-row td {
+  color: #c0c0d8;
+  border-bottom: 1px solid #1a1a2e;
+}
+.swagger-ui table.model tr.property-row td:first-child {
+  color: #e0e0e8;
+}
+.swagger-ui table.model tr.property-row .star {
+  color: #ff5252;
+}
+.swagger-ui .model .deprecated {
+  color: #ff5252;
+  text-decoration: line-through;
+}
+
+/* Expand/collapse arrows in schemas */
+.swagger-ui .model-toggle {
+  cursor: pointer;
+}
+.swagger-ui .model-box .model-jump-to-path {
+  color: #6666a0;
+}
+.swagger-ui .model-box .model-jump-to-path:hover {
+  color: #f7931a;
+}
+
+/* Schema description and example values */
+.swagger-ui .model p,
+.swagger-ui .model .description {
+  color: #8888a0;
+}
+.swagger-ui .model-example {
+  background: #0d0d18;
+  border: 1px solid #1a1a2e;
+  border-radius: 4px;
+}
+
+/* Brace/bracket colors in schema view */
+.swagger-ui .brace-open,
+.swagger-ui .brace-close,
+.swagger-ui .model .brace-open,
+.swagger-ui .model .brace-close {
+  color: #6666a0;
+}
+
+/* Inner object toggle text */
+.swagger-ui .model .inner-object .model-toggle {
+  color: #c0c0d8;
+}
+
+/* Response schema body */
+.swagger-ui .responses-inner {
+  background: transparent;
+}
+.swagger-ui .response-col_links {
+  color: #8888a0;
+}
+.swagger-ui .response-col_description__inner p {
+  color: #8888a0;
+}
+.swagger-ui .response-col_description__inner span {
+  color: #c0c0d8;
+}
+
+/* Tab headers (Example Value / Schema toggle) */
+.swagger-ui .tab li {
+  color: #8888a0;
+}
+.swagger-ui .tab li.active {
+  color: #e0e0e8;
+}
+.swagger-ui .tab li:hover {
+  color: #e0e0e8;
+}
+.swagger-ui .tablinks {
+  color: #8888a0;
+  background: transparent;
+}
+.swagger-ui .tablinks.active {
+  color: #e0e0e8;
+  border-bottom: 2px solid #f7931a;
+}
+
+/* Opblock body (expanded operation details) */
+.swagger-ui .opblock-body {
+  background: transparent;
+}
+.swagger-ui .opblock-body pre {
+  background: #0d0d18;
+  color: #c0c0d8;
+  border: 1px solid #1a1a2e;
+  border-radius: 4px;
+}
+
+/* JSON key-value colors in example bodies */
+.swagger-ui .json-schema-2020-12 .json-schema-2020-12-keyword {
+  color: #aa88ff;
+}
+.swagger-ui .json-schema-2020-12 .json-schema-2020-12-property {
+  color: #e0e0e8;
+}
+
+/* Select dropdowns (response code, media type) */
+.swagger-ui .responses-wrapper .col_header {
+  color: #8888a0;
+}
+.swagger-ui select {
+  background: #0d0d18;
+  border: 1px solid #1e1e30;
+  color: #e0e0e8;
+}
+
+/* No margin bleed on wrapper */
+.swagger-ui .wrapper {
+  padding: 0;
+}
+
+/* Arrow/chevron SVGs */
+.swagger-ui svg.arrow {
+  fill: #8888a0;
+}
+.swagger-ui button {
+  color: #c0c0d8;
+}
+.swagger-ui .expand-operation svg {
+  fill: #8888a0;
+}

@@ -310,3 +310,15 @@ docker compose exec api node dist/scripts/backup.js
 
 Backups are stored in `data/backups/`, with the 24 most recent retained automatically.
 Each backup is verified with `PRAGMA integrity_check` after copy.
+
+## 7. Snapshot retention
+
+The `score_snapshots` table grows with each score computation (~50 agents every 5 minutes = ~14,400 rows/day).
+The crawler automatically purges old snapshots after each crawl run:
+
+- **< 7 days**: all snapshots retained
+- **7–30 days**: 1 snapshot per agent per day (deduplication via `ROW_NUMBER()`)
+- **> 30 days**: deleted
+
+This runs inside `runCrawl()` at the end of each cycle (cron or single run).
+No additional cron job is needed — the purge is embedded in the crawler process.

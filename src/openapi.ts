@@ -192,6 +192,13 @@ export const openapiSpec = {
               properties: { data: { $ref: '#/components/schemas/HealthResponse' } },
             } } },
           },
+          '503': {
+            description: 'Service degraded — database unreachable or schema mismatch',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              properties: { data: { $ref: '#/components/schemas/HealthResponse' } },
+            } } },
+          },
         },
       },
     },

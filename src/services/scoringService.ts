@@ -22,8 +22,6 @@ import {
   CIRCULAR_CLUSTER_PENALTY,
   MANUAL_SOURCE_PENALTY_THRESHOLD,
   MANUAL_SOURCE_MIN_MULTIPLIER,
-  ATTESTATION_CONCENTRATION_THRESHOLD,
-  ATTESTATION_CONCENTRATION_PENALTY,
   VERIFIED_TX_BONUS_CAP,
   VERIFIED_TX_BONUS_PER_TX,
   LN_VOLUME_HEADROOM,
@@ -239,10 +237,6 @@ export class ScoringService {
     const mutualAgents = new Set(this.attestationRepo.findMutualAttestations(agentHash));
     const clusterMembers = new Set(this.attestationRepo.findCircularCluster(agentHash));
 
-    const uniqueAttesters = this.attestationRepo.countUniqueAttesters(agentHash);
-    const concentrationRatio = uniqueAttesters > 0 ? attestations.length / uniqueAttesters : 0;
-    const isConcentrated = concentrationRatio > ATTESTATION_CONCENTRATION_THRESHOLD;
-
     // Batch: load all attesters and their snapshots in 2 queries instead of 2N
     const attesterHashes = [...new Set(attestations.map(a => a.attester_hash))];
     const attesterAgents = this.agentRepo.findByHashes(attesterHashes);
@@ -288,11 +282,6 @@ export class ScoringService {
         effectiveScore = Math.min(effectiveScore, SUSPECT_ATTESTATION_SCORE_CAP);
       }
 
-      // Source concentration
-      if (isConcentrated) {
-        weight *= ATTESTATION_CONCENTRATION_PENALTY;
-      }
-
       weightedSum += effectiveScore * weight;
       totalWeight += weight;
     }
@@ -311,6 +300,9 @@ export class ScoringService {
   private computeRegularity(agentHash: string): number {
     const timestamps = this.txRepo.getTimestampsByAgent(agentHash);
     if (timestamps.length < 3) return 0;
+
+    // Ensure ascending order — DB returns ORDER BY timestamp ASC but defensive sort
+    timestamps.sort((a, b) => a - b);
 
     const intervals: number[] = [];
     for (let i = 1; i < timestamps.length; i++) {

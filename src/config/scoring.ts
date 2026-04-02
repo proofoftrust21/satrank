@@ -53,12 +53,6 @@ export const MANUAL_SOURCE_PENALTY_THRESHOLD = 150;
 /** Minimum penalty multiplier for manual-source agents with 0 transactions */
 export const MANUAL_SOURCE_MIN_MULTIPLIER = 0.5;
 
-/** Ratio of (attestation count / unique attesters) that triggers concentration penalty */
-export const ATTESTATION_CONCENTRATION_THRESHOLD = 2.5;
-
-/** Weight multiplier when attestations come from too few sources */
-export const ATTESTATION_CONCENTRATION_PENALTY = 0.3;
-
 // --- Verified transaction bonus ---
 
 /** Max bonus points from verified Observer Protocol transactions */
