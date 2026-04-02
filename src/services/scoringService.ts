@@ -32,6 +32,7 @@ import {
   LN_DIVERSITY_BTC_MULTIPLIER,
   LNPLUS_RANK_MULTIPLIER,
   LNPLUS_RATINGS_WEIGHT,
+  NEGATIVE_RATINGS_PENALTY,
   CENTRALITY_BONUS_MULTIPLIER,
   CENTRALITY_DECAY_CONSTANT,
   VOLUME_LOG_BASE,
@@ -191,15 +192,20 @@ export class ScoringService {
   // LN+ ratings-based reputation for Lightning nodes
   // See config/scoring.ts for LNPLUS_RANK_MULTIPLIER, LNPLUS_RATINGS_WEIGHT, CENTRALITY_* constants
   private computeLightningReputation(positive: number, negative: number, lnpRank: number, hubnessRank: number, betweennessRank: number): number {
-    if (positive === 0 && negative === 0 && lnpRank === 0) return 0;
+    if (positive === 0 && negative === 0 && lnpRank === 0 && hubnessRank === 0 && betweennessRank === 0) return 0;
     let score = lnpRank * LNPLUS_RANK_MULTIPLIER;
     if (positive > 0) {
       const ratio = positive / (positive + negative + 1);
       score += ratio * LNPLUS_RATINGS_WEIGHT;
     }
+    // Negative ratings penalty: reduces score when negatives dominate
+    if (negative > 0) {
+      const negRatio = negative / (positive + negative + 1);
+      score -= negRatio * NEGATIVE_RATINGS_PENALTY;
+    }
     if (hubnessRank > 0) score += CENTRALITY_BONUS_MULTIPLIER * Math.exp(-hubnessRank / CENTRALITY_DECAY_CONSTANT);
     if (betweennessRank > 0) score += CENTRALITY_BONUS_MULTIPLIER * Math.exp(-betweennessRank / CENTRALITY_DECAY_CONSTANT);
-    return Math.min(100, Math.round(score));
+    return Math.min(100, Math.max(0, Math.round(score)));
   }
 
   private computeVolume(count: number): number {

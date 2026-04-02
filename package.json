@@ -17,6 +17,7 @@
     "mcp:prod": "node dist/mcp/server.js",
     "purge": "tsx src/database/purge.ts",
     "purge:prod": "node dist/database/purge.js",
+    "calibrate": "tsx src/scripts/calibrationReport.ts",
     "lint": "tsc --noEmit",
     "sdk:build": "cd sdk && npx tsc"
   },

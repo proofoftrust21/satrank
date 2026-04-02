@@ -179,6 +179,182 @@
     .score-mid { background: #f7931a20; color: #f7931a; }
     .score-low { background: #ff525220; color: #ff5252; }
     .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; color: #8888a0; }
+    tr.clickable { cursor: pointer; }
+
+    /* Search bar */
+    .search-bar {
+      position: relative;
+      margin-bottom: 20px;
+    }
+    .search-bar input {
+      width: 100%;
+      padding: 12px 16px 12px 42px;
+      background: #12121e;
+      border: 1px solid #1e1e30;
+      border-radius: 10px;
+      color: #e0e0e8;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .search-bar input:focus { border-color: #f7931a; }
+    .search-bar input::placeholder { color: #555570; }
+    .search-bar .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #555570;
+      font-size: 1rem;
+      pointer-events: none;
+    }
+    .search-bar .search-clear {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: #555570;
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: none;
+      padding: 4px;
+    }
+    .search-bar .search-clear:hover { color: #e0e0e8; }
+
+    /* Agent detail panel */
+    .agent-detail {
+      background: #12121e;
+      border: 1px solid #1e1e30;
+      border-radius: 12px;
+      padding: 32px;
+      margin-top: 20px;
+      display: none;
+    }
+    .agent-detail.visible { display: block; }
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+    .detail-header .agent-name {
+      font-size: 1.3rem;
+      font-weight: 600;
+      color: #e0e0e8;
+    }
+    .detail-header .agent-hash {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+      color: #6666a0;
+      margin-top: 4px;
+    }
+    .detail-header .detail-close {
+      background: none;
+      border: 1px solid #1e1e30;
+      border-radius: 6px;
+      color: #8888a0;
+      padding: 4px 12px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .detail-header .detail-close:hover { color: #e0e0e8; border-color: #333; }
+    .detail-score-big {
+      font-size: 3.5rem;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .detail-score-big .confidence {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 400;
+      color: #6666a0;
+      margin-top: 2px;
+    }
+
+    /* Component bars */
+    .component-bars { margin-bottom: 28px; }
+    .bar-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .bar-label {
+      width: 90px;
+      font-size: 0.82rem;
+      color: #8888a0;
+      text-transform: capitalize;
+    }
+    .bar-track {
+      flex: 1;
+      height: 10px;
+      background: #1a1a2e;
+      border-radius: 5px;
+      overflow: hidden;
+      margin: 0 12px;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 5px;
+      transition: width 0.4s ease;
+    }
+    .bar-fill.volume { background: #f7931a; }
+    .bar-fill.reputation { background: #00c853; }
+    .bar-fill.seniority { background: #448aff; }
+    .bar-fill.regularity { background: #aa00ff; }
+    .bar-fill.diversity { background: #ff6d00; }
+    .bar-value {
+      width: 36px;
+      text-align: right;
+      font-size: 0.82rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: #c0c0d8;
+    }
+
+    /* Evidence section */
+    .evidence-section { border-top: 1px solid #1a1a2e; padding-top: 20px; }
+    .evidence-section h3 {
+      font-size: 0.9rem;
+      color: #6666a0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 14px;
+    }
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .evidence-item {
+      background: #0d0d18;
+      border: 1px solid #1a1a2e;
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .evidence-item .ev-label {
+      font-size: 0.75rem;
+      color: #555570;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-bottom: 4px;
+    }
+    .evidence-item .ev-value {
+      font-size: 0.95rem;
+      color: #e0e0e8;
+    }
+    .evidence-item a {
+      color: #f7931a;
+      text-decoration: none;
+      font-size: 0.85rem;
+    }
+    .evidence-item a:hover { text-decoration: underline; }
+    .detail-loading {
+      text-align: center;
+      color: #555570;
+      padding: 40px 0;
+    }
 
     /* API docs */
     .endpoints { list-style: none; }
@@ -285,7 +461,12 @@
 
   <!-- Top agents -->
   <div class="section">
-    <h2>Top Agents</h2>
+    <h2 id="agents-heading">Top Agents</h2>
+    <div class="search-bar">
+      <span class="search-icon">&#128269;</span>
+      <input type="text" id="search-input" placeholder="Search agents by alias..." autocomplete="off">
+      <button class="search-clear" id="search-clear">&times;</button>
+    </div>
     <table>
       <thead>
         <tr>
@@ -300,11 +481,15 @@
         <tr><td colspan="5" style="text-align:center;color:#444">Loading...</td></tr>
       </tbody>
     </table>
+    <div class="agent-detail" id="agent-detail"></div>
   </div>
 
   <!-- API -->
   <div class="section">
     <h2>API Endpoints</h2>
+    <p style="color:#8888a0;margin-bottom:16px;font-size:0.9rem">
+      Scores are computed from 5 weighted components. <a href="/methodology.html" style="color:#f7931a">Read the full scoring methodology &rarr;</a>
+    </p>
     <ul class="endpoints">
       <li>
         <span class="method method-get">GET</span>
@@ -369,7 +554,7 @@
   <div class="container">
     SatRank &mdash; Trust score for AI agents on Bitcoin Lightning
     <br>
-    <a href="/api/v1/stats">Stats</a> &middot; <a href="/api/v1/health">Health</a> &middot; <a href="/api/v1/openapi.json">API Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
+    <a href="/methodology.html">How scoring works</a> &middot; <a href="/api/v1/stats">Stats</a> &middot; <a href="/api/v1/health">Health</a> &middot; <a href="/api/v1/openapi.json">API Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
   </div>
 </footer>
 

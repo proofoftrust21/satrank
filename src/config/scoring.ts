@@ -95,6 +95,9 @@ export const LNPLUS_RANK_MULTIPLIER = 5;
 /** Max points from positive/negative ratings ratio */
 export const LNPLUS_RATINGS_WEIGHT = 50;
 
+/** Penalty weight for negative ratings: score -= (neg / (pos + neg + 1)) * this */
+export const NEGATIVE_RATINGS_PENALTY = 20;
+
 /** Centrality bonus multiplier (applied to exp decay) */
 export const CENTRALITY_BONUS_MULTIPLIER = 5;
 

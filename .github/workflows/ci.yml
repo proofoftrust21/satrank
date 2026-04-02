@@ -18,6 +18,8 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
 
   docker:
     needs: test

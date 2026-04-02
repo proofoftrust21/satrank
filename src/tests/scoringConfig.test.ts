@@ -17,6 +17,7 @@ import {
   VERIFIED_TX_BONUS_CAP,
   LNPLUS_RANK_MULTIPLIER,
   LNPLUS_RATINGS_WEIGHT,
+  NEGATIVE_RATINGS_PENALTY,
   CENTRALITY_BONUS_MULTIPLIER,
   CENTRALITY_DECAY_CONSTANT,
   SCORE_CACHE_TTL,
@@ -71,6 +72,11 @@ describe('Scoring configuration', () => {
     // rank 10 * multiplier + ratio(1.0) * weight = max possible reputation
     const maxReputation = LNPLUS_RANK_MULTIPLIER * 10 + LNPLUS_RATINGS_WEIGHT;
     expect(maxReputation).toBe(100);
+  });
+
+  it('negative ratings penalty is positive and bounded', () => {
+    expect(NEGATIVE_RATINGS_PENALTY).toBeGreaterThan(0);
+    expect(NEGATIVE_RATINGS_PENALTY).toBeLessThanOrEqual(50);
   });
 
   it('confidence thresholds are strictly increasing', () => {
