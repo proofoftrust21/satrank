@@ -19,6 +19,10 @@ export class AgentRepository {
     return this.db.prepare(`SELECT * FROM agents WHERE public_key_hash IN (${placeholders})`).all(...hashes) as Agent[];
   }
 
+  findByExactAlias(alias: string): Agent | undefined {
+    return this.db.prepare('SELECT * FROM agents WHERE alias = ? LIMIT 1').get(alias) as Agent | undefined;
+  }
+
   findTopByScore(limit: number, offset: number): Agent[] {
     return this.db.prepare('SELECT * FROM agents ORDER BY avg_score DESC LIMIT ? OFFSET ?').all(limit, offset) as Agent[];
   }

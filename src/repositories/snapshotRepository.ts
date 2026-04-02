@@ -48,6 +48,41 @@ export class SnapshotRepository {
     return row.count;
   }
 
+  /** Purge old snapshots: keep all < 7 days, keep 1/day between 7-30 days, delete all > 30 days */
+  purgeOldSnapshots(): number {
+    return this.db.transaction(() => {
+      const now = Math.floor(Date.now() / 1000);
+      const sevenDaysAgo = now - 7 * 86400;
+      const thirtyDaysAgo = now - 30 * 86400;
+
+      // Delete everything older than 30 days
+      const deleted30 = this.db.prepare(
+        'DELETE FROM score_snapshots WHERE computed_at < ?'
+      ).run(thirtyDaysAgo);
+
+      // Between 7 and 30 days: keep only the latest snapshot per agent per day
+      // Delete duplicates within the same (agent_hash, day) window, keeping the one with max computed_at
+      const deleted7 = this.db.prepare(`
+        DELETE FROM score_snapshots WHERE rowid IN (
+          SELECT s.rowid FROM score_snapshots s
+          WHERE s.computed_at >= ? AND s.computed_at < ?
+          AND s.rowid NOT IN (
+            SELECT rowid FROM (
+              SELECT rowid, ROW_NUMBER() OVER (
+                PARTITION BY agent_hash, CAST(computed_at / 86400 AS INTEGER)
+                ORDER BY computed_at DESC
+              ) AS rn
+              FROM score_snapshots
+              WHERE computed_at >= ? AND computed_at < ?
+            ) WHERE rn = 1
+          )
+        )
+      `).run(thirtyDaysAgo, sevenDaysAgo, thirtyDaysAgo, sevenDaysAgo);
+
+      return (deleted30.changes ?? 0) + (deleted7.changes ?? 0);
+    })();
+  }
+
   getLastUpdateTime(): number {
     const row = this.db.prepare(
       'SELECT MAX(computed_at) as last FROM score_snapshots'

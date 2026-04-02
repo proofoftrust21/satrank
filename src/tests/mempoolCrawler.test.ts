@@ -26,7 +26,7 @@ class MockMempoolClient implements MempoolClient {
   calls = 0;
   shouldFail = false;
 
-  async fetchTopNodes(): Promise<MempoolNode[]> {
+  async fetchTopNodes(_limit?: number): Promise<MempoolNode[]> {
     this.calls++;
     if (this.shouldFail) throw new Error('Connection refused');
     return this.nodes;
@@ -166,6 +166,77 @@ describe('MempoolCrawler', () => {
     const agent = agentRepo.findByHash(expectedHash);
     expect(agent).toBeDefined();
     expect(agent!.alias).toBe('Test');
+  });
+
+  it('consolidates cross-source agents by alias match', async () => {
+    // Pre-existing Observer Protocol agent — hash is sha256('ACINQ'), not sha256(pubkey)
+    const observerHash = sha256('ACINQ');
+    agentRepo.insert({
+      public_key_hash: observerHash,
+      alias: 'ACINQ',
+      first_seen: 1500000000,
+      last_seen: 1600000000,
+      source: 'observer_protocol',
+      total_transactions: 15,
+      total_attestations_received: 3,
+      avg_score: 60,
+      capacity_sats: null,
+    });
+
+    // Lightning node with same alias but different pubkey hash
+    mockClient.nodes = [makeNode({
+      publicKey: 'pk-acinq-real',
+      alias: 'ACINQ',
+      channels: 2500,
+      capacity: 5_000_000_000,
+      updatedAt: 1700000000,
+    })];
+
+    const result = await crawler.run();
+
+    // Should enrich the existing agent, not create a duplicate
+    expect(result.newAgents).toBe(0);
+    expect(result.updatedAgents).toBe(1);
+    expect(agentRepo.count()).toBe(1);
+
+    // Original agent enriched with capacity, but alias/source/tx preserved
+    const agent = agentRepo.findByHash(observerHash);
+    expect(agent).toBeDefined();
+    expect(agent!.alias).toBe('ACINQ');
+    expect(agent!.source).toBe('observer_protocol');
+    expect(agent!.total_transactions).toBe(15);
+    expect(agent!.capacity_sats).toBe(5_000_000_000);
+
+    // No agent created under the Lightning pubkey hash
+    const lightningAgent = agentRepo.findByHash(sha256('pk-acinq-real'));
+    expect(lightningAgent).toBeUndefined();
+  });
+
+  it('creates new agent when no alias match exists', async () => {
+    // Pre-existing agent with different alias
+    agentRepo.insert({
+      public_key_hash: sha256('other-agent'),
+      alias: 'OtherNode',
+      first_seen: 1500000000,
+      last_seen: 1600000000,
+      source: 'observer_protocol',
+      total_transactions: 5,
+      total_attestations_received: 0,
+      avg_score: 0,
+      capacity_sats: null,
+    });
+
+    mockClient.nodes = [makeNode({
+      publicKey: 'pk-unique',
+      alias: 'UniqueNode',
+      channels: 100,
+      capacity: 1_000_000_000,
+    })];
+
+    const result = await crawler.run();
+
+    expect(result.newAgents).toBe(1);
+    expect(agentRepo.count()).toBe(2);
   });
 
   it('only enriches non-lightning agents with capacity and lastSeen', async () => {

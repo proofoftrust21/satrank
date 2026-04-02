@@ -17,7 +17,7 @@ import { MempoolCrawler } from './mempoolCrawler';
 
 const CRON_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler, agentRepo: AgentRepository, scoringService: ScoringService): Promise<void> {
+async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler, agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
   // Observer Protocol
   logger.info('Starting Observer Protocol crawl');
   const obsResult = await observerCrawler.run();
@@ -56,6 +56,12 @@ async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler
     scoringService.computeScore(agent.public_key_hash);
   }
   logger.info({ count: topAgents.length }, 'Scores pre-computed for top agents');
+
+  // Snapshot retention: purge old snapshots to prevent unbounded DB growth
+  const purged = snapshotRepo.purgeOldSnapshots();
+  if (purged > 0) {
+    logger.info({ purged }, 'Old snapshots purged');
+  }
 }
 
 async function main(): Promise<void> {
@@ -82,10 +88,10 @@ async function main(): Promise<void> {
   if (isCron) {
     logger.info({ intervalMs: CRON_INTERVAL_MS }, 'Cron mode enabled');
 
-    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService);
+    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService, snapshotRepo);
 
     const interval = setInterval(() => {
-      runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService).catch(err => {
+      runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService, snapshotRepo).catch(err => {
         logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Fatal cron crawl error');
       });
     }, CRON_INTERVAL_MS);
@@ -99,7 +105,7 @@ async function main(): Promise<void> {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } else {
-    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService);
+    await runCrawl(observerCrawler, mempoolCrawlerInstance, agentRepo, scoringService, snapshotRepo);
     closeDatabase();
   }
 }

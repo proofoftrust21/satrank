@@ -92,6 +92,16 @@ export class MempoolCrawler {
       return 'updated';
     }
 
+    // Cross-source consolidation: if an agent with the same alias already exists
+    // (e.g. from Observer Protocol which hashes alias, not pubkey), enrich it
+    // instead of creating a duplicate entry
+    const aliasMatch = this.agentRepo.findByExactAlias(node.alias);
+    if (aliasMatch && aliasMatch.public_key_hash !== publicKeyHash) {
+      this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacity, node.updatedAt);
+      logger.info({ existingHash: aliasMatch.public_key_hash, alias: node.alias }, 'Cross-source enrichment (alias match)');
+      return 'updated';
+    }
+
     this.agentRepo.insert({
       public_key_hash: publicKeyHash,
       alias: node.alias,

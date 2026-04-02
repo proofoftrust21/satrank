@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "satrank": {
+      "command": "npx",
+      "args": ["-y", "tsx", "src/mcp/server.ts"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DB_PATH": "./data/satrank.db"
+      }
+    }
+  }
+}
