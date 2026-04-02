@@ -146,7 +146,7 @@ export function createApp() {
 <body>
   <div id="swagger-ui"></div>
   <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script>SwaggerUIBundle({ url: '/api/v1/openapi.json', dom_id: '#swagger-ui' });</script>
+  <script src="/swagger-init.js"></script>
 </body>
 </html>`);
   });
