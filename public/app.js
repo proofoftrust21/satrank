@@ -18,11 +18,21 @@
     });
   }
 
-  fetch('/api/v1/stats')
-    .then(function(r) {
+  function fetchWithRetry(url, retries) {
+    return fetch(url).then(function(r) {
       if (!r.ok) throw new Error(r.status);
       return r.json();
-    })
+    }).catch(function(err) {
+      if (retries > 0) {
+        return new Promise(function(resolve) {
+          setTimeout(function() { resolve(fetchWithRetry(url, retries - 1)); }, 3000);
+        });
+      }
+      throw err;
+    });
+  }
+
+  fetchWithRetry('/api/v1/stats', 1)
     .then(function(d) {
       var s = d.data;
       document.getElementById('stat-agents').textContent = fmt(s.totalAgents);
@@ -36,11 +46,7 @@
     })
     .catch(setStatError);
 
-  fetch('/api/v1/agents/top?limit=10')
-    .then(function(r) {
-      if (!r.ok) throw new Error(r.status);
-      return r.json();
-    })
+  fetchWithRetry('/api/v1/agents/top?limit=10', 1)
     .then(function(d) {
       var tbody = document.getElementById('top-agents');
       tbody.innerHTML = '';
@@ -79,6 +85,6 @@
     })
     .catch(function() {
       var tbody = document.getElementById('top-agents');
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ff5252">Unable to load agents</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ff5252">API unavailable</td></tr>';
     });
 })();

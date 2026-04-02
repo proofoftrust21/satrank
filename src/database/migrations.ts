@@ -98,5 +98,32 @@ export function runMigrations(db: Database.Database): void {
     }
   }
 
+  // v0.5: CHECK constraints on rating/rank columns + indexes for crawler queries
+  // SQLite doesn't support ADD CONSTRAINT on existing columns, so we enforce via triggers
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_agents_ratings_check
+    BEFORE UPDATE ON agents
+    FOR EACH ROW
+    WHEN NEW.positive_ratings < 0 OR NEW.negative_ratings < 0
+      OR NEW.lnplus_rank < 0 OR NEW.lnplus_rank > 10
+      OR NEW.hubness_rank < 0 OR NEW.betweenness_rank < 0 OR NEW.hopness_rank < 0
+    BEGIN
+      SELECT RAISE(ABORT, 'Invalid rating or rank value');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_agents_ratings_check_insert
+    BEFORE INSERT ON agents
+    FOR EACH ROW
+    WHEN NEW.positive_ratings < 0 OR NEW.negative_ratings < 0
+      OR NEW.lnplus_rank < 0 OR NEW.lnplus_rank > 10
+      OR NEW.hubness_rank < 0 OR NEW.betweenness_rank < 0 OR NEW.hopness_rank < 0
+    BEGIN
+      SELECT RAISE(ABORT, 'Invalid rating or rank value');
+    END;
+
+    CREATE INDEX IF NOT EXISTS idx_agents_source ON agents(source);
+    CREATE INDEX IF NOT EXISTS idx_agents_public_key ON agents(public_key);
+  `);
+
   logger.info('Migrations executed successfully');
 }

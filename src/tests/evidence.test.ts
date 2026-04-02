@@ -205,6 +205,28 @@ describe('Score evidence', () => {
     expect(result.evidence.reputation).toBeNull();
   });
 
+  it('returns reputation evidence when only centrality ranks exist', () => {
+    const pubkey = 'pk-centrality-only';
+    const agent = makeAgent({
+      public_key_hash: sha256(pubkey),
+      public_key: pubkey,
+      source: 'lightning_graph',
+      total_transactions: 100,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+      hubness_rank: 25,
+      betweenness_rank: 0,
+    });
+    agentRepo.insert(agent);
+
+    const result = agentService.getAgentScore(agent.public_key_hash);
+
+    expect(result.evidence.reputation).not.toBeNull();
+    expect(result.evidence.reputation!.hubnessRank).toBe(25);
+    expect(result.evidence.reputation!.betweennessRank).toBe(0);
+  });
+
   it('returns popularity evidence with bonus calculation', () => {
     const agent = makeAgent({
       public_key_hash: sha256('pop-evidence'),

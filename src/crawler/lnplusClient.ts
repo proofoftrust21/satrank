@@ -1,11 +1,23 @@
 // HTTP client for the LightningNetwork.plus API
 // Rate limited to 1 request/sec to respect the service
+import { z } from 'zod';
 import { logger } from '../logger';
 
 const DEFAULT_BASE_URL = 'https://lightningnetwork.plus/api/2';
 const DEFAULT_TIMEOUT_MS = 10000;
 const MAX_RETRIES = 1;
 const RATE_LIMIT_MS = 1000; // 1 req/sec
+
+// Zod schema for LN+ API response validation — also used in tests
+export const lnplusResponseSchema = z.object({
+  lnp_rank: z.coerce.number().int().min(0).max(10).default(0),
+  lnp_rank_name: z.string().default(''),
+  lnp_positive_ratings_received: z.coerce.number().int().min(0).nullable().default(null),
+  lnp_negative_ratings_received: z.coerce.number().int().min(0).nullable().default(null),
+  hubness_rank: z.coerce.number().int().min(0).default(0),
+  betweenness_rank: z.coerce.number().int().min(0).default(0),
+  hopness_rank: z.coerce.number().int().min(0).default(0),
+}).passthrough();
 
 export interface LnplusNodeInfo {
   positive_ratings: number | null;
@@ -61,16 +73,22 @@ export class HttpLnplusClient implements LnplusClient {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
-        const data = await response.json() as Record<string, unknown>;
+        const raw = await response.json();
+        const parsed = lnplusResponseSchema.safeParse(raw);
+        if (!parsed.success) {
+          logger.warn({ url, errors: parsed.error.issues.map(i => i.message) }, 'LN+ response validation failed');
+          return null;
+        }
+        const data = parsed.data;
 
         return {
-          positive_ratings: data.lnp_positive_ratings_received != null ? Number(data.lnp_positive_ratings_received) : null,
-          negative_ratings: data.lnp_negative_ratings_received != null ? Number(data.lnp_negative_ratings_received) : null,
-          lnp_rank: Number(data.lnp_rank ?? 0),
-          lnp_rank_name: String(data.lnp_rank_name ?? ''),
-          hubness_rank: Number(data.hubness_rank ?? 0),
-          betweenness_rank: Number(data.betweenness_rank ?? 0),
-          hopness_rank: Number(data.hopness_rank ?? 0),
+          positive_ratings: data.lnp_positive_ratings_received,
+          negative_ratings: data.lnp_negative_ratings_received,
+          lnp_rank: data.lnp_rank,
+          lnp_rank_name: data.lnp_rank_name,
+          hubness_rank: data.hubness_rank,
+          betweenness_rank: data.betweenness_rank,
+          hopness_rank: data.hopness_rank,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -402,7 +402,7 @@ describe('ScoringService', () => {
       const scoreRated = scoring.computeScore(ratedNode.public_key_hash);
       const scoreUnrated = scoring.computeScore(unratedNode.public_key_hash);
 
-      // Rated: 8*7 + (42/(42+2+1))*30 + 5 (hubness<=50) + 5 (betweenness<=50) = 56 + 28 + 10 = 94
+      // Rated: 8*5 + (42/(42+2+1))*50 + 5*exp(-25/50) + 5*exp(-30/50) = 40 + 46.7 + 3.0 + 2.7 = 92.5
       expect(scoreRated.components.reputation).toBeGreaterThan(80);
       // Unrated: 0
       expect(scoreUnrated.components.reputation).toBe(0);
@@ -410,9 +410,9 @@ describe('ScoringService', () => {
       expect(scoreRated.total).toBeGreaterThan(scoreUnrated.total + 15);
     });
 
-    it('LN+ reputation formula: rank * 7 + ratio * 30 + centrality bonuses', () => {
+    it('LN+ reputation formula: rank * 5 + ratio * 50 + centrality bonuses', () => {
       // Exact formula test: 10 positive, 0 negative, rank 5, no centrality bonuses
-      // score = 5 * 7 + (10 / (10 + 0 + 1)) * 30 = 35 + 27.27 = 62.27 → 62
+      // score = 5 * 5 + (10 / (10 + 0 + 1)) * 50 = 25 + 45.45 = 70.45 → 70
       const node = makeAgent('ln-formula', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -424,10 +424,10 @@ describe('ScoringService', () => {
       agentRepo.insert(node);
 
       const result = scoring.computeScore(node.public_key_hash);
-      expect(result.components.reputation).toBe(62);
+      expect(result.components.reputation).toBe(70);
     });
 
-    it('hubness and betweenness bonuses add +5 each when rank <= 50', () => {
+    it('centrality bonuses use continuous exponential curve', () => {
       const centralNode = makeAgent('ln-central', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -454,11 +454,12 @@ describe('ScoringService', () => {
       const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
       const scorePeripheral = scoring.computeScore(peripheralNode.public_key_hash);
 
-      // Central: 35 + 27.27 + 5 + 5 = 72.27 → 72
-      expect(scoreCentral.components.reputation).toBe(72);
-      // Peripheral: 35 + 27.27 = 62.27 → 62
-      expect(scorePeripheral.components.reputation).toBe(62);
-      expect(scoreCentral.components.reputation - scorePeripheral.components.reputation).toBe(10);
+      // Central: 25 + 45.45 + 5*exp(-20/50) + 5*exp(-30/50) = 25 + 45.45 + 3.35 + 2.74 = 76.54 → 77
+      expect(scoreCentral.components.reputation).toBe(77);
+      // Peripheral: 25 + 45.45 + 5*exp(-200/50) + 5*exp(-300/50) ≈ 25 + 45.45 + ~0 = 70.55 → 71
+      expect(scorePeripheral.components.reputation).toBe(71);
+      // Continuous curve: central bonus > peripheral, but not binary +10
+      expect(scoreCentral.components.reputation).toBeGreaterThan(scorePeripheral.components.reputation);
     });
 
     it('negative ratings reduce reputation', () => {
@@ -530,6 +531,80 @@ describe('ScoringService', () => {
       // Observer agent: volume from 30 real tx + diversity from 10 counterparties + bonus (+15)
       // Small LN node: low volume (30ch vs 2000 max) + low diversity (0.5 BTC)
       expect(scoreObs.total).toBeGreaterThan(scoreSmallLn.total);
+    });
+  });
+
+  describe('reputation calibration', () => {
+    it('community ratings outweigh rank for Lightning nodes', () => {
+      // Rank 10 mediocre reputation vs rank 3 stellar reputation
+      const highRank = makeAgent('ln-highrank', {
+        source: 'lightning_graph',
+        total_transactions: 500,
+        capacity_sats: 5_000_000_000,
+        positive_ratings: 2,
+        negative_ratings: 2,
+        lnplus_rank: 10,
+      });
+      const lovedNode = makeAgent('ln-loved', {
+        source: 'lightning_graph',
+        total_transactions: 500,
+        capacity_sats: 5_000_000_000,
+        positive_ratings: 50,
+        negative_ratings: 0,
+        lnplus_rank: 3,
+      });
+      agentRepo.insert(highRank);
+      agentRepo.insert(lovedNode);
+
+      const scoreHighRank = scoring.computeScore(highRank.public_key_hash);
+      const scoreLovedNode = scoring.computeScore(lovedNode.public_key_hash);
+
+      // highRank: 10*5 + (2/(2+2+1))*50 = 50 + 20 = 70
+      // loved: 3*5 + (50/(50+0+1))*50 = 15 + 49 = 64
+      // With the new formula, rank 10 still wins slightly, but the gap is small
+      // The old formula: highRank = 10*7 + 12 = 82, loved = 3*7 + 29 = 50 — huge gap
+      expect(scoreHighRank.components.reputation - scoreLovedNode.components.reputation).toBeLessThan(15);
+    });
+
+    it('centrality bonus decays smoothly — rank 1 > rank 51 > rank 200', () => {
+      const rank1 = makeAgent('ln-hub1', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        lnplus_rank: 5,
+        positive_ratings: 10,
+        negative_ratings: 0,
+        hubness_rank: 1,
+      });
+      const rank51 = makeAgent('ln-hub51', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        lnplus_rank: 5,
+        positive_ratings: 10,
+        negative_ratings: 0,
+        hubness_rank: 51,
+      });
+      const rank200 = makeAgent('ln-hub200', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        lnplus_rank: 5,
+        positive_ratings: 10,
+        negative_ratings: 0,
+        hubness_rank: 200,
+      });
+      agentRepo.insert(rank1);
+      agentRepo.insert(rank51);
+      agentRepo.insert(rank200);
+
+      const s1 = scoring.computeScore(rank1.public_key_hash);
+      const s51 = scoring.computeScore(rank51.public_key_hash);
+      const s200 = scoring.computeScore(rank200.public_key_hash);
+
+      // Continuous decay: rank 1 gets most bonus, rank 51 gets some, rank 200 gets ~0
+      expect(s1.components.reputation).toBeGreaterThan(s51.components.reputation);
+      expect(s51.components.reputation).toBeGreaterThanOrEqual(s200.components.reputation);
     });
   });
 

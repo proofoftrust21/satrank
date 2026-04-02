@@ -55,7 +55,7 @@ export class AgentService {
     const totalTxCount = agent.total_transactions;
 
     const isLightning = agent.source === 'lightning_graph';
-    const hasLnplusData = agent.positive_ratings > 0 || agent.negative_ratings > 0 || agent.lnplus_rank > 0;
+    const hasLnplusData = agent.positive_ratings > 0 || agent.negative_ratings > 0 || agent.lnplus_rank > 0 || agent.hubness_rank > 0 || agent.betweenness_rank > 0;
 
     const popularityBonus = computePopularityBonus(agent.query_count);
 

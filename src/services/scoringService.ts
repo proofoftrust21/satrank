@@ -191,19 +191,18 @@ export class ScoringService {
   }
 
   // LN+ ratings-based reputation for Lightning nodes
-  // lnp_rank (1-10) * 7 = up to 70 points base
-  // If positive ratings exist: ratio * 30 = up to 30 points
-  // hubness_rank <= 50: +5 (highly influential node)
-  // betweenness_rank <= 50: +5 (central routing node)
+  // lnp_rank (1-10) * 5 = up to 50 points base
+  // If positive ratings exist: ratio * 50 = up to 50 points (community voice)
+  // Centrality bonus: 5 * exp(-rank/50) for hubness and betweenness (continuous curve)
   private computeLightningReputation(positive: number, negative: number, lnpRank: number, hubnessRank: number, betweennessRank: number): number {
     if (positive === 0 && negative === 0 && lnpRank === 0) return 0;
-    let score = lnpRank * 7;
+    let score = lnpRank * 5;
     if (positive > 0) {
       const ratio = positive / (positive + negative + 1);
-      score += ratio * 30;
+      score += ratio * 50;
     }
-    if (hubnessRank > 0 && hubnessRank <= 50) score += 5;
-    if (betweennessRank > 0 && betweennessRank <= 50) score += 5;
+    if (hubnessRank > 0) score += 5 * Math.exp(-hubnessRank / 50);
+    if (betweennessRank > 0) score += 5 * Math.exp(-betweennessRank / 50);
     return Math.min(100, Math.round(score));
   }
 
@@ -248,7 +247,10 @@ export class ScoringService {
         } else {
           const latestSnapshot = snapshotMap.get(att.attester_hash);
           const attesterScore = latestSnapshot ? latestSnapshot.score : attester.avg_score;
-          weight *= (attesterScore / 100) || 0.3;
+          // Deliberate anti-gaming: unknown attesters (score 0) are treated as nearly worthless
+          // (0.1 weight). Prevents sybil attacks where fake attesters boost a target's reputation.
+          // Previous value was 0.3 which was too generous.
+          weight *= (attesterScore / 100) || 0.1;
         }
       }
 

@@ -1,5 +1,5 @@
 // API key authentication middleware
-// Placeholder for future L402 gating via Aperture
+// Aperture gateway verification for L402-gated endpoints
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { config } from '../config';
@@ -9,6 +9,13 @@ class AuthenticationError extends AppError {
   constructor(message: string) {
     super(message, 401, 'UNAUTHORIZED');
     this.name = 'AuthenticationError';
+  }
+}
+
+class PaymentRequiredError extends AppError {
+  constructor() {
+    super('Payment required', 402, 'PAYMENT_REQUIRED');
+    this.name = 'PaymentRequiredError';
   }
 }
 
@@ -23,7 +30,6 @@ function safeEqual(provided: string, expected: string): boolean {
 // Protects write endpoints with an API key via X-API-Key header
 // In dev without API_KEY configured, allows passthrough (easier development)
 // In production, API_KEY is required (validated in config.ts)
-// TODO: replace with L402/macaroon verification via Aperture
 export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): void {
   if (!config.API_KEY) {
     next();
@@ -39,6 +45,26 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
 
   if (!safeEqual(provided, config.API_KEY)) {
     next(new AuthenticationError('Invalid API key'));
+    return;
+  }
+
+  next();
+}
+
+// Verifies that the request came through Aperture (L402 gateway).
+// Deployment assumption: Aperture strips X-Aperture-Auth from upstream client requests
+// before forwarding. This header is only present when the request comes through Aperture.
+// If Express is ever exposed directly without Aperture, add a shared secret validation here.
+// In development, allows passthrough when NODE_ENV !== 'production'.
+export function apertureGateAuth(req: Request, _res: Response, next: NextFunction): void {
+  if (config.NODE_ENV !== 'production') {
+    next();
+    return;
+  }
+
+  const apertureHeader = req.headers['x-aperture-auth'] as string | undefined;
+  if (!apertureHeader) {
+    next(new PaymentRequiredError());
     return;
   }
 

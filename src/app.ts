@@ -65,19 +65,21 @@ export function createApp() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+        imgSrc: ["'self'", "data:"],
       },
     },
   }));
   app.use(cors({ origin: config.CORS_ORIGIN }));
-  app.use(express.json());
+  app.use(express.json({ limit: '10kb' }));
   app.use(requestIdMiddleware);
   app.use(rateLimit({
     windowMs: config.RATE_LIMIT_WINDOW_MS,
     max: config.RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => req.ip ?? '0.0.0.0',
     message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
   }));
 
@@ -90,6 +92,22 @@ export function createApp() {
   v1.use(createAttestationRoutes(attestationController));
   v1.use(createHealthRoutes(healthController));
   v1.get('/openapi.json', (_req, res) => res.json(openapiSpec));
+  v1.get('/docs', (_req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SatRank API Docs</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>SwaggerUIBundle({ url: '/api/v1/openapi.json', dom_id: '#swagger-ui' });</script>
+</body>
+</html>`);
+  });
   app.use('/api/v1', v1);
 
   // Error handler (must be the last middleware)
