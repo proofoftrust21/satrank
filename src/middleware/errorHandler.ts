@@ -29,12 +29,16 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     return;
   }
 
-  // Unexpected error
+  // Unexpected error — always log the real message, never expose it to the client in production
   logger.error({ err, requestId: req.requestId }, 'Unhandled internal error');
+  const message = config.NODE_ENV === 'production'
+    ? 'Internal server error'
+    : (err.message || 'Internal server error');
+
   res.status(500).json({
     error: {
       code: 'INTERNAL_ERROR',
-      message: 'Internal server error',
+      message,
     },
     requestId: req.requestId,
   });

@@ -8,6 +8,7 @@ import { config } from './config';
 import { getDatabase } from './database/connection';
 import { runMigrations } from './database/migrations';
 import { requestIdMiddleware } from './middleware/requestId';
+import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
 
 // Repositories
@@ -74,6 +75,7 @@ export function createApp() {
   app.use(cors({ origin: config.CORS_ORIGIN }));
   app.use(express.json({ limit: '10kb' }));
   app.use(requestIdMiddleware);
+  app.use(requestTimeout(30_000));
   app.use(rateLimit({
     windowMs: config.RATE_LIMIT_WINDOW_MS,
     max: config.RATE_LIMIT_MAX,

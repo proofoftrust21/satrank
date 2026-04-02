@@ -98,7 +98,6 @@ export const openapiSpec = {
         summary: 'Leaderboard by score',
         operationId: 'getTopAgents',
         tags: ['Agents'],
-        security: [{ l402: [] }],
         parameters: [
           { $ref: '#/components/parameters/limit' },
           { $ref: '#/components/parameters/offset' },
@@ -117,7 +116,6 @@ export const openapiSpec = {
               },
             } } },
           },
-          '402': { $ref: '#/components/responses/PaymentRequired' },
         },
       },
     },
@@ -126,7 +124,6 @@ export const openapiSpec = {
         summary: 'Search agents by alias',
         operationId: 'searchAgents',
         tags: ['Agents'],
-        security: [{ l402: [] }],
         parameters: [
           { name: 'alias', in: 'query', required: true, schema: { type: 'string', minLength: 1, maxLength: 100 } },
           { $ref: '#/components/parameters/limit' },
@@ -146,7 +143,6 @@ export const openapiSpec = {
               },
             } } },
           },
-          '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { $ref: '#/components/responses/ValidationError' },
         },
       },

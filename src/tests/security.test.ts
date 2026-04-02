@@ -150,4 +150,33 @@ describe('LN+ Zod validation', () => {
     });
     expect(nanInput.success).toBe(false);
   });
+
+  it('strips unknown fields from LN+ response', async () => {
+    const { lnplusResponseSchema } = await import('../crawler/lnplusClient');
+
+    const result = lnplusResponseSchema.safeParse({
+      lnp_rank: 5, lnp_rank_name: 'Silver',
+      lnp_positive_ratings_received: 10, lnp_negative_ratings_received: 1,
+      hubness_rank: 20, betweenness_rank: 30, hopness_rank: 10,
+      unknown_field: 'should be removed',
+      another_extra: 42,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).not.toHaveProperty('unknown_field');
+      expect(result.data).not.toHaveProperty('another_extra');
+      expect(result.data.lnp_rank).toBe(5);
+      expect(result.data.hubness_rank).toBe(20);
+    }
+  });
+
+  it('rejects negative hopness_rank', async () => {
+    const { lnplusResponseSchema } = await import('../crawler/lnplusClient');
+
+    const result = lnplusResponseSchema.safeParse({
+      hopness_rank: -1,
+    });
+    expect(result.success).toBe(false);
+  });
 });

@@ -17,7 +17,7 @@ export const lnplusResponseSchema = z.object({
   hubness_rank: z.coerce.number().int().min(0).default(0),
   betweenness_rank: z.coerce.number().int().min(0).default(0),
   hopness_rank: z.coerce.number().int().min(0).default(0),
-}).passthrough();
+}).strip();
 
 export interface LnplusNodeInfo {
   positive_ratings: number | null;

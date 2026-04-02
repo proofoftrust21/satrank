@@ -1,0 +1,165 @@
+// Middleware tests — timeout, error handler, auth
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Request, Response, NextFunction } from 'express';
+
+// Minimal mock helpers
+function mockReq(overrides: Partial<Request> = {}): Request {
+  return { requestId: 'test-req-id', headers: {}, ...overrides } as unknown as Request;
+}
+
+function mockRes(): Response & { _status: number; _body: unknown; headersSent: boolean } {
+  const res = {
+    _status: 0,
+    _body: null as unknown,
+    headersSent: false,
+    _listeners: {} as Record<string, () => void>,
+    status(code: number) { res._status = code; return res; },
+    json(body: unknown) { res._body = body; res.headersSent = true; return res; },
+    on(event: string, fn: () => void) { res._listeners[event] = fn; return res; },
+    emit(event: string) { if (res._listeners[event]) res._listeners[event](); },
+  };
+  return res as unknown as Response & { _status: number; _body: unknown; headersSent: boolean };
+}
+
+describe('requestTimeout middleware', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it('calls next immediately and does not fire before timeout', async () => {
+    const { requestTimeout } = await import('../middleware/timeout');
+    const next = vi.fn();
+    const res = mockRes();
+    const middleware = requestTimeout(30_000);
+
+    middleware(mockReq(), res as unknown as Response, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    // Advance 29s — should NOT have fired
+    vi.advanceTimersByTime(29_000);
+    expect(res._status).toBe(0);
+
+    // Simulate response completing before timeout
+    res.emit('close');
+
+    // Advance past timeout — should NOT fire because response already closed
+    vi.advanceTimersByTime(2_000);
+    expect(res._status).toBe(0);
+
+    vi.useRealTimers();
+  });
+
+  it('returns 504 when request exceeds timeout', async () => {
+    const { requestTimeout } = await import('../middleware/timeout');
+    const next = vi.fn();
+    const res = mockRes();
+    const middleware = requestTimeout(100);
+
+    middleware(mockReq(), res as unknown as Response, next);
+
+    vi.advanceTimersByTime(101);
+
+    expect(res._status).toBe(504);
+    expect(res._body).toEqual({
+      error: { code: 'GATEWAY_TIMEOUT', message: 'Request timed out' },
+      requestId: 'test-req-id',
+    });
+
+    vi.useRealTimers();
+  });
+
+  it('does not fire 504 if headers already sent', async () => {
+    const { requestTimeout } = await import('../middleware/timeout');
+    const next = vi.fn();
+    const res = mockRes();
+    res.headersSent = true;
+    const middleware = requestTimeout(100);
+
+    middleware(mockReq(), res as unknown as Response, next);
+
+    vi.advanceTimersByTime(101);
+
+    // Should not have changed status since headers were already sent
+    expect(res._status).toBe(0);
+
+    vi.useRealTimers();
+  });
+});
+
+describe('errorHandler', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('returns generic message for non-AppError in production', async () => {
+    vi.doMock('../config', () => ({
+      config: { NODE_ENV: 'production' },
+    }));
+    vi.doMock('../logger', () => ({
+      logger: { error: vi.fn() },
+    }));
+
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const res = mockRes();
+
+    errorHandler(
+      new TypeError('Cannot read property x of undefined'),
+      mockReq(),
+      res as unknown as Response,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res._status).toBe(500);
+    const body = res._body as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('INTERNAL_ERROR');
+    expect(body.error.message).toBe('Internal server error');
+    expect(body.error.message).not.toContain('Cannot read property');
+  });
+
+  it('returns real message for non-AppError in development', async () => {
+    vi.doMock('../config', () => ({
+      config: { NODE_ENV: 'development' },
+    }));
+    vi.doMock('../logger', () => ({
+      logger: { error: vi.fn() },
+    }));
+
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const res = mockRes();
+
+    errorHandler(
+      new Error('Detailed dev error info'),
+      mockReq(),
+      res as unknown as Response,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res._status).toBe(500);
+    const body = res._body as { error: { code: string; message: string } };
+    expect(body.error.message).toBe('Detailed dev error info');
+  });
+});
+
+describe('OpenAPI spec auth alignment', () => {
+  it('does not require L402 on /agents/top and /agents/search', async () => {
+    const { openapiSpec } = await import('../openapi');
+    const topOp = openapiSpec.paths['/agents/top'].get;
+    const searchOp = openapiSpec.paths['/agents/search'].get;
+
+    // These endpoints are free — no security requirement
+    expect(topOp).not.toHaveProperty('security');
+    expect(searchOp).not.toHaveProperty('security');
+  });
+
+  it('requires L402 on individual agent endpoints', async () => {
+    const { openapiSpec } = await import('../openapi');
+
+    const agentOp = openapiSpec.paths['/agent/{publicKeyHash}'].get;
+    const historyOp = openapiSpec.paths['/agent/{publicKeyHash}/history'].get;
+    const attestOp = openapiSpec.paths['/agent/{publicKeyHash}/attestations'].get;
+
+    expect(agentOp.security).toEqual([{ l402: [] }]);
+    expect(historyOp.security).toEqual([{ l402: [] }]);
+    expect(attestOp.security).toEqual([{ l402: [] }]);
+  });
+});
