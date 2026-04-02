@@ -42,6 +42,20 @@ export const httpRequestDuration = new client.Histogram({
   registers: [metricsRegistry],
 });
 
+export const scoreComputeDuration = new client.Histogram({
+  name: 'satrank_score_compute_duration_seconds',
+  help: 'Score computation duration in seconds',
+  registers: [metricsRegistry],
+});
+
+export const crawlDuration = new client.Histogram({
+  name: 'satrank_crawl_duration_seconds',
+  help: 'Crawler run duration in seconds',
+  labelNames: ['source'] as const,
+  buckets: [0.5, 1, 2.5, 5, 10, 30, 60, 120, 300],
+  registers: [metricsRegistry],
+});
+
 // --- HTTP metrics middleware ---
 
 function normalizeRoute(req: Request): string {

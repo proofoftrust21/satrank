@@ -3,6 +3,7 @@
 //        npm run crawl -- --cron (every 5 minutes)
 import { config } from '../config';
 import { logger } from '../logger';
+import { crawlDuration } from '../middleware/metrics';
 import { getDatabase, closeDatabase } from '../database/connection';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
@@ -22,7 +23,9 @@ const CRON_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler, lnplusCrawler: LnplusCrawler, agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
   // Observer Protocol
   logger.info('Starting Observer Protocol crawl');
+  let hrStart = process.hrtime.bigint();
   const obsResult = await observerCrawler.run();
+  crawlDuration.observe({ source: 'observer' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
 
   logger.info({
     duration: obsResult.finishedAt - obsResult.startedAt,
@@ -38,7 +41,9 @@ async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler
 
   // mempool.space Lightning Network
   logger.info('Starting mempool.space Lightning crawl');
+  hrStart = process.hrtime.bigint();
   const memResult = await mempoolCrawler.run();
+  crawlDuration.observe({ source: 'mempool' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
 
   logger.info({
     duration: memResult.finishedAt - memResult.startedAt,
@@ -55,7 +60,9 @@ async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler
   // LightningNetwork.plus ratings
   logger.info('Starting LN+ ratings crawl');
   try {
+    hrStart = process.hrtime.bigint();
     const lnpResult = await lnplusCrawler.run();
+    crawlDuration.observe({ source: 'lnplus' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
 
     logger.info({
       duration: lnpResult.finishedAt - lnpResult.startedAt,
@@ -95,7 +102,7 @@ async function main(): Promise<void> {
   const txRepo = new TransactionRepository(db);
   const attestationRepo = new AttestationRepository(db);
   const snapshotRepo = new SnapshotRepository(db);
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
 
   const observerClient = new HttpObserverClient({
     baseUrl: config.OBSERVER_BASE_URL,

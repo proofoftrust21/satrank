@@ -221,3 +221,92 @@ journalctl -u aperture -f
 # nginx access
 tail -f /var/log/nginx/access.log | grep satrank
 ```
+
+### Prometheus scraping
+
+Add to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: satrank
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['satrank-api:3000']
+    metrics_path: /metrics
+```
+
+### Alerting rules
+
+Create `satrank-alerts.yml` and include it in your Alertmanager config:
+
+```yaml
+groups:
+  - name: satrank
+    rules:
+      # API is down
+      - alert: SatRankDown
+        expr: up{job="satrank"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SatRank API is unreachable"
+
+      # No agents indexed (data loss or failed migration)
+      - alert: SatRankNoAgents
+        expr: satrank_agents_total == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No agents indexed — possible data loss or migration failure"
+
+      # p99 latency > 5s
+      - alert: SatRankHighLatency
+        expr: histogram_quantile(0.99, rate(satrank_http_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SatRank p99 latency > 5s"
+
+      # Score computation > 2s (should be <100ms normally)
+      - alert: SatRankSlowScoring
+        expr: histogram_quantile(0.99, rate(satrank_score_compute_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Score computation p99 > 2s — possible DB performance issue"
+
+      # Crawler taking too long (> 5 minutes)
+      - alert: SatRankCrawlSlow
+        expr: histogram_quantile(0.99, rate(satrank_crawl_duration_seconds_bucket[30m])) > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Crawler run exceeding 5 minutes"
+
+      # High error rate (> 5% of requests returning 5xx)
+      - alert: SatRankHighErrorRate
+        expr: rate(satrank_requests_total{status=~"5.."}[5m]) / rate(satrank_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SatRank 5xx error rate > 5%"
+```
+
+## 6. Backup
+
+```bash
+# Manual backup
+docker compose exec api node dist/scripts/backup.js
+
+# Automated hourly backup via cron
+0 * * * * cd /root/satrank && docker compose exec -T api node dist/scripts/backup.js >> /var/log/satrank-backup.log 2>&1
+```
+
+Backups are stored in `data/backups/`, with the 24 most recent retained automatically.
+Each backup is verified with `PRAGMA integrity_check` after copy.

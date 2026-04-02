@@ -17,10 +17,7 @@ header {
 header h1 {
   font-size: 3rem;
   font-weight: 700;
-  background: linear-gradient(135deg, #f7931a, #ffd93d);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #ff8200;
 }
 header p {
   font-size: 1.2rem;

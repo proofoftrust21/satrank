@@ -176,6 +176,39 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 6, 'UNIQUE constraint on attestations(attester_hash, subject_hash)');
   }
 
+  // v7: ON DELETE CASCADE for attestations.tx_id → transactions.tx_id
+  // SQLite doesn't support ALTER CONSTRAINT, so we recreate the table with the new FK.
+  // Wrapped in a transaction: DROP+RENAME must be atomic to avoid losing the table on crash.
+  if (!hasVersion(db, 7)) {
+    db.transaction(() => {
+    db.exec(`
+      CREATE TABLE attestations_new (
+        attestation_id TEXT PRIMARY KEY,
+        tx_id TEXT NOT NULL REFERENCES transactions(tx_id) ON DELETE CASCADE,
+        attester_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+        subject_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+        score INTEGER NOT NULL CHECK(score >= 0 AND score <= 100),
+        tags TEXT,
+        evidence_hash TEXT,
+        timestamp INTEGER NOT NULL,
+        UNIQUE(tx_id, attester_hash)
+      );
+
+      INSERT INTO attestations_new SELECT * FROM attestations;
+
+      DROP TABLE attestations;
+      ALTER TABLE attestations_new RENAME TO attestations;
+
+      -- Recreate indexes lost during table swap
+      CREATE INDEX IF NOT EXISTS idx_attestations_subject ON attestations(subject_hash);
+      CREATE INDEX IF NOT EXISTS idx_attestations_attester ON attestations(attester_hash);
+      CREATE INDEX IF NOT EXISTS idx_attestations_timestamp ON attestations(timestamp);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_attestations_unique_attester_subject ON attestations(attester_hash, subject_hash);
+    `);
+    recordVersion(db, 7, 'ON DELETE CASCADE for attestations.tx_id FK');
+    })();
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -185,6 +218,32 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  7: (db) => {
+    // Revert to attestations table without ON DELETE CASCADE
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS attestations_old (
+        attestation_id TEXT PRIMARY KEY,
+        tx_id TEXT NOT NULL REFERENCES transactions(tx_id),
+        attester_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+        subject_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+        score INTEGER NOT NULL CHECK(score >= 0 AND score <= 100),
+        tags TEXT,
+        evidence_hash TEXT,
+        timestamp INTEGER NOT NULL,
+        UNIQUE(tx_id, attester_hash)
+      );
+
+      INSERT INTO attestations_old SELECT * FROM attestations;
+
+      DROP TABLE attestations;
+      ALTER TABLE attestations_old RENAME TO attestations;
+
+      CREATE INDEX IF NOT EXISTS idx_attestations_subject ON attestations(subject_hash);
+      CREATE INDEX IF NOT EXISTS idx_attestations_attester ON attestations(attester_hash);
+      CREATE INDEX IF NOT EXISTS idx_attestations_timestamp ON attestations(timestamp);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_attestations_unique_attester_subject ON attestations(attester_hash, subject_hash);
+    `);
+  },
   6: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_attestations_unique_attester_subject');
   },

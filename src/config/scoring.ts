@@ -127,6 +127,13 @@ export const CONFIDENCE_MEDIUM = 100;
 /** Below this: high confidence; above: very_high */
 export const CONFIDENCE_HIGH = 500;
 
+// --- Attestation limits ---
+
+/** Maximum attestations loaded per agent for reputation computation.
+ *  If an agent exceeds this limit, only the most recent attestations are used
+ *  and a warning is logged. Increase for agents with very high attestation volume. */
+export const MAX_ATTESTATIONS_PER_AGENT = 1000;
+
 // --- Cache ---
 
 /** Minimum time between score recomputations (seconds) */

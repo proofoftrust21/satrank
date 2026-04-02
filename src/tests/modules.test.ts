@@ -21,7 +21,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { metricsMiddleware, metricsRegistry } from '../middleware/metrics';
 import { errorHandler } from '../middleware/errorHandler';
-const EXPECTED_SCHEMA_VERSION = 6;
+const EXPECTED_SCHEMA_VERSION = 7;
 
 function buildTestApp() {
   const db = new Database(':memory:');
@@ -151,7 +151,7 @@ describe('Migration rollback', () => {
     runMigrations(db);
 
     let versions = getAppliedVersions(db);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     rollbackTo(db, 4);
 
@@ -195,7 +195,7 @@ describe('Migration rollback', () => {
     runMigrations(db);
 
     const versions = getAppliedVersions(db);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     db.close();
   });
@@ -212,6 +212,53 @@ describe('Migration rollback', () => {
     );
 
     expect(() => rollbackTo(db, 6)).toThrow('No rollback function for migration v99');
+
+    db.close();
+  });
+
+  it('v7 adds ON DELETE CASCADE — deleting a transaction cascades to attestations', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+
+    // Insert agent, transaction, attestation
+    const hash = 'a'.repeat(64);
+    const hash2 = 'b'.repeat(64);
+    db.prepare('INSERT INTO agents (public_key_hash, first_seen, last_seen, source) VALUES (?, ?, ?, ?)').run(hash, 1000, 2000, 'manual');
+    db.prepare('INSERT INTO agents (public_key_hash, first_seen, last_seen, source) VALUES (?, ?, ?, ?)').run(hash2, 1000, 2000, 'manual');
+    db.prepare('INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'tx1', hash, hash2, 'small', 1000, 'ph1', 'verified', 'bolt11',
+    );
+    db.prepare('INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, timestamp) VALUES (?, ?, ?, ?, ?, ?)').run(
+      'att1', 'tx1', hash, hash2, 80, 1000,
+    );
+
+    // Verify attestation exists
+    const before = db.prepare('SELECT COUNT(*) as c FROM attestations WHERE tx_id = ?').get('tx1') as { c: number };
+    expect(before.c).toBe(1);
+
+    // Delete the transaction — attestation should cascade
+    db.prepare('DELETE FROM transactions WHERE tx_id = ?').run('tx1');
+
+    const after = db.prepare('SELECT COUNT(*) as c FROM attestations WHERE tx_id = ?').get('tx1') as { c: number };
+    expect(after.c).toBe(0);
+
+    db.close();
+  });
+
+  it('v7 rollback removes CASCADE', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+
+    rollbackTo(db, 6);
+
+    const versions = getAppliedVersions(db);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    // Attestations table should still exist with all indexes
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_attestations_subject'").all();
+    expect(indexes).toHaveLength(1);
 
     db.close();
   });

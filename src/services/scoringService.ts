@@ -2,6 +2,7 @@
 // Score 0-100 computed from 5 weighted components, with reinforced anti-gaming
 // All tunable constants are in src/config/scoring.ts
 import { v4 as uuid } from 'uuid';
+import type Database from 'better-sqlite3';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
@@ -9,6 +10,7 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoreComponents, ConfidenceLevel } from '../types';
 import { logger } from '../logger';
 import { computePopularityBonus } from '../utils/scoring';
+import { scoreComputeDuration } from '../middleware/metrics';
 import {
   WEIGHTS,
   ATTESTATION_HALF_LIFE,
@@ -43,6 +45,7 @@ import {
   CONFIDENCE_MEDIUM,
   CONFIDENCE_HIGH,
   SCORE_CACHE_TTL,
+  MAX_ATTESTATIONS_PER_AGENT,
 } from '../config/scoring';
 
 export interface ScoreResult {
@@ -58,6 +61,7 @@ export class ScoringService {
     private txRepo: TransactionRepository,
     private attestationRepo: AttestationRepository,
     private snapshotRepo: SnapshotRepository,
+    private db?: Database.Database,
   ) {}
 
   // Returns an agent's score, using cache if the score is recent
@@ -87,6 +91,7 @@ export class ScoringService {
 
   // Computes the full score for an agent and persists a snapshot
   computeScore(agentHash: string): ScoreResult {
+    const startHr = process.hrtime.bigint();
     const now = Math.floor(Date.now() / 1000);
     const agent = this.agentRepo.findByHash(agentHash);
     if (!agent) {
@@ -145,18 +150,25 @@ export class ScoringService {
 
     const confidence = this.deriveConfidence(agent.total_transactions, agent.total_attestations_received);
 
-    // Persist the snapshot
-    this.snapshotRepo.insert({
-      snapshot_id: uuid(),
-      agent_hash: agentHash,
-      score: total,
-      components: JSON.stringify(components),
-      computed_at: now,
-    });
+    // Persist snapshot + update denormalized agents.avg_score atomically
+    const persist = () => {
+      this.snapshotRepo.insert({
+        snapshot_id: uuid(),
+        agent_hash: agentHash,
+        score: total,
+        components: JSON.stringify(components),
+        computed_at: now,
+      });
+      this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, total, agent.first_seen, agent.last_seen);
+    };
 
-    // Update the denormalized score in the agents table
-    this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, total, agent.first_seen, agent.last_seen);
+    if (this.db) {
+      this.db.transaction(persist)();
+    } else {
+      persist();
+    }
 
+    scoreComputeDuration.observe(Number(process.hrtime.bigint() - startHr) / 1e9);
     logger.debug({ agentHash, total, components }, 'Score computed');
 
     return { total, components, confidence, computedAt: now };
@@ -217,8 +229,12 @@ export class ScoringService {
   // Reputation with reinforced anti-gaming
   // Batch attester lookups to avoid N+1 queries
   private computeReputation(agentHash: string, now: number): number {
-    const attestations = this.attestationRepo.findBySubject(agentHash, 1000, 0);
+    const attestations = this.attestationRepo.findBySubject(agentHash, MAX_ATTESTATIONS_PER_AGENT, 0);
     if (attestations.length === 0) return 0;
+
+    if (attestations.length >= MAX_ATTESTATIONS_PER_AGENT) {
+      logger.warn({ agentHash, limit: MAX_ATTESTATIONS_PER_AGENT }, 'Attestation count truncated to limit for agent');
+    }
 
     const mutualAgents = new Set(this.attestationRepo.findMutualAttestations(agentHash));
     const clusterMembers = new Set(this.attestationRepo.findCircularCluster(agentHash));
@@ -255,12 +271,18 @@ export class ScoringService {
       }
 
       // Anti-gaming: direct mutual attestation (A<->B)
+      // Intentional double penalty: weight reduction (0.05x) limits the attestation's
+      // contribution to the weighted average, while the score cap (40) prevents a single
+      // high-score mutual attestation from dominating even at reduced weight. Both layers
+      // are needed: weight alone doesn't prevent artificial 100-score attestations from
+      // skewing the average; cap alone doesn't prevent flooding with many mutual attestations.
       if (mutualAgents.has(att.attester_hash)) {
         weight *= MUTUAL_ATTESTATION_PENALTY;
         effectiveScore = Math.min(effectiveScore, SUSPECT_ATTESTATION_SCORE_CAP);
       }
 
       // Anti-gaming: circular cluster (A->B->C->A)
+      // Same double penalty rationale as mutual attestations above.
       if (clusterMembers.has(att.attester_hash)) {
         weight *= CIRCULAR_CLUSTER_PENALTY;
         effectiveScore = Math.min(effectiveScore, SUSPECT_ATTESTATION_SCORE_CAP);
@@ -296,7 +318,8 @@ export class ScoringService {
     }
 
     const mean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-    if (mean === 0) return 0;
+    // Near-zero mean (< 1 second) means transactions are quasi-simultaneous — perfectly regular
+    if (mean < 1) return 100;
 
     const variance = intervals.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / intervals.length;
     const stdDev = Math.sqrt(variance);

@@ -50,7 +50,7 @@ export function createApp() {
   const attestationRepo = new AttestationRepository(db);
   const snapshotRepo = new SnapshotRepository(db);
 
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);

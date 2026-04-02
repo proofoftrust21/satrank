@@ -254,6 +254,20 @@ describe('ScoringService', () => {
       expect(result.components.regularity).toBe(0);
     });
 
+    it('regularity = 100 with near-simultaneous transactions (mean < 1s)', () => {
+      const agent = makeAgent('simul-tx');
+      const peer = makeAgent('peer-simul');
+      agentRepo.insert(agent);
+      agentRepo.insert(peer);
+      // 3 transactions within the same second
+      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
+      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
+      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
+
+      const result = scoring.computeScore(agent.public_key_hash);
+      expect(result.components.regularity).toBe(100);
+    });
+
     it('diversity increases with number of counterparties', () => {
       const agent = makeAgent('diverse-agent');
       agentRepo.insert(agent);
