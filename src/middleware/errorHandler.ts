@@ -16,7 +16,7 @@ const GENERIC_MESSAGES: Record<string, string> = {
 export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
   if (err instanceof AppError) {
     const message = config.NODE_ENV === 'production'
-      ? (GENERIC_MESSAGES[err.code] ?? err.message)
+      ? (GENERIC_MESSAGES[err.code] ?? 'An error occurred')
       : err.message;
 
     res.status(err.statusCode).json({

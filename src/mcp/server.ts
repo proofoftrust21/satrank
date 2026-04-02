@@ -53,7 +53,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'get_agent_score',
-      description: 'Returns the detailed trust score of an agent by its hashed public key',
+      description: 'Returns the detailed trust score of an agent including score components, evidence (transactions, Lightning graph, LN+ reputation, popularity), and verification URLs',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -64,7 +64,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'get_top_agents',
-      description: 'Returns the agent leaderboard ranked by trust score',
+      description: 'Returns the agent leaderboard ranked by trust score, including LN+ ratings and popularity data',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -118,6 +118,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           score: a.avg_score,
           totalTransactions: a.total_transactions,
           source: a.source,
+          positiveRatings: a.positive_ratings,
+          negativeRatings: a.negative_ratings,
+          lnplusRank: a.lnplus_rank,
+          queryCount: a.query_count,
         }));
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
@@ -133,6 +137,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           alias: a.alias,
           score: a.avg_score,
           source: a.source,
+          positiveRatings: a.positive_ratings,
+          negativeRatings: a.negative_ratings,
+          lnplusRank: a.lnplus_rank,
         }));
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }

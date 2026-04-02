@@ -91,6 +91,33 @@ describe('errorHandler', () => {
     vi.resetModules();
   });
 
+  it('returns generic fallback for unknown AppError code in production', async () => {
+    vi.doMock('../config', () => ({
+      config: { NODE_ENV: 'production' },
+    }));
+    vi.doMock('../logger', () => ({
+      logger: { error: vi.fn() },
+    }));
+
+    // Simulate an AppError with an unmapped code
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const { AppError } = await import('../errors');
+    const res = mockRes();
+
+    errorHandler(
+      new AppError('Sensitive internal detail', 500, 'UNKNOWN_CODE'),
+      mockReq(),
+      res as unknown as Response,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res._status).toBe(500);
+    const body = res._body as { error: { code: string; message: string } };
+    // Must NOT expose the real message — should fall back to generic
+    expect(body.error.message).toBe('An error occurred');
+    expect(body.error.message).not.toContain('Sensitive');
+  });
+
   it('returns generic message for non-AppError in production', async () => {
     vi.doMock('../config', () => ({
       config: { NODE_ENV: 'production' },

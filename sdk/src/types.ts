@@ -4,6 +4,7 @@
 export type AgentSource = 'observer_protocol' | '4tress' | 'lightning_graph' | 'manual';
 export type ConfidenceLevel = 'very_low' | 'low' | 'medium' | 'high' | 'very_high';
 export type AmountBucket = 'micro' | 'small' | 'medium' | 'large';
+export type PaymentProtocol = 'l402' | 'keysend' | 'bolt11';
 
 export interface PaginationMeta {
   total: number;
@@ -17,6 +18,46 @@ export interface ScoreComponents {
   seniority: number;
   regularity: number;
   diversity: number;
+}
+
+export interface TransactionSample {
+  txId: string;
+  protocol: PaymentProtocol;
+  amountBucket: AmountBucket;
+  verified: boolean;
+  timestamp: number;
+}
+
+export interface LightningGraphEvidence {
+  publicKey: string;
+  channels: number;
+  capacitySats: number;
+  sourceUrl: string;
+}
+
+export interface ReputationEvidence {
+  positiveRatings: number;
+  negativeRatings: number;
+  lnplusRank: number;
+  hubnessRank: number;
+  betweennessRank: number;
+  sourceUrl: string;
+}
+
+export interface PopularityEvidence {
+  queryCount: number;
+  bonusApplied: number;
+}
+
+export interface ScoreEvidence {
+  transactions: {
+    count: number;
+    verifiedCount: number;
+    sample: TransactionSample[];
+  };
+  lightningGraph: LightningGraphEvidence | null;
+  reputation: ReputationEvidence | null;
+  popularity: PopularityEvidence;
 }
 
 export interface AgentScoreResponse {
@@ -40,6 +81,7 @@ export interface AgentScoreResponse {
     attestationsReceived: number;
     avgAttestationScore: number;
   };
+  evidence: ScoreEvidence;
 }
 
 export interface TopAgentsResponse {

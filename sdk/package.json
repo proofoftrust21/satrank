@@ -1,15 +1,20 @@
 {
   "name": "@satrank/sdk",
   "version": "0.1.0",
-  "description": "Client SDK pour l'API SatRank — zero dependencies",
+  "description": "Client SDK for the SatRank API — trust scores for AI agents on Bitcoin Lightning",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist/"],
+  "files": ["dist/", "README.md"],
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["satrank", "lightning", "l402", "trust-score", "agents"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/proofoftrust21/satrank",
+    "directory": "sdk"
+  },
+  "keywords": ["satrank", "lightning", "l402", "trust-score", "agents", "bitcoin", "mcp"],
   "license": "AGPL-3.0",
   "devDependencies": {
     "typescript": "^5.7.3"

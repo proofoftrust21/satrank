@@ -1,5 +1,6 @@
 // Composite scoring engine — the core of SatRank
 // Score 0-100 computed from 5 weighted components, with reinforced anti-gaming
+// All tunable constants are in src/config/scoring.ts
 import { v4 as uuid } from 'uuid';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
@@ -8,43 +9,40 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoreComponents, ConfidenceLevel } from '../types';
 import { logger } from '../logger';
 import { computePopularityBonus } from '../utils/scoring';
-
-// Weight of each component in the final score
-const WEIGHTS = {
-  volume: 0.25,
-  reputation: 0.30,
-  seniority: 0.15,
-  regularity: 0.15,
-  diversity: 0.15,
-} as const;
-
-// Half-life for exponential decay of attestations (30 days in seconds)
-const ATTESTATION_HALF_LIFE = 30 * 24 * 3600;
-
-// Minimum seniority (in days) for an attester to be credible
-const MIN_ATTESTER_AGE_DAYS = 7;
-
-// --- Anti-gaming ---
-
-// Direct mutual attestations (A<->B): nearly eliminated
-const MUTUAL_ATTESTATION_PENALTY = 0.05;
-
-// Score cap for suspect attestations (mutual or cluster)
-const SUSPECT_ATTESTATION_SCORE_CAP = 40;
-
-// Attestations from a circular cluster (A->B->C->A)
-const CIRCULAR_CLUSTER_PENALTY = 0.1;
-
-// Penalty multiplier on final score for "manual" source agents
-const MANUAL_SOURCE_PENALTY_THRESHOLD = 150;
-const MANUAL_SOURCE_MIN_MULTIPLIER = 0.5;
-
-// Attestation concentration: few sources attest a lot -> suspicious
-const ATTESTATION_CONCENTRATION_THRESHOLD = 2.5;
-const ATTESTATION_CONCENTRATION_PENALTY = 0.3;
-
-// Minimum time between score recomputations (in seconds)
-const SCORE_CACHE_TTL = 300; // 5 minutes
+import {
+  WEIGHTS,
+  ATTESTATION_HALF_LIFE,
+  MIN_ATTESTER_AGE_DAYS,
+  UNKNOWN_ATTESTER_WEIGHT,
+  YOUNG_ATTESTER_WEIGHT,
+  MUTUAL_ATTESTATION_PENALTY,
+  SUSPECT_ATTESTATION_SCORE_CAP,
+  CIRCULAR_CLUSTER_PENALTY,
+  MANUAL_SOURCE_PENALTY_THRESHOLD,
+  MANUAL_SOURCE_MIN_MULTIPLIER,
+  ATTESTATION_CONCENTRATION_THRESHOLD,
+  ATTESTATION_CONCENTRATION_PENALTY,
+  VERIFIED_TX_BONUS_CAP,
+  VERIFIED_TX_BONUS_PER_TX,
+  LN_VOLUME_HEADROOM,
+  LN_VOLUME_POWER,
+  LN_REGULARITY_DECAY_DAYS,
+  SATS_PER_BTC,
+  LN_DIVERSITY_LOG_BASE,
+  LN_DIVERSITY_BTC_MULTIPLIER,
+  LNPLUS_RANK_MULTIPLIER,
+  LNPLUS_RATINGS_WEIGHT,
+  CENTRALITY_BONUS_MULTIPLIER,
+  CENTRALITY_DECAY_CONSTANT,
+  VOLUME_LOG_BASE,
+  DIVERSITY_LOG_BASE,
+  SENIORITY_HALF_LIFE_DAYS,
+  CONFIDENCE_VERY_LOW,
+  CONFIDENCE_LOW,
+  CONFIDENCE_MEDIUM,
+  CONFIDENCE_HIGH,
+  SCORE_CACHE_TTL,
+} from '../config/scoring';
 
 export interface ScoreResult {
   total: number;
@@ -135,7 +133,7 @@ export class ScoringService {
       ? this.txRepo.countVerifiedByAgent(agentHash)
       : verifiedTxCount;
     if (verifiedForBonus > 0) {
-      total = Math.min(100, total + Math.min(15, Math.round(verifiedForBonus * 0.5)));
+      total = Math.min(100, total + Math.min(VERIFIED_TX_BONUS_CAP, Math.round(verifiedForBonus * VERIFIED_TX_BONUS_PER_TX)));
     }
 
     // Popularity bonus — agents that are queried more often get a small boost
@@ -169,46 +167,44 @@ export class ScoringService {
     if (channels === 0 || maxNetworkChannels === 0) return 0;
     // Network-relative: score proportional to max, with power curve for spread
     // ACINQ (1988ch, max ~2000) → ~95, 120ch → ~30
-    const reference = maxNetworkChannels * 1.1; // 10% headroom so top node ≈ 95
+    const reference = maxNetworkChannels * LN_VOLUME_HEADROOM;
     const ratio = Math.min(1, channels / reference);
-    return Math.min(100, Math.round(Math.pow(ratio, 0.4) * 100));
+    return Math.min(100, Math.round(Math.pow(ratio, LN_VOLUME_POWER) * 100));
   }
 
   private computeLightningRegularity(lastSeen: number, now: number): number {
     // Score based on recency of node update — 30-day decay
     const daysSinceUpdate = (now - lastSeen) / 86400;
     if (daysSinceUpdate <= 0) return 100;
-    return Math.min(100, Math.round(100 * Math.exp(-daysSinceUpdate / 30)));
+    return Math.min(100, Math.round(100 * Math.exp(-daysSinceUpdate / LN_REGULARITY_DECAY_DAYS)));
   }
 
   private computeLightningDiversity(capacitySats: number | null): number {
     // Capacity as diversity proxy — more BTC locked = broader network participation
     // 59 BTC → ~92, 5 BTC → ~57, 0.05 BTC → ~6
     if (!capacitySats || capacitySats <= 0) return 0;
-    const btc = capacitySats / 100_000_000;
-    const score = (Math.log10(btc * 10 + 1) / Math.log10(1001)) * 100;
+    const btc = capacitySats / SATS_PER_BTC;
+    const score = (Math.log10(btc * LN_DIVERSITY_BTC_MULTIPLIER + 1) / Math.log10(LN_DIVERSITY_LOG_BASE)) * 100;
     return Math.min(100, Math.round(score));
   }
 
   // LN+ ratings-based reputation for Lightning nodes
-  // lnp_rank (1-10) * 5 = up to 50 points base
-  // If positive ratings exist: ratio * 50 = up to 50 points (community voice)
-  // Centrality bonus: 5 * exp(-rank/50) for hubness and betweenness (continuous curve)
+  // See config/scoring.ts for LNPLUS_RANK_MULTIPLIER, LNPLUS_RATINGS_WEIGHT, CENTRALITY_* constants
   private computeLightningReputation(positive: number, negative: number, lnpRank: number, hubnessRank: number, betweennessRank: number): number {
     if (positive === 0 && negative === 0 && lnpRank === 0) return 0;
-    let score = lnpRank * 5;
+    let score = lnpRank * LNPLUS_RANK_MULTIPLIER;
     if (positive > 0) {
       const ratio = positive / (positive + negative + 1);
-      score += ratio * 50;
+      score += ratio * LNPLUS_RATINGS_WEIGHT;
     }
-    if (hubnessRank > 0) score += 5 * Math.exp(-hubnessRank / 50);
-    if (betweennessRank > 0) score += 5 * Math.exp(-betweennessRank / 50);
+    if (hubnessRank > 0) score += CENTRALITY_BONUS_MULTIPLIER * Math.exp(-hubnessRank / CENTRALITY_DECAY_CONSTANT);
+    if (betweennessRank > 0) score += CENTRALITY_BONUS_MULTIPLIER * Math.exp(-betweennessRank / CENTRALITY_DECAY_CONSTANT);
     return Math.min(100, Math.round(score));
   }
 
   private computeVolume(count: number): number {
     if (count === 0) return 0;
-    const score = (Math.log(count + 1) / Math.log(1001)) * 100;
+    const score = (Math.log(count + 1) / Math.log(VOLUME_LOG_BASE)) * 100;
     return Math.min(100, Math.round(score));
   }
 
@@ -243,14 +239,12 @@ export class ScoringService {
       if (attester) {
         const attesterAgeDays = (now - attester.first_seen) / 86400;
         if (attesterAgeDays < MIN_ATTESTER_AGE_DAYS) {
-          weight *= 0.05;
+          weight *= YOUNG_ATTESTER_WEIGHT;
         } else {
           const latestSnapshot = snapshotMap.get(att.attester_hash);
           const attesterScore = latestSnapshot ? latestSnapshot.score : attester.avg_score;
-          // Deliberate anti-gaming: unknown attesters (score 0) are treated as nearly worthless
-          // (0.1 weight). Prevents sybil attacks where fake attesters boost a target's reputation.
-          // Previous value was 0.3 which was too generous.
-          weight *= (attesterScore / 100) || 0.1;
+          // Anti-sybil: unknown attesters (score 0) get UNKNOWN_ATTESTER_WEIGHT
+          weight *= (attesterScore / 100) || UNKNOWN_ATTESTER_WEIGHT;
         }
       }
 
@@ -282,7 +276,7 @@ export class ScoringService {
   private computeSeniority(firstSeen: number, now: number): number {
     const days = (now - firstSeen) / 86400;
     if (days <= 0) return 0;
-    const score = 100 * (1 - Math.exp(-days / 180));
+    const score = 100 * (1 - Math.exp(-days / SENIORITY_HALF_LIFE_DAYS));
     return Math.round(score);
   }
 
@@ -309,7 +303,7 @@ export class ScoringService {
   private computeDiversity(agentHash: string): number {
     const count = this.txRepo.countUniqueCounterparties(agentHash);
     if (count === 0) return 0;
-    const score = (Math.log(count + 1) / Math.log(51)) * 100;
+    const score = (Math.log(count + 1) / Math.log(DIVERSITY_LOG_BASE)) * 100;
     return Math.min(100, Math.round(score));
   }
 
@@ -334,10 +328,10 @@ export class ScoringService {
 
   private deriveConfidence(totalTx: number, totalAttestations: number): ConfidenceLevel {
     const dataPoints = totalTx + totalAttestations;
-    if (dataPoints < 5) return 'very_low';
-    if (dataPoints < 20) return 'low';
-    if (dataPoints < 100) return 'medium';
-    if (dataPoints < 500) return 'high';
+    if (dataPoints < CONFIDENCE_VERY_LOW) return 'very_low';
+    if (dataPoints < CONFIDENCE_LOW) return 'low';
+    if (dataPoints < CONFIDENCE_MEDIUM) return 'medium';
+    if (dataPoints < CONFIDENCE_HIGH) return 'high';
     return 'very_high';
   }
 }
