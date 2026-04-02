@@ -63,6 +63,11 @@ export class HttpLndGraphClient implements LndGraphClient {
     try {
       const macaroonBytes = fs.readFileSync(options.macaroonPath);
       this.macaroonHex = macaroonBytes.toString('hex');
+      logger.debug({
+        url: this.restUrl,
+        macaroonLen: this.macaroonHex.length,
+        macaroonPrefix: this.macaroonHex.slice(0, 16) + '...',
+      }, 'LND client initialized');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ path: options.macaroonPath, error: msg }, 'Failed to read LND macaroon — LND client will not work');
@@ -103,6 +108,7 @@ export class HttpLndGraphClient implements LndGraphClient {
     }
 
     const url = `${this.restUrl}${path}`;
+    logger.debug({ url, timeoutMs: this.timeoutMs }, 'LND request starting');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
