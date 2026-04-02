@@ -18,6 +18,7 @@
     "purge": "tsx src/database/purge.ts",
     "purge:prod": "node dist/database/purge.js",
     "calibrate": "tsx src/scripts/calibrationReport.ts",
+    "demo": "tsx src/scripts/attestationDemo.ts",
     "lint": "tsc --noEmit",
     "sdk:build": "cd sdk && npx tsc"
   },

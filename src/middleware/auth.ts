@@ -63,7 +63,7 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
   }
 
   const apertureHeader = req.headers['x-aperture-auth'] as string | undefined;
-  if (!apertureHeader) {
+  if (!apertureHeader || !apertureHeader.trim()) {
     next(new PaymentRequiredError());
     return;
   }

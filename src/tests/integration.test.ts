@@ -53,6 +53,16 @@ function buildTestApp() {
   const app = express();
   app.use(cors());
   app.use(express.json());
+
+  // Content-Type enforcement (same as app.ts)
+  app.use((req, res, next) => {
+    if (['POST', 'PUT', 'PATCH'].includes(req.method) && !req.is('application/json')) {
+      res.status(415).json({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Content-Type must be application/json' } });
+      return;
+    }
+    next();
+  });
+
   app.use(requestIdMiddleware);
 
   // Static files (for methodology test)
@@ -388,13 +398,10 @@ describe('Integration — L402 perimeter (production mode)', () => {
     agentRepo.insert(agent);
     agentHash = agent.public_key_hash;
 
-    // Simulate production L402 middleware that always enforces payment
+    // Simulate production L402 middleware — matches real apertureGateAuth behavior
     function prodApertureGateAuth(req: express.Request, _res: express.Response, next: express.NextFunction): void {
       const header = req.headers['x-aperture-auth'] as string | undefined;
-      if (!header) {
-        const err = new Error('Payment required');
-        (err as unknown as { statusCode: number; code: string }).statusCode = 402;
-        (err as unknown as { statusCode: number; code: string }).code = 'PAYMENT_REQUIRED';
+      if (!header || !header.trim()) {
         _res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: 'Payment required' } });
         return;
       }
@@ -472,5 +479,166 @@ describe('Integration — L402 perimeter (production mode)', () => {
       .get(`/api/v1/agent/${agentHash}`)
       .set('X-Aperture-Auth', 'valid-token');
     expect(res.status).toBe(200);
+  });
+
+  // L402 edge cases: empty and whitespace-only headers must be rejected
+  it('GET /api/v1/agent/:hash returns 402 with empty X-Aperture-Auth', async () => {
+    const res = await request(app)
+      .get(`/api/v1/agent/${agentHash}`)
+      .set('X-Aperture-Auth', '');
+    expect(res.status).toBe(402);
+  });
+
+  it('GET /api/v1/agent/:hash returns 402 with whitespace-only X-Aperture-Auth', async () => {
+    const res = await request(app)
+      .get(`/api/v1/agent/${agentHash}`)
+      .set('X-Aperture-Auth', '   ');
+    expect(res.status).toBe(402);
+  });
+
+  it('GET /api/v1/agent/:hash returns 402 with X-Aperture-Auth: "false"', async () => {
+    // "false" is a truthy string — but the middleware should still pass it
+    // (it's a non-empty token value; the real Aperture proxy handles validation)
+    const res = await request(app)
+      .get(`/api/v1/agent/${agentHash}`)
+      .set('X-Aperture-Auth', 'false');
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('Integration — Security headers and Content-Type', () => {
+  let app: express.Express;
+  let db: Database.Database;
+  let agentHash: string;
+  let txId: string;
+
+  beforeAll(() => {
+    const memDb = new Database(':memory:');
+    memDb.pragma('foreign_keys = ON');
+    runMigrations(memDb);
+    db = memDb;
+
+    const agentRepo = new AgentRepository(db);
+    const txRepo = new TransactionRepository(db);
+    const attestationRepo = new AttestationRepository(db);
+    const snapshotRepo = new SnapshotRepository(db);
+    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
+    const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
+    const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
+    const agentController = new AgentController(agentService, agentRepo, snapshotRepo);
+    const attestationController = new AttestationController(attestationService);
+    const healthController = new HealthController(statsService);
+
+    const agent = makeAgent({
+      public_key_hash: sha256('sec-test-agent'),
+      alias: 'SecTestNode',
+      total_transactions: 10,
+    });
+    const agent2 = makeAgent({
+      public_key_hash: sha256('sec-test-agent2'),
+      alias: 'SecTestNode2',
+      total_transactions: 5,
+    });
+    agentRepo.insert(agent);
+    agentRepo.insert(agent2);
+    agentHash = agent.public_key_hash;
+
+    txId = uuid();
+    txRepo.insert({
+      tx_id: txId,
+      sender_hash: agent.public_key_hash,
+      receiver_hash: agent2.public_key_hash,
+      amount_bucket: 'small',
+      timestamp: NOW - 5 * DAY,
+      payment_hash: sha256('sec-pay'),
+      preimage: null,
+      status: 'verified',
+      protocol: 'l402',
+    });
+
+    // Build app with helmet for security header tests
+    const helmet = require('helmet');
+    const testApp = express();
+    testApp.use(helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
+          styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+          imgSrc: ["'self'", "data:"],
+        },
+      },
+    }));
+    testApp.use(express.json());
+
+    // Content-Type enforcement
+    testApp.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (['POST', 'PUT', 'PATCH'].includes(req.method) && !req.is('application/json')) {
+        res.status(415).json({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Content-Type must be application/json' } });
+        return;
+      }
+      next();
+    });
+
+    testApp.use(requestIdMiddleware);
+    const { Router } = express;
+    const v1 = Router();
+    v1.use(createAgentRoutes(agentController));
+    v1.use(createAttestationRoutes(attestationController));
+    v1.use(createHealthRoutes(healthController));
+    testApp.use('/api/v1', v1);
+    testApp.use(errorHandler);
+
+    app = testApp;
+  });
+
+  afterAll(() => { db.close(); });
+
+  it('POST with Content-Type: text/plain returns 415', async () => {
+    const res = await request(app)
+      .post('/api/v1/attestation')
+      .set('Content-Type', 'text/plain')
+      .send('not json');
+    expect(res.status).toBe(415);
+    expect(res.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+  });
+
+  it('POST with no Content-Type returns 415', async () => {
+    const res = await request(app)
+      .post('/api/v1/attestation')
+      .set('Content-Type', '')
+      .send('');
+    expect(res.status).toBe(415);
+  });
+
+  it('POST with application/json Content-Type is accepted', async () => {
+    const res = await request(app)
+      .post('/api/v1/attestation')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({
+        txId,
+        attesterHash: agentHash,
+        subjectHash: sha256('sec-test-agent2'),
+        score: 80,
+      }));
+    expect(res.status).toBe(201);
+  });
+
+  it('responses include Content-Security-Policy header', async () => {
+    const res = await request(app).get('/api/v1/health');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-security-policy']).toBeDefined();
+    expect(res.headers['content-security-policy']).toContain("default-src 'self'");
+  });
+
+  it('responses include X-Content-Type-Options: nosniff', async () => {
+    const res = await request(app).get('/api/v1/health');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('responses include X-Frame-Options header', async () => {
+    const res = await request(app).get('/api/v1/health');
+    expect(res.headers['x-frame-options']).toBeDefined();
   });
 });

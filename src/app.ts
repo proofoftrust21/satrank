@@ -74,6 +74,16 @@ export function createApp() {
   }));
   app.use(cors({ origin: config.CORS_ORIGIN }));
   app.use(express.json({ limit: '10kb' }));
+
+  // Reject POST/PUT/PATCH requests without application/json Content-Type
+  app.use((req, res, next) => {
+    if (['POST', 'PUT', 'PATCH'].includes(req.method) && !req.is('application/json')) {
+      res.status(415).json({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Content-Type must be application/json' } });
+      return;
+    }
+    next();
+  });
+
   app.use(requestIdMiddleware);
   app.use(requestTimeout(30_000));
   app.use(rateLimit({
