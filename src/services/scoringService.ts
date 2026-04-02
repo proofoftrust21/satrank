@@ -103,7 +103,7 @@ export class ScoringService {
         ? this.computeLightningVolume(agent.total_transactions, maxNetworkChannels)
         : this.computeVolume(verifiedTxCount),
       reputation: isLightningGraph
-        ? this.computeLightningReputation(agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank)
+        ? this.computeLightningReputation(agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.hubness_rank, agent.betweenness_rank)
         : this.computeReputation(agentHash, now),
       seniority: this.computeSeniority(agent.first_seen, now),
       regularity: isLightningGraph
@@ -191,12 +191,20 @@ export class ScoringService {
   }
 
   // LN+ ratings-based reputation for Lightning nodes
-  // positive / (positive + negative + 1) gives a 0-1 ratio, scaled to 60
-  // lnplus_rank (1-10) adds up to 40 points
-  private computeLightningReputation(positive: number, negative: number, lnplusRank: number): number {
-    if (positive === 0 && negative === 0 && lnplusRank === 0) return 0;
-    const ratio = positive / (positive + negative + 1);
-    return Math.min(100, Math.round(ratio * 60 + lnplusRank * 4));
+  // lnp_rank (1-10) * 7 = up to 70 points base
+  // If positive ratings exist: ratio * 30 = up to 30 points
+  // hubness_rank <= 50: +5 (highly influential node)
+  // betweenness_rank <= 50: +5 (central routing node)
+  private computeLightningReputation(positive: number, negative: number, lnpRank: number, hubnessRank: number, betweennessRank: number): number {
+    if (positive === 0 && negative === 0 && lnpRank === 0) return 0;
+    let score = lnpRank * 7;
+    if (positive > 0) {
+      const ratio = positive / (positive + negative + 1);
+      score += ratio * 30;
+    }
+    if (hubnessRank > 0 && hubnessRank <= 50) score += 5;
+    if (betweennessRank > 0 && betweennessRank <= 50) score += 5;
+    return Math.min(100, Math.round(score));
   }
 
   private computeVolume(count: number): number {

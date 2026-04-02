@@ -30,6 +30,9 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     positive_ratings: 0,
     negative_ratings: 0,
     lnplus_rank: 0,
+    hubness_rank: 0,
+    betweenness_rank: 0,
+    hopness_rank: 0,
     query_count: 0,
     ...overrides,
   };
@@ -166,6 +169,8 @@ describe('Score evidence', () => {
       positive_ratings: 47,
       negative_ratings: 2,
       lnplus_rank: 9,
+      hubness_rank: 15,
+      betweenness_rank: 22,
     });
     agentRepo.insert(agent);
 
@@ -175,6 +180,8 @@ describe('Score evidence', () => {
     expect(result.evidence.reputation!.positiveRatings).toBe(47);
     expect(result.evidence.reputation!.negativeRatings).toBe(2);
     expect(result.evidence.reputation!.lnplusRank).toBe(9);
+    expect(result.evidence.reputation!.hubnessRank).toBe(15);
+    expect(result.evidence.reputation!.betweennessRank).toBe(22);
     expect(result.evidence.reputation!.sourceUrl).toBe(
       `https://lightningnetwork.plus/nodes/${pubkey}`
     );
@@ -261,6 +268,8 @@ describe('Score evidence', () => {
       positive_ratings: 30,
       negative_ratings: 1,
       lnplus_rank: 7,
+      hubness_rank: 10,
+      betweenness_rank: 20,
       query_count: 50,
     });
     agentRepo.insert(agent);

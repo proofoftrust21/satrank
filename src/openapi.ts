@@ -384,6 +384,8 @@ export const openapiSpec = {
                   positiveRatings: { type: 'integer' },
                   negativeRatings: { type: 'integer' },
                   lnplusRank: { type: 'integer', minimum: 0, maximum: 10 },
+                  hubnessRank: { type: 'integer', description: 'LN+ hubness rank — influence in the network' },
+                  betweennessRank: { type: 'integer', description: 'LN+ betweenness rank — frequency on shortest paths' },
                   sourceUrl: { type: 'string', format: 'uri', description: 'Verify on LightningNetwork.plus' },
                 },
               },

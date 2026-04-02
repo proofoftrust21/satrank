@@ -120,6 +120,9 @@ export class MempoolCrawler {
       positive_ratings: 0,
       negative_ratings: 0,
       lnplus_rank: 0,
+      hubness_rank: 0,
+      betweenness_rank: 0,
+      hopness_rank: 0,
       query_count: 0,
     });
 

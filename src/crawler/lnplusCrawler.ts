@@ -45,17 +45,22 @@ export class LnplusCrawler {
 
         this.agentRepo.updateLnplusRatings(
           agent.public_key_hash,
-          info.positive_ratings_count,
-          info.negative_ratings_count,
-          info.lnplus_rank_number,
+          info.positive_ratings ?? 0,
+          info.negative_ratings ?? 0,
+          info.lnp_rank,
+          info.hubness_rank,
+          info.betweenness_rank,
+          info.hopness_rank,
         );
         result.updated++;
 
         logger.debug({
           alias: agent.alias,
-          positive: info.positive_ratings_count,
-          negative: info.negative_ratings_count,
-          rank: info.lnplus_rank_number,
+          positive: info.positive_ratings,
+          negative: info.negative_ratings,
+          rank: info.lnp_rank,
+          hubness: info.hubness_rank,
+          betweenness: info.betweenness_rank,
         }, 'LN+ ratings updated');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

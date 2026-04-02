@@ -84,5 +84,19 @@ export function runMigrations(db: Database.Database): void {
     }
   }
 
+  // v0.4: LN+ graph centrality ranks
+  const v04Columns: [string, string][] = [
+    ['hubness_rank', 'INTEGER NOT NULL DEFAULT 0'],
+    ['betweenness_rank', 'INTEGER NOT NULL DEFAULT 0'],
+    ['hopness_rank', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [col, def] of v04Columns) {
+    try {
+      db.exec(`ALTER TABLE agents ADD COLUMN ${col} ${def}`);
+    } catch {
+      // Column already exists
+    }
+  }
+
   logger.info('Migrations executed successfully');
 }

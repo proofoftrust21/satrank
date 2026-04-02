@@ -29,6 +29,9 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
     positive_ratings: 0,
     negative_ratings: 0,
     lnplus_rank: 0,
+    hubness_rank: 0,
+    betweenness_rank: 0,
+    hopness_rank: 0,
     query_count: 0,
     ...overrides,
   };
@@ -382,6 +385,8 @@ describe('ScoringService', () => {
         positive_ratings: 42,
         negative_ratings: 2,
         lnplus_rank: 8,
+        hubness_rank: 25,
+        betweenness_rank: 30,
       });
       const unratedNode = makeAgent('ln-unrated', {
         source: 'lightning_graph',
@@ -397,7 +402,7 @@ describe('ScoringService', () => {
       const scoreRated = scoring.computeScore(ratedNode.public_key_hash);
       const scoreUnrated = scoring.computeScore(unratedNode.public_key_hash);
 
-      // Rated: (42/(42+2+1))*60 + 8*4 = 56 + 32 = 88
+      // Rated: 8*7 + (42/(42+2+1))*30 + 5 (hubness<=50) + 5 (betweenness<=50) = 56 + 28 + 10 = 94
       expect(scoreRated.components.reputation).toBeGreaterThan(80);
       // Unrated: 0
       expect(scoreUnrated.components.reputation).toBe(0);
@@ -405,10 +410,9 @@ describe('ScoringService', () => {
       expect(scoreRated.total).toBeGreaterThan(scoreUnrated.total + 15);
     });
 
-    it('LN+ reputation formula: ratio * 60 + rank * 4', () => {
-      // Exact formula test: 10 positive, 0 negative, rank 5
-      // ratio = 10 / (10 + 0 + 1) = 0.909
-      // score = 0.909 * 60 + 5 * 4 = 54.5 + 20 = 74.5 → 75
+    it('LN+ reputation formula: rank * 7 + ratio * 30 + centrality bonuses', () => {
+      // Exact formula test: 10 positive, 0 negative, rank 5, no centrality bonuses
+      // score = 5 * 7 + (10 / (10 + 0 + 1)) * 30 = 35 + 27.27 = 62.27 → 62
       const node = makeAgent('ln-formula', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -420,7 +424,41 @@ describe('ScoringService', () => {
       agentRepo.insert(node);
 
       const result = scoring.computeScore(node.public_key_hash);
-      expect(result.components.reputation).toBe(75);
+      expect(result.components.reputation).toBe(62);
+    });
+
+    it('hubness and betweenness bonuses add +5 each when rank <= 50', () => {
+      const centralNode = makeAgent('ln-central', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        positive_ratings: 10,
+        negative_ratings: 0,
+        lnplus_rank: 5,
+        hubness_rank: 20,
+        betweenness_rank: 30,
+      });
+      const peripheralNode = makeAgent('ln-peripheral', {
+        source: 'lightning_graph',
+        total_transactions: 100,
+        capacity_sats: 1_000_000_000,
+        positive_ratings: 10,
+        negative_ratings: 0,
+        lnplus_rank: 5,
+        hubness_rank: 200,
+        betweenness_rank: 300,
+      });
+      agentRepo.insert(centralNode);
+      agentRepo.insert(peripheralNode);
+
+      const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
+      const scorePeripheral = scoring.computeScore(peripheralNode.public_key_hash);
+
+      // Central: 35 + 27.27 + 5 + 5 = 72.27 → 72
+      expect(scoreCentral.components.reputation).toBe(72);
+      // Peripheral: 35 + 27.27 = 62.27 → 62
+      expect(scorePeripheral.components.reputation).toBe(62);
+      expect(scoreCentral.components.reputation - scorePeripheral.components.reputation).toBe(10);
     });
 
     it('negative ratings reduce reputation', () => {

@@ -8,10 +8,13 @@ const MAX_RETRIES = 1;
 const RATE_LIMIT_MS = 1000; // 1 req/sec
 
 export interface LnplusNodeInfo {
-  positive_ratings_count: number;
-  negative_ratings_count: number;
-  lnplus_rank_number: number;
-  lnplus_rank_name: string;
+  positive_ratings: number | null;
+  negative_ratings: number | null;
+  lnp_rank: number;
+  lnp_rank_name: string;
+  hubness_rank: number;
+  betweenness_rank: number;
+  hopness_rank: number;
 }
 
 export interface LnplusClient {
@@ -31,7 +34,7 @@ export class HttpLnplusClient implements LnplusClient {
   async fetchNodeInfo(pubkey: string): Promise<LnplusNodeInfo | null> {
     await this.rateLimit();
 
-    const url = `${this.baseUrl}/get_node_info/${pubkey}`;
+    const url = `${this.baseUrl}/get_node?pubkey=${encodeURIComponent(pubkey)}`;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (attempt > 0) {
@@ -61,10 +64,13 @@ export class HttpLnplusClient implements LnplusClient {
         const data = await response.json() as Record<string, unknown>;
 
         return {
-          positive_ratings_count: Number(data.positive_ratings_count ?? 0),
-          negative_ratings_count: Number(data.negative_ratings_count ?? 0),
-          lnplus_rank_number: Number(data.lnplus_rank_number ?? 0),
-          lnplus_rank_name: String(data.lnplus_rank_name ?? ''),
+          positive_ratings: data.lnp_positive_ratings_received != null ? Number(data.lnp_positive_ratings_received) : null,
+          negative_ratings: data.lnp_negative_ratings_received != null ? Number(data.lnp_negative_ratings_received) : null,
+          lnp_rank: Number(data.lnp_rank ?? 0),
+          lnp_rank_name: String(data.lnp_rank_name ?? ''),
+          hubness_rank: Number(data.hubness_rank ?? 0),
+          betweenness_rank: Number(data.betweenness_rank ?? 0),
+          hopness_rank: Number(data.hopness_rank ?? 0),
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -20,6 +20,9 @@ export interface Agent {
   positive_ratings: number;
   negative_ratings: number;
   lnplus_rank: number;
+  hubness_rank: number;
+  betweenness_rank: number;
+  hopness_rank: number;
   query_count: number;
 }
 
@@ -115,6 +118,8 @@ export interface ScoreEvidence {
     positiveRatings: number;
     negativeRatings: number;
     lnplusRank: number;
+    hubnessRank: number;
+    betweennessRank: number;
     sourceUrl: string;
   } | null;
   popularity: {

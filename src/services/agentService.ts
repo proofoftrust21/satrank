@@ -81,6 +81,8 @@ export class AgentService {
         positiveRatings: agent.positive_ratings,
         negativeRatings: agent.negative_ratings,
         lnplusRank: agent.lnplus_rank,
+        hubnessRank: agent.hubness_rank,
+        betweennessRank: agent.betweenness_rank,
         sourceUrl: `https://lightningnetwork.plus/nodes/${agent.public_key}`,
       } : null,
       popularity: {

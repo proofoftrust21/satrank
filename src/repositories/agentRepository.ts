@@ -53,9 +53,9 @@ export class AgentRepository {
 
   insert(agent: Agent): void {
     this.db.prepare(`
-      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats, positive_ratings, negative_ratings, lnplus_rank, query_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(agent.public_key_hash, agent.public_key, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats, agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.query_count);
+      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats, positive_ratings, negative_ratings, lnplus_rank, hubness_rank, betweenness_rank, hopness_rank, query_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(agent.public_key_hash, agent.public_key, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats, agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.hubness_rank, agent.betweenness_rank, agent.hopness_rank, agent.query_count);
   }
 
   maxChannels(): number {
@@ -99,11 +99,11 @@ export class AgentRepository {
     this.db.prepare('UPDATE agents SET public_key = ? WHERE public_key_hash = ?').run(publicKey, hash);
   }
 
-  updateLnplusRatings(hash: string, positiveRatings: number, negativeRatings: number, lnplusRank: number): void {
+  updateLnplusRatings(hash: string, positiveRatings: number, negativeRatings: number, lnplusRank: number, hubnessRank: number, betweennessRank: number, hopnessRank: number): void {
     this.db.prepare(`
-      UPDATE agents SET positive_ratings = ?, negative_ratings = ?, lnplus_rank = ?
+      UPDATE agents SET positive_ratings = ?, negative_ratings = ?, lnplus_rank = ?, hubness_rank = ?, betweenness_rank = ?, hopness_rank = ?
       WHERE public_key_hash = ?
-    `).run(positiveRatings, negativeRatings, lnplusRank, hash);
+    `).run(positiveRatings, negativeRatings, lnplusRank, hubnessRank, betweennessRank, hopnessRank, hash);
   }
 
   findLightningAgentsWithPubkey(): Agent[] {

@@ -23,6 +23,9 @@ function makeAgent(pubkey: string, alias: string): Agent {
     positive_ratings: 0,
     negative_ratings: 0,
     lnplus_rank: 0,
+    hubness_rank: 0,
+    betweenness_rank: 0,
+    hopness_rank: 0,
     query_count: 0,
   };
 }
@@ -63,10 +66,13 @@ describe('LnplusCrawler', () => {
     agentRepo.insert(makeAgent(pubkey, 'ACINQ'));
 
     mockClient.responses.set(pubkey, {
-      positive_ratings_count: 42,
-      negative_ratings_count: 2,
-      lnplus_rank_number: 8,
-      lnplus_rank_name: 'Gold',
+      positive_ratings: 42,
+      negative_ratings: 2,
+      lnp_rank: 8,
+      lnp_rank_name: 'Gold',
+      hubness_rank: 25,
+      betweenness_rank: 30,
+      hopness_rank: 15,
     });
 
     const result = await crawler.run();
@@ -79,6 +85,9 @@ describe('LnplusCrawler', () => {
     expect(agent!.positive_ratings).toBe(42);
     expect(agent!.negative_ratings).toBe(2);
     expect(agent!.lnplus_rank).toBe(8);
+    expect(agent!.hubness_rank).toBe(25);
+    expect(agent!.betweenness_rank).toBe(30);
+    expect(agent!.hopness_rank).toBe(15);
   });
 
   it('queries LN+ with the original pubkey, not the hash', async () => {
@@ -106,6 +115,9 @@ describe('LnplusCrawler', () => {
       positive_ratings: 0,
       negative_ratings: 0,
       lnplus_rank: 0,
+      hubness_rank: 0,
+      betweenness_rank: 0,
+      hopness_rank: 0,
       query_count: 0,
     });
 
@@ -132,16 +144,22 @@ describe('LnplusCrawler', () => {
     agentRepo.insert(makeAgent('pk-c', 'NodeC'));
 
     mockClient.responses.set('pk-a', {
-      positive_ratings_count: 10,
-      negative_ratings_count: 1,
-      lnplus_rank_number: 5,
-      lnplus_rank_name: 'Silver',
+      positive_ratings: 10,
+      negative_ratings: 1,
+      lnp_rank: 5,
+      lnp_rank_name: 'Silver',
+      hubness_rank: 100,
+      betweenness_rank: 200,
+      hopness_rank: 50,
     });
     mockClient.responses.set('pk-b', {
-      positive_ratings_count: 0,
-      negative_ratings_count: 0,
-      lnplus_rank_number: 1,
-      lnplus_rank_name: 'Iron',
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnp_rank: 1,
+      lnp_rank_name: 'Iron',
+      hubness_rank: 500,
+      betweenness_rank: 600,
+      hopness_rank: 400,
     });
     // pk-c not on LN+
 
@@ -155,10 +173,13 @@ describe('LnplusCrawler', () => {
   it('continues when individual node fetch fails', async () => {
     agentRepo.insert(makeAgent('pk-ok', 'OKNode'));
     mockClient.responses.set('pk-ok', {
-      positive_ratings_count: 5,
-      negative_ratings_count: 0,
-      lnplus_rank_number: 3,
-      lnplus_rank_name: 'Bronze',
+      positive_ratings: 5,
+      negative_ratings: 0,
+      lnp_rank: 3,
+      lnp_rank_name: 'Bronze',
+      hubness_rank: 80,
+      betweenness_rank: 90,
+      hopness_rank: 70,
     });
 
     // Override to fail on specific key
