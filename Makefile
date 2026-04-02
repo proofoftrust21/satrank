@@ -47,7 +47,7 @@ docker-down:
 
 # Deploy to VPS
 deploy:
-	./deploy.sh
+	rsync -avz --exclude node_modules --exclude dist --exclude .git --exclude .env.production . root@REDACTED-SERVER-IP:/root/satrank/
 
 rollback:
 	@echo "Rolling back to previous image on remote..."

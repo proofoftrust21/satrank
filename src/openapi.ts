@@ -14,6 +14,7 @@ export const openapiSpec = {
         summary: 'Get agent score',
         operationId: 'getAgentScore',
         tags: ['Agents'],
+        security: [{ l402: [] }],
         parameters: [{ $ref: '#/components/parameters/publicKeyHash' }],
         responses: {
           '200': {
@@ -25,6 +26,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
           '404': { $ref: '#/components/responses/NotFound' },
           '400': { $ref: '#/components/responses/ValidationError' },
         },
@@ -35,6 +37,7 @@ export const openapiSpec = {
         summary: 'Get agent score history',
         operationId: 'getAgentHistory',
         tags: ['Agents'],
+        security: [{ l402: [] }],
         parameters: [
           { $ref: '#/components/parameters/publicKeyHash' },
           { $ref: '#/components/parameters/limit' },
@@ -54,6 +57,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { $ref: '#/components/responses/ValidationError' },
         },
       },
@@ -63,6 +67,7 @@ export const openapiSpec = {
         summary: 'Get attestations received by an agent',
         operationId: 'getAgentAttestations',
         tags: ['Attestations'],
+        security: [{ l402: [] }],
         parameters: [
           { $ref: '#/components/parameters/publicKeyHash' },
           { $ref: '#/components/parameters/limit' },
@@ -82,6 +87,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
           '404': { $ref: '#/components/responses/NotFound' },
           '400': { $ref: '#/components/responses/ValidationError' },
         },
@@ -92,6 +98,7 @@ export const openapiSpec = {
         summary: 'Leaderboard by score',
         operationId: 'getTopAgents',
         tags: ['Agents'],
+        security: [{ l402: [] }],
         parameters: [
           { $ref: '#/components/parameters/limit' },
           { $ref: '#/components/parameters/offset' },
@@ -110,6 +117,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
         },
       },
     },
@@ -118,6 +126,7 @@ export const openapiSpec = {
         summary: 'Search agents by alias',
         operationId: 'searchAgents',
         tags: ['Agents'],
+        security: [{ l402: [] }],
         parameters: [
           { name: 'alias', in: 'query', required: true, schema: { type: 'string', minLength: 1, maxLength: 100 } },
           { $ref: '#/components/parameters/limit' },
@@ -137,6 +146,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { $ref: '#/components/responses/ValidationError' },
         },
       },
@@ -235,6 +245,11 @@ export const openapiSpec = {
   components: {
     securitySchemes: {
       apiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+      l402: {
+        type: 'http',
+        scheme: 'L402',
+        description: 'L402 Lightning payment authentication. Send a request without credentials to receive HTTP 402 with a Lightning invoice (1 sat). Pay the invoice and include the token: Authorization: L402 <macaroon>:<preimage>',
+      },
     },
     parameters: {
       publicKeyHash: {
@@ -423,6 +438,15 @@ export const openapiSpec = {
       Unauthorized: {
         description: 'Missing or invalid API key',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+      },
+      PaymentRequired: {
+        description: 'L402 payment required. Pay the Lightning invoice (1 sat) and retry with the L402 token.',
+        headers: {
+          'WWW-Authenticate': {
+            description: 'L402 challenge containing a macaroon and a Lightning invoice. Format: L402 macaroon="<base64>", invoice="<bolt11>"',
+            schema: { type: 'string', example: 'L402 macaroon="AGIAJEemVQ...", invoice="lnbc10n1pj..."' },
+          },
+        },
       },
     },
   },

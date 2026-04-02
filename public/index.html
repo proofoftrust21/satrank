@@ -77,6 +77,72 @@
     }
     .stat-card .value.loading { color: #333; }
 
+    /* L402 how-to */
+    .l402-flow {
+      padding: 32px 0 0;
+    }
+    .l402-flow h2 {
+      font-size: 1.4rem;
+      margin-bottom: 20px;
+      color: #c0c0d8;
+    }
+    .l402-steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .l402-step {
+      background: #12121e;
+      border: 1px solid #1e1e30;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .l402-step .step-num {
+      display: inline-block;
+      width: 28px;
+      height: 28px;
+      line-height: 28px;
+      text-align: center;
+      border-radius: 50%;
+      background: #f7931a20;
+      color: #f7931a;
+      font-weight: 700;
+      font-size: 0.85rem;
+      margin-bottom: 10px;
+    }
+    .l402-step .step-title {
+      font-weight: 600;
+      color: #e0e0e8;
+      margin-bottom: 6px;
+    }
+    .l402-step .step-desc {
+      color: #8888a0;
+      font-size: 0.9rem;
+    }
+    .l402-step code {
+      display: inline;
+      color: #f7931a;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+    }
+    .l402-code {
+      background: #0d0d18;
+      border: 1px solid #1e1e30;
+      border-radius: 8px;
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: #8888a0;
+    }
+    .l402-code .comment { color: #555570; }
+    .l402-code .cmd { color: #e0e0e8; }
+    .l402-code .flag { color: #f7931a; }
+    .l402-code .url { color: #00c853; }
+    .l402-code .status { color: #ff5252; }
+
     /* Top agents */
     .section { padding: 32px 0; }
     .section h2 {
@@ -181,6 +247,39 @@
     <div class="stat-card">
       <div class="value loading" id="stat-avg-score">--</div>
       <div class="label">Avg Score</div>
+    </div>
+  </div>
+
+  <!-- L402 how-to -->
+  <div class="l402-flow">
+    <h2>How to query (L402)</h2>
+    <div class="l402-steps">
+      <div class="l402-step">
+        <div class="step-num">1</div>
+        <div class="step-title">Request</div>
+        <div class="step-desc">Call any scored endpoint without credentials.</div>
+        <div style="margin-top:8px"><code>GET /api/v1/agent/{hash}</code></div>
+      </div>
+      <div class="l402-step">
+        <div class="step-num">2</div>
+        <div class="step-title">Receive invoice</div>
+        <div class="step-desc">Server returns <code>HTTP 402</code> with a Lightning invoice in the <code>WWW-Authenticate</code> header. Cost: <strong style="color:#f7931a">1 sat</strong>.</div>
+      </div>
+      <div class="l402-step">
+        <div class="step-num">3</div>
+        <div class="step-title">Pay & retry</div>
+        <div class="step-desc">Pay the invoice, then resend your request with the L402 token to get the score.</div>
+      </div>
+    </div>
+    <div class="l402-code">
+      <div><span class="comment"># Step 1 &mdash; Request (returns 402 + invoice)</span></div>
+      <div><span class="cmd">curl</span> <span class="flag">-i</span> <span class="url">https://satrank.dev/api/v1/agent/{hash}</span></div>
+      <div><span class="status">HTTP/2 402</span></div>
+      <div><span class="comment"># WWW-Authenticate: L402 macaroon="AGI...", invoice="lnbc10n1..."</span></div>
+      <div style="margin-top:8px"><span class="comment"># Step 2 &mdash; Pay the invoice (1 sat)</span></div>
+      <div><span class="cmd">lncli payinvoice</span> <span class="url">lnbc10n1...</span></div>
+      <div style="margin-top:8px"><span class="comment"># Step 3 &mdash; Retry with L402 token</span></div>
+      <div><span class="cmd">curl</span> <span class="flag">-H</span> <span class="cmd">"Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;"</span> <span class="url">https://satrank.dev/api/v1/agent/{hash}</span></div>
     </div>
   </div>
 
