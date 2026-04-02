@@ -142,6 +142,7 @@ export function createApp() {
   <meta charset="UTF-8">
   <title>SatRank API Docs</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="/swagger-custom.css">
 </head>
 <body>
   <div id="swagger-ui"></div>
