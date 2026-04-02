@@ -139,6 +139,8 @@ export interface HealthResponse {
   totalTransactions: number;
   lastUpdate: number;
   uptime: number;
+  schemaVersion: number;
+  dbStatus: 'ok' | 'error';
 }
 
 export interface NetworkStats {

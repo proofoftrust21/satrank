@@ -8,7 +8,9 @@ export class HealthController {
 
   getHealth = (_req: Request, res: Response, next: NextFunction): void => {
     try {
-      res.json({ data: this.statsService.getHealth() });
+      const health = this.statsService.getHealth();
+      const status = health.status === 'ok' ? 200 : 503;
+      res.status(status).json({ data: health });
     } catch (err) {
       next(err);
     }

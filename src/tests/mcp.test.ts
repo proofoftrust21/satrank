@@ -55,7 +55,7 @@ describe('MCP tool response shapes', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
-    statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+    statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
   });
 
   afterEach(() => { db.close(); });

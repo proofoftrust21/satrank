@@ -15,6 +15,7 @@ import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
+import { AttestationService } from '../services/attestationService';
 import { StatsService } from '../services/statsService';
 import { logger } from '../logger';
 
@@ -28,6 +29,14 @@ const getTopAgentsArgs = z.object({
 const searchAgentsArgs = z.object({
   alias: z.string().min(1).max(100),
 });
+const submitAttestationArgs = z.object({
+  txId: z.string().uuid('txId must be a valid UUID'),
+  attesterHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)'),
+  subjectHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)'),
+  score: z.number().int().min(0).max(100),
+  tags: z.array(z.string().max(50)).max(5).optional(),
+  evidenceHash: z.string().max(128).regex(/^[a-f0-9]*$/, 'Expected hex string').optional(),
+});
 
 // Database initialization and dependency injection
 const db = getDatabase();
@@ -40,7 +49,8 @@ const snapshotRepo = new SnapshotRepository(db);
 
 const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
 const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
-const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
+const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
 
 // MCP server creation (low-level API to avoid TS2589 with .tool())
 const server = new Server(
@@ -88,6 +98,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'Returns global SatRank network statistics',
       inputSchema: { type: 'object' as const, properties: {} },
     },
+    {
+      name: 'submit_attestation',
+      description: 'Submit a trust attestation for an agent after a transaction. Requires SATRANK_API_KEY env var.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          txId: { type: 'string', description: 'Transaction ID the attestation references' },
+          attesterHash: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'SHA256 hex of the attester public key' },
+          subjectHash: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'SHA256 hex of the subject agent public key' },
+          score: { type: 'number', minimum: 0, maximum: 100, description: 'Trust score (0-100)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags (e.g. ["fast", "reliable"])' },
+          evidenceHash: { type: 'string', description: 'Optional evidence hash' },
+        },
+        required: ['txId', 'attesterHash', 'subjectHash', 'score'],
+      },
+    },
   ],
 }));
 
@@ -100,7 +126,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_agent_score': {
         const parsed = getAgentScoreArgs.safeParse(args);
         if (!parsed.success) {
-          return { content: [{ type: 'text', text: `Invalid parameters:${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
         const result = agentService.getAgentScore(parsed.data.publicKeyHash);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -109,7 +135,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_top_agents': {
         const parsed = getTopAgentsArgs.safeParse(args);
         if (!parsed.success) {
-          return { content: [{ type: 'text', text: `Invalid parameters:${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
         const agents = agentService.getTopAgents(parsed.data.limit, 0);
         const result = agents.map(a => ({
@@ -129,7 +155,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'search_agents': {
         const parsed = searchAgentsArgs.safeParse(args);
         if (!parsed.success) {
-          return { content: [{ type: 'text', text: `Invalid parameters:${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
         const agents = agentService.searchByAlias(parsed.data.alias, 20, 0);
         const result = agents.map(a => ({
@@ -147,6 +173,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_network_stats': {
         const stats = statsService.getNetworkStats();
         return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
+      }
+
+      case 'submit_attestation': {
+        // The MCP server acts as a trusted proxy — it holds the API key and
+        // authenticates on behalf of the MCP client. Access control is managed
+        // at the MCP transport level (stdio/local only).
+        const apiKey = process.env.SATRANK_API_KEY;
+        if (!apiKey) {
+          return { content: [{ type: 'text', text: 'SATRANK_API_KEY environment variable is required for write operations' }], isError: true };
+        }
+        const parsed = submitAttestationArgs.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        const attestation = attestationService.create(parsed.data);
+        return { content: [{ type: 'text', text: JSON.stringify({ attestationId: attestation.attestation_id, subjectHash: attestation.subject_hash, score: attestation.score, timestamp: attestation.timestamp }, null, 2) }] };
       }
 
       default:

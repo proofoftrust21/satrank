@@ -52,7 +52,7 @@ export function createApp() {
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
 
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo);
   const attestationController = new AttestationController(attestationService);
@@ -87,6 +87,7 @@ export function createApp() {
 
   // Static landing page
   app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', 'public') }));
 
   // API v1 routes
   const v1 = Router();
