@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid';
 import { getDatabase } from './connection';
 import { runMigrations } from './migrations';
 import { sha256 } from '../utils/crypto';
-import type { Agent, Transaction, Attestation, AgentSource, AmountBucket, TransactionStatus, PaymentProtocol } from '../types';
+import type { Agent, Transaction, Attestation, AgentSource, AmountBucket, TransactionStatus, PaymentProtocol, AttestationCategory } from '../types';
 
 // Utilities
 function randomInt(min: number, max: number): number {
@@ -227,12 +227,14 @@ function generateAttestations(agents: Agent[], transactions: Transaction[]): Att
     if (Math.random() > 0.5) tags.push('fast');
     if (Math.random() > 0.7) tags.push('accurate');
 
+    const positiveCategories: AttestationCategory[] = ['successful_transaction', 'general'];
     attestations.push({
       attestation_id: uuid(),
       tx_id: tx.tx_id,
       attester_hash: attesterHash,
       subject_hash: subjectHash,
       score: baseScore,
+      category: positiveCategories[i % positiveCategories.length],
       tags: JSON.stringify(tags),
       evidence_hash: Math.random() > 0.3 ? sha256(`evidence-${i}`) : null,
       timestamp: tx.timestamp + randomInt(60, 86400),
@@ -244,12 +246,14 @@ function generateAttestations(agents: Agent[], transactions: Transaction[]): Att
     const tx = verifiedTxs[randomInt(0, verifiedTxs.length - 1)];
     if (isDuplicate(tx.tx_id, tx.receiver_hash)) continue;
 
+    const negativeCategories: AttestationCategory[] = ['failed_transaction', 'dispute', 'unresponsive'];
     attestations.push({
       attestation_id: uuid(),
       tx_id: tx.tx_id,
       attester_hash: tx.receiver_hash,
       subject_hash: tx.sender_hash,
       score: randomInt(5, 35),
+      category: negativeCategories[i % negativeCategories.length],
       tags: JSON.stringify(['slow', 'unreliable']),
       evidence_hash: sha256(`negative-evidence-${i}`),
       timestamp: tx.timestamp + randomInt(60, 86400),
@@ -276,6 +280,7 @@ function generateAttestations(agents: Agent[], transactions: Transaction[]): Att
       attester_hash: attesterHash,
       subject_hash: agents[toIdx].public_key_hash,
       score: randomInt(90, 100), // Artificially high scores
+      category: 'successful_transaction' as AttestationCategory,
       tags: JSON.stringify(['reliable', 'fast', 'accurate']),
       evidence_hash: null, // No evidence — suspicious
       timestamp: tx.timestamp + randomInt(10, 300), // Very fast — suspicious

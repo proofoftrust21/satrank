@@ -4,12 +4,13 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
+import type { TrendService } from './trendService';
 import type { HealthResponse, NetworkStats } from '../types';
 
 const startTime = Date.now();
 
 // Must match the latest migration version in migrations.ts
-const EXPECTED_SCHEMA_VERSION = 7;
+const EXPECTED_SCHEMA_VERSION = 9;
 
 export class StatsService {
   constructor(
@@ -18,6 +19,7 @@ export class StatsService {
     private attestationRepo: AttestationRepository,
     private snapshotRepo: SnapshotRepository,
     private db: Database.Database,
+    private trendService: TrendService,
   ) {}
 
   getHealth(): HealthResponse {
@@ -64,6 +66,7 @@ export class StatsService {
         medium: buckets['medium'] ?? 0,
         large: buckets['large'] ?? 0,
       },
+      trends: this.trendService.getNetworkTrends(),
     };
   }
 }

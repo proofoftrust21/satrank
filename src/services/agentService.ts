@@ -2,10 +2,23 @@
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
+import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoringService } from './scoringService';
-import type { AgentScoreResponse, ScoreEvidence, Agent } from '../types';
+import type { TrendService } from './trendService';
+import type { AgentScoreResponse, ScoreEvidence, ScoreComponents, Agent } from '../types';
 import { NotFoundError } from '../errors';
 import { computePopularityBonus } from '../utils/scoring';
+
+export type SortByField = 'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity';
+
+export interface TopAgentEntry {
+  publicKeyHash: string;
+  alias: string | null;
+  score: number;
+  totalTransactions: number;
+  source: string;
+  components: ScoreComponents;
+}
 
 export class AgentService {
   constructor(
@@ -13,6 +26,8 @@ export class AgentService {
     private txRepo: TransactionRepository,
     private attestationRepo: AttestationRepository,
     private scoringService: ScoringService,
+    private trendService: TrendService,
+    private snapshotRepo?: SnapshotRepository,
   ) {}
 
   getAgentScore(publicKeyHash: string): AgentScoreResponse {
@@ -24,6 +39,9 @@ export class AgentService {
     const uniqueCounterparties = this.txRepo.countUniqueCounterparties(publicKeyHash);
     const attestationsCount = this.attestationRepo.countBySubject(publicKeyHash);
     const avgAttestationScore = this.attestationRepo.avgScoreBySubject(publicKeyHash);
+
+    const delta = this.trendService.computeDeltas(publicKeyHash, scoreResult.total);
+    const alerts = this.trendService.computeAlerts(publicKeyHash, scoreResult.total, delta);
 
     return {
       agent: {
@@ -47,6 +65,8 @@ export class AgentService {
         avgAttestationScore: Math.round(avgAttestationScore * 10) / 10,
       },
       evidence: this.buildEvidence(agent, verifiedTx),
+      delta,
+      alerts,
     };
   }
 
@@ -92,8 +112,48 @@ export class AgentService {
     };
   }
 
-  getTopAgents(limit: number, offset: number) {
-    return this.agentRepo.findTopByScore(limit, offset);
+  getTopAgents(limit: number, offset: number, sortBy: SortByField = 'score'): TopAgentEntry[] {
+    // For component-based sorting, fetch a larger pool, enrich, sort, then slice
+    const fetchLimit = sortBy === 'score' ? limit : Math.min(200, limit + offset + 100);
+    const fetchOffset = sortBy === 'score' ? offset : 0;
+    const agents = this.agentRepo.findTopByScore(fetchLimit, fetchOffset);
+
+    if (agents.length === 0) return [];
+
+    // Batch-fetch latest snapshots for components
+    const hashes = agents.map(a => a.public_key_hash);
+    const snapshotMap = this.snapshotRepo
+      ? this.snapshotRepo.findLatestByAgents(hashes)
+      : new Map();
+
+    let entries: TopAgentEntry[] = agents.map(a => {
+      const snap = snapshotMap.get(a.public_key_hash);
+      let components: ScoreComponents = { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 };
+      if (snap) {
+        try {
+          const parsed = JSON.parse(snap.components);
+          if (typeof parsed === 'object' && parsed !== null && typeof parsed.volume === 'number') {
+            components = parsed as ScoreComponents;
+          }
+        } catch { /* use default */ }
+      }
+      return {
+        publicKeyHash: a.public_key_hash,
+        alias: a.alias,
+        score: a.avg_score,
+        totalTransactions: a.total_transactions,
+        source: a.source,
+        components,
+      };
+    });
+
+    // Sort by requested field
+    if (sortBy !== 'score') {
+      entries.sort((a, b) => b.components[sortBy] - a.components[sortBy]);
+      entries = entries.slice(offset, offset + limit);
+    }
+
+    return entries;
   }
 
   searchByAlias(alias: string, limit: number, offset: number) {

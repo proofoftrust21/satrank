@@ -84,6 +84,49 @@ export class SnapshotRepository {
     })();
   }
 
+  /** Find the closest snapshot to a target timestamp for an agent (looking backwards) */
+  findScoreAt(agentHash: string, timestamp: number): number | null {
+    const row = this.db.prepare(
+      'SELECT score FROM score_snapshots WHERE agent_hash = ? AND computed_at <= ? ORDER BY computed_at DESC LIMIT 1'
+    ).get(agentHash, timestamp) as { score: number } | undefined;
+    return row?.score ?? null;
+  }
+
+  /** Batch: find scores at a target timestamp for multiple agents */
+  findScoresAtForAgents(agentHashes: string[], timestamp: number): Map<string, number> {
+    if (agentHashes.length === 0) return new Map();
+    if (agentHashes.length > 500) throw new Error('findScoresAtForAgents: array exceeds 500 elements');
+    const placeholders = agentHashes.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT s.agent_hash, s.score FROM score_snapshots s
+      INNER JOIN (
+        SELECT agent_hash, MAX(computed_at) as max_at
+        FROM score_snapshots
+        WHERE agent_hash IN (${placeholders}) AND computed_at <= ?
+        GROUP BY agent_hash
+      ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
+    `).all(...agentHashes, timestamp) as { agent_hash: string; score: number }[];
+    const map = new Map<string, number>();
+    for (const row of rows) map.set(row.agent_hash, row.score);
+    return map;
+  }
+
+  /** Network average score at a given timestamp */
+  findAvgScoreAt(timestamp: number): number | null {
+    const row = this.db.prepare(`
+      SELECT ROUND(AVG(sub.score), 1) as avg FROM (
+        SELECT s.agent_hash, s.score FROM score_snapshots s
+        INNER JOIN (
+          SELECT agent_hash, MAX(computed_at) as max_at
+          FROM score_snapshots
+          WHERE computed_at <= ?
+          GROUP BY agent_hash
+        ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
+      ) sub
+    `).get(timestamp) as { avg: number | null } | undefined;
+    return row?.avg ?? null;
+  }
+
   getLastUpdateTime(): number {
     const row = this.db.prepare(
       'SELECT MAX(computed_at) as last FROM score_snapshots'

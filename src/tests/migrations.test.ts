@@ -47,8 +47,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(7);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(versions.length).toBe(9);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -64,7 +64,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(7);
+    expect(versions.length).toBe(9);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -142,6 +142,7 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       tags: null,
       evidence_hash: null,
       timestamp: NOW,
+      category: 'general',
     };
     attestationRepo.insert(att);
     expect(attestationRepo.countBySubject(sha256('subject-b'))).toBe(1);
@@ -157,6 +158,7 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       tags: null,
       evidence_hash: null,
       timestamp: NOW - DAY,
+      category: 'general',
     };
     attestationRepo.insert(att1);
 
@@ -169,6 +171,7 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       tags: null,
       evidence_hash: null,
       timestamp: NOW,
+      category: 'general',
     };
     expect(() => attestationRepo.insert(att2)).toThrow(/UNIQUE constraint failed/);
   });
@@ -197,6 +200,7 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       tags: null,
       evidence_hash: null,
       timestamp: NOW,
+      category: 'general',
     };
     const att2: Attestation = {
       attestation_id: 'att-2',
@@ -207,6 +211,7 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       tags: null,
       evidence_hash: null,
       timestamp: NOW,
+      category: 'general',
     };
     attestationRepo.insert(att1);
     attestationRepo.insert(att2);

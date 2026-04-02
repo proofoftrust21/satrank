@@ -62,6 +62,7 @@ function makeAttestation(attester: string, subject: string, txId: string, overri
     tags: null,
     evidence_hash: null,
     timestamp: NOW - Math.floor(Math.random() * 10 * DAY),
+    category: 'general',
     ...overrides,
   };
 }

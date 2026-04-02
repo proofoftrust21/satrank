@@ -3,10 +3,18 @@ import { z } from 'zod';
 
 export const publicKeyHashSchema = z.string().regex(/^[a-f0-9]{64}$/, 'Invalid SHA256 hash (expected 64 hex characters)');
 
+// Accepts both a 64-char SHA256 hash and a 66-char compressed Lightning pubkey (02/03 prefix)
+export const agentIdentifierSchema = z.string().regex(
+  /^(?:[a-f0-9]{64}|(02|03)[a-f0-9]{64})$/,
+  'Expected 64-char SHA256 hash or 66-char Lightning pubkey (02/03 prefix)',
+);
+
 export const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+export const attestationCategoryValues = ['successful_transaction', 'failed_transaction', 'dispute', 'fraud', 'unresponsive', 'general'] as const;
 
 export const createAttestationSchema = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
@@ -15,6 +23,7 @@ export const createAttestationSchema = z.object({
   score: z.number().int().min(0).max(100),
   tags: z.array(z.string().max(50).regex(/^[\w\-]+$/, 'Invalid tag')).max(10).optional(),
   evidenceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  category: z.enum(attestationCategoryValues).default('general'),
 });
 
 export const searchQuerySchema = z.object({
@@ -23,7 +32,14 @@ export const searchQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+export const batchVerdictsSchema = z.object({
+  hashes: z.array(agentIdentifierSchema).min(1).max(100),
+});
+
+const sortByValues = ['score', 'volume', 'reputation', 'seniority', 'regularity', 'diversity'] as const;
+
 export const topQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
+  sort_by: z.enum(sortByValues).default('score'),
 });

@@ -311,7 +311,33 @@ docker compose exec api node dist/scripts/backup.js
 Backups are stored in `data/backups/`, with the 24 most recent retained automatically.
 Each backup is verified with `PRAGMA integrity_check` after copy.
 
-## 7. Snapshot retention
+## 7. Crawl intervals
+
+Each data source runs on its own timer in `--cron` mode. At startup, a full crawl of all sources runs immediately, then each source follows its own interval.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CRAWL_INTERVAL_OBSERVER_MS` | `300000` (5 min) | Observer Protocol transactions |
+| `CRAWL_INTERVAL_LND_GRAPH_MS` | `3600000` (1 hour) | LND full graph (~17k nodes) |
+| `CRAWL_INTERVAL_LNPLUS_MS` | `86400000` (24 hours) | LN+ community ratings |
+
+Override in `.env.production`:
+
+```bash
+# Aggressive: refresh everything often (higher resource usage)
+CRAWL_INTERVAL_OBSERVER_MS=60000        # 1 minute
+CRAWL_INTERVAL_LND_GRAPH_MS=300000      # 5 minutes
+CRAWL_INTERVAL_LNPLUS_MS=3600000        # 1 hour
+
+# Relaxed: save resources
+CRAWL_INTERVAL_OBSERVER_MS=600000       # 10 minutes
+CRAWL_INTERVAL_LND_GRAPH_MS=21600000    # 6 hours
+CRAWL_INTERVAL_LNPLUS_MS=86400000       # 24 hours
+```
+
+After each Observer and LND crawl, scores are pre-computed for the top 50 agents and old snapshots are purged.
+
+## 8. Snapshot retention
 
 The `score_snapshots` table grows with each score computation (~50 agents every 5 minutes = ~14,400 rows/day).
 The crawler automatically purges old snapshots after each crawl run:

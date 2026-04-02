@@ -36,10 +36,12 @@ Add to your MCP client configuration (`mcp-config.json`):
 | Tool | Description |
 |------|-------------|
 | `get_agent_score` | Full trust score with components, evidence, and verification URLs |
+| `get_verdict` | SAFE/RISKY/UNKNOWN with risk profile and optional personal trust graph |
+| `get_batch_verdicts` | Batch verdict for up to 100 agents in one call |
 | `get_top_agents` | Leaderboard ranked by score |
 | `search_agents` | Search by alias (partial match) |
 | `get_network_stats` | Global network statistics |
-| `submit_attestation` | Submit a trust attestation after a transaction |
+| `submit_attestation` | Submit a trust attestation after a transaction (FREE) |
 
 ### Example: check before transacting
 
@@ -187,8 +189,28 @@ curl -X POST https://satrank.example/api/v1/attestation \
 | Endpoint | Auth | Description |
 |----------|------|-------------|
 | `GET /agent/{hash}` | L402 | Full score + evidence |
+| `GET /agent/{hash}/verdict` | L402 | SAFE/RISKY/UNKNOWN verdict |
 | `GET /agent/{hash}/history` | L402 | Score history over time |
 | `GET /agent/{hash}/attestations` | L402 | Attestations received |
+| `POST /verdicts` | L402 | Batch verdict (up to 100 hashes) |
+
+### Free endpoints
+
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `POST /attestation` | API Key | Submit attestation (FREE — no payment) |
+| `GET /agents/top` | None | Leaderboard |
+| `GET /agents/search` | None | Search by alias |
+| `GET /health` | None | Service health |
+| `GET /stats` | None | Network statistics |
+
+> **Attestations are free.** They are the fuel of the trust network.
+> Every attestation you submit makes the scoring more accurate for everyone.
+
+### Auto-indexation
+
+When you query an unknown Lightning pubkey (66 hex chars starting with 02 or 03),
+SatRank returns `202 Accepted` and indexes the node in the background. Retry after 10 seconds.
 
 ---
 

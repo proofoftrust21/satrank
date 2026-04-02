@@ -32,6 +32,84 @@ export const openapiSpec = {
         },
       },
     },
+    '/agent/{publicKeyHash}/verdict': {
+      get: {
+        summary: 'Get agent verdict (SAFE / RISKY / UNKNOWN)',
+        operationId: 'getAgentVerdict',
+        description: 'Binary trust decision optimized for < 200ms agent-to-agent evaluation. Returns SAFE, RISKY, or UNKNOWN with confidence, flags, risk profile, and optional personalized trust distance.',
+        tags: ['Agents'],
+        security: [{ l402: [] }],
+        parameters: [
+          { $ref: '#/components/parameters/publicKeyHash' },
+          {
+            name: 'caller_pubkey',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            description: 'Your own pubkey hash. Enables personalized trust graph (trust_distance, shared connections). Also accepted as X-Caller-Pubkey header.',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Agent verdict',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              properties: {
+                data: { $ref: '#/components/schemas/VerdictResponse' },
+              },
+            } } },
+          },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
+          '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
+    '/verdicts': {
+      post: {
+        summary: 'Batch verdict — up to 100 hashes in one request',
+        operationId: 'batchVerdicts',
+        description: 'Returns SAFE/RISKY/UNKNOWN for multiple agents in one request. Triggers auto-indexation for unknown Lightning pubkeys.',
+        tags: ['Agents'],
+        security: [{ l402: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: {
+            type: 'object',
+            required: ['hashes'],
+            properties: {
+              hashes: {
+                type: 'array',
+                items: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+                minItems: 1,
+                maxItems: 100,
+                description: 'Array of SHA256 hex hashes (max 100)',
+              },
+            },
+          } } },
+        },
+        responses: {
+          '200': {
+            description: 'Array of verdicts',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              properties: {
+                data: {
+                  type: 'array',
+                  items: {
+                    allOf: [
+                      { type: 'object', properties: { publicKeyHash: { type: 'string' } }, required: ['publicKeyHash'] },
+                      { $ref: '#/components/schemas/VerdictResponse' },
+                    ],
+                  },
+                },
+              },
+            } } },
+          },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
+          '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
     '/agent/{publicKeyHash}/history': {
       get: {
         summary: 'Get agent score history',
@@ -45,14 +123,15 @@ export const openapiSpec = {
         ],
         responses: {
           '200': {
-            description: 'Paginated score history',
+            description: 'Paginated score history enriched with deltas',
             content: { 'application/json': { schema: {
               type: 'object',
               properties: {
                 data: {
                   type: 'array',
-                  items: { $ref: '#/components/schemas/ScoreSnapshot' },
+                  items: { $ref: '#/components/schemas/EnrichedSnapshot' },
                 },
+                delta: { $ref: '#/components/schemas/ScoreDelta' },
                 meta: { $ref: '#/components/schemas/PaginationMeta' },
               },
             } } },
@@ -93,14 +172,48 @@ export const openapiSpec = {
         },
       },
     },
+    '/agents/movers': {
+      get: {
+        summary: 'Top movers (7-day score change)',
+        operationId: 'getTopMovers',
+        tags: ['Agents'],
+        responses: {
+          '200': {
+            description: 'Agents with biggest score changes in the last 7 days',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              properties: {
+                data: {
+                  type: 'object',
+                  properties: {
+                    up: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+                    down: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+                  },
+                },
+              },
+            } } },
+          },
+        },
+      },
+    },
     '/agents/top': {
       get: {
-        summary: 'Leaderboard by score',
+        summary: 'Leaderboard by score or component',
         operationId: 'getTopAgents',
         tags: ['Agents'],
         parameters: [
           { $ref: '#/components/parameters/limit' },
           { $ref: '#/components/parameters/offset' },
+          {
+            name: 'sort_by',
+            in: 'query',
+            schema: {
+              type: 'string',
+              enum: ['score', 'volume', 'reputation', 'seniority', 'regularity', 'diversity'],
+              default: 'score',
+            },
+            description: 'Sort leaderboard by total score (default) or individual component. Use reputation to find reliable small nodes.',
+          },
         ],
         responses: {
           '200': {
@@ -149,8 +262,9 @@ export const openapiSpec = {
     },
     '/attestation': {
       post: {
-        summary: 'Submit an attestation',
+        summary: 'Submit an attestation (FREE — no L402 payment required)',
         operationId: 'createAttestation',
+        description: 'Attestations are free. They are the fuel of the trust network. Requires an API key (X-API-Key header) for identity verification, but no Lightning payment.',
         tags: ['Attestations'],
         security: [{ apiKey: [] }],
         requestBody: {
@@ -340,6 +454,8 @@ export const openapiSpec = {
             },
           },
           evidence: { $ref: '#/components/schemas/ScoreEvidence' },
+          delta: { $ref: '#/components/schemas/ScoreDelta' },
+          alerts: { type: 'array', items: { $ref: '#/components/schemas/AgentAlert' } },
         },
       },
       TransactionSample: {
@@ -413,6 +529,52 @@ export const openapiSpec = {
           computedAt: { type: 'integer' },
         },
       },
+      EnrichedSnapshot: {
+        type: 'object',
+        properties: {
+          score: { type: 'integer' },
+          components: { $ref: '#/components/schemas/ScoreComponents' },
+          computedAt: { type: 'integer' },
+          delta: { type: ['integer', 'null'], description: 'Score change vs previous snapshot' },
+        },
+      },
+      ScoreDelta: {
+        type: 'object',
+        description: 'Temporal score deltas — the core differentiating product',
+        properties: {
+          delta24h: { type: ['integer', 'null'], description: 'Score change over 24 hours' },
+          delta7d: { type: ['integer', 'null'], description: 'Score change over 7 days' },
+          delta30d: { type: ['integer', 'null'], description: 'Score change over 30 days' },
+          trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
+        },
+      },
+      AgentAlert: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['score_drop', 'score_surge', 'new_agent', 'inactive'] },
+          message: { type: 'string' },
+          severity: { type: 'string', enum: ['info', 'warning', 'critical'] },
+        },
+      },
+      TopMover: {
+        type: 'object',
+        properties: {
+          publicKeyHash: { type: 'string' },
+          alias: { type: ['string', 'null'] },
+          score: { type: 'integer' },
+          delta7d: { type: 'integer', description: '7-day score change' },
+          trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
+        },
+      },
+      NetworkTrends: {
+        type: 'object',
+        description: 'Network-wide temporal trends',
+        properties: {
+          avgScoreDelta7d: { type: 'number', description: 'Average score change over 7 days' },
+          topMoversUp: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+          topMoversDown: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+        },
+      },
       AgentSummary: {
         type: 'object',
         properties: {
@@ -421,6 +583,7 @@ export const openapiSpec = {
           score: { type: 'integer' },
           totalTransactions: { type: 'integer' },
           source: { type: 'string' },
+          components: { $ref: '#/components/schemas/ScoreComponents' },
         },
       },
       AgentSearchResult: {
@@ -442,6 +605,7 @@ export const openapiSpec = {
           tags: { type: 'array', items: { type: 'string' } },
           evidenceHash: { type: ['string', 'null'] },
           timestamp: { type: 'integer' },
+          category: { type: 'string', enum: ['successful_transaction', 'failed_transaction', 'dispute', 'fraud', 'unresponsive', 'general'] },
         },
       },
       CreateAttestationInput: {
@@ -454,7 +618,67 @@ export const openapiSpec = {
           score: { type: 'integer', minimum: 0, maximum: 100 },
           tags: { type: 'array', items: { type: 'string', maxLength: 50 }, maxItems: 10 },
           evidenceHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          category: {
+            type: 'string',
+            enum: ['successful_transaction', 'failed_transaction', 'dispute', 'fraud', 'unresponsive', 'general'],
+            default: 'general',
+            description: 'Attestation category. Use "fraud" or "dispute" to report negative interactions.',
+          },
         },
+      },
+      VerdictResponse: {
+        type: 'object',
+        description: 'Binary trust decision for agent-to-agent evaluation. Designed for < 200ms decision loops.',
+        properties: {
+          verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'], description: 'Trust verdict' },
+          confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence level (0-1)' },
+          reason: { type: 'string', description: 'Human-readable summary of the verdict rationale' },
+          flags: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['new_agent', 'low_volume', 'rapid_decline', 'rapid_rise', 'negative_reputation', 'high_demand', 'no_reputation_data', 'fraud_reported', 'dispute_reported'],
+            },
+            description: 'Active flags that influenced the verdict',
+          },
+          personalTrust: {
+            oneOf: [{ $ref: '#/components/schemas/PersonalTrust' }, { type: 'null' }],
+            description: 'Personalized trust distance from caller to target. Null if caller_pubkey not provided.',
+          },
+          riskProfile: { $ref: '#/components/schemas/RiskProfile' },
+        },
+        required: ['verdict', 'confidence', 'reason', 'flags', 'personalTrust', 'riskProfile'],
+      },
+      PersonalTrust: {
+        type: 'object',
+        description: 'Trust distance from the calling agent to the target, computed from the attestation graph.',
+        properties: {
+          distance: {
+            type: ['integer', 'null'],
+            minimum: 0,
+            maximum: 2,
+            description: '0 = direct attestation, 1 = friend-of-friend, 2 = two degrees, null = no connection',
+          },
+          sharedConnections: { type: 'integer', minimum: 0, description: 'Number of shared trusted agents in the path' },
+          strongestConnection: {
+            type: ['string', 'null'],
+            description: 'Alias of the strongest shared connection, or null if none',
+          },
+        },
+        required: ['distance', 'sharedConnections', 'strongestConnection'],
+      },
+      RiskProfile: {
+        type: 'object',
+        description: 'Behavioral risk classification based on observable properties.',
+        properties: {
+          name: {
+            type: 'string',
+            enum: ['established_hub', 'growing_node', 'declining_node', 'new_unproven', 'small_reliable', 'suspicious_rapid_rise', 'default'],
+          },
+          riskLevel: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'] },
+          description: { type: 'string', description: 'Human-readable explanation of the profile classification' },
+        },
+        required: ['name', 'riskLevel', 'description'],
       },
       HealthResponse: {
         type: 'object',
@@ -485,6 +709,7 @@ export const openapiSpec = {
               large: { type: 'integer' },
             },
           },
+          trends: { $ref: '#/components/schemas/NetworkTrends' },
         },
       },
       VersionResponse: {

@@ -40,6 +40,7 @@ export class AttestationController {
           tags: a.tags ? safeParseJsonTags(a.tags) : [],
           evidenceHash: a.evidence_hash,
           timestamp: a.timestamp,
+          category: a.category,
         })),
         meta: { total, limit, offset },
       });

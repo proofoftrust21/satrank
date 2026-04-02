@@ -52,6 +52,7 @@ services:
       - BUILD_DATE=${BUILD_DATE:-unknown}
     volumes:
       - satrank-data:/app/data
+      - /root/satrank/readonly.macaroon:/app/data/readonly.macaroon:ro
     depends_on:
       api:
         condition: service_healthy

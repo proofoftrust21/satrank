@@ -18,6 +18,23 @@
     return '#ff5252';
   }
 
+  function escapeNum(v) {
+    var n = Number(v);
+    return Number.isFinite(n) ? String(n) : '0';
+  }
+
+  function safeColor(c) {
+    return /^#[0-9a-f]{3,6}$/i.test(c) ? c : '#888';
+  }
+
+  function deltaHtml(delta) {
+    if (delta === null || delta === undefined) return '<span class="delta neutral">--</span>';
+    var safe = escapeNum(delta);
+    if (delta > 0) return '<span class="delta positive">+' + safe + '</span>';
+    if (delta < 0) return '<span class="delta negative">' + safe + '</span>';
+    return '<span class="delta neutral">0</span>';
+  }
+
   function setStatError() {
     ['stat-agents', 'stat-transactions', 'stat-attestations', 'stat-avg-score'].forEach(function (id) {
       var el = document.getElementById(id);
@@ -70,20 +87,65 @@
       document.getElementById('stat-attestations').classList.remove('loading');
       document.getElementById('stat-avg-score').textContent = s.avgScore;
       document.getElementById('stat-avg-score').classList.remove('loading');
+
+      // Network trend delta
+      if (s.trends && s.trends.avgScoreDelta7d !== 0) {
+        var deltaEl = document.getElementById('stat-avg-delta');
+        if (deltaEl) {
+          var val = s.trends.avgScoreDelta7d;
+          deltaEl.innerHTML = deltaHtml(val) + ' <span class="delta-period">7d</span>';
+        }
+      }
     })
     .catch(setStatError);
+
+  // -- Top Movers --
+  fetchWithRetry(API + '/agents/movers', 1)
+    .then(function (d) {
+      renderMovers('movers-up', d.data.up, true);
+      renderMovers('movers-down', d.data.down, false);
+    })
+    .catch(function () {
+      document.getElementById('movers-up').innerHTML = '<div style="color:#555570">No data yet</div>';
+      document.getElementById('movers-down').innerHTML = '<div style="color:#555570">No data yet</div>';
+    });
+
+  function renderMovers(containerId, movers, isUp) {
+    var container = document.getElementById(containerId);
+    if (!movers || movers.length === 0) {
+      container.innerHTML = '<div style="color:#555570">No movers yet</div>';
+      return;
+    }
+    var html = '';
+    movers.forEach(function (m) {
+      var name = m.alias ? escapeHtml(m.alias) : escapeHtml(m.publicKeyHash.slice(0, 10) + '...');
+      var deltaClass = isUp ? 'positive' : 'negative';
+      var deltaSign = isUp ? '+' : '';
+      html += '<div class="mover-item">';
+      html += '  <span class="mover-name">' + name + '</span>';
+      html += '  <span class="mover-score">' + escapeHtml(m.score) + '</span>';
+      html += '  <span class="delta ' + deltaClass + '">' + deltaSign + escapeHtml(m.delta7d) + '</span>';
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  }
 
   // -- Agent table rendering --
   var tbody = document.getElementById('top-agents');
   var heading = document.getElementById('agents-heading');
   var detailPanel = document.getElementById('agent-detail');
 
+  function miniBar(value, color) {
+    var pct = Math.min(100, Math.max(0, Number(value) || 0));
+    return '<div class="mini-bar-track"><div class="mini-bar-fill" style="width:' + pct + '%;background:' + safeColor(color) + '"></div></div><span class="mini-bar-val">' + Math.round(pct) + '</span>';
+  }
+
   function renderAgentRows(agents, isSearch) {
     tbody.innerHTML = '';
     if (agents.length === 0) {
       var tr = document.createElement('tr');
       var td = document.createElement('td');
-      td.colSpan = 5;
+      td.colSpan = 7;
       td.style.textAlign = 'center';
       td.style.color = '#555570';
       td.textContent = isSearch ? 'No agents found' : 'No agents yet';
@@ -116,8 +178,26 @@
       badge.textContent = String(a.score);
       scoreCell.appendChild(badge);
 
-      var txCell = tr.insertCell();
-      txCell.textContent = String(a.totalTransactions || 0);
+      // Volume mini-bar
+      var volCell = tr.insertCell();
+      volCell.className = 'component-cell';
+      var vol = (a.components && a.components.volume) || 0;
+      volCell.innerHTML = miniBar(vol, '#f7931a');
+
+      // Reputation mini-bar
+      var repCell = tr.insertCell();
+      repCell.className = 'component-cell';
+      var rep = (a.components && a.components.reputation) || 0;
+      repCell.innerHTML = miniBar(rep, '#00c853');
+
+      // Delta column
+      var deltaCell = tr.insertCell();
+      deltaCell.className = 'delta-cell';
+      if (a._delta7d !== undefined && a._delta7d !== null) {
+        deltaCell.innerHTML = deltaHtml(a._delta7d);
+      } else {
+        deltaCell.innerHTML = '<span class="delta neutral">--</span>';
+      }
 
       var sourceCell = tr.insertCell();
       sourceCell.className = 'mono';
@@ -131,15 +211,31 @@
     });
   }
 
-  // -- Load top agents --
+  // -- Load top agents with delta enrichment --
   function loadTopAgents() {
-    fetchWithRetry(API + '/agents/top?limit=10', 1)
-      .then(function (d) {
-        renderAgentRows(d.data, false);
-      })
-      .catch(function () {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ff5252">API unavailable</td></tr>';
+    Promise.all([
+      fetchWithRetry(API + '/agents/top?limit=10', 1),
+      fetchWithRetry(API + '/agents/movers', 1).catch(function () { return { data: { up: [], down: [] } }; }),
+    ]).then(function (results) {
+      var agents = results[0].data;
+      var movers = results[1].data;
+
+      // Build delta lookup from movers
+      var deltaMap = {};
+      (movers.up || []).forEach(function (m) { deltaMap[m.publicKeyHash] = m.delta7d; });
+      (movers.down || []).forEach(function (m) { deltaMap[m.publicKeyHash] = m.delta7d; });
+
+      // Enrich agents with delta
+      agents.forEach(function (a) {
+        if (deltaMap[a.publicKeyHash] !== undefined) {
+          a._delta7d = deltaMap[a.publicKeyHash];
+        }
       });
+
+      renderAgentRows(agents, false);
+    }).catch(function () {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff5252">API unavailable</td></tr>';
+    });
   }
 
   loadTopAgents();
@@ -168,7 +264,7 @@
           renderAgentRows(d.data, true);
         })
         .catch(function () {
-          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ff5252">Search failed</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff5252">Search failed</td></tr>';
         });
     }, 300);
   });
@@ -213,11 +309,11 @@
     var score = r.score;
     var comp = score.components;
     var ev = r.evidence;
+    var delta = r.delta;
+    var alerts = r.alerts;
 
     var alias = agent.alias ? escapeHtml(agent.alias) : '<span class="mono">' + escapeHtml(agent.publicKeyHash) + '</span>';
 
-    // Max possible per component (weighted score is 0-100, each component contributes proportionally)
-    // Components are raw 0-100 values
     var maxComp = 100;
 
     var html = '';
@@ -229,11 +325,32 @@
     html += '  <button class="detail-close" id="detail-close-btn">Close</button>';
     html += '</div>';
 
-    // Big score
+    // Big score with deltas
     html += '<div class="detail-score-big" style="color:' + scoreColor(score.total) + '">';
     html += escapeHtml(score.total);
     html += '<span class="confidence">confidence: ' + escapeHtml(score.confidence) + '</span>';
     html += '</div>';
+
+    // Delta badges
+    if (delta) {
+      html += '<div class="delta-badges">';
+      html += '  <span class="delta-badge">24h: ' + deltaHtml(delta.delta24h) + '</span>';
+      html += '  <span class="delta-badge">7d: ' + deltaHtml(delta.delta7d) + '</span>';
+      html += '  <span class="delta-badge">30d: ' + deltaHtml(delta.delta30d) + '</span>';
+      html += '  <span class="trend-badge trend-' + escapeHtml(delta.trend) + '">' + escapeHtml(delta.trend) + '</span>';
+      html += '</div>';
+    }
+
+    // Alerts
+    if (alerts && alerts.length > 0) {
+      html += '<div class="alerts-section">';
+      alerts.forEach(function (alert) {
+        html += '<div class="alert alert-' + escapeHtml(alert.severity) + '">';
+        html += escapeHtml(alert.message);
+        html += '</div>';
+      });
+      html += '</div>';
+    }
 
     // Component bars
     var components = ['volume', 'reputation', 'seniority', 'regularity', 'diversity'];

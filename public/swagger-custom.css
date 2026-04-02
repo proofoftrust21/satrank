@@ -345,6 +345,30 @@ html, body {
   margin: 0 12px 12px;
 }
 
+/* "Expand all" button next to schema names */
+.swagger-ui .model-box-control,
+.swagger-ui .models-control {
+  background: #1a1a2e;
+  border: 1px solid #333350;
+  border-radius: 4px;
+  color: #c0c0d8;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.swagger-ui .model-box-control:hover,
+.swagger-ui .models-control:hover {
+  background: #222240;
+  color: #e0e0e8;
+}
+
+/* Schema name labels (bordered boxes like "PaginationMeta >") */
+.swagger-ui .model-title {
+  color: #e0e0e8;
+  font-weight: 600;
+  border-color: #333350;
+}
+
 /* Model box and display */
 .swagger-ui .model-box {
   background: transparent;
@@ -352,10 +376,6 @@ html, body {
 .swagger-ui .model {
   color: #c0c0d8;
   font-size: 0.9rem;
-}
-.swagger-ui .model-title {
-  color: #e0e0e8;
-  font-weight: 600;
 }
 .swagger-ui .model-title__text {
   color: #e0e0e8;

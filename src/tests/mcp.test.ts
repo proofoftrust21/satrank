@@ -9,6 +9,7 @@ import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
 import { StatsService } from '../services/statsService';
+import { TrendService } from '../services/trendService';
 import { sha256 } from '../utils/crypto';
 import type { Agent } from '../types';
 
@@ -54,8 +55,9 @@ describe('MCP tool response shapes', () => {
     const attestationRepo = new AttestationRepository(db);
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-    agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
-    statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
+    const trendService = new TrendService(agentRepo, snapshotRepo);
+    agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+    statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
   });
 
   afterEach(() => { db.close(); });
@@ -102,7 +104,7 @@ describe('MCP tool response shapes', () => {
     expect(result.evidence.popularity.bonusApplied).toBeGreaterThan(0);
   });
 
-  it('get_top_agents returns agents with LN+ fields', () => {
+  it('get_top_agents returns agents with components', () => {
     const agent = makeAgent({
       public_key_hash: sha256('top-mcp'),
       alias: 'TopNode',
@@ -117,12 +119,12 @@ describe('MCP tool response shapes', () => {
     const agents = agentService.getTopAgents(10, 0);
     expect(agents.length).toBeGreaterThan(0);
 
-    // Verify the raw agent has the fields MCP maps
     const a = agents[0];
-    expect(a.positive_ratings).toBe(10);
-    expect(a.negative_ratings).toBe(1);
-    expect(a.lnplus_rank).toBe(5);
-    expect(a.query_count).toBe(100);
+    expect(a.publicKeyHash).toBe(sha256('top-mcp'));
+    expect(a.score).toBe(80);
+    expect(a.components).toBeDefined();
+    expect(typeof a.components.volume).toBe('number');
+    expect(typeof a.components.reputation).toBe('number');
   });
 
   it('search_agents returns agents with LN+ fields', () => {

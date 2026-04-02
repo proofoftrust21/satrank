@@ -1,6 +1,6 @@
-// Crawler launch script — single run or cron mode
-// Usage: npm run crawl          (single run)
-//        npm run crawl -- --cron (every 5 minutes)
+// Crawler launch script — single run or cron mode with per-source intervals
+// Usage: npm run crawl          (single run — all sources once)
+//        npm run crawl -- --cron (per-source intervals, configurable)
 import { config } from '../config';
 import { logger } from '../logger';
 import { crawlDuration } from '../middleware/metrics';
@@ -15,84 +15,148 @@ import { HttpObserverClient } from './observerClient';
 import { Crawler } from './crawler';
 import { HttpMempoolClient } from './mempoolClient';
 import { MempoolCrawler } from './mempoolCrawler';
+import { HttpLndGraphClient } from './lndGraphClient';
+import { LndGraphCrawler } from './lndGraphCrawler';
 import { HttpLnplusClient } from './lnplusClient';
 import { LnplusCrawler } from './lnplusCrawler';
 
-const CRON_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// --- Per-source crawl functions ---
 
-async function runCrawl(observerCrawler: Crawler, mempoolCrawler: MempoolCrawler, lnplusCrawler: LnplusCrawler, agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
-  // Observer Protocol
+async function crawlObserver(crawler: Crawler): Promise<void> {
   logger.info('Starting Observer Protocol crawl');
-  let hrStart = process.hrtime.bigint();
-  const obsResult = await observerCrawler.run();
+  const hrStart = process.hrtime.bigint();
+  const result = await crawler.run();
   crawlDuration.observe({ source: 'observer' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
 
   logger.info({
-    duration: obsResult.finishedAt - obsResult.startedAt,
-    fetched: obsResult.eventsFetched,
-    newTx: obsResult.newTransactions,
-    newAgents: obsResult.newAgents,
-    errors: obsResult.errors.length,
+    duration: result.finishedAt - result.startedAt,
+    fetched: result.eventsFetched,
+    newTx: result.newTransactions,
+    newAgents: result.newAgents,
+    errors: result.errors.length,
   }, 'Observer Protocol crawl result');
 
-  if (obsResult.errors.length > 0) {
-    logger.warn({ errors: obsResult.errors }, 'Errors during Observer Protocol crawl');
+  if (result.errors.length > 0) {
+    logger.warn({ errors: result.errors }, 'Errors during Observer Protocol crawl');
   }
+}
 
-  // mempool.space Lightning Network
-  logger.info('Starting mempool.space Lightning crawl');
-  hrStart = process.hrtime.bigint();
-  const memResult = await mempoolCrawler.run();
-  crawlDuration.observe({ source: 'mempool' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
+async function crawlLightning(lndGraphCrawler: LndGraphCrawler, mempoolCrawler: MempoolCrawler): Promise<void> {
+  let lndSuccess = false;
+  logger.info('Starting LND graph crawl');
+  const hrStart = process.hrtime.bigint();
 
-  logger.info({
-    duration: memResult.finishedAt - memResult.startedAt,
-    fetched: memResult.nodesFetched,
-    newAgents: memResult.newAgents,
-    updated: memResult.updatedAgents,
-    errors: memResult.errors.length,
-  }, 'mempool.space crawl result');
-
-  if (memResult.errors.length > 0) {
-    logger.warn({ errors: memResult.errors }, 'Errors during mempool.space crawl');
-  }
-
-  // LightningNetwork.plus ratings
-  logger.info('Starting LN+ ratings crawl');
   try {
-    hrStart = process.hrtime.bigint();
-    const lnpResult = await lnplusCrawler.run();
-    crawlDuration.observe({ source: 'lnplus' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
+    const lndResult = await lndGraphCrawler.run();
+    crawlDuration.observe({ source: 'lnd_graph' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
 
-    logger.info({
-      duration: lnpResult.finishedAt - lnpResult.startedAt,
-      queried: lnpResult.queried,
-      updated: lnpResult.updated,
-      notFound: lnpResult.notFound,
-      errors: lnpResult.errors.length,
-    }, 'LN+ crawl result');
-
-    if (lnpResult.errors.length > 0) {
-      logger.warn({ errors: lnpResult.errors }, 'Errors during LN+ crawl');
+    if (lndResult.syncedToGraph && lndResult.errors.length === 0) {
+      lndSuccess = true;
+      logger.info({
+        duration: lndResult.finishedAt - lndResult.startedAt,
+        fetched: lndResult.nodesFetched,
+        newAgents: lndResult.newAgents,
+        updated: lndResult.updatedAgents,
+      }, 'LND graph crawl result');
+    } else {
+      logger.warn({
+        synced: lndResult.syncedToGraph,
+        errors: lndResult.errors,
+      }, 'LND graph crawl incomplete — falling back to mempool.space');
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
+    logger.warn({ error: msg }, 'LND graph unavailable — falling back to mempool.space');
   }
 
-  // Pre-compute scores for the top 50 agents by activity
+  if (!lndSuccess) {
+    logger.info('Starting mempool.space Lightning crawl (fallback)');
+    const hrFallback = process.hrtime.bigint();
+    const memResult = await mempoolCrawler.run();
+    crawlDuration.observe({ source: 'mempool' }, Number(process.hrtime.bigint() - hrFallback) / 1e9);
+
+    logger.info({
+      duration: memResult.finishedAt - memResult.startedAt,
+      fetched: memResult.nodesFetched,
+      newAgents: memResult.newAgents,
+      updated: memResult.updatedAgents,
+      errors: memResult.errors.length,
+    }, 'mempool.space crawl result (fallback)');
+
+    if (memResult.errors.length > 0) {
+      logger.warn({ errors: memResult.errors }, 'Errors during mempool.space crawl');
+    }
+  }
+}
+
+async function crawlLnplus(crawler: LnplusCrawler): Promise<void> {
+  logger.info('Starting LN+ ratings crawl');
+  const hrStart = process.hrtime.bigint();
+  const result = await crawler.run();
+  crawlDuration.observe({ source: 'lnplus' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
+
+  logger.info({
+    duration: result.finishedAt - result.startedAt,
+    queried: result.queried,
+    updated: result.updated,
+    notFound: result.notFound,
+    errors: result.errors.length,
+  }, 'LN+ crawl result');
+
+  if (result.errors.length > 0) {
+    logger.warn({ errors: result.errors }, 'Errors during LN+ crawl');
+  }
+}
+
+// Cooldown prevents redundant precompute runs when multiple crawl timers fire close together
+const PRECOMPUTE_COOLDOWN_MS = 30_000; // 30 seconds
+let lastPrecomputeAt = 0;
+
+function precomputeAndPurge(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): void {
+  const now = Date.now();
+  if (now - lastPrecomputeAt < PRECOMPUTE_COOLDOWN_MS) {
+    logger.debug('precomputeAndPurge skipped — cooldown active');
+    return;
+  }
+  lastPrecomputeAt = now;
+
   const topAgents = agentRepo.findTopByActivity(50);
   for (const agent of topAgents) {
     scoringService.computeScore(agent.public_key_hash);
   }
   logger.info({ count: topAgents.length }, 'Scores pre-computed for top agents');
 
-  // Snapshot retention: purge old snapshots to prevent unbounded DB growth
   const purged = snapshotRepo.purgeOldSnapshots();
   if (purged > 0) {
     logger.info({ purged }, 'Old snapshots purged');
   }
 }
+
+// --- Full crawl (all sources once, used for single-run and initial cron boot) ---
+
+async function runFullCrawl(
+  observerCrawler: Crawler,
+  lndGraphCrawler: LndGraphCrawler,
+  mempoolCrawler: MempoolCrawler,
+  lnplusCrawler: LnplusCrawler,
+  agentRepo: AgentRepository,
+  scoringService: ScoringService,
+  snapshotRepo: SnapshotRepository,
+): Promise<void> {
+  await crawlObserver(observerCrawler);
+  await crawlLightning(lndGraphCrawler, mempoolCrawler);
+
+  try {
+    await crawlLnplus(lnplusCrawler);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
+  }
+
+  precomputeAndPurge(agentRepo, scoringService, snapshotRepo);
+}
+
+// --- Main ---
 
 async function main(): Promise<void> {
   const db = getDatabase();
@@ -110,6 +174,13 @@ async function main(): Promise<void> {
   });
   const observerCrawler = new Crawler(observerClient, agentRepo, txRepo);
 
+  const lndClient = new HttpLndGraphClient({
+    restUrl: config.LND_REST_URL,
+    macaroonPath: config.LND_MACAROON_PATH,
+    timeoutMs: config.LND_TIMEOUT_MS,
+  });
+  const lndGraphCrawlerInstance = new LndGraphCrawler(lndClient, agentRepo);
+
   const mempoolClient = new HttpMempoolClient();
   const mempoolCrawlerInstance = new MempoolCrawler(mempoolClient, agentRepo);
 
@@ -119,26 +190,57 @@ async function main(): Promise<void> {
   const isCron = process.argv.includes('--cron');
 
   if (isCron) {
-    logger.info({ intervalMs: CRON_INTERVAL_MS }, 'Cron mode enabled');
+    const intervals = {
+      observer: config.CRAWL_INTERVAL_OBSERVER_MS,
+      lndGraph: config.CRAWL_INTERVAL_LND_GRAPH_MS,
+      lnplus: config.CRAWL_INTERVAL_LNPLUS_MS,
+    };
 
-    await runCrawl(observerCrawler, mempoolCrawlerInstance, lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo);
+    logger.info({
+      observerMs: intervals.observer,
+      lndGraphMs: intervals.lndGraph,
+      lnplusMs: intervals.lnplus,
+    }, 'Cron mode enabled — per-source intervals');
 
-    const interval = setInterval(() => {
-      runCrawl(observerCrawler, mempoolCrawlerInstance, lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo).catch(err => {
-        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Fatal cron crawl error');
-      });
-    }, CRON_INTERVAL_MS);
+    // Initial full crawl at startup
+    await runFullCrawl(
+      observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
+      lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo,
+    );
+
+    // Per-source timers
+    const timerObserver = setInterval(() => {
+      crawlObserver(observerCrawler)
+        .then(() => precomputeAndPurge(agentRepo, scoringService, snapshotRepo))
+        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Observer crawl error'));
+    }, intervals.observer);
+
+    const timerLnd = setInterval(() => {
+      crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance)
+        .then(() => precomputeAndPurge(agentRepo, scoringService, snapshotRepo))
+        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LND graph crawl error'));
+    }, intervals.lndGraph);
+
+    const timerLnplus = setInterval(() => {
+      crawlLnplus(lnplusCrawlerInstance)
+        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
+    }, intervals.lnplus);
 
     function shutdown() {
       logger.info('Stopping cron crawler');
-      clearInterval(interval);
+      clearInterval(timerObserver);
+      clearInterval(timerLnd);
+      clearInterval(timerLnplus);
       closeDatabase();
       process.exit(0);
     }
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } else {
-    await runCrawl(observerCrawler, mempoolCrawlerInstance, lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo);
+    await runFullCrawl(
+      observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
+      lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo,
+    );
     closeDatabase();
   }
 }

@@ -209,6 +209,24 @@ export function runMigrations(db: Database.Database): void {
     })();
   }
 
+  // v8: Composite index on score_snapshots for efficient delta queries
+  if (!hasVersion(db, 8)) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_snapshots_agent_computed ON score_snapshots(agent_hash, computed_at)');
+    recordVersion(db, 8, 'Composite index on score_snapshots(agent_hash, computed_at) for delta queries');
+  }
+
+  // v9: category column on attestations for structured negative feedback
+  if (!hasVersion(db, 9)) {
+    try {
+      db.exec("ALTER TABLE attestations ADD COLUMN category TEXT NOT NULL DEFAULT 'general'");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_attestations_category ON attestations(category)');
+    recordVersion(db, 9, 'Add category column to attestations for structured negative feedback');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -218,6 +236,13 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  9: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_attestations_category');
+    try { db.exec('ALTER TABLE attestations DROP COLUMN category'); } catch { /* SQLite < 3.35 */ }
+  },
+  8: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_snapshots_agent_computed');
+  },
   7: (db) => {
     // Revert to attestations table without ON DELETE CASCADE
     db.exec(`

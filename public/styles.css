@@ -441,3 +441,148 @@ pre {
   font-size: 0.9rem;
   color: #8888a0;
 }
+
+/* Component mini-bars in table */
+.component-cell {
+  min-width: 70px;
+}
+.mini-bar-track {
+  display: inline-block;
+  width: 40px;
+  height: 6px;
+  background: #1a1a2e;
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.mini-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+.mini-bar-val {
+  font-size: 0.78rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: #8888a0;
+  vertical-align: middle;
+}
+
+/* Delta indicators */
+.delta { font-weight: 600; font-size: 0.85rem; }
+.delta.positive { color: #00c853; }
+.delta.negative { color: #ff5252; }
+.delta.neutral { color: #555570; }
+.delta-cell { text-align: center; }
+
+/* Stat card delta */
+.stat-delta {
+  margin-top: 6px;
+  font-size: 0.8rem;
+}
+.stat-delta .delta-period {
+  color: #555570;
+  font-size: 0.75rem;
+}
+
+/* Top Movers section */
+.movers-section h2 .period-label {
+  font-size: 0.85rem;
+  color: #555570;
+  font-weight: 400;
+}
+.movers-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.movers-col {
+  background: #12121e;
+  border: 1px solid #1e1e30;
+  border-radius: 12px;
+  padding: 20px;
+}
+.movers-up-title { color: #00c853; font-size: 1rem; margin-bottom: 12px; }
+.movers-down-title { color: #ff5252; font-size: 1rem; margin-bottom: 12px; }
+.mover-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #1a1a2e;
+}
+.mover-item:last-child { border-bottom: none; }
+.mover-name {
+  color: #c0c0d8;
+  font-size: 0.9rem;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mover-score {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.85rem;
+  color: #8888a0;
+  margin: 0 12px;
+}
+
+/* Delta badges in agent detail */
+.delta-badges {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.delta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #0d0d18;
+  border: 1px solid #1e1e30;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  color: #8888a0;
+}
+.trend-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.trend-rising { background: #00c85320; color: #00c853; }
+.trend-stable { background: #555570; color: #c0c0d8; }
+.trend-falling { background: #ff525220; color: #ff5252; }
+
+/* Alerts in agent detail */
+.alerts-section { margin-bottom: 20px; }
+.alert {
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  font-size: 0.88rem;
+}
+.alert-info {
+  background: #448aff15;
+  border: 1px solid #448aff30;
+  color: #80b0ff;
+}
+.alert-warning {
+  background: #f7931a15;
+  border: 1px solid #f7931a30;
+  color: #f7931a;
+}
+.alert-critical {
+  background: #ff525215;
+  border: 1px solid #ff525230;
+  color: #ff5252;
+}
+
+/* Responsive movers */
+@media (max-width: 600px) {
+  .movers-grid { grid-template-columns: 1fr; }
+}

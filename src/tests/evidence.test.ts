@@ -9,6 +9,7 @@ import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
+import { TrendService } from '../services/trendService';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
 
@@ -72,7 +73,8 @@ describe('Score evidence', () => {
     snapshotRepo = new SnapshotRepository(db);
 
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-    agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
+    const trendService = new TrendService(agentRepo, snapshotRepo);
+    agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
   });
 
   afterEach(() => {

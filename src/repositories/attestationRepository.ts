@@ -89,14 +89,40 @@ export class AttestationRepository {
     return row.count;
   }
 
+  // --- Trust graph queries ---
+
+  /** Agents positively attested (score >= threshold) by a given attester */
+  findPositivelyAttestedBy(attesterHash: string, minScore: number = 70): string[] {
+    const rows = this.db.prepare(
+      'SELECT DISTINCT subject_hash FROM attestations WHERE attester_hash = ? AND score >= ?'
+    ).all(attesterHash, minScore) as { subject_hash: string }[];
+    return rows.map(r => r.subject_hash);
+  }
+
+  /** Agents who positively attested (score >= threshold) a given subject */
+  findPositiveAttestersOf(subjectHash: string, minScore: number = 70): { attester_hash: string; score: number }[] {
+    return this.db.prepare(
+      'SELECT attester_hash, score FROM attestations WHERE subject_hash = ? AND score >= ?'
+    ).all(subjectHash, minScore) as { attester_hash: string; score: number }[];
+  }
+
+  countByCategoryForSubject(subjectHash: string, categories: string[]): number {
+    if (categories.length === 0) return 0;
+    const placeholders = categories.map(() => '?').join(',');
+    const row = this.db.prepare(
+      `SELECT COUNT(*) as count FROM attestations WHERE subject_hash = ? AND category IN (${placeholders})`
+    ).get(subjectHash, ...categories) as { count: number };
+    return row.count;
+  }
+
   insert(attestation: Attestation): void {
     this.db.prepare(`
-      INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, tags, evidence_hash, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, tags, evidence_hash, timestamp, category)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       attestation.attestation_id, attestation.tx_id, attestation.attester_hash,
       attestation.subject_hash, attestation.score, attestation.tags,
-      attestation.evidence_hash, attestation.timestamp
+      attestation.evidence_hash, attestation.timestamp, attestation.category
     );
   }
 }

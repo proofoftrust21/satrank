@@ -37,6 +37,7 @@
     <div class="stat-card">
       <div class="value loading" id="stat-avg-score">--</div>
       <div class="label">Avg Score</div>
+      <div class="stat-delta" id="stat-avg-delta"></div>
     </div>
   </div>
 
@@ -73,6 +74,25 @@
     </div>
   </div>
 
+  <!-- Top Movers -->
+  <div class="section movers-section">
+    <h2>Top Movers <span class="period-label">(7 days)</span></h2>
+    <div class="movers-grid">
+      <div class="movers-col">
+        <h3 class="movers-up-title">Rising</h3>
+        <div id="movers-up" class="movers-list">
+          <div class="table-loading">Loading...</div>
+        </div>
+      </div>
+      <div class="movers-col">
+        <h3 class="movers-down-title">Falling</h3>
+        <div id="movers-down" class="movers-list">
+          <div class="table-loading">Loading...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Top agents -->
   <div class="section">
     <h2 id="agents-heading">Top Agents</h2>
@@ -87,12 +107,14 @@
           <th>#</th>
           <th>Agent</th>
           <th>Score</th>
-          <th>Transactions</th>
+          <th>Vol</th>
+          <th>Rep</th>
+          <th>7d</th>
           <th>Source</th>
         </tr>
       </thead>
       <tbody id="top-agents">
-        <tr><td colspan="5" class="table-loading">Loading...</td></tr>
+        <tr><td colspan="7" class="table-loading">Loading...</td></tr>
       </tbody>
     </table>
     <div class="agent-detail" id="agent-detail"></div>
@@ -102,9 +124,14 @@
   <div class="section">
     <h2>API Endpoints</h2>
     <p class="section-desc">
-      Scores are computed from 5 weighted components. <a href="/methodology.html" style="color:#f7931a">Read the full scoring methodology &rarr;</a>
+      Scores are computed from 5 weighted components. The <a href="/methodology.html#verdict" style="color:#f7931a">Verdict API</a> returns SAFE/RISKY/UNKNOWN for &lt;200ms decisions. <a href="/methodology.html" style="color:#f7931a">Full methodology &rarr;</a>
     </p>
     <ul class="endpoints">
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agent/:hash/verdict</span>
+        <span class="endpoint-desc">SAFE / RISKY / UNKNOWN verdict</span>
+      </li>
       <li>
         <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/v1/agent/:hash</span>

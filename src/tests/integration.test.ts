@@ -15,7 +15,10 @@ import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
 import { AttestationService } from '../services/attestationService';
 import { StatsService } from '../services/statsService';
+import { TrendService } from '../services/trendService';
 import { AgentController } from '../controllers/agentController';
+import { VerdictService } from '../services/verdictService';
+import { RiskService } from '../services/riskService';
 import { AttestationController } from '../controllers/attestationController';
 import { HealthController } from '../controllers/healthController';
 import { createAgentRoutes } from '../routes/agent';
@@ -42,11 +45,13 @@ function buildTestApp() {
   const snapshotRepo = new SnapshotRepository(db);
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
+  const trendService = new TrendService(agentRepo, snapshotRepo);
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
+  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
 
@@ -216,6 +221,32 @@ describe('Integration — HTTP endpoints', () => {
     expect(res.body.meta.limit).toBe(1);
   });
 
+  it('GET /api/v1/agents/top returns components for each agent', async () => {
+    const res = await request(app).get('/api/v1/agents/top?limit=1');
+    expect(res.status).toBe(200);
+    const agent = res.body.data[0];
+    expect(agent).toHaveProperty('components');
+    expect(agent.components).toHaveProperty('volume');
+    expect(agent.components).toHaveProperty('reputation');
+    expect(agent.components).toHaveProperty('seniority');
+    expect(agent.components).toHaveProperty('regularity');
+    expect(agent.components).toHaveProperty('diversity');
+  });
+
+  it('GET /api/v1/agents/top?sort_by=reputation sorts by reputation component', async () => {
+    const res = await request(app).get('/api/v1/agents/top?sort_by=reputation');
+    expect(res.status).toBe(200);
+    expect(res.body.meta.sort_by).toBe('reputation');
+    if (res.body.data.length >= 2) {
+      expect(res.body.data[0].components.reputation).toBeGreaterThanOrEqual(res.body.data[1].components.reputation);
+    }
+  });
+
+  it('GET /api/v1/agents/top?sort_by=invalid returns 400', async () => {
+    const res = await request(app).get('/api/v1/agents/top?sort_by=invalid');
+    expect(res.status).toBe(400);
+  });
+
   // --- Search agents (free, no L402) ---
 
   it('GET /api/v1/agents/search?alias=Alpha returns 200 without L402', async () => {
@@ -383,10 +414,12 @@ describe('Integration — L402 perimeter (production mode)', () => {
     const attestationRepo = new AttestationRepository(db);
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
+    const trendService = new TrendService(agentRepo, snapshotRepo);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-    const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
-    const agentController = new AgentController(agentService, agentRepo, snapshotRepo);
+    const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
 
@@ -537,10 +570,12 @@ describe('Integration — Security headers and Content-Type', () => {
     const attestationRepo = new AttestationRepository(db);
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
+    const trendService = new TrendService(agentRepo, snapshotRepo);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-    const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
-    const agentController = new AgentController(agentService, agentRepo, snapshotRepo);
+    const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
 

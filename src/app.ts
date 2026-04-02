@@ -23,6 +23,12 @@ import { ScoringService } from './services/scoringService';
 import { AgentService } from './services/agentService';
 import { AttestationService } from './services/attestationService';
 import { StatsService } from './services/statsService';
+import { TrendService } from './services/trendService';
+import { VerdictService } from './services/verdictService';
+import { RiskService } from './services/riskService';
+import { AutoIndexService } from './services/autoIndexService';
+import { HttpLndGraphClient } from './crawler/lndGraphClient';
+import { LndGraphCrawler } from './crawler/lndGraphCrawler';
 
 // Controllers
 import { AgentController } from './controllers/agentController';
@@ -51,11 +57,27 @@ export function createApp() {
   const snapshotRepo = new SnapshotRepository(db);
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
+  const trendService = new TrendService(agentRepo, snapshotRepo);
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
+  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
+  const riskService = new RiskService();
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService);
 
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo);
+  // Auto-indexation: LND graph client for on-demand node lookups
+  const lndClient = new HttpLndGraphClient({
+    restUrl: config.LND_REST_URL,
+    macaroonPath: config.LND_MACAROON_PATH,
+    timeoutMs: config.LND_TIMEOUT_MS,
+  });
+  const lndGraphCrawler = lndClient.isConfigured()
+    ? new LndGraphCrawler(lndClient, agentRepo)
+    : null;
+  const autoIndexService = new AutoIndexService(
+    lndGraphCrawler, agentRepo, scoringService, config.AUTO_INDEX_MAX_PER_MINUTE,
+  );
+
+  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
 

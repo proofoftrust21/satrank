@@ -64,6 +64,7 @@ export class AttestationService {
       tags: input.tags ? JSON.stringify(input.tags) : null,
       evidence_hash: input.evidenceHash ?? null,
       timestamp: Math.floor(Date.now() / 1000),
+      category: input.category ?? 'general',
     };
 
     // Insert + stats update in an atomic transaction

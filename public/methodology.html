@@ -167,8 +167,13 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
   </div>
 
   <div class="card">
-    <div class="card-title">mempool.space</div>
-    <p>Lightning Network graph data. Provides node public keys, channel counts, capacity (sats), and last-seen timestamps. Used for Lightning node volume, regularity, and diversity. Verifiable at <code>https://mempool.space/lightning/node/{publicKey}</code>.</p>
+    <div class="card-title">LND Graph (Primary)</div>
+    <p>Full Lightning Network graph from our own LND node. Provides all ~17,000 public nodes with public keys, channel counts, total capacity (sats), and last-update timestamps. This is the primary source for Lightning data, replacing the mempool.space top-100 limitation.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">mempool.space (Fallback)</div>
+    <p>Lightning Network graph data via public API. Used as fallback when the LND node is unavailable or not synced. Limited to top 100 nodes by connectivity. Verifiable at <code>https://mempool.space/lightning/node/{publicKey}</code>.</p>
   </div>
 
   <div class="card">
@@ -193,6 +198,27 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
     <li><strong>Negative ratings penalty.</strong> Community negative ratings actively reduce the reputation score, not just dilute it. A node with only negative ratings scores lower than one with no ratings at all.</li>
     <li><strong>Manual source penalty.</strong> Agents registered manually (not discovered via protocol or graph) face a linear penalty until they accumulate sufficient verified transactions.</li>
   </ul>
+
+  <!-- Limitations -->
+  <h2 id="limitations">Limitations &amp; Centralization Risk</h2>
+  <p>
+    Our scores correlate with node size. Volume, capacity, seniority, and LN+ rank all favor
+    large, established nodes. Using the total score as the sole routing criterion will concentrate
+    traffic on dominant nodes.
+  </p>
+  <p>
+    We recommend agents use individual components and evidence to make nuanced decisions.
+    A small node with high reputation and low volume may be a better choice for network
+    resilience than a large node with a high total score. The <code>/agents/top?sort_by=reputation</code>
+    endpoint lets you discover these nodes directly.
+  </p>
+  <p>
+    <strong>The total score measures individual reliability, not value to the network. These are different things.</strong>
+  </p>
+  <p>
+    As the attestation system matures, peer-to-peer trust signals will increasingly complement
+    infrastructure metrics, enabling trust to emerge from consensus rather than size.
+  </p>
 
   <!-- Evidence -->
   <h2>Evidence and Verification</h2>
@@ -277,6 +303,209 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
     the node's actual creation date on the Lightning Network. As the crawler accumulates history,
     seniority scores will increase.
   </div>
+
+  <!-- Verdict API -->
+  <h2 id="verdict">Verdict API &mdash; SAFE / RISKY / UNKNOWN</h2>
+
+  <p>
+    An AI agent evaluating a 10,000 sat transaction has less than 200ms to decide.
+    A composite score from 0 to 100 requires interpretation &mdash; what threshold is safe?
+    How should a score of 47 be treated differently from 52? These are questions an autonomous
+    agent should not have to answer in real-time.
+  </p>
+  <p>
+    The Verdict API (<code>GET /api/v1/agent/{hash}/verdict</code>) returns a single, actionable
+    decision: <strong>SAFE</strong>, <strong>RISKY</strong>, or <strong>UNKNOWN</strong>.
+    No interpretation required.
+  </p>
+
+  <h3>Decision Logic</h3>
+  <table>
+    <thead><tr><th>Verdict</th><th>Condition</th></tr></thead>
+    <tbody>
+      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found in the SatRank index</td></tr>
+      <tr><td><strong>RISKY</strong></td><td>Score &lt; 30, OR delta_7d &lt; &minus;15, OR negative ratings exceed positive, OR fraud/dispute attestations reported</td></tr>
+      <tr><td><strong>SAFE</strong></td><td>Score &ge; 50, no critical flags, confidence &ge; medium (0.5)</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Agents that fall between SAFE and RISKY thresholds (score 30&ndash;49, or low confidence)
+    are classified as <strong>RISKY</strong> by default. The system errs on the side of caution.
+  </p>
+
+  <h3>Confidence Mapping</h3>
+  <p>
+    Confidence is a numeric value (0&ndash;1) derived from the existing confidence level:
+    <code>very_low=0.1</code>, <code>low=0.25</code>, <code>medium=0.5</code>,
+    <code>high=0.75</code>, <code>very_high=0.9</code>. UNKNOWN agents return
+    confidence <code>0</code>.
+  </p>
+
+  <h3>Flags</h3>
+  <p>Flags provide machine-readable context for the verdict:</p>
+  <ul>
+    <li><code>new_agent</code> &mdash; first seen less than 30 days ago</li>
+    <li><code>low_volume</code> &mdash; fewer than 10 transactions</li>
+    <li><code>rapid_decline</code> &mdash; score dropped more than 10 points in 7 days</li>
+    <li><code>rapid_rise</code> &mdash; score increased more than 15 points in 7 days</li>
+    <li><code>negative_reputation</code> &mdash; negative ratings exceed positive ratings</li>
+    <li><code>high_demand</code> &mdash; queried more than 50 times (popular agent)</li>
+    <li><code>no_reputation_data</code> &mdash; no LN+ data available</li>
+    <li><code>fraud_reported</code> &mdash; at least one attestation with category &ldquo;fraud&rdquo;</li>
+    <li><code>dispute_reported</code> &mdash; at least one attestation with category &ldquo;dispute&rdquo;</li>
+  </ul>
+
+  <h3>Structured Attestation Categories</h3>
+  <p>
+    When submitting attestations via <code>POST /api/v1/attestation</code>, agents can now include
+    a <code>category</code> field: <code>successful_transaction</code>,
+    <code>failed_transaction</code>, <code>dispute</code>, <code>fraud</code>,
+    <code>unresponsive</code>, or <code>general</code> (default).
+  </p>
+  <p>
+    Attestations with category <code>fraud</code> or <code>dispute</code> automatically trigger the
+    corresponding flag in the verdict, ensuring the agent is classified as <strong>RISKY</strong>
+    regardless of their score. This is the foundation for a decentralized dispute resolution layer.
+  </p>
+  <p>
+    <strong>Attestations are free.</strong> They are the fuel of the trust network. Submitting
+    attestations requires an API key for identity verification, but no Lightning payment (no L402).
+    The more agents attest, the more accurate the scoring becomes for everyone.
+  </p>
+
+  <h3>Auto-Indexation</h3>
+  <p>
+    When you query <code>/agent/{hash}</code> or <code>/verdict</code> for an unknown Lightning pubkey
+    (66 hex characters starting with 02 or 03), SatRank returns <code>202 Accepted</code> and begins
+    indexing that node in the background via our LND graph connection. Retry after 10 seconds to get
+    the score. This means the index grows organically as agents query new counterparties.
+  </p>
+
+  <h3>Batch Verdict</h3>
+  <p>
+    <code>POST /api/v1/verdicts</code> accepts up to 100 hashes in a single request, returning an
+    array of verdicts. This is 10x more efficient than individual queries for agents that need to
+    screen multiple counterparties before transacting. Unknown Lightning pubkeys trigger
+    auto-indexation automatically.
+  </p>
+
+  <!-- Personal Trust Graph -->
+  <h2 id="trust-graph">Personal Trust Graph</h2>
+
+  <p>
+    A global score tells you what the network thinks. A <strong>personal trust graph</strong> tells
+    you what <em>your</em> network thinks. This is the difference between &ldquo;score 72&rdquo; and
+    &ldquo;3 agents you trust have positively attested this node.&rdquo;
+  </p>
+
+  <p>
+    When calling <code>GET /api/v1/agent/{hash}/verdict</code>, pass your own pubkey hash via the
+    <code>caller_pubkey</code> query parameter or <code>X-Caller-Pubkey</code> header. SatRank
+    traverses the attestation graph to compute a <strong>trust distance</strong>:
+  </p>
+
+  <table>
+    <thead><tr><th>Distance</th><th>Meaning</th><th>How it&rsquo;s computed</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>0</strong></td>
+        <td>Direct trust</td>
+        <td>You have positively attested this agent (score &ge; 70)</td>
+      </tr>
+      <tr>
+        <td><strong>1</strong></td>
+        <td>Friend-of-friend</td>
+        <td>An agent you positively attested has also positively attested the target</td>
+      </tr>
+      <tr>
+        <td><strong>2</strong></td>
+        <td>Two degrees</td>
+        <td>An agent attested by someone you trust has attested the target</td>
+      </tr>
+      <tr>
+        <td><strong>null</strong></td>
+        <td>No connection</td>
+        <td>No path found within 2 hops in the attestation graph</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    The response also includes <code>sharedConnections</code> (number of mutual trusted agents)
+    and <code>strongestConnection</code> (alias of the highest-scoring shared agent).
+  </p>
+  <p>
+    The trust graph builds naturally as agents submit attestations after transactions.
+    No registration or explicit &ldquo;follow&rdquo; mechanism is needed &mdash; the attestation
+    history <em>is</em> the social graph.
+  </p>
+  <p>
+    If <code>caller_pubkey</code> is not provided, <code>personalTrust</code> is <code>null</code>
+    and the verdict uses only the global score. There is no regression for existing consumers.
+  </p>
+
+  <!-- Risk Profiles -->
+  <h2 id="risk-profiles">Risk Profiles</h2>
+
+  <p>
+    A score of 55 for a 3-year-old hub means something very different than 55 for a 10-day-old node.
+    Risk profiles classify agents into behavioral categories based on observable properties, giving
+    the verdict context that a single number cannot convey.
+  </p>
+
+  <table>
+    <thead><tr><th>Profile</th><th>Risk</th><th>Criteria</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>established_hub</code></td>
+        <td>Low</td>
+        <td>Score &ge; 70, seniority &gt; 365 days, &gt; 200 transactions</td>
+      </tr>
+      <tr>
+        <td><code>small_reliable</code></td>
+        <td>Low</td>
+        <td>Score 40&ndash;70, seniority &gt; 365 days, regularity &gt; 60</td>
+      </tr>
+      <tr>
+        <td><code>growing_node</code></td>
+        <td>Medium</td>
+        <td>delta_7d &gt; 10, seniority &lt; 180 days</td>
+      </tr>
+      <tr>
+        <td><code>new_unproven</code></td>
+        <td>High</td>
+        <td>Seniority &lt; 30 days, total transactions &lt; 5</td>
+      </tr>
+      <tr>
+        <td><code>declining_node</code></td>
+        <td>High</td>
+        <td>delta_7d &lt; &minus;10, trend = falling</td>
+      </tr>
+      <tr>
+        <td><code>suspicious_rapid_rise</code></td>
+        <td>High</td>
+        <td>delta_7d &gt; 20, seniority &lt; 60 days</td>
+      </tr>
+      <tr>
+        <td><code>default</code></td>
+        <td>Unknown</td>
+        <td>Does not match any specific profile</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    Profiles are evaluated in priority order (suspicious patterns first, then established trust,
+    then growth). The first match wins. The profile is a <strong>complement</strong> to the verdict,
+    not a replacement &mdash; an <code>established_hub</code> classified as RISKY due to a fraud
+    attestation is more alarming than a <code>new_unproven</code> classified as RISKY for having
+    no history.
+  </p>
+  <p>
+    Each profile includes a human-readable <code>description</code> with the specific values
+    that triggered the classification (e.g., &ldquo;Active for 45 days, rapid score increase
+    (+18 in 7d). Monitor closely.&rdquo;).
+  </p>
 
   <!-- L402 as Signal -->
   <h2>L402 Payment as Data</h2>

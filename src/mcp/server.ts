@@ -17,11 +17,33 @@ import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
 import { AttestationService } from '../services/attestationService';
 import { StatsService } from '../services/statsService';
+import { TrendService } from '../services/trendService';
+import { VerdictService } from '../services/verdictService';
+import { RiskService } from '../services/riskService';
+import { attestationCategoryValues } from '../middleware/validation';
 import { logger } from '../logger';
 
+import { sha256 } from '../utils/crypto';
+
 // Zod validation schemas for MCP args (same rules as HTTP controllers)
+const hashSchema = z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)');
+// Accepts both 64-char SHA256 hash and 66-char Lightning compressed pubkey
+const identifierSchema = z.string().regex(
+  /^(?:[a-f0-9]{64}|(02|03)[a-f0-9]{64})$/,
+  'Expected 64-char SHA256 hash or 66-char Lightning pubkey (02/03 prefix)',
+);
+
+function normalizeId(input: string): string {
+  if (input.length === 66 && /^(02|03)/.test(input)) return sha256(input);
+  return input;
+}
+
 const getAgentScoreArgs = z.object({
-  publicKeyHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)'),
+  publicKeyHash: identifierSchema,
+});
+const getVerdictArgs = z.object({
+  publicKeyHash: identifierSchema,
+  callerPubkey: hashSchema.optional(),
 });
 const getTopAgentsArgs = z.object({
   limit: z.number().int().min(1).max(100).default(10),
@@ -29,13 +51,17 @@ const getTopAgentsArgs = z.object({
 const searchAgentsArgs = z.object({
   alias: z.string().min(1).max(100),
 });
+const getBatchVerdictsArgs = z.object({
+  hashes: z.array(identifierSchema).min(1).max(100),
+});
 const submitAttestationArgs = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
-  attesterHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)'),
-  subjectHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)'),
+  attesterHash: hashSchema,
+  subjectHash: hashSchema,
   score: z.number().int().min(0).max(100),
   tags: z.array(z.string().max(50).regex(/^[\w\-]+$/, 'Invalid tag')).max(10).optional(),
-  evidenceHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)').optional(),
+  evidenceHash: hashSchema.optional(),
+  category: z.enum(attestationCategoryValues).default('general'),
 });
 
 // Database initialization and dependency injection
@@ -48,9 +74,12 @@ const attestationRepo = new AttestationRepository(db);
 const snapshotRepo = new SnapshotRepository(db);
 
 const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService);
+const trendService = new TrendService(agentRepo, snapshotRepo);
+const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
 const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
+const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
+const riskService = new RiskService();
+const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService);
 
 // MCP server creation (low-level API to avoid TS2589 with .tool())
 const server = new Server(
@@ -99,6 +128,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: 'object' as const, properties: {} },
     },
     {
+      name: 'get_verdict',
+      description: 'Returns SAFE / RISKY / UNKNOWN verdict for an agent, with risk profile and optional personal trust graph. The primary tool for pre-transaction trust decisions.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          publicKeyHash: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'SHA256 hex of the target agent public key' },
+          callerPubkey: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Optional: your own pubkey hash to get personalized trust distance' },
+        },
+        required: ['publicKeyHash'],
+      },
+    },
+    {
+      name: 'get_batch_verdicts',
+      description: 'Returns SAFE/RISKY/UNKNOWN for up to 100 agents in one call. Efficient for bulk pre-transaction screening.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          hashes: {
+            type: 'array',
+            items: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            minItems: 1,
+            maxItems: 100,
+            description: 'Array of SHA256 hex hashes of target agent public keys',
+          },
+        },
+        required: ['hashes'],
+      },
+    },
+    {
       name: 'submit_attestation',
       description: 'Submit a trust attestation for an agent after a transaction. Requires SATRANK_API_KEY env var.',
       inputSchema: {
@@ -110,6 +168,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           score: { type: 'number', minimum: 0, maximum: 100, description: 'Trust score (0-100)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags (e.g. ["fast", "reliable"])' },
           evidenceHash: { type: 'string', description: 'Optional evidence hash' },
+          category: { type: 'string', enum: ['successful_transaction', 'failed_transaction', 'dispute', 'fraud', 'unresponsive', 'general'], description: 'Attestation category (default: general)' },
         },
         required: ['txId', 'attesterHash', 'subjectHash', 'score'],
       },
@@ -128,7 +187,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!parsed.success) {
           return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
-        const result = agentService.getAgentScore(parsed.data.publicKeyHash);
+        const result = agentService.getAgentScore(normalizeId(parsed.data.publicKeyHash));
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
 
@@ -139,15 +198,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const agents = agentService.getTopAgents(parsed.data.limit, 0);
         const result = agents.map(a => ({
-          publicKeyHash: a.public_key_hash,
+          publicKeyHash: a.publicKeyHash,
           alias: a.alias,
-          score: a.avg_score,
-          totalTransactions: a.total_transactions,
+          score: a.score,
+          totalTransactions: a.totalTransactions,
           source: a.source,
-          positiveRatings: a.positive_ratings,
-          negativeRatings: a.negative_ratings,
-          lnplusRank: a.lnplus_rank,
-          queryCount: a.query_count,
+          components: a.components,
         }));
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
@@ -168,6 +224,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lnplusRank: a.lnplus_rank,
         }));
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      case 'get_verdict': {
+        const parsed = getVerdictArgs.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        const verdict = verdictService.getVerdict(normalizeId(parsed.data.publicKeyHash), parsed.data.callerPubkey);
+        return { content: [{ type: 'text', text: JSON.stringify(verdict, null, 2) }] };
+      }
+
+      case 'get_batch_verdicts': {
+        const parsed = getBatchVerdictsArgs.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        const results = parsed.data.hashes.map(id => ({
+          publicKeyHash: normalizeId(id),
+          ...verdictService.getVerdict(normalizeId(id)),
+        }));
+        return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
       }
 
       case 'get_network_stats': {
