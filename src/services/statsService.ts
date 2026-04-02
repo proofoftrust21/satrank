@@ -8,6 +8,9 @@ import type { HealthResponse, NetworkStats } from '../types';
 
 const startTime = Date.now();
 
+// Must match the latest migration version in migrations.ts
+const EXPECTED_SCHEMA_VERSION = 6;
+
 export class StatsService {
   constructor(
     private agentRepo: AgentRepository,
@@ -33,13 +36,16 @@ export class StatsService {
       dbStatus = 'error';
     }
 
+    const status: 'ok' | 'error' = dbStatus === 'ok' && schemaVersion === EXPECTED_SCHEMA_VERSION ? 'ok' : 'error';
+
     return {
-      status: dbStatus === 'ok' ? 'ok' : 'error',
+      status,
       agentsIndexed: dbStatus === 'ok' ? this.agentRepo.count() : 0,
       totalTransactions: dbStatus === 'ok' ? this.txRepo.totalCount() : 0,
       lastUpdate: dbStatus === 'ok' ? this.snapshotRepo.getLastUpdateTime() : 0,
       uptime: Math.floor((Date.now() - startTime) / 1000),
       schemaVersion,
+      expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
       dbStatus,
     };
   }

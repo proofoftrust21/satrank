@@ -34,8 +34,8 @@ const submitAttestationArgs = z.object({
   attesterHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)'),
   subjectHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)'),
   score: z.number().int().min(0).max(100),
-  tags: z.array(z.string().max(50)).max(5).optional(),
-  evidenceHash: z.string().max(128).regex(/^[a-f0-9]*$/, 'Expected hex string').optional(),
+  tags: z.array(z.string().max(50).regex(/^[\w\-]+$/, 'Invalid tag')).max(10).optional(),
+  evidenceHash: z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)').optional(),
 });
 
 // Database initialization and dependency injection

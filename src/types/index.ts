@@ -140,6 +140,7 @@ export interface HealthResponse {
   lastUpdate: number;
   uptime: number;
   schemaVersion: number;
+  expectedSchemaVersion: number;
   dbStatus: 'ok' | 'error';
 }
 

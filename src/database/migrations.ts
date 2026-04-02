@@ -179,6 +179,77 @@ export function runMigrations(db: Database.Database): void {
   logger.info('Migrations executed successfully');
 }
 
+// --- Rollback (down) functions ---
+// Each down() reverses the corresponding up() migration.
+// SQLite limitations: ALTER TABLE DROP COLUMN requires SQLite 3.35+.
+// For older versions, the column simply remains (harmless).
+
+const downMigrations: Record<number, (db: Database.Database) => void> = {
+  6: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_attestations_unique_attester_subject');
+  },
+  5: (db) => {
+    db.exec(`
+      DROP TRIGGER IF EXISTS trg_agents_ratings_check;
+      DROP TRIGGER IF EXISTS trg_agents_ratings_check_insert;
+      DROP INDEX IF EXISTS idx_agents_source;
+      DROP INDEX IF EXISTS idx_agents_public_key;
+    `);
+  },
+  4: (db) => {
+    for (const col of ['hubness_rank', 'betweenness_rank', 'hopness_rank']) {
+      try { db.exec(`ALTER TABLE agents DROP COLUMN ${col}`); } catch { /* SQLite < 3.35 */ }
+    }
+  },
+  3: (db) => {
+    for (const col of ['public_key', 'positive_ratings', 'negative_ratings', 'lnplus_rank', 'query_count']) {
+      try { db.exec(`ALTER TABLE agents DROP COLUMN ${col}`); } catch { /* SQLite < 3.35 */ }
+    }
+  },
+  2: (db) => {
+    // capacity_sats was added in v2 but also exists in v1 CREATE TABLE — only drop if it was added by v2
+    try { db.exec('ALTER TABLE agents DROP COLUMN capacity_sats'); } catch { /* SQLite < 3.35 */ }
+  },
+  1: (db) => {
+    db.exec(`
+      DROP TABLE IF EXISTS score_snapshots;
+      DROP TABLE IF EXISTS attestations;
+      DROP TABLE IF EXISTS transactions;
+      DROP TABLE IF EXISTS agents;
+    `);
+  },
+};
+
+/** Rolls back migrations from current to target version (exclusive).
+ *  E.g., rollbackTo(db, 4) with current=6 runs down(6), down(5).
+ *  The entire rollback is wrapped in a transaction for atomicity. */
+export function rollbackTo(db: Database.Database, targetVersion: number): void {
+  const applied = getAppliedVersions(db);
+  const toRollback = applied
+    .map(v => v.version)
+    .filter(v => v > targetVersion)
+    .sort((a, b) => b - a); // descending
+
+  // Validate all rollback functions exist before starting
+  for (const version of toRollback) {
+    if (!downMigrations[version]) {
+      throw new Error(`No rollback function for migration v${version}`);
+    }
+  }
+
+  const rollback = db.transaction(() => {
+    for (const version of toRollback) {
+      const down = downMigrations[version]!;
+      logger.info({ version }, 'Rolling back migration');
+      down(db);
+      db.prepare('DELETE FROM schema_version WHERE version = ?').run(version);
+    }
+  });
+
+  rollback();
+  logger.info({ target: targetVersion, rolled: toRollback }, 'Rollback complete');
+}
+
 /** Returns all applied migration versions (for testing/inspection). */
 export function getAppliedVersions(db: Database.Database): { version: number; applied_at: string; description: string }[] {
   try {

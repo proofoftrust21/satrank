@@ -399,9 +399,16 @@ describe('Integration — L402 perimeter (production mode)', () => {
     agentHash = agent.public_key_hash;
 
     // Simulate production L402 middleware — matches real apertureGateAuth behavior
+    // Includes shared secret verification (defense in depth)
+    const TEST_APERTURE_SECRET = 'test-aperture-shared-secret';
     function prodApertureGateAuth(req: express.Request, _res: express.Response, next: express.NextFunction): void {
       const header = req.headers['x-aperture-auth'] as string | undefined;
       if (!header || !header.trim()) {
+        _res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: 'Payment required' } });
+        return;
+      }
+      // Verify shared secret — mirrors real middleware
+      if (header.trim() !== TEST_APERTURE_SECRET) {
         _res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: 'Payment required' } });
         return;
       }
@@ -473,12 +480,20 @@ describe('Integration — L402 perimeter (production mode)', () => {
     expect(res.status).toBe(200);
   });
 
-  // L402-gated endpoints should pass with X-Aperture-Auth header
-  it('GET /api/v1/agent/:hash returns 200 with L402 header', async () => {
+  // L402-gated endpoints should pass with correct shared secret
+  it('GET /api/v1/agent/:hash returns 200 with valid shared secret', async () => {
     const res = await request(app)
       .get(`/api/v1/agent/${agentHash}`)
-      .set('X-Aperture-Auth', 'valid-token');
+      .set('X-Aperture-Auth', 'test-aperture-shared-secret');
     expect(res.status).toBe(200);
+  });
+
+  // L402-gated endpoints should reject wrong shared secret
+  it('GET /api/v1/agent/:hash returns 402 with wrong shared secret', async () => {
+    const res = await request(app)
+      .get(`/api/v1/agent/${agentHash}`)
+      .set('X-Aperture-Auth', 'wrong-secret');
+    expect(res.status).toBe(402);
   });
 
   // L402 edge cases: empty and whitespace-only headers must be rejected
@@ -497,12 +512,11 @@ describe('Integration — L402 perimeter (production mode)', () => {
   });
 
   it('GET /api/v1/agent/:hash returns 402 with X-Aperture-Auth: "false"', async () => {
-    // "false" is a truthy string — but the middleware should still pass it
-    // (it's a non-empty token value; the real Aperture proxy handles validation)
+    // "false" is a non-empty string but doesn't match the shared secret — rejected
     const res = await request(app)
       .get(`/api/v1/agent/${agentHash}`)
       .set('X-Aperture-Auth', 'false');
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(402);
   });
 });
 

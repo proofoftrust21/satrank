@@ -15,6 +15,7 @@ export class AgentRepository {
 
   findByHashes(hashes: string[]): Agent[] {
     if (hashes.length === 0) return [];
+    if (hashes.length > 500) throw new Error('findByHashes: array exceeds 500 elements');
     const placeholders = hashes.map(() => '?').join(',');
     return this.db.prepare(`SELECT * FROM agents WHERE public_key_hash IN (${placeholders})`).all(...hashes) as Agent[];
   }

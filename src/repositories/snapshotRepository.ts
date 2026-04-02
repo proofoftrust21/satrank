@@ -13,6 +13,7 @@ export class SnapshotRepository {
 
   findLatestByAgents(agentHashes: string[]): Map<string, ScoreSnapshot> {
     if (agentHashes.length === 0) return new Map();
+    if (agentHashes.length > 500) throw new Error('findLatestByAgents: array exceeds 500 elements');
     const placeholders = agentHashes.map(() => '?').join(',');
     const rows = this.db.prepare(`
       SELECT s.* FROM score_snapshots s

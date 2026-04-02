@@ -456,7 +456,10 @@ export const openapiSpec = {
           agentsIndexed: { type: 'integer' },
           totalTransactions: { type: 'integer' },
           lastUpdate: { type: 'integer' },
-          uptime: { type: 'integer' },
+          uptime: { type: 'integer', description: 'Seconds since process start' },
+          schemaVersion: { type: 'integer', description: 'Applied DB schema version' },
+          expectedSchemaVersion: { type: 'integer', description: 'Expected DB schema version' },
+          dbStatus: { type: 'string', enum: ['ok', 'error'] },
         },
       },
       NetworkStats: {

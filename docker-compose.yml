@@ -17,12 +17,13 @@ services:
     volumes:
       - satrank-data:/app/data
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/v1/health').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/v1/health').then(r=>r.json()).then(j=>{process.exit(j.data.status==='ok'?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 10s
       retries: 3
     stop_grace_period: 30s
+    read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -54,6 +55,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:

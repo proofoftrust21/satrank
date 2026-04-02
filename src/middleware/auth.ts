@@ -52,9 +52,10 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
 }
 
 // Verifies that the request came through Aperture (L402 gateway).
-// Deployment assumption: Aperture strips X-Aperture-Auth from upstream client requests
-// before forwarding. This header is only present when the request comes through Aperture.
-// If Express is ever exposed directly without Aperture, add a shared secret validation here.
+// Defense in depth: validates APERTURE_SHARED_SECRET so that even if Express is
+// exposed directly (firewall misconfiguration, Aperture down), paid endpoints
+// remain protected. Aperture must be configured to inject this secret in the
+// X-Aperture-Auth header when forwarding paid requests.
 // In development, allows passthrough when NODE_ENV !== 'production'.
 export function apertureGateAuth(req: Request, _res: Response, next: NextFunction): void {
   if (config.NODE_ENV !== 'production') {
@@ -64,6 +65,18 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
 
   const apertureHeader = req.headers['x-aperture-auth'] as string | undefined;
   if (!apertureHeader || !apertureHeader.trim()) {
+    next(new PaymentRequiredError());
+    return;
+  }
+
+  // Verify the shared secret — prevents bypass if Express is reachable directly
+  // Fail closed: if secret is not configured in production, reject the request
+  if (!config.APERTURE_SHARED_SECRET) {
+    next(new PaymentRequiredError());
+    return;
+  }
+
+  if (!safeEqual(apertureHeader.trim(), config.APERTURE_SHARED_SECRET)) {
     next(new PaymentRequiredError());
     return;
   }

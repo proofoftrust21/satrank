@@ -10,6 +10,7 @@ import { runMigrations } from './database/migrations';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
+import { metricsMiddleware, metricsRegistry, agentsTotal, transactionsTotal } from './middleware/metrics';
 
 // Repositories
 import { AgentRepository } from './repositories/agentRepository';
@@ -67,13 +68,24 @@ export function createApp() {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+        styleSrc: ["'self'", "https://cdn.jsdelivr.net"],
         imgSrc: ["'self'", "data:"],
+        connectSrc: ["'self'"],
+        frameAncestors: ["'none'"],
       },
     },
   }));
   app.use(cors({ origin: config.CORS_ORIGIN }));
   app.use(express.json({ limit: '10kb' }));
+
+  // X-API-Version header on all responses
+  app.use((_req, res, next) => {
+    res.setHeader('X-API-Version', '1.0');
+    next();
+  });
+
+  // Prometheus request metrics
+  app.use(metricsMiddleware);
 
   // Reject POST/PUT/PATCH requests without application/json Content-Type
   app.use((req, res, next) => {
@@ -86,21 +98,38 @@ export function createApp() {
 
   app.use(requestIdMiddleware);
   app.use(requestTimeout(30_000));
-  app.use(rateLimit({
+
+  // Static landing page
+  app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', 'public') }));
+
+  // Prometheus metrics endpoint — before rate limiter, not L402 gated
+  app.get('/metrics', async (_req, res) => {
+    try {
+      const stats = statsService.getNetworkStats();
+      agentsTotal.set(stats.totalAgents);
+      transactionsTotal.set(stats.totalTransactions);
+
+      res.setHeader('Content-Type', metricsRegistry.contentType);
+      res.end(await metricsRegistry.metrics());
+    } catch {
+      res.status(500).end('Internal Server Error');
+    }
+  });
+
+  // Rate limiter scoped to API routes only (not /metrics, not static)
+  const apiRateLimit = rateLimit({
     windowMs: config.RATE_LIMIT_WINDOW_MS,
     max: config.RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
     message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
-  }));
-
-  // Static landing page
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-  app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', 'public') }));
+  });
 
   // API v1 routes
   const v1 = Router();
+  v1.use(apiRateLimit);
   v1.use(createAgentRoutes(agentController));
   v1.use(createAttestationRoutes(attestationController));
   v1.use(createHealthRoutes(healthController));

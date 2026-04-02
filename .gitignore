@@ -6,3 +6,6 @@ data/
 .env.production
 *.log
 .DS_Store
+*.pem
+*.key
+*.macaroon
