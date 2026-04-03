@@ -236,6 +236,8 @@ export class ScoringService {
 
     const mutualAgents = new Set(this.attestationRepo.findMutualAttestations(agentHash));
     const clusterMembers = new Set(this.attestationRepo.findCircularCluster(agentHash));
+    // Extended cycle detection — catches 4+ hop cycles (A→B→C→D→A)
+    const extendedCycleMembers = new Set(this.attestationRepo.findCycleMembers(agentHash, 4));
 
     // Batch: load all attesters and their snapshots in 2 queries instead of 2N
     const attesterHashes = [...new Set(attestations.map(a => a.attester_hash))];
@@ -278,6 +280,13 @@ export class ScoringService {
       // Anti-gaming: circular cluster (A->B->C->A)
       // Same double penalty rationale as mutual attestations above.
       if (clusterMembers.has(att.attester_hash)) {
+        weight *= CIRCULAR_CLUSTER_PENALTY;
+        effectiveScore = Math.min(effectiveScore, SUSPECT_ATTESTATION_SCORE_CAP);
+      }
+
+      // Anti-gaming: extended cycles (4+ hops, e.g. A→B→C→D→A)
+      // Same penalty as 3-hop clusters — applied only if not already caught above
+      if (!mutualAgents.has(att.attester_hash) && !clusterMembers.has(att.attester_hash) && extendedCycleMembers.has(att.attester_hash)) {
         weight *= CIRCULAR_CLUSTER_PENALTY;
         effectiveScore = Math.min(effectiveScore, SUSPECT_ATTESTATION_SCORE_CAP);
       }

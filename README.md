@@ -41,6 +41,7 @@ Composite score 0-100 computed from 5 weighted factors:
 **Anti-gaming:**
 - Mutual attestation loop detection (A↔B) with 95% penalty
 - Circular cluster detection (A→B→C→A) with 90% penalty
+- Extended cycle detection via BFS (A→B→C→D→A, up to 4 hops) with 90% penalty
 - Minimum 7-day seniority required to attest
 - Attester score weighting (PageRank-like recursion)
 - Attestation source concentration penalty
@@ -95,7 +96,7 @@ curl http://localhost:3000/api/v1/agents/search?alias=atlas
 
 ### Submit Attestation (free — no L402)
 ```bash
-curl -X POST http://localhost:3000/api/v1/attestation \
+curl -X POST http://localhost:3000/api/v1/attestations \
   -H "Content-Type: application/json" \
   -H "X-API-Key: <your-key>" \
   -d '{"txId": "...", "attesterHash": "...", "subjectHash": "...", "score": 85, "category": "successful_transaction"}'
@@ -116,7 +117,7 @@ npm run mcp        # Development
 npm run mcp:prod   # Production
 ```
 
-Available tools: `get_agent_score`, `get_top_agents`, `search_agents`, `get_network_stats`, `get_verdict`, `get_batch_verdicts`, `submit_attestation`.
+Available tools: `get_agent_score`, `get_top_agents`, `search_agents`, `get_network_stats`, `get_verdict`, `get_batch_verdicts`, `get_top_movers`, `submit_attestation`.
 
 ## SDK
 
@@ -131,6 +132,7 @@ const client = new SatRankClient('http://localhost:3000');
 const verdict = await client.getVerdict('<hash>');
 const score = await client.getScore('<hash>');
 const batch = await client.getBatchVerdicts(['<hash1>', '<hash2>']);
+const movers = await client.getMovers();
 ```
 
 ## Tech Stack

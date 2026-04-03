@@ -2,6 +2,7 @@
 // Reads the full graph from our Voltage LND node
 import fs from 'fs';
 import { logger } from '../logger';
+import { CircuitBreaker } from '../utils/circuitBreaker';
 
 export interface LndNode {
   pub_key: string;
@@ -55,10 +56,12 @@ export class HttpLndGraphClient implements LndGraphClient {
   private restUrl: string;
   private macaroonHex: string;
   private timeoutMs: number;
+  private breaker: CircuitBreaker;
 
   constructor(options: LndClientOptions) {
     this.restUrl = options.restUrl.replace(/\/$/, '');
     this.timeoutMs = options.timeoutMs;
+    this.breaker = new CircuitBreaker({ name: 'lnd' });
 
     try {
       const macaroonBytes = fs.readFileSync(options.macaroonPath);
@@ -107,6 +110,10 @@ export class HttpLndGraphClient implements LndGraphClient {
       throw new Error('LND macaroon not loaded — cannot make requests');
     }
 
+    if (!this.breaker.canExecute()) {
+      throw new Error(`LND circuit breaker open — skipping request: ${path}`);
+    }
+
     const url = `${this.restUrl}${path}`;
     logger.debug({ url, timeoutMs: this.timeoutMs }, 'LND request starting');
     const controller = new AbortController();
@@ -126,14 +133,22 @@ export class HttpLndGraphClient implements LndGraphClient {
 
       if (!response.ok) {
         const body = await response.text().catch(() => '');
+        this.breaker.onFailure();
         throw new Error(`HTTP ${response.status}: ${response.statusText} — ${body.slice(0, 200)}`);
       }
 
-      return await response.json() as T;
+      const result = await response.json() as T;
+      this.breaker.onSuccess();
+      return result;
     } catch (err: unknown) {
       clearTimeout(timeout);
       if (err instanceof Error && err.name === 'AbortError') {
+        this.breaker.onFailure();
         throw new Error(`LND request timed out after ${this.timeoutMs}ms: ${path}`);
+      }
+      // Only call onFailure if we haven't already (non-ok response path)
+      if (!(err instanceof Error && err.message.startsWith('HTTP '))) {
+        this.breaker.onFailure();
       }
       throw err;
     }

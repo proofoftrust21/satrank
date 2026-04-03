@@ -382,9 +382,9 @@ describe('Contract tests — L402 security markers in OpenAPI spec', () => {
     expect(op.security).toEqual([{ l402: [] }]);
   });
 
-  // POST /attestation uses apiKey, not L402
-  it('/attestation POST uses apiKey auth, not L402', () => {
-    const pathSpec = openapiSpec.paths['/attestation'];
+  // POST /attestations uses apiKey, not L402
+  it('/attestations POST uses apiKey auth, not L402', () => {
+    const pathSpec = openapiSpec.paths['/attestations'];
     expect(pathSpec).toBeDefined();
     const op = pathSpec.post;
     expect(op.security).toEqual([{ apiKey: [] }]);

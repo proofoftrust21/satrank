@@ -13,6 +13,7 @@ import type {
   BatchVerdictItem,
   CreateAttestationInput,
   CreateAttestationResponse,
+  MoversResponse,
 } from './types';
 
 export class SatRankError extends Error {
@@ -111,9 +112,15 @@ export class SatRankClient {
     return envelope.data;
   }
 
+  /** Top movers — agents with biggest score changes in 7 days */
+  async getMovers(): Promise<MoversResponse> {
+    const envelope = await this.get<ApiEnvelope<MoversResponse>>(`/api/v1/agents/movers`);
+    return envelope.data;
+  }
+
   /** Submit an attestation (requires API key in headers) */
   async submitAttestation(input: CreateAttestationInput): Promise<CreateAttestationResponse> {
-    const envelope = await this.post<ApiEnvelope<CreateAttestationResponse>>(`/api/v1/attestation`, input);
+    const envelope = await this.post<ApiEnvelope<CreateAttestationResponse>>(`/api/v1/attestations`, input);
     return envelope.data;
   }
 

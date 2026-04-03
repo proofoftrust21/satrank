@@ -255,3 +255,8 @@ export interface CreateAttestationResponse {
 export interface BatchVerdictItem extends VerdictResponse {
   publicKeyHash: string;
 }
+
+export interface MoversResponse {
+  up: TopMover[];
+  down: TopMover[];
+}

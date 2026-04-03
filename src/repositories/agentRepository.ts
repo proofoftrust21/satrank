@@ -67,7 +67,7 @@ export class AgentRepository {
   }
 
   avgScore(): number {
-    const row = this.db.prepare('SELECT ROUND(AVG(avg_score), 1) as avg FROM agents').get() as { avg: number | null };
+    const row = this.db.prepare('SELECT ROUND(AVG(avg_score), 1) as avg FROM agents WHERE avg_score > 0').get() as { avg: number | null };
     return row.avg ?? 0;
   }
 

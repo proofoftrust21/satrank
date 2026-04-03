@@ -262,7 +262,7 @@ export const openapiSpec = {
         },
       },
     },
-    '/attestation': {
+    '/attestations': {
       post: {
         summary: 'Submit an attestation (FREE — no L402 payment required)',
         operationId: 'createAttestation',

@@ -81,6 +81,63 @@ export class AttestationRepository {
     return Array.from(members);
   }
 
+  // Detects cycles up to `maxDepth` hops using BFS (A→B→C→D→A for depth=4)
+  // Returns all agents that are part of a cycle passing through agentHash
+  findCycleMembers(agentHash: string, maxDepth: number = 4): string[] {
+    if (maxDepth < 2) return [];
+
+    // BFS: walk "who attested agents in the current layer" layer by layer.
+    // If agentHash appears as an attester at any layer, we've found a cycle.
+    const cycleMembers = new Set<string>();
+    let currentLayer = new Set<string>();
+
+    // Layer 0: direct attesters of agentHash (excluding self-attestation)
+    const directAttesters = this.db.prepare(
+      'SELECT DISTINCT attester_hash FROM attestations WHERE subject_hash = ? AND attester_hash != ?'
+    ).all(agentHash, agentHash) as { attester_hash: string }[];
+
+    for (const row of directAttesters) {
+      currentLayer.add(row.attester_hash);
+    }
+
+    const visited = new Set<string>([agentHash]);
+    const layerHistory: Set<string>[] = [currentLayer];
+
+    for (let depth = 2; depth <= maxDepth; depth++) {
+      if (currentLayer.size === 0) break;
+
+      const nextLayer = new Set<string>();
+      const hashes = Array.from(currentLayer);
+
+      const batchSize = 100;
+      for (let i = 0; i < hashes.length; i += batchSize) {
+        const batch = hashes.slice(i, i + batchSize);
+        const placeholders = batch.map(() => '?').join(',');
+        // Do NOT exclude agentHash — we need to detect when it closes the cycle
+        const rows = this.db.prepare(
+          `SELECT DISTINCT attester_hash, subject_hash FROM attestations WHERE subject_hash IN (${placeholders})`
+        ).all(...batch) as { attester_hash: string; subject_hash: string }[];
+
+        for (const row of rows) {
+          if (row.attester_hash === agentHash) {
+            // Cycle found! All agents visited so far are cycle members
+            for (const layer of layerHistory) {
+              for (const member of layer) cycleMembers.add(member);
+            }
+          } else if (!visited.has(row.attester_hash)) {
+            nextLayer.add(row.attester_hash);
+          }
+        }
+      }
+
+      for (const h of nextLayer) visited.add(h);
+      currentLayer = nextLayer;
+      layerHistory.push(nextLayer);
+    }
+
+    return Array.from(cycleMembers);
+  }
+
   // Number of unique attesters for an agent (attestation source diversity)
   countUniqueAttesters(subjectHash: string): number {
     const row = this.db.prepare(

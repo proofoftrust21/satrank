@@ -422,7 +422,7 @@ describe('Free attestations verification', () => {
   it('OpenAPI spec marks attestation as apiKey auth, not L402', async () => {
     // Import the spec
     const { openapiSpec } = await import('../openapi');
-    const attestationPath = openapiSpec.paths['/attestation'];
+    const attestationPath = openapiSpec.paths['/attestations'];
     expect(attestationPath.post.security).toEqual([{ apiKey: [] }]);
     // Should NOT have l402 in security
     expect(attestationPath.post.security).not.toContainEqual({ l402: [] });

@@ -190,7 +190,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
 
   <ul>
     <li><strong>Mutual attestation detection.</strong> When agent A attests agent B and B attests A, both attestations are detected and heavily penalized. The effective score from these attestations is capped.</li>
-    <li><strong>Circular cluster detection.</strong> Cycles up to depth 3 (A&rarr;B&rarr;C&rarr;A) are identified. Attestations from cluster members receive reduced weight and capped effective scores.</li>
+    <li><strong>Circular cluster detection.</strong> Cycles up to depth 4 (A&rarr;B&rarr;C&rarr;D&rarr;A) are identified via BFS. Attestations from cycle members receive reduced weight and capped effective scores.</li>
     <li><strong>Attestation concentration.</strong> When a disproportionate number of attestations come from too few unique attesters, a penalty is applied. This discourages sybil attestation farms.</li>
     <li><strong>New attester weight reduction.</strong> Attesters younger than a minimum age carry significantly reduced weight. This prevents rapid bootstrapping of fake reputation.</li>
     <li><strong>Attester reliability weighting.</strong> Each attester's weight is proportional to their own score. Unknown attesters (score 0) carry minimal weight.</li>

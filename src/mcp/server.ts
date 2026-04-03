@@ -51,6 +51,9 @@ const getTopAgentsArgs = z.object({
 const searchAgentsArgs = z.object({
   alias: z.string().min(1).max(100),
 });
+const getTopMoversArgs = z.object({
+  limit: z.number().int().min(1).max(20).default(5),
+});
 const getBatchVerdictsArgs = z.object({
   hashes: z.array(identifierSchema).min(1).max(100),
 });
@@ -157,6 +160,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'get_top_movers',
+      description: 'Returns agents with the biggest score changes over the past 7 days — rising and falling.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          limit: { type: 'number', minimum: 1, maximum: 20, default: 5, description: 'Number of movers per direction (up/down)' },
+        },
+      },
+    },
+    {
       name: 'submit_attestation',
       description: 'Submit a trust attestation for an agent after a transaction. Requires SATRANK_API_KEY env var.',
       inputSchema: {
@@ -245,6 +258,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ...verdictService.getVerdict(normalizeId(id)),
         }));
         return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+      }
+
+      case 'get_top_movers': {
+        const parsed = getTopMoversArgs.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        const movers = trendService.getTopMovers(parsed.data.limit);
+        return { content: [{ type: 'text', text: JSON.stringify(movers, null, 2) }] };
       }
 
       case 'get_network_stats': {

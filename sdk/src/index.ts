@@ -40,4 +40,5 @@ export type {
   CreateAttestationInput,
   CreateAttestationResponse,
   BatchVerdictItem,
+  MoversResponse,
 } from './types';
