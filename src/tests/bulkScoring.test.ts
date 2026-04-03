@@ -78,6 +78,55 @@ describe('AgentRepository — bulk scoring queries', () => {
     expect(scored.map(a => a.alias).sort()).toEqual(['scored-1', 'scored-2']);
   });
 
+  it('findLnplusCandidates returns agents with existing LN+ data', () => {
+    // Agent with lnplus_rank — should be included
+    agentRepo.insert(makeLndAgent('has-rank', { lnplus_rank: 5, capacity_sats: 100_000 }));
+    // Agent with positive_ratings — should be included
+    agentRepo.insert(makeLndAgent('has-ratings', { positive_ratings: 10, capacity_sats: 100_000 }));
+    // Agent with no LN+ data, low capacity — should NOT be included (not in top 2)
+    agentRepo.insert(makeLndAgent('small-node', { capacity_sats: 1_000 }));
+    // Agent with high capacity, no LN+ data — included via top-N
+    agentRepo.insert(makeLndAgent('big-cap', { capacity_sats: 50_000_000_000 }));
+
+    const candidates = agentRepo.findLnplusCandidates(2);
+    const aliases = candidates.map(a => a.alias);
+
+    expect(aliases).toContain('has-rank');
+    expect(aliases).toContain('has-ratings');
+    expect(aliases).toContain('big-cap');
+    expect(aliases).not.toContain('small-node');
+  });
+
+  it('findLnplusCandidates excludes non-lightning agents', () => {
+    // Observer protocol agent — should NOT be included even with high capacity
+    agentRepo.insert({
+      ...makeLndAgent('observer-node', { capacity_sats: 100_000_000_000 }),
+      source: 'observer_protocol',
+      public_key: null,
+    });
+    // Lightning agent — included
+    agentRepo.insert(makeLndAgent('ln-node', { capacity_sats: 1_000_000_000 }));
+
+    const candidates = agentRepo.findLnplusCandidates(100);
+    const aliases = candidates.map(a => a.alias);
+
+    expect(aliases).toContain('ln-node');
+    expect(aliases).not.toContain('observer-node');
+  });
+
+  it('findLnplusCandidates respects topCapacityLimit', () => {
+    // Insert 5 agents with descending capacity
+    for (let i = 0; i < 5; i++) {
+      agentRepo.insert(makeLndAgent(`cap-${i}`, { capacity_sats: (5 - i) * 1_000_000_000 }));
+    }
+
+    const top3 = agentRepo.findLnplusCandidates(3);
+    expect(top3.length).toBe(3);
+
+    const top5 = agentRepo.findLnplusCandidates(10);
+    expect(top5.length).toBe(5);
+  });
+
   it('countUnscoredWithData matches findUnscoredWithData length', () => {
     for (let i = 0; i < 10; i++) {
       agentRepo.insert(makeLndAgent(`node-${i}`, { capacity_sats: (i + 1) * 100_000_000, total_transactions: i * 5 + 2 }));

@@ -30,7 +30,11 @@ export class LnplusCrawler {
       errors: [],
     };
 
-    const agents = this.agentRepo.findLightningAgentsWithPubkey();
+    // Only query agents likely to have LN+ profiles:
+    // - Already have lnplus_rank > 0 or positive_ratings > 0 (re-check)
+    // - Top 1000 by capacity (new candidates)
+    const agents = this.agentRepo.findLnplusCandidates(1000);
+    logger.info({ candidates: agents.length }, 'LN+ crawl candidates selected');
 
     for (const agent of agents) {
       result.queried++;
@@ -65,6 +69,16 @@ export class LnplusCrawler {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         result.errors.push(`${agent.alias ?? agent.public_key_hash.slice(0, 16)}: ${msg}`);
+      }
+
+      // Progress log every 200 nodes
+      if (result.queried % 200 === 0) {
+        logger.info({
+          queried: result.queried,
+          total: agents.length,
+          updated: result.updated,
+          notFound: result.notFound,
+        }, 'LN+ crawl progress');
       }
     }
 

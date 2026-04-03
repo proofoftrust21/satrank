@@ -178,6 +178,9 @@ async function runFullCrawl(
   await crawlObserver(observerCrawler);
   await crawlLightning(lndGraphCrawler, mempoolCrawler);
 
+  // Score immediately after LND crawl — don't wait for LN+
+  bulkScoreAll(agentRepo, scoringService, snapshotRepo);
+
   try {
     await crawlLnplus(lnplusCrawler);
   } catch (err: unknown) {
@@ -185,6 +188,7 @@ async function runFullCrawl(
     logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
   }
 
+  // Rescore with LN+ data
   bulkScoreAll(agentRepo, scoringService, snapshotRepo);
 }
 

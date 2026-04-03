@@ -140,6 +140,25 @@ export class AgentRepository {
     ).all() as Agent[];
   }
 
+  /** Returns LN+ crawl candidates: agents already with LN+ data OR top N by capacity.
+   *  Avoids querying all 16k+ nodes — most small nodes don't have LN+ profiles. */
+  findLnplusCandidates(topCapacityLimit: number): Agent[] {
+    return this.db.prepare(`
+      SELECT * FROM agents
+      WHERE source = 'lightning_graph' AND public_key IS NOT NULL
+        AND (
+          lnplus_rank > 0
+          OR positive_ratings > 0
+          OR public_key_hash IN (
+            SELECT public_key_hash FROM agents
+            WHERE source = 'lightning_graph' AND capacity_sats > 0
+            ORDER BY capacity_sats DESC
+            LIMIT ?
+          )
+        )
+    `).all(topCapacityLimit) as Agent[];
+  }
+
   incrementQueryCount(hash: string): void {
     this.db.prepare('UPDATE agents SET query_count = query_count + 1 WHERE public_key_hash = ?').run(hash);
   }
