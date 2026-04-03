@@ -145,7 +145,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
   <!-- Confidence -->
   <h2>Confidence Levels</h2>
   <p>
-    Confidence indicates how much data backs the score. It is based on <code>totalTransactions + totalAttestations</code>:
+    Confidence indicates how much data backs the score. It is based on total data points (transactions, attestations, channels, and LN+ ratings):
   </p>
   <table>
     <thead><tr><th>Level</th><th>Data Points</th><th>Interpretation</th></tr></thead>
@@ -323,9 +323,9 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
   <table>
     <thead><tr><th>Verdict</th><th>Condition</th></tr></thead>
     <tbody>
-      <tr><td><strong>RISKY</strong></td><td>Score &lt; 30, OR delta_7d &lt; &minus;15, OR <code>negative_reputation</code> flag, OR <code>fraud_reported</code> flag</td></tr>
+      <tr><td><strong>RISKY</strong></td><td>Score &lt; 30 with confidence &ge; low (0.25), OR delta_7d &lt; &minus;15, OR <code>negative_reputation</code> flag, OR <code>fraud_reported</code> flag</td></tr>
       <tr><td><strong>SAFE</strong></td><td>Score &ge; 50, no critical flags, confidence &ge; medium (0.5)</td></tr>
-      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;49, OR score &ge; 50 with confidence &lt; medium</td></tr>
+      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;49, OR score &lt; 30 with very low confidence, OR score &ge; 50 with confidence &lt; medium</td></tr>
     </tbody>
   </table>
   <p>
@@ -477,7 +477,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
       <tr>
         <td><code>small_reliable</code></td>
         <td>Low</td>
-        <td>Score 40&ndash;70, seniority &gt; 365 days, regularity &gt; 60</td>
+        <td>Score 40&ndash;69, seniority &gt; 365 days, regularity &gt; 60</td>
       </tr>
       <tr>
         <td><code>growing_node</code></td>

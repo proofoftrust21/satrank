@@ -170,7 +170,7 @@ curl -H 'Authorization: L402 AGIAJEemVQ...:preimage_hex' \
 ### Submit an attestation (API key required)
 
 ```bash
-curl -X POST https://satrank.example/api/v1/attestation \
+curl -X POST https://satrank.example/api/v1/attestations \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-api-key' \
   -d '{
@@ -198,7 +198,7 @@ curl -X POST https://satrank.example/api/v1/attestation \
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `POST /attestation` | API Key | Submit attestation (FREE — no payment) |
+| `POST /attestations` | API Key | Submit attestation (FREE — no payment) |
 | `GET /agents/top` | None | Leaderboard |
 | `GET /agents/search` | None | Search by alias |
 | `GET /health` | None | Service health |

@@ -151,8 +151,9 @@ export interface HealthResponse {
 
 export interface NetworkStats {
   totalAgents: number;
-  totalTransactions: number;
-  totalAttestations: number;
+  totalChannels: number;
+  nodesWithRatings: number;
+  networkCapacityBtc: number;
   avgScore: number;
   totalVolumeBuckets: Record<AmountBucket, number>;
   trends: NetworkTrends;

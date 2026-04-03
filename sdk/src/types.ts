@@ -136,12 +136,16 @@ export interface HealthResponse {
   totalTransactions: number;
   lastUpdate: number;
   uptime: number;
+  schemaVersion: number;
+  expectedSchemaVersion: number;
+  dbStatus: 'ok' | 'error';
 }
 
 export interface NetworkStats {
   totalAgents: number;
-  totalTransactions: number;
-  totalAttestations: number;
+  totalChannels: number;
+  nodesWithRatings: number;
+  networkCapacityBtc: number;
   avgScore: number;
   totalVolumeBuckets: Record<AmountBucket, number>;
   trends: NetworkTrends;

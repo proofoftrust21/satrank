@@ -36,7 +36,7 @@
   }
 
   function setStatError() {
-    ['stat-agents', 'stat-transactions', 'stat-attestations', 'stat-avg-score'].forEach(function (id) {
+    ['stat-agents', 'stat-channels', 'stat-rated', 'stat-avg-score'].forEach(function (id) {
       var el = document.getElementById(id);
       el.textContent = 'API unavailable';
       el.classList.remove('loading');
@@ -81,10 +81,10 @@
       var s = d.data;
       document.getElementById('stat-agents').textContent = fmt(s.totalAgents);
       document.getElementById('stat-agents').classList.remove('loading');
-      document.getElementById('stat-transactions').textContent = fmt(s.totalTransactions);
-      document.getElementById('stat-transactions').classList.remove('loading');
-      document.getElementById('stat-attestations').textContent = fmt(s.totalAttestations);
-      document.getElementById('stat-attestations').classList.remove('loading');
+      document.getElementById('stat-channels').textContent = fmt(s.totalChannels);
+      document.getElementById('stat-channels').classList.remove('loading');
+      document.getElementById('stat-rated').textContent = fmt(s.nodesWithRatings);
+      document.getElementById('stat-rated').classList.remove('loading');
       document.getElementById('stat-avg-score').textContent = s.avgScore;
       document.getElementById('stat-avg-score').classList.remove('loading');
 

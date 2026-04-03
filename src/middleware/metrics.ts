@@ -17,9 +17,9 @@ export const agentsTotal = new client.Gauge({
   registers: [metricsRegistry],
 });
 
-export const transactionsTotal = new client.Gauge({
-  name: 'satrank_transactions_total',
-  help: 'Total number of transactions',
+export const channelsTotal = new client.Gauge({
+  name: 'satrank_channels_total',
+  help: 'Total Lightning channels across all nodes',
   registers: [metricsRegistry],
 });
 

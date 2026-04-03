@@ -189,8 +189,9 @@ describe('Integration — HTTP endpoints', () => {
     const res = await request(app).get('/api/v1/stats');
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveProperty('totalAgents');
-    expect(res.body.data).toHaveProperty('totalTransactions');
-    expect(res.body.data).toHaveProperty('totalAttestations');
+    expect(res.body.data).toHaveProperty('totalChannels');
+    expect(res.body.data).toHaveProperty('nodesWithRatings');
+    expect(res.body.data).toHaveProperty('networkCapacityBtc');
     expect(res.body.data).toHaveProperty('avgScore');
     expect(res.body.data).toHaveProperty('totalVolumeBuckets');
   });

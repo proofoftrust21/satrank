@@ -57,8 +57,9 @@ export class StatsService {
 
     return {
       totalAgents: this.agentRepo.count(),
-      totalTransactions: this.txRepo.totalCount(),
-      totalAttestations: this.attestationRepo.totalCount(),
+      totalChannels: this.agentRepo.sumChannels(),
+      nodesWithRatings: this.agentRepo.countWithRatings(),
+      networkCapacityBtc: this.agentRepo.networkCapacityBtc(),
       avgScore: this.agentRepo.avgScore(),
       totalVolumeBuckets: {
         micro: buckets['micro'] ?? 0,

@@ -278,8 +278,9 @@ describe('Contract tests — responses match OpenAPI spec', () => {
     expect(res.status).toBe(200);
     assertShape(res.body.data, {
       totalAgents: 'number',
-      totalTransactions: 'number',
-      totalAttestations: 'number',
+      totalChannels: 'number',
+      nodesWithRatings: 'number',
+      networkCapacityBtc: 'number',
       avgScore: 'number',
       totalVolumeBuckets: 'object',
     });

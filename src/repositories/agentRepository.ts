@@ -98,6 +98,30 @@ export class AgentRepository {
     return row.avg ?? 0;
   }
 
+  /** Total channels across all lightning_graph agents */
+  sumChannels(): number {
+    const row = this.db.prepare(
+      "SELECT COALESCE(SUM(total_transactions), 0) as total FROM agents WHERE source = 'lightning_graph'"
+    ).get() as { total: number };
+    return row.total;
+  }
+
+  /** Count of agents with LN+ ratings (lnplus_rank > 0) */
+  countWithRatings(): number {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as count FROM agents WHERE lnplus_rank > 0'
+    ).get() as { count: number };
+    return row.count;
+  }
+
+  /** Total network capacity in BTC */
+  networkCapacityBtc(): number {
+    const row = this.db.prepare(
+      'SELECT COALESCE(SUM(capacity_sats), 0) as total FROM agents WHERE capacity_sats > 0'
+    ).get() as { total: number };
+    return Math.round((row.total / 100_000_000) * 10) / 10;
+  }
+
   updateAlias(hash: string, alias: string): void {
     this.db.prepare('UPDATE agents SET alias = ? WHERE public_key_hash = ?').run(alias, hash);
   }

@@ -145,8 +145,9 @@ describe('MCP tool response shapes', () => {
   it('get_network_stats returns expected shape', () => {
     const stats = statsService.getNetworkStats();
     expect(stats).toHaveProperty('totalAgents');
-    expect(stats).toHaveProperty('totalTransactions');
-    expect(stats).toHaveProperty('totalAttestations');
+    expect(stats).toHaveProperty('totalChannels');
+    expect(stats).toHaveProperty('nodesWithRatings');
+    expect(stats).toHaveProperty('networkCapacityBtc');
     expect(stats).toHaveProperty('avgScore');
     expect(stats).toHaveProperty('totalVolumeBuckets');
   });

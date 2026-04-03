@@ -10,7 +10,7 @@ import { runMigrations } from './database/migrations';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
-import { metricsMiddleware, metricsRegistry, agentsTotal, transactionsTotal } from './middleware/metrics';
+import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal } from './middleware/metrics';
 
 // Repositories
 import { AgentRepository } from './repositories/agentRepository';
@@ -130,7 +130,7 @@ export function createApp() {
     try {
       const stats = statsService.getNetworkStats();
       agentsTotal.set(stats.totalAgents);
-      transactionsTotal.set(stats.totalTransactions);
+      channelsTotal.set(stats.totalChannels);
 
       res.setHeader('Content-Type', metricsRegistry.contentType);
       res.end(await metricsRegistry.metrics());

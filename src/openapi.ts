@@ -107,6 +107,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '202': { $ref: '#/components/responses/AutoIndexing' },
           '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { $ref: '#/components/responses/ValidationError' },
         },
@@ -698,10 +699,11 @@ export const openapiSpec = {
       NetworkStats: {
         type: 'object',
         properties: {
-          totalAgents: { type: 'integer' },
-          totalTransactions: { type: 'integer' },
-          totalAttestations: { type: 'integer' },
-          avgScore: { type: 'number' },
+          totalAgents: { type: 'integer', description: 'Total agents indexed across all sources' },
+          totalChannels: { type: 'integer', description: 'Sum of Lightning channels across all lightning_graph agents' },
+          nodesWithRatings: { type: 'integer', description: 'Number of agents with LN+ ratings (lnplus_rank > 0)' },
+          networkCapacityBtc: { type: 'number', description: 'Total network capacity in BTC (sum of all agent capacities)' },
+          avgScore: { type: 'number', description: 'Average score across all scored agents' },
           totalVolumeBuckets: {
             type: 'object',
             properties: {
