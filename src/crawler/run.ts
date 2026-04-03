@@ -19,6 +19,8 @@ import { HttpLndGraphClient } from './lndGraphClient';
 import { LndGraphCrawler } from './lndGraphCrawler';
 import { HttpLnplusClient } from './lnplusClient';
 import { LnplusCrawler } from './lnplusCrawler';
+import { ProbeRepository } from '../repositories/probeRepository';
+import { ProbeCrawler } from './probeCrawler';
 
 // --- Per-source crawl functions ---
 
@@ -108,6 +110,32 @@ async function crawlLnplus(crawler: LnplusCrawler): Promise<void> {
   }
 }
 
+async function crawlProbe(crawler: ProbeCrawler, probeRepo: ProbeRepository): Promise<void> {
+  logger.info('Starting probe routing crawl');
+  const hrStart = process.hrtime.bigint();
+  const result = await crawler.run();
+  const durationSec = Number(process.hrtime.bigint() - hrStart) / 1e9;
+  crawlDuration.observe({ source: 'probe' }, durationSec);
+
+  logger.info({
+    probed: result.probed,
+    reachable: result.reachable,
+    unreachable: result.unreachable,
+    errors: result.errors.length,
+    durationMs: Math.round(durationSec * 1000),
+  }, 'Probe crawl result');
+
+  if (result.errors.length > 0) {
+    logger.warn({ errors: result.errors }, 'Errors during probe crawl');
+  }
+
+  // Purge stale probe results — keep 7 days
+  const purged = probeRepo.purgeOlderThan(7 * 24 * 3600);
+  if (purged > 0) {
+    logger.info({ purged }, 'Old probe results purged');
+  }
+}
+
 const SCORE_BATCH_SIZE = 500;
 
 /** Score a list of agents in batches, returning the number successfully scored. */
@@ -171,6 +199,8 @@ async function runFullCrawl(
   lndGraphCrawler: LndGraphCrawler,
   mempoolCrawler: MempoolCrawler,
   lnplusCrawler: LnplusCrawler,
+  probeCrawlerInstance: ProbeCrawler | null,
+  probeRepo: ProbeRepository,
   agentRepo: AgentRepository,
   scoringService: ScoringService,
   snapshotRepo: SnapshotRepository,
@@ -188,7 +218,19 @@ async function runFullCrawl(
     logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
   }
 
-  // Rescore with LN+ data
+  // Probe routing — after LND crawl so we have all pubkeys
+  if (probeCrawlerInstance) {
+    try {
+      await crawlProbe(probeCrawlerInstance, probeRepo);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ error: msg }, 'Probe crawl failed, skipping');
+    }
+  } else {
+    logger.warn('Probe crawler not configured — LND macaroon missing or unreadable. Skipping probe crawl.');
+  }
+
+  // Rescore with LN+ and probe data
   bulkScoreAll(agentRepo, scoringService, snapshotRepo);
 }
 
@@ -202,7 +244,8 @@ async function main(): Promise<void> {
   const txRepo = new TransactionRepository(db);
   const attestationRepo = new AttestationRepository(db);
   const snapshotRepo = new SnapshotRepository(db);
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
+  const probeRepo = new ProbeRepository(db);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
 
   const observerClient = new HttpObserverClient({
     baseUrl: config.OBSERVER_BASE_URL,
@@ -223,6 +266,23 @@ async function main(): Promise<void> {
   const lnplusClient = new HttpLnplusClient();
   const lnplusCrawlerInstance = new LnplusCrawler(lnplusClient, agentRepo);
 
+  const probeCrawlerInstance = lndClient.isConfigured()
+    ? new ProbeCrawler(lndClient, agentRepo, probeRepo, {
+        maxPerSecond: config.PROBE_MAX_PER_SECOND,
+        amountSats: config.PROBE_AMOUNT_SATS,
+      })
+    : null;
+
+  if (probeCrawlerInstance) {
+    logger.info({
+      maxPerSecond: config.PROBE_MAX_PER_SECOND,
+      amountSats: config.PROBE_AMOUNT_SATS,
+      intervalMs: config.CRAWL_INTERVAL_PROBE_MS,
+    }, 'Probe crawler configured');
+  } else {
+    logger.warn('Probe crawler disabled — LND macaroon not loaded');
+  }
+
   const isCron = process.argv.includes('--cron');
 
   if (isCron) {
@@ -230,18 +290,20 @@ async function main(): Promise<void> {
       observer: config.CRAWL_INTERVAL_OBSERVER_MS,
       lndGraph: config.CRAWL_INTERVAL_LND_GRAPH_MS,
       lnplus: config.CRAWL_INTERVAL_LNPLUS_MS,
+      probe: config.CRAWL_INTERVAL_PROBE_MS,
     };
 
     logger.info({
       observerMs: intervals.observer,
       lndGraphMs: intervals.lndGraph,
       lnplusMs: intervals.lnplus,
+      probeMs: intervals.probe,
     }, 'Cron mode enabled — per-source intervals');
 
     // Initial full crawl at startup
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
-      lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo,
+      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService, snapshotRepo,
     );
 
     // Per-source timers
@@ -263,11 +325,24 @@ async function main(): Promise<void> {
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
     }, intervals.lnplus);
 
+    let timerProbe: ReturnType<typeof setInterval> | null = null;
+    if (probeCrawlerInstance) {
+      timerProbe = setInterval(() => {
+        crawlProbe(probeCrawlerInstance, probeRepo)
+          .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
+          .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Probe crawl error'));
+      }, intervals.probe);
+      logger.info({ intervalMs: intervals.probe }, 'Probe cron timer started');
+    } else {
+      logger.warn('Probe cron timer NOT started — LND not configured');
+    }
+
     function shutdown() {
       logger.info('Stopping cron crawler');
       clearInterval(timerObserver);
       clearInterval(timerLnd);
       clearInterval(timerLnplus);
+      if (timerProbe) clearInterval(timerProbe);
       closeDatabase();
       process.exit(0);
     }
@@ -276,7 +351,7 @@ async function main(): Promise<void> {
   } else {
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
-      lnplusCrawlerInstance, agentRepo, scoringService, snapshotRepo,
+      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService, snapshotRepo,
     );
     closeDatabase();
   }

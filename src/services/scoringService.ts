@@ -7,6 +7,7 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
+import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ScoreComponents, ConfidenceLevel } from '../types';
 import { logger } from '../logger';
 import { computePopularityBonus } from '../utils/scoring';
@@ -44,6 +45,10 @@ import {
   CONFIDENCE_HIGH,
   SCORE_CACHE_TTL,
   MAX_ATTESTATIONS_PER_AGENT,
+  PROBE_UNREACHABLE_PENALTY,
+  PROBE_LOW_LATENCY_BONUS,
+  PROBE_SHORT_HOP_BONUS,
+  PROBE_FRESHNESS_TTL,
 } from '../config/scoring';
 
 export interface ScoreResult {
@@ -60,6 +65,7 @@ export class ScoringService {
     private attestationRepo: AttestationRepository,
     private snapshotRepo: SnapshotRepository,
     private db?: Database.Database,
+    private probeRepo?: ProbeRepository,
   ) {}
 
   // Returns an agent's score, using cache if the score is recent
@@ -144,6 +150,23 @@ export class ScoringService {
     const popularityBonus = computePopularityBonus(agent.query_count);
     if (popularityBonus > 0) {
       total = Math.min(100, total + popularityBonus);
+    }
+
+    // Probe routing bonus/penalty — proprietary reachability data
+    if (this.probeRepo) {
+      const probe = this.probeRepo.findLatest(agentHash);
+      if (probe && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
+        if (probe.reachable === 0) {
+          total = Math.max(0, total - PROBE_UNREACHABLE_PENALTY);
+        } else {
+          if (probe.latency_ms !== null && probe.latency_ms < 500) {
+            total = Math.min(100, total + PROBE_LOW_LATENCY_BONUS);
+          }
+          if (probe.hops !== null && probe.hops <= 3) {
+            total = Math.min(100, total + PROBE_SHORT_HOP_BONUS);
+          }
+        }
+      }
     }
 
     const confidence = this.deriveConfidence(agent.total_transactions, agent.total_attestations_received);

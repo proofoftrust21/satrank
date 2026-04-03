@@ -26,7 +26,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { errorHandler } from '../middleware/errorHandler';
 import { sha256 } from '../utils/crypto';
-import type { LndGraphClient, LndGetInfoResponse, LndGraph, LndNodeInfo } from '../crawler/lndGraphClient';
+import type { LndGraphClient, LndGetInfoResponse, LndGraph, LndNodeInfo, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
 import type { Agent } from '../types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -56,6 +56,10 @@ class MockLndClient implements LndGraphClient {
 
   async getNodeInfo(pubkey: string): Promise<LndNodeInfo | null> {
     return this.singleNodes.get(pubkey) ?? null;
+  }
+
+  async queryRoutes(_pubkey: string, _amountSats: number): Promise<LndQueryRoutesResponse> {
+    return { routes: [] };
   }
 }
 

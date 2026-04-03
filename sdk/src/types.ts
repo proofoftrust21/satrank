@@ -49,6 +49,15 @@ export interface PopularityEvidence {
   bonusApplied: number;
 }
 
+export interface ProbeData {
+  reachable: boolean;
+  latencyMs: number | null;
+  hops: number | null;
+  estimatedFeeMsat: number | null;
+  failureReason: string | null;
+  probedAt: number;
+}
+
 export interface ScoreEvidence {
   transactions: {
     count: number;
@@ -58,6 +67,7 @@ export interface ScoreEvidence {
   lightningGraph: LightningGraphEvidence | null;
   reputation: ReputationEvidence | null;
   popularity: PopularityEvidence;
+  probe: ProbeData | null;
 }
 
 export interface AgentScoreResponse {
@@ -199,7 +209,8 @@ export type VerdictFlag =
   | 'high_demand'
   | 'no_reputation_data'
   | 'fraud_reported'
-  | 'dispute_reported';
+  | 'dispute_reported'
+  | 'unreachable';
 
 export interface PersonalTrust {
   distance: number | null;

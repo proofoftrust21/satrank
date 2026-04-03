@@ -227,6 +227,26 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 9, 'Add category column to attestations for structured negative feedback');
   }
 
+  // v10: probe_results table for route probing data
+  if (!hasVersion(db, 10)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS probe_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+        probed_at INTEGER NOT NULL,
+        reachable INTEGER NOT NULL DEFAULT 0 CHECK(reachable IN (0, 1)),
+        latency_ms INTEGER,
+        hops INTEGER,
+        estimated_fee_msat INTEGER,
+        failure_reason TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_probe_target ON probe_results(target_hash);
+      CREATE INDEX IF NOT EXISTS idx_probe_target_time ON probe_results(target_hash, probed_at);
+    `);
+    recordVersion(db, 10, 'Probe results table for route probing data');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -236,6 +256,9 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  10: (db) => {
+    db.exec('DROP TABLE IF EXISTS probe_results');
+  },
   9: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_attestations_category');
     try { db.exec('ALTER TABLE attestations DROP COLUMN category'); } catch { /* SQLite < 3.35 */ }

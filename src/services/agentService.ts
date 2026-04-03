@@ -3,9 +3,10 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
+import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ScoringService } from './scoringService';
 import type { TrendService } from './trendService';
-import type { AgentScoreResponse, ScoreEvidence, ScoreComponents, Agent } from '../types';
+import type { AgentScoreResponse, ScoreEvidence, ScoreComponents, Agent, ProbeData } from '../types';
 import { NotFoundError } from '../errors';
 import { computePopularityBonus } from '../utils/scoring';
 
@@ -28,6 +29,7 @@ export class AgentService {
     private scoringService: ScoringService,
     private trendService: TrendService,
     private snapshotRepo?: SnapshotRepository,
+    private probeRepo?: ProbeRepository,
   ) {}
 
   getAgentScore(publicKeyHash: string): AgentScoreResponse {
@@ -109,6 +111,21 @@ export class AgentService {
         queryCount: agent.query_count,
         bonusApplied: popularityBonus,
       },
+      probe: this.buildProbeData(agent.public_key_hash),
+    };
+  }
+
+  private buildProbeData(agentHash: string): ProbeData | null {
+    if (!this.probeRepo) return null;
+    const latest = this.probeRepo.findLatest(agentHash);
+    if (!latest) return null;
+    return {
+      reachable: latest.reachable === 1,
+      latencyMs: latest.latency_ms,
+      hops: latest.hops,
+      estimatedFeeMsat: latest.estimated_fee_msat,
+      failureReason: latest.failure_reason,
+      probedAt: latest.probed_at,
     };
   }
 

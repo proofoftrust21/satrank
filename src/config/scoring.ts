@@ -140,3 +140,17 @@ export const POPULARITY_BONUS_CAP = 10;
 
 /** Multiplier applied to log2(queryCount+1) */
 export const POPULARITY_LOG_MULTIPLIER = 2;
+
+// --- Probe routing ---
+
+/** Penalty applied to total score when node is unreachable (subtracted) */
+export const PROBE_UNREACHABLE_PENALTY = 10;
+
+/** Bonus for low-latency probes (< 500ms response) */
+export const PROBE_LOW_LATENCY_BONUS = 3;
+
+/** Bonus for short hop routes (≤ 3 hops) */
+export const PROBE_SHORT_HOP_BONUS = 2;
+
+/** Max age (seconds) for probe data to be considered fresh for scoring. 24h. */
+export const PROBE_FRESHNESS_TTL = 86_400;

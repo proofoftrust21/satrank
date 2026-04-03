@@ -522,6 +522,24 @@ export const openapiSpec = {
               bonusApplied: { type: 'integer', minimum: 0, maximum: 10, description: 'Score bonus from popularity (0-10)' },
             },
           },
+          probe: {
+            oneOf: [
+              {
+                type: 'object',
+                description: 'Route probe data — proprietary reachability test from our Lightning node',
+                properties: {
+                  reachable: { type: 'boolean', description: 'Whether a route exists to this node' },
+                  latencyMs: { type: ['integer', 'null'], description: 'Route query response time in ms' },
+                  hops: { type: ['integer', 'null'], description: 'Number of hops in the best route' },
+                  estimatedFeeMsat: { type: ['integer', 'null'], description: 'Estimated routing fee in millisatoshis' },
+                  failureReason: { type: ['string', 'null'], description: 'Reason for route failure if unreachable' },
+                  probedAt: { type: 'integer', description: 'Unix timestamp of the probe' },
+                },
+              },
+              { type: 'null' },
+            ],
+            description: 'Route probe reachability data. Null if not yet probed.',
+          },
         },
       },
       ScoreSnapshot: {
@@ -640,7 +658,7 @@ export const openapiSpec = {
             type: 'array',
             items: {
               type: 'string',
-              enum: ['new_agent', 'low_volume', 'rapid_decline', 'rapid_rise', 'negative_reputation', 'high_demand', 'no_reputation_data', 'fraud_reported', 'dispute_reported'],
+              enum: ['new_agent', 'low_volume', 'rapid_decline', 'rapid_rise', 'negative_reputation', 'high_demand', 'no_reputation_data', 'fraud_reported', 'dispute_reported', 'unreachable'],
             },
             description: 'Active flags that influenced the verdict',
           },

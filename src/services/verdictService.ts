@@ -2,11 +2,13 @@
 // The binary decision an agent needs before accepting a transaction
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
+import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ScoringService } from './scoringService';
 import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { VerdictResponse, VerdictFlag, Verdict, ConfidenceLevel, PersonalTrust } from '../types';
 import { DAY } from '../utils/constants';
+import { PROBE_FRESHNESS_TTL } from '../config/scoring';
 const POSITIVE_ATTESTATION_MIN_SCORE = 70;
 
 const CONFIDENCE_MAP: Record<ConfidenceLevel, number> = {
@@ -24,6 +26,7 @@ export class VerdictService {
     private scoringService: ScoringService,
     private trendService: TrendService,
     private riskService: RiskService,
+    private probeRepo?: ProbeRepository,
   ) {}
 
   getVerdict(publicKeyHash: string, callerPubkey?: string): VerdictResponse {
@@ -65,6 +68,14 @@ export class VerdictService {
     if (fraudCount > 0) flags.push('fraud_reported');
     if (disputeCount > 0) flags.push('dispute_reported');
 
+    // Check probe reachability — unreachable node is a risk signal (fresh probes only)
+    if (this.probeRepo) {
+      const probe = this.probeRepo.findLatest(publicKeyHash);
+      if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
+        flags.push('unreachable');
+      }
+    }
+
     // Determine verdict
     const confidenceNum = CONFIDENCE_MAP[scoreResult.confidence];
     const hasCriticalFlags = flags.includes('fraud_reported') || flags.includes('negative_reputation');
@@ -73,6 +84,7 @@ export class VerdictService {
     // RISKY requires evidence of risk, not just absence of data.
     // Low score + very_low confidence = UNKNOWN (insufficient data), not RISKY.
     const hasRiskEvidence = hasCriticalFlags ||
+      flags.includes('unreachable') ||
       (delta.delta7d !== null && delta.delta7d < -15) ||
       (scoreResult.total < 30 && confidenceNum >= CONFIDENCE_MAP.low);
     if (hasRiskEvidence) {
@@ -180,6 +192,8 @@ export class VerdictService {
       parts.push('fraud reported');
     } else if (flags.includes('dispute_reported')) {
       parts.push('dispute reported');
+    } else if (flags.includes('unreachable')) {
+      parts.push('unreachable via route probe');
     } else {
       const disputes = agent.negative_ratings;
       parts.push(`${disputes} disputes`);

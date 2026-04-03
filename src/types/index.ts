@@ -60,6 +60,18 @@ export interface ScoreSnapshot {
   computed_at: number;
 }
 
+// Probe results — stored in probe_results table
+export interface ProbeResult {
+  id: number;
+  target_hash: string;
+  probed_at: number;
+  reachable: number; // SQLite boolean: 0 or 1
+  latency_ms: number | null;
+  hops: number | null;
+  estimated_fee_msat: number | null;
+  failure_reason: string | null;
+}
+
 // Detailed score components
 export interface ScoreComponents {
   volume: number;
@@ -107,6 +119,15 @@ export interface TransactionSample {
   timestamp: number;
 }
 
+export interface ProbeData {
+  reachable: boolean;
+  latencyMs: number | null;
+  hops: number | null;
+  estimatedFeeMsat: number | null;
+  failureReason: string | null;
+  probedAt: number;
+}
+
 export interface ScoreEvidence {
   transactions: {
     count: number;
@@ -131,6 +152,7 @@ export interface ScoreEvidence {
     queryCount: number;
     bonusApplied: number;
   };
+  probe: ProbeData | null;
 }
 
 export interface PaginationParams {
@@ -211,7 +233,8 @@ export type VerdictFlag =
   | 'high_demand'
   | 'no_reputation_data'
   | 'fraud_reported'
-  | 'dispute_reported';
+  | 'dispute_reported'
+  | 'unreachable';
 
 export interface PersonalTrust {
   distance: number | null;

@@ -13,6 +13,7 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
+import { ProbeRepository } from '../repositories/probeRepository';
 import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
 import { AttestationService } from '../services/attestationService';
@@ -75,14 +76,15 @@ const agentRepo = new AgentRepository(db);
 const txRepo = new TransactionRepository(db);
 const attestationRepo = new AttestationRepository(db);
 const snapshotRepo = new SnapshotRepository(db);
+const probeRepo = new ProbeRepository(db);
 
-const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
+const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
 const trendService = new TrendService(agentRepo, snapshotRepo);
-const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
 const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
 const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 const riskService = new RiskService();
-const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService);
+const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
 
 // MCP server creation (low-level API to avoid TS2589 with .tool())
 const server = new Server(
