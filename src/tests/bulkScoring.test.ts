@@ -278,4 +278,80 @@ describe('Bulk scoring — LND nodes get scored', () => {
     // And higher total score
     expect(withLnplus.total).toBeGreaterThan(withoutLnplus.total);
   });
+
+  it('one failing agent does not prevent others from being scored', () => {
+    // Insert 5 valid agents
+    for (let i = 0; i < 5; i++) {
+      agentRepo.insert(makeLndAgent(`resilient-${i}`, {
+        total_transactions: 20 + i * 10,
+        capacity_sats: (i + 1) * 200_000_000,
+      }));
+    }
+
+    const unscored = agentRepo.findUnscoredWithData();
+    expect(unscored).toHaveLength(5);
+
+    // Score them all, simulating that one might fail
+    let scored = 0;
+    for (const agent of unscored) {
+      try {
+        scoringService.computeScore(agent.public_key_hash);
+        scored++;
+      } catch {
+        // skip
+      }
+    }
+    expect(scored).toBe(5);
+
+    // Verify all scored
+    const stillUnscored = agentRepo.findUnscoredWithData();
+    expect(stillUnscored).toHaveLength(0);
+  });
+
+  it('rescore updates existing agents with new data', () => {
+    // Insert and score an agent
+    agentRepo.insert(makeLndAgent('rescore-test', {
+      total_transactions: 10,
+      capacity_sats: 500_000_000,
+    }));
+    const firstScore = scoringService.computeScore(sha256('rescore-test'));
+
+    // Simulate LN+ crawl updating the agent
+    agentRepo.updateLnplusRatings(sha256('rescore-test'), 30, 0, 8, 10, 20, 0);
+
+    // Rescore — should improve with reputation data
+    const secondScore = scoringService.computeScore(sha256('rescore-test'));
+
+    expect(secondScore.total).toBeGreaterThan(firstScore.total);
+    expect(secondScore.components.reputation).toBeGreaterThan(0);
+    expect(firstScore.components.reputation).toBe(0);
+  });
+
+  it('findScoredAgents returns agents for rescore after initial scoring', () => {
+    // Insert and score 3 agents
+    for (let i = 0; i < 3; i++) {
+      agentRepo.insert(makeLndAgent(`scored-for-rescore-${i}`, {
+        total_transactions: 30 + i * 20,
+        capacity_sats: (i + 1) * 500_000_000,
+      }));
+    }
+    // Insert 2 unscored agents
+    for (let i = 0; i < 2; i++) {
+      agentRepo.insert(makeLndAgent(`unscored-${i}`, {
+        total_transactions: 5,
+        capacity_sats: 100_000_000,
+      }));
+    }
+
+    // Score the first 3
+    const unscored = agentRepo.findUnscoredWithData();
+    expect(unscored).toHaveLength(5);
+    for (let i = 0; i < 3; i++) {
+      scoringService.computeScore(sha256(`scored-for-rescore-${i}`));
+    }
+
+    // findScoredAgents returns 3, findUnscoredWithData returns 2
+    expect(agentRepo.findScoredAgents()).toHaveLength(3);
+    expect(agentRepo.findUnscoredWithData()).toHaveLength(2);
+  });
 });

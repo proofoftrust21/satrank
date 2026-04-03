@@ -108,52 +108,60 @@ async function crawlLnplus(crawler: LnplusCrawler): Promise<void> {
   }
 }
 
-// Cooldown prevents redundant precompute runs when multiple crawl timers fire close together
-const PRECOMPUTE_COOLDOWN_MS = 30_000; // 30 seconds
 const SCORE_BATCH_SIZE = 500;
-let lastPrecomputeAt = 0;
 
-function precomputeAndPurge(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): void {
-  const now = Date.now();
-  if (now - lastPrecomputeAt < PRECOMPUTE_COOLDOWN_MS) {
-    logger.debug('precomputeAndPurge skipped — cooldown active');
-    return;
-  }
-  lastPrecomputeAt = now;
-
-  // Phase 1: Score all unscored agents that have exploitable data
-  const unscored = agentRepo.findUnscoredWithData();
-  if (unscored.length > 0) {
-    let scored = 0;
-    for (let i = 0; i < unscored.length; i += SCORE_BATCH_SIZE) {
-      const batch = unscored.slice(i, i + SCORE_BATCH_SIZE);
-      for (const agent of batch) {
+/** Score a list of agents in batches, returning the number successfully scored. */
+function scoreBatch(agents: { public_key_hash: string }[], scoringService: ScoringService, label: string): number {
+  let scored = 0;
+  let errors = 0;
+  for (let i = 0; i < agents.length; i += SCORE_BATCH_SIZE) {
+    const batch = agents.slice(i, i + SCORE_BATCH_SIZE);
+    for (const agent of batch) {
+      try {
         scoringService.computeScore(agent.public_key_hash);
-      }
-      scored += batch.length;
-      if (unscored.length > SCORE_BATCH_SIZE) {
-        logger.info({ scored, total: unscored.length }, 'Scoring progress (unscored agents)');
+        scored++;
+      } catch (err: unknown) {
+        errors++;
+        if (errors <= 5) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn({ agentHash: agent.public_key_hash, error: msg }, `Scoring error (${label})`);
+        }
       }
     }
-    logger.info({ count: scored }, 'Scores computed for previously unscored agents');
+    if (agents.length > SCORE_BATCH_SIZE) {
+      logger.info({ scored, total: agents.length, errors }, `Bulk scoring progress (${label})`);
+    }
+  }
+  return scored;
+}
+
+function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): void {
+  const startMs = Date.now();
+
+  // Phase 1: Score all unscored agents that have exploitable data
+  const unscoredCount = agentRepo.countUnscoredWithData();
+  logger.info({ unscoredCount }, 'Starting bulk scoring: unscored agents with data');
+
+  if (unscoredCount > 0) {
+    const unscored = agentRepo.findUnscoredWithData();
+    const scored = scoreBatch(unscored, scoringService, 'unscored');
+    logger.info({ scored, total: unscored.length, durationMs: Date.now() - startMs }, 'Bulk scoring complete (unscored agents)');
   }
 
   // Phase 2: Rescore already-scored agents (refresh with latest data)
   const alreadyScored = agentRepo.findScoredAgents();
   if (alreadyScored.length > 0) {
-    for (let i = 0; i < alreadyScored.length; i += SCORE_BATCH_SIZE) {
-      const batch = alreadyScored.slice(i, i + SCORE_BATCH_SIZE);
-      for (const agent of batch) {
-        scoringService.computeScore(agent.public_key_hash);
-      }
-    }
-    logger.info({ count: alreadyScored.length }, 'Scores refreshed for existing agents');
+    const rescoreStart = Date.now();
+    const rescored = scoreBatch(alreadyScored, scoringService, 'rescore');
+    logger.info({ rescored, total: alreadyScored.length, durationMs: Date.now() - rescoreStart }, 'Bulk rescore complete (existing agents)');
   }
 
   const purged = snapshotRepo.purgeOldSnapshots();
   if (purged > 0) {
     logger.info({ purged }, 'Old snapshots purged');
   }
+
+  logger.info({ totalDurationMs: Date.now() - startMs }, 'Bulk scoring pipeline finished');
 }
 
 // --- Full crawl (all sources once, used for single-run and initial cron boot) ---
@@ -177,7 +185,7 @@ async function runFullCrawl(
     logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
   }
 
-  precomputeAndPurge(agentRepo, scoringService, snapshotRepo);
+  bulkScoreAll(agentRepo, scoringService, snapshotRepo);
 }
 
 // --- Main ---
@@ -235,18 +243,19 @@ async function main(): Promise<void> {
     // Per-source timers
     const timerObserver = setInterval(() => {
       crawlObserver(observerCrawler)
-        .then(() => precomputeAndPurge(agentRepo, scoringService, snapshotRepo))
+        .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Observer crawl error'));
     }, intervals.observer);
 
     const timerLnd = setInterval(() => {
       crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance)
-        .then(() => precomputeAndPurge(agentRepo, scoringService, snapshotRepo))
+        .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LND graph crawl error'));
     }, intervals.lndGraph);
 
     const timerLnplus = setInterval(() => {
       crawlLnplus(lnplusCrawlerInstance)
+        .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
     }, intervals.lnplus);
 
