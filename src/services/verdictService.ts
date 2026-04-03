@@ -70,11 +70,12 @@ export class VerdictService {
     const hasCriticalFlags = flags.includes('fraud_reported') || flags.includes('negative_reputation');
 
     let verdict: Verdict;
-    if (
-      scoreResult.total < 30 ||
+    // RISKY requires evidence of risk, not just absence of data.
+    // Low score + very_low confidence = UNKNOWN (insufficient data), not RISKY.
+    const hasRiskEvidence = hasCriticalFlags ||
       (delta.delta7d !== null && delta.delta7d < -15) ||
-      hasCriticalFlags
-    ) {
+      (scoreResult.total < 30 && confidenceNum >= CONFIDENCE_MAP.low);
+    if (hasRiskEvidence) {
       verdict = 'RISKY';
     } else if (
       scoreResult.total >= 50 &&
@@ -83,7 +84,7 @@ export class VerdictService {
     ) {
       verdict = 'SAFE';
     } else {
-      // Score 30-49 or low confidence — insufficient signal to declare SAFE or RISKY
+      // Score 30-49, or low score with very low confidence — insufficient signal
       verdict = 'UNKNOWN';
     }
 

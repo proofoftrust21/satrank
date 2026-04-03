@@ -32,6 +32,33 @@ export class AgentRepository {
     return this.db.prepare('SELECT * FROM agents ORDER BY total_transactions DESC LIMIT ?').all(limit) as Agent[];
   }
 
+  /** Returns all agents that have scorable data (capacity, LN+ ratings, transactions, or attestations)
+   *  but currently have avg_score = 0. Used for bulk scoring after crawls. */
+  findUnscoredWithData(): Agent[] {
+    return this.db.prepare(`
+      SELECT * FROM agents
+      WHERE avg_score = 0
+        AND (capacity_sats > 0 OR lnplus_rank > 0 OR positive_ratings > 0
+             OR total_transactions > 1 OR total_attestations_received > 0)
+    `).all() as Agent[];
+  }
+
+  /** Returns all agents that have been scored (avg_score > 0) for periodic rescore. */
+  findScoredAgents(): Agent[] {
+    return this.db.prepare('SELECT * FROM agents WHERE avg_score > 0').all() as Agent[];
+  }
+
+  /** Count of agents with scorable data but avg_score = 0 */
+  countUnscoredWithData(): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as count FROM agents
+      WHERE avg_score = 0
+        AND (capacity_sats > 0 OR lnplus_rank > 0 OR positive_ratings > 0
+             OR total_transactions > 1 OR total_attestations_received > 0)
+    `).get() as { count: number };
+    return row.count;
+  }
+
   searchByAlias(alias: string, limit: number, offset: number): Agent[] {
     const escaped = alias.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
     return this.db.prepare(

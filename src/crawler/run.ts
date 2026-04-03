@@ -110,6 +110,7 @@ async function crawlLnplus(crawler: LnplusCrawler): Promise<void> {
 
 // Cooldown prevents redundant precompute runs when multiple crawl timers fire close together
 const PRECOMPUTE_COOLDOWN_MS = 30_000; // 30 seconds
+const SCORE_BATCH_SIZE = 500;
 let lastPrecomputeAt = 0;
 
 function precomputeAndPurge(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): void {
@@ -120,11 +121,34 @@ function precomputeAndPurge(agentRepo: AgentRepository, scoringService: ScoringS
   }
   lastPrecomputeAt = now;
 
-  const topAgents = agentRepo.findTopByActivity(50);
-  for (const agent of topAgents) {
-    scoringService.computeScore(agent.public_key_hash);
+  // Phase 1: Score all unscored agents that have exploitable data
+  const unscored = agentRepo.findUnscoredWithData();
+  if (unscored.length > 0) {
+    let scored = 0;
+    for (let i = 0; i < unscored.length; i += SCORE_BATCH_SIZE) {
+      const batch = unscored.slice(i, i + SCORE_BATCH_SIZE);
+      for (const agent of batch) {
+        scoringService.computeScore(agent.public_key_hash);
+      }
+      scored += batch.length;
+      if (unscored.length > SCORE_BATCH_SIZE) {
+        logger.info({ scored, total: unscored.length }, 'Scoring progress (unscored agents)');
+      }
+    }
+    logger.info({ count: scored }, 'Scores computed for previously unscored agents');
   }
-  logger.info({ count: topAgents.length }, 'Scores pre-computed for top agents');
+
+  // Phase 2: Rescore already-scored agents (refresh with latest data)
+  const alreadyScored = agentRepo.findScoredAgents();
+  if (alreadyScored.length > 0) {
+    for (let i = 0; i < alreadyScored.length; i += SCORE_BATCH_SIZE) {
+      const batch = alreadyScored.slice(i, i + SCORE_BATCH_SIZE);
+      for (const agent of batch) {
+        scoringService.computeScore(agent.public_key_hash);
+      }
+    }
+    logger.info({ count: alreadyScored.length }, 'Scores refreshed for existing agents');
+  }
 
   const purged = snapshotRepo.purgeOldSnapshots();
   if (purged > 0) {

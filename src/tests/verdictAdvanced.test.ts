@@ -136,6 +136,56 @@ describe('Verdict confidence formula', () => {
     expect(result.confidence).toBe(0.9);
   });
 
+  it('UNKNOWN (not RISKY) for low score with very_low confidence — insufficient data', () => {
+    // A small LND node with few channels and no reputation data should be UNKNOWN, not RISKY.
+    // RISKY requires at least low confidence (some evidence of risk).
+    const hash = sha256('conf-insufficient-data');
+    const agent = makeAgent({
+      public_key_hash: hash,
+      avg_score: 15,
+      total_transactions: 2,  // few channels → very_low confidence (2 data points < 5)
+      total_attestations_received: 0,
+      source: 'lightning_graph',
+      capacity_sats: 500_000,
+      positive_ratings: 0,
+      negative_ratings: 0,
+      lnplus_rank: 0,
+    });
+    agentRepo.insert(agent);
+    // Insert recent snapshot so cache is used (avoids recompute overriding score)
+    db.prepare(`
+      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(uuid(), hash, 15, '{"volume":5,"reputation":0,"seniority":10,"regularity":50,"diversity":1}', NOW);
+    const result = verdictService.getVerdict(agent.public_key_hash);
+    // very_low confidence (2 data points) + low score → UNKNOWN, not RISKY
+    expect(result.verdict).toBe('UNKNOWN');
+    expect(result.confidence).toBe(0.1);
+  });
+
+  it('RISKY for low score with sufficient confidence', () => {
+    // An agent with enough data points to have at least low confidence AND a low score is genuinely RISKY
+    const hash = sha256('conf-risky-with-evidence');
+    const agent = makeAgent({
+      public_key_hash: hash,
+      avg_score: 20,
+      total_transactions: 10,
+      total_attestations_received: 5,
+      // 15 data points → low confidence (>= 5, < 20)
+      positive_ratings: 0,
+      lnplus_rank: 0,
+    });
+    agentRepo.insert(agent);
+    db.prepare(`
+      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(uuid(), hash, 20, '{"volume":10,"reputation":5,"seniority":20,"regularity":10,"diversity":5}', NOW);
+    const result = verdictService.getVerdict(agent.public_key_hash);
+    // low confidence (15 data points) + low score → RISKY (enough evidence)
+    expect(result.verdict).toBe('RISKY');
+    expect(result.confidence).toBe(0.25);
+  });
+
   it('UNKNOWN verdict for score 30-49 even with medium confidence', () => {
     // Score 30-49 should be UNKNOWN, not SAFE or RISKY
     const hash = sha256('conf-unknown-mid');
