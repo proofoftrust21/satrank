@@ -26,6 +26,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '202': { $ref: '#/components/responses/AutoIndexing' },
           '402': { $ref: '#/components/responses/PaymentRequired' },
           '404': { $ref: '#/components/responses/NotFound' },
           '400': { $ref: '#/components/responses/ValidationError' },
@@ -59,6 +60,7 @@ export const openapiSpec = {
               },
             } } },
           },
+          '202': { $ref: '#/components/responses/AutoIndexing' },
           '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { $ref: '#/components/responses/ValidationError' },
         },
@@ -733,6 +735,16 @@ export const openapiSpec = {
       Unauthorized: {
         description: 'Missing or invalid API key',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+      },
+      AutoIndexing: {
+        description: 'Unknown Lightning pubkey accepted for background indexing. Retry after 10 seconds.',
+        content: { 'application/json': { schema: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['indexing'] },
+            retryAfter: { type: 'integer', example: 10 },
+          },
+        } } },
       },
       PaymentRequired: {
         description: 'L402 payment required. Pay the Lightning invoice (1 sat) and retry with the L402 token.',

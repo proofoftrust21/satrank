@@ -168,7 +168,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
 
   <div class="card">
     <div class="card-title">LND Graph (Primary)</div>
-    <p>Full Lightning Network graph from our own LND node. Provides all ~17,000 public nodes with public keys, channel counts, total capacity (sats), and last-update timestamps. This is the primary source for Lightning data, replacing the mempool.space top-100 limitation.</p>
+    <p>Full Lightning Network graph from our own LND node via the gossip protocol. Currently indexing <strong>4,500+ Lightning nodes</strong> with public keys, channel counts, total capacity (sats), and last-update timestamps. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes.</p>
   </div>
 
   <div class="card">
@@ -323,14 +323,17 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
   <table>
     <thead><tr><th>Verdict</th><th>Condition</th></tr></thead>
     <tbody>
-      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found in the SatRank index</td></tr>
-      <tr><td><strong>RISKY</strong></td><td>Score &lt; 30, OR delta_7d &lt; &minus;15, OR negative ratings exceed positive, OR fraud/dispute attestations reported</td></tr>
+      <tr><td><strong>RISKY</strong></td><td>Score &lt; 30, OR delta_7d &lt; &minus;15, OR <code>negative_reputation</code> flag, OR <code>fraud_reported</code> flag</td></tr>
       <tr><td><strong>SAFE</strong></td><td>Score &ge; 50, no critical flags, confidence &ge; medium (0.5)</td></tr>
+      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;49, OR score &ge; 50 with confidence &lt; medium</td></tr>
     </tbody>
   </table>
   <p>
-    Agents that fall between SAFE and RISKY thresholds (score 30&ndash;49, or low confidence)
-    are classified as <strong>RISKY</strong> by default. The system errs on the side of caution.
+    UNKNOWN is the honest answer when data is insufficient to commit either way. A score of 42
+    with low confidence could be a legitimate new node or a sophisticated fake &mdash; the system
+    signals uncertainty rather than forcing a premature judgment. Agents receiving UNKNOWN should
+    retry after the node accumulates more history, or use <code>caller_pubkey</code> for a
+    personal trust graph assessment.
   </p>
 
   <h3>Confidence Mapping</h3>
@@ -373,12 +376,22 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
     The more agents attest, the more accurate the scoring becomes for everyone.
   </p>
 
-  <h3>Auto-Indexation</h3>
+  <h3 id="auto-index">Auto-Indexation</h3>
   <p>
-    When you query <code>/agent/{hash}</code> or <code>/verdict</code> for an unknown Lightning pubkey
-    (66 hex characters starting with 02 or 03), SatRank returns <code>202 Accepted</code> and begins
-    indexing that node in the background via our LND graph connection. Retry after 10 seconds to get
-    the score. This means the index grows organically as agents query new counterparties.
+    When you query <code>/agent/{pubkey}</code> or <code>/verdict</code> for an unknown Lightning
+    pubkey (66 hex characters starting with <code>02</code> or <code>03</code>), SatRank returns
+    <code>202 Accepted</code> and begins indexing that node in the background via our LND graph
+    connection. Retry after 10 seconds to get the score.
+  </p>
+  <p>
+    This means the index grows organically as agents query new counterparties &mdash; usage drives
+    coverage. The system is rate-limited (configurable, default 10 auto-indexes per minute) to
+    prevent abuse, and deduplicates concurrent requests for the same pubkey.
+  </p>
+  <p>
+    Batch verdicts (<code>POST /api/v1/verdicts</code>) also trigger auto-indexation for unknown
+    Lightning pubkeys, capped at 2 per batch to prevent a single request from consuming the
+    entire rate budget.
   </p>
 
   <h3>Batch Verdict</h3>
@@ -505,6 +518,108 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
     Each profile includes a human-readable <code>description</code> with the specific values
     that triggered the classification (e.g., &ldquo;Active for 45 days, rapid score increase
     (+18 in 7d). Monitor closely.&rdquo;).
+  </p>
+
+  <!-- Score History & Deltas -->
+  <h2 id="score-history">Score History &amp; Deltas</h2>
+
+  <p>
+    A score is a snapshot. A <strong>delta</strong> is a trajectory. SatRank stores score snapshots
+    over time and computes deltas at three intervals:
+  </p>
+
+  <table>
+    <thead><tr><th>Field</th><th>Window</th><th>Use Case</th></tr></thead>
+    <tbody>
+      <tr><td><code>delta24h</code></td><td>24 hours</td><td>Detect sudden drops or spikes after an incident</td></tr>
+      <tr><td><code>delta7d</code></td><td>7 days</td><td>Primary trend signal. Used by verdict logic and risk profiles</td></tr>
+      <tr><td><code>delta30d</code></td><td>30 days</td><td>Long-term trajectory. Identifies sustained improvement or degradation</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    All deltas are <code>null</code> when no historical snapshot exists for the given window.
+    A delta of <code>0</code> means the score was measured at both endpoints and did not change.
+  </p>
+
+  <h3>Trend Direction</h3>
+  <p>
+    Derived from <code>delta7d</code>:
+  </p>
+  <pre>if delta7d is null or between -2 and +2 → stable
+if delta7d > 2                          → rising
+if delta7d < -2                         → falling</pre>
+  <p>
+    The &plusmn;2 dead zone prevents noise from minor score fluctuations. Only meaningful
+    directional changes register as <code>rising</code> or <code>falling</code>.
+  </p>
+
+  <h3>History Endpoint</h3>
+  <p>
+    <code>GET /api/v1/agent/{hash}/history</code> returns paginated score snapshots with per-entry
+    deltas (difference from previous snapshot), plus an aggregate delta summary for the agent:
+  </p>
+  <pre>{
+  "data": [
+    { "score": 72, "components": {...}, "computedAt": "2026-04-01T...", "delta": +3 },
+    { "score": 69, "components": {...}, "computedAt": "2026-03-31T...", "delta": -1 },
+    ...
+  ],
+  "delta": { "delta24h": 3, "delta7d": 8, "delta30d": 12, "trend": "rising" },
+  "meta": { "total": 45, "limit": 20, "offset": 0 }
+}</pre>
+
+  <h3>Top Movers</h3>
+  <p>
+    <code>GET /api/v1/agents/movers</code> returns the 5 agents with the largest score increases
+    and the 5 with the largest decreases over the past 7 days. This surfaces emerging trust
+    signals and developing problems before they reach the individual agent level.
+  </p>
+
+  <!-- Alerts -->
+  <h2 id="alerts">Alerts</h2>
+
+  <p>
+    The score response (<code>GET /api/v1/agent/{hash}</code>) includes an <code>alerts</code>
+    array with machine-readable signals about the agent's current state. Alerts are computed
+    from deltas, age, and activity:
+  </p>
+
+  <table>
+    <thead><tr><th>Alert Type</th><th>Severity</th><th>Trigger</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>score_drop</code></td>
+        <td><strong>warning</strong> or <strong>critical</strong></td>
+        <td>delta_7d &le; &minus;10 (warning) or &le; &minus;20 (critical)</td>
+      </tr>
+      <tr>
+        <td><code>score_surge</code></td>
+        <td><strong>info</strong></td>
+        <td>delta_7d &ge; +15</td>
+      </tr>
+      <tr>
+        <td><code>new_agent</code></td>
+        <td><strong>info</strong></td>
+        <td>First seen &le; 7 days ago</td>
+      </tr>
+      <tr>
+        <td><code>inactive</code></td>
+        <td><strong>info</strong></td>
+        <td>Last seen &ge; 60 days ago</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    Alerts complement verdicts. A <code>SAFE</code> agent with a <code>score_drop</code> alert
+    is still safe today but may not be next week. A <code>score_surge</code> on a new agent
+    warrants the same scrutiny as the <code>suspicious_rapid_rise</code> risk profile.
+  </p>
+  <p>
+    Alerts differ from verdict flags: flags affect the verdict decision itself
+    (<code>fraud_reported</code> forces RISKY), while alerts are informational and do not
+    change the verdict outcome.
   </p>
 
   <!-- L402 as Signal -->

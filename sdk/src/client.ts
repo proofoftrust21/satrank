@@ -9,6 +9,10 @@ import type {
   NetworkStats,
   VersionResponse,
   PaginationMeta,
+  VerdictResponse,
+  BatchVerdictItem,
+  CreateAttestationInput,
+  CreateAttestationResponse,
 } from './types';
 
 export class SatRankError extends Error {
@@ -94,6 +98,25 @@ export class SatRankClient {
     return envelope.data;
   }
 
+  /** Agent verdict (SAFE / RISKY / UNKNOWN) */
+  async getVerdict(publicKeyHash: string, callerPubkey?: string): Promise<VerdictResponse> {
+    const qs = callerPubkey ? `?caller_pubkey=${callerPubkey}` : '';
+    const envelope = await this.get<ApiEnvelope<VerdictResponse>>(`/api/v1/agent/${publicKeyHash}/verdict${qs}`);
+    return envelope.data;
+  }
+
+  /** Batch verdicts — up to 100 hashes in one request */
+  async getBatchVerdicts(hashes: string[]): Promise<BatchVerdictItem[]> {
+    const envelope = await this.post<ApiEnvelope<BatchVerdictItem[]>>(`/api/v1/verdicts`, { hashes });
+    return envelope.data;
+  }
+
+  /** Submit an attestation (requires API key in headers) */
+  async submitAttestation(input: CreateAttestationInput): Promise<CreateAttestationResponse> {
+    const envelope = await this.post<ApiEnvelope<CreateAttestationResponse>>(`/api/v1/attestation`, input);
+    return envelope.data;
+  }
+
   private async get<T>(path: string): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
@@ -122,6 +145,51 @@ export class SatRankClient {
       }
 
       return body;
+    } catch (err) {
+      if (err instanceof SatRankError) throw err;
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new SatRankError('Request timeout', 0, 'TIMEOUT');
+      }
+      throw new SatRankError(
+        err instanceof Error ? err.message : String(err),
+        0,
+        'NETWORK_ERROR',
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'SatRank-SDK/0.1',
+          ...this.headers,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      const responseBody = await response.json() as T & { error?: { code: string; message: string } };
+
+      if (!response.ok) {
+        const errBody = responseBody as { error?: { code: string; message: string } };
+        throw new SatRankError(
+          errBody.error?.message ?? `HTTP ${response.status}`,
+          response.status,
+          errBody.error?.code ?? 'UNKNOWN',
+        );
+      }
+
+      return responseBody;
     } catch (err) {
       if (err instanceof SatRankError) throw err;
       if (err instanceof Error && err.name === 'AbortError') {

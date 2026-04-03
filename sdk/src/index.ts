@@ -21,4 +21,23 @@ export type {
   AgentSource,
   AmountBucket,
   PaymentProtocol,
+  // Verdict types
+  VerdictResponse,
+  Verdict,
+  VerdictFlag,
+  PersonalTrust,
+  RiskProfile,
+  RiskProfileName,
+  RiskLevel,
+  // Temporal types
+  ScoreDelta,
+  TrendDirection,
+  AgentAlert,
+  TopMover,
+  NetworkTrends,
+  // Attestation types
+  AttestationCategory,
+  CreateAttestationInput,
+  CreateAttestationResponse,
+  BatchVerdictItem,
 } from './types';

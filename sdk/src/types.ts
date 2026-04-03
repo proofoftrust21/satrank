@@ -82,6 +82,8 @@ export interface AgentScoreResponse {
     avgAttestationScore: number;
   };
   evidence: ScoreEvidence;
+  delta: ScoreDelta;
+  alerts: AgentAlert[];
 }
 
 export interface TopAgentsResponse {
@@ -123,6 +125,7 @@ export interface AttestationsResponse {
     tags: string[];
     evidenceHash: string | null;
     timestamp: number;
+    category: AttestationCategory;
   }[];
   meta: PaginationMeta;
 }
@@ -141,10 +144,114 @@ export interface NetworkStats {
   totalAttestations: number;
   avgScore: number;
   totalVolumeBuckets: Record<AmountBucket, number>;
+  trends: NetworkTrends;
 }
 
 export interface VersionResponse {
   commit: string;
   buildDate: string;
   version: string;
+}
+
+// Temporal delta types
+export type TrendDirection = 'rising' | 'stable' | 'falling';
+
+export interface ScoreDelta {
+  delta24h: number | null;
+  delta7d: number | null;
+  delta30d: number | null;
+  trend: TrendDirection;
+}
+
+export interface AgentAlert {
+  type: 'score_drop' | 'score_surge' | 'new_agent' | 'inactive';
+  message: string;
+  severity: 'info' | 'warning' | 'critical';
+}
+
+export interface TopMover {
+  publicKeyHash: string;
+  alias: string | null;
+  score: number;
+  delta7d: number;
+  trend: TrendDirection;
+}
+
+export interface NetworkTrends {
+  avgScoreDelta7d: number;
+  topMoversUp: TopMover[];
+  topMoversDown: TopMover[];
+}
+
+// Verdict types
+export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN';
+
+export type VerdictFlag =
+  | 'new_agent'
+  | 'low_volume'
+  | 'rapid_decline'
+  | 'rapid_rise'
+  | 'negative_reputation'
+  | 'high_demand'
+  | 'no_reputation_data'
+  | 'fraud_reported'
+  | 'dispute_reported';
+
+export interface PersonalTrust {
+  distance: number | null;
+  sharedConnections: number;
+  strongestConnection: string | null;
+}
+
+export type RiskProfileName =
+  | 'established_hub'
+  | 'growing_node'
+  | 'declining_node'
+  | 'new_unproven'
+  | 'small_reliable'
+  | 'suspicious_rapid_rise'
+  | 'default';
+
+export type RiskLevel = 'low' | 'medium' | 'high' | 'unknown';
+
+export interface RiskProfile {
+  name: RiskProfileName;
+  riskLevel: RiskLevel;
+  description: string;
+}
+
+export interface VerdictResponse {
+  verdict: Verdict;
+  confidence: number;
+  reason: string;
+  flags: VerdictFlag[];
+  personalTrust: PersonalTrust | null;
+  riskProfile: RiskProfile;
+}
+
+export type AttestationCategory =
+  | 'successful_transaction'
+  | 'failed_transaction'
+  | 'dispute'
+  | 'fraud'
+  | 'unresponsive'
+  | 'general';
+
+export interface CreateAttestationInput {
+  txId: string;
+  attesterHash: string;
+  subjectHash: string;
+  score: number;
+  tags?: string[];
+  evidenceHash?: string;
+  category?: AttestationCategory;
+}
+
+export interface CreateAttestationResponse {
+  attestationId: string;
+  timestamp: number;
+}
+
+export interface BatchVerdictItem extends VerdictResponse {
+  publicKeyHash: string;
 }
