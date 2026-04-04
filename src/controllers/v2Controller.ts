@@ -9,6 +9,9 @@ import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ScoringService } from '../services/scoringService';
 import type { TrendService } from '../services/trendService';
 import type { RiskService } from '../services/riskService';
+import type { SurvivalService } from '../services/survivalService';
+import type { ChannelFlowService } from '../services/channelFlowService';
+import type { FeeVolatilityService } from '../services/feeVolatilityService';
 import { agentIdentifierSchema, decideSchema, reportSchema } from '../middleware/validation';
 import { ValidationError } from '../errors';
 import { normalizeIdentifier } from '../utils/identifier';
@@ -27,6 +30,9 @@ export class V2Controller {
     private trendService: TrendService,
     private riskService: RiskService,
     private probeRepo?: ProbeRepository,
+    private survivalService?: SurvivalService,
+    private channelFlowService?: ChannelFlowService,
+    private feeVolatilityService?: FeeVolatilityService,
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -121,6 +127,19 @@ export class V2Controller {
         }
       }
 
+      // Drain flags from channel snapshots
+      if (this.channelFlowService) {
+        flags.push(...this.channelFlowService.computeDrainFlags(hash));
+      }
+
+      // Predictive signals
+      const survival = this.survivalService
+        ? this.survivalService.compute(agent)
+        : { score: 100, prediction: 'stable' as const, signals: { scoreTrajectory: 'no data', probeStability: 'no data', gossipFreshness: 'no data' } };
+      const channelFlow = this.channelFlowService?.computeFlow(hash) ?? null;
+      const capacityHealth = this.channelFlowService?.computeCapacityHealth(hash) ?? null;
+      const feeVolatility = this.feeVolatilityService?.compute(hash) ?? null;
+
       res.json({
         data: {
           agent: {
@@ -145,6 +164,10 @@ export class V2Controller {
             successRate: Math.round(successRate * 1000) / 1000,
           },
           probeUptime: probeUptime !== null ? Math.round(probeUptime * 1000) / 1000 : null,
+          survival,
+          channelFlow,
+          capacityHealth,
+          feeVolatility,
           delta,
           riskProfile,
           evidence,

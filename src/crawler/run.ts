@@ -20,6 +20,8 @@ import { LndGraphCrawler } from './lndGraphCrawler';
 import { HttpLnplusClient } from './lnplusClient';
 import { LnplusCrawler } from './lnplusCrawler';
 import { ProbeRepository } from '../repositories/probeRepository';
+import { ChannelSnapshotRepository } from '../repositories/channelSnapshotRepository';
+import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
 
 // --- Per-source crawl functions ---
@@ -262,7 +264,9 @@ async function main(): Promise<void> {
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
   });
-  const lndGraphCrawlerInstance = new LndGraphCrawler(lndClient, agentRepo);
+  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
+  const feeSnapshotRepo = new FeeSnapshotRepository(db);
+  const lndGraphCrawlerInstance = new LndGraphCrawler(lndClient, agentRepo, channelSnapshotRepo, feeSnapshotRepo);
 
   const mempoolClient = new HttpMempoolClient();
   const mempoolCrawlerInstance = new MempoolCrawler(mempoolClient, agentRepo);

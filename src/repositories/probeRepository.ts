@@ -68,6 +68,11 @@ export class ProbeRepository {
     return row.reachable / row.total;
   }
 
+  countByTarget(targetHash: string): number {
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM probe_results WHERE target_hash = ?').get(targetHash) as { count: number };
+    return row.count;
+  }
+
   /** Purge probe results older than maxAgeSec */
   purgeOlderThan(maxAgeSec: number): number {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;

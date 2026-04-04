@@ -29,7 +29,12 @@ import { VerdictService } from './services/verdictService';
 import { RiskService } from './services/riskService';
 import { DecideService } from './services/decideService';
 import { ReportService } from './services/reportService';
+import { SurvivalService } from './services/survivalService';
+import { ChannelFlowService } from './services/channelFlowService';
+import { FeeVolatilityService } from './services/feeVolatilityService';
 import { AutoIndexService } from './services/autoIndexService';
+import { ChannelSnapshotRepository } from './repositories/channelSnapshotRepository';
+import { FeeSnapshotRepository } from './repositories/feeSnapshotRepository';
 import { HttpLndGraphClient } from './crawler/lndGraphClient';
 import { LndGraphCrawler } from './crawler/lndGraphCrawler';
 
@@ -75,22 +80,28 @@ export function createApp() {
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
   });
+  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
+  const feeSnapshotRepo = new FeeSnapshotRepository(db);
+
   const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+  const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
+  const channelFlowService = new ChannelFlowService(channelSnapshotRepo);
+  const feeVolatilityService = new FeeVolatilityService(feeSnapshotRepo, agentRepo);
 
   const lndGraphCrawler = lndClient.isConfigured()
-    ? new LndGraphCrawler(lndClient, agentRepo)
+    ? new LndGraphCrawler(lndClient, agentRepo, channelSnapshotRepo, feeSnapshotRepo)
     : null;
   const autoIndexService = new AutoIndexService(
     lndGraphCrawler, agentRepo, scoringService, config.AUTO_INDEX_MAX_PER_MINUTE,
   );
 
-  const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+  const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined, survivalService);
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
-  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs
   app.set('trust proxy', 1);

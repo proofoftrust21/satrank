@@ -120,53 +120,38 @@
     <div class="agent-detail" id="agent-detail"></div>
   </div>
 
-  <!-- API -->
-  <div class="section">
-    <h2>API Endpoints</h2>
+  <!-- API — Agent Decision -->
+  <div class="section api-hero">
+    <h2>Agent Decision API</h2>
     <p class="section-desc">
-      Scores are computed from 5 weighted components. The <a href="/methodology.html#verdict" style="color:#f7931a">Verdict API</a> returns SAFE/RISKY/UNKNOWN for &lt;200ms decisions. <a href="/methodology.html" style="color:#f7931a">Full methodology &rarr;</a>
+      The 3 endpoints an autonomous agent needs. <strong>Decide</strong> before paying, <strong>report</strong> the outcome, <strong>query</strong> the profile. <a href="/methodology.html#decision-engine" style="color:#f7931a">How it works &rarr;</a>
     </p>
-    <ul class="endpoints">
+    <ul class="endpoints endpoints-hero">
       <li>
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/v2/decide</span>
-        <span class="endpoint-desc">GO / NO-GO with success probability <span class="badge-sm">v2</span></span>
+        <span class="endpoint-desc">GO / NO-GO with success probability</span>
+        <span class="endpoint-cost">1 sat</span>
       </li>
       <li>
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/v2/report</span>
-        <span class="endpoint-desc">Report outcome (free) <span class="badge-sm">v2</span></span>
+        <span class="endpoint-desc">Report transaction outcome</span>
+        <span class="endpoint-cost free">free</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/v2/profile/:id</span>
-        <span class="endpoint-desc">Agent profile with reports &amp; uptime <span class="badge-sm">v2</span></span>
+        <span class="endpoint-desc">Full agent profile with reports &amp; uptime</span>
+        <span class="endpoint-cost">1 sat</span>
       </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agent/:hash/verdict</span>
-        <span class="endpoint-desc">SAFE / RISKY / UNKNOWN verdict</span>
-      </li>
-      <li>
-        <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/v1/verdicts</span>
-        <span class="endpoint-desc">Batch verdicts (up to 100 hashes)</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agent/:hash</span>
-        <span class="endpoint-desc">Detailed agent score</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agent/:hash/history</span>
-        <span class="endpoint-desc">Score history</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agent/:hash/attestations</span>
-        <span class="endpoint-desc">Received attestations</span>
-      </li>
+    </ul>
+  </div>
+
+  <!-- API — Discovery -->
+  <div class="section">
+    <h2>Discovery <span class="api-tag free-tag">free</span></h2>
+    <ul class="endpoints">
       <li>
         <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/v1/agents/top</span>
@@ -183,10 +168,44 @@
         <span class="endpoint-desc">Search by alias</span>
       </li>
       <li>
-        <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/v1/attestations</span>
-        <span class="endpoint-desc">Submit an attestation</span>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/stats</span>
+        <span class="endpoint-desc">Network statistics</span>
       </li>
+    </ul>
+  </div>
+
+  <!-- API — Detailed Queries -->
+  <div class="section">
+    <h2>Detailed Queries <span class="api-tag paid-tag">1 sat</span></h2>
+    <ul class="endpoints">
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agent/:hash</span>
+        <span class="endpoint-desc">Detailed score &amp; evidence</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agent/:hash/verdict</span>
+        <span class="endpoint-desc">SAFE / RISKY / UNKNOWN</span>
+      </li>
+      <li>
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/v1/agent/:hash/history</span>
+        <span class="endpoint-desc">Score history</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/v1/verdicts</span>
+        <span class="endpoint-desc">Batch verdicts (up to 100)</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- API — Tools -->
+  <div class="section">
+    <h2>Tools</h2>
+    <ul class="endpoints">
       <li>
         <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/v1/health</span>
@@ -194,23 +213,13 @@
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/stats</span>
-        <span class="endpoint-desc">Network statistics</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/version</span>
-        <span class="endpoint-desc">Build commit and date</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/openapi.json</span>
-        <span class="endpoint-desc">OpenAPI specification</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
         <span class="endpoint-path"><a href="/api/v1/docs" style="color:#c0c0d8">/api/v1/docs</a></span>
         <span class="endpoint-desc">Interactive API explorer (Swagger UI)</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/v1/attestations</span>
+        <span class="endpoint-desc">Submit attestation (free, API key required)</span>
       </li>
     </ul>
   </div>

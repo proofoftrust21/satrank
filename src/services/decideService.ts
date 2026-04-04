@@ -8,6 +8,7 @@ import type { ScoringService } from './scoringService';
 import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { VerdictService } from './verdictService';
+import type { SurvivalService } from './survivalService';
 import type { DecideResponse, VerdictFlag, Verdict, ConfidenceLevel, PathfindingResult } from '../types';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
 import { logger } from '../logger';
@@ -28,6 +29,7 @@ export class DecideService {
     private verdictService: VerdictService,
     private probeRepo?: ProbeRepository,
     private lndClient?: LndGraphClient,
+    private survivalService?: SurvivalService,
   ) {}
 
   async decide(
@@ -83,11 +85,15 @@ export class DecideService {
       verdictResult.flags.includes('negative_reputation');
     const go = successRate >= 0.5 && !hasCritical;
 
+    const survival = this.survivalService
+      ? this.survivalService.compute(targetHash)
+      : { score: 100, prediction: 'stable' as const, signals: { scoreTrajectory: 'no data', probeStability: 'no data', gossipFreshness: 'no data' } };
+
     const latencyMs = Date.now() - startMs;
 
     return {
       go,
-      successRate: Math.round(successRate * 1000) / 1000, // 3 decimal places
+      successRate: Math.round(successRate * 1000) / 1000,
       components: {
         trustScore: Math.round(pTrust * 1000) / 1000,
         routable: Math.round(pRoutable * 1000) / 1000,
@@ -101,6 +107,7 @@ export class DecideService {
       pathfinding: verdictResult.pathfinding,
       riskProfile: verdictResult.riskProfile,
       reason: verdictResult.reason,
+      survival,
       latencyMs,
     };
   }

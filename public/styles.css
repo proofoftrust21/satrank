@@ -343,6 +343,18 @@ tr.clickable { cursor: pointer; }
 .endpoint-path { font-family: monospace; color: #c0c0d8; }
 .endpoint-desc { color: #6666a0; font-size: 0.85rem; margin-left: auto; }
 
+/* Hero API section */
+.api-hero { background: #0d0d18; border: 1px solid #f7931a30; border-radius: 12px; padding: 28px 24px; margin-bottom: 12px; }
+.api-hero h2 { color: #f7931a; }
+.endpoints-hero li { background: #14142a; border-color: #f7931a25; }
+.endpoint-cost { font-size: 0.75rem; font-weight: 700; padding: 2px 10px; border-radius: 10px; background: #f7931a20; color: #f7931a; white-space: nowrap; }
+.endpoint-cost.free { background: #00c85318; color: #00c853; }
+
+/* API category tags */
+.api-tag { font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 8px; vertical-align: middle; margin-left: 8px; }
+.free-tag { background: #00c85318; color: #00c853; }
+.paid-tag { background: #f7931a18; color: #f7931a; }
+
 /* Header logo */
 .header-logo { width: 120px; height: auto; display: block; margin: 0 auto 0.5rem; }
 

@@ -183,7 +183,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
 
   <div class="card">
     <div class="card-title">Route Probes</div>
-    <p>Periodic reachability checks via LND&rsquo;s <code>QueryRoutes</code> API. Each indexed node is probed hourly to determine whether a route exists from SatRank&rsquo;s node. The <code>unreachable</code> flag in the verdict comes from probe data. Uptime ratios over 7 days are computed and exposed in the <a href="#v2-api">v2 profile</a>.</p>
+    <p>Periodic reachability checks via LND&rsquo;s <code>QueryRoutes</code> API. Each indexed node is probed hourly to determine whether a route exists from SatRank&rsquo;s node. The <code>unreachable</code> flag in the verdict comes from probe data. Uptime ratios over 7 days are computed and exposed in the <a href="#decision-engine">agent profile</a>.</p>
   </div>
 
   <!-- Anti-Gaming -->
@@ -699,28 +699,28 @@ if delta7d < -2                         → falling</pre>
     &ldquo;Can <em>I</em> pay this node, and what will it cost <em>me</em>?&rdquo;
   </p>
 
-  <!-- v2 Decision API -->
-  <h2 id="v2-api">v2 Decision API</h2>
+  <!-- Decision Engine -->
+  <h2 id="decision-engine">Decision Engine</h2>
 
   <p>
-    The v1 API answers &ldquo;what is this agent&rsquo;s score?&rdquo; The v2 API answers
-    &ldquo;should I transact with this agent?&rdquo; SatRank v2 transforms from an information
-    service into <strong>decision infrastructure</strong>.
+    Scores answer &ldquo;how trustworthy is this agent?&rdquo; The decision engine answers
+    &ldquo;should I transact with this agent <em>right now</em>?&rdquo; It combines the trust
+    score with real-time signals &mdash; route availability, probe uptime, and historical
+    outcomes &mdash; into a single GO / NO-GO decision.
   </p>
 
-  <h3>Endpoints</h3>
   <table>
     <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>POST /api/v2/decide</code></td><td>L402</td><td>GO / NO-GO with success probability</td></tr>
-      <tr><td><code>POST /api/v2/report</code></td><td>API Key</td><td>Report outcome (free)</td></tr>
-      <tr><td><code>GET /api/v2/profile/{id}</code></td><td>L402</td><td>Agent profile with reports, uptime, rank</td></tr>
+      <tr><td><code>POST /api/v2/decide</code></td><td>1 sat</td><td>GO / NO-GO with success probability</td></tr>
+      <tr><td><code>POST /api/v2/report</code></td><td>API Key</td><td>Report transaction outcome (free)</td></tr>
+      <tr><td><code>GET /api/v2/profile/{id}</code></td><td>1 sat</td><td>Agent profile with reports, uptime, rank</td></tr>
     </tbody>
   </table>
 
-  <h3>The Decide Endpoint</h3>
+  <h3>Decide</h3>
   <p>
-    <code>POST /api/v2/decide</code> returns a boolean <code>go</code> (true/false) and a
+    The decide endpoint returns a boolean <code>go</code> (true/false) and a
     <code>successRate</code> (0&ndash;1) composed from 4 probability signals:
   </p>
   <pre>P_trust     = sigmoid(score, midpoint=50, steepness=0.1)   // SatRank score → probability
@@ -739,11 +739,11 @@ P_empirical = weighted success rate from past reports         // Did other agent
     (<code>fraud_reported</code>, <code>negative_reputation</code>).
   </p>
 
-  <h3>The Report Endpoint</h3>
+  <h3>Report</h3>
   <p>
-    <code>POST /api/v2/report</code> accepts a simplified outcome feedback:
-    <code>success</code>, <code>failure</code>, or <code>timeout</code>. Reports are
-    <strong>free</strong> (no L402 payment) to maximize participation.
+    After a transaction, agents report the outcome: <code>success</code>,
+    <code>failure</code>, or <code>timeout</code>. Reports are
+    <strong>free</strong> (no payment required) to maximize participation.
   </p>
   <ul>
     <li><strong>Reporter weighting:</strong> Each report&rsquo;s weight is proportional to the reporter&rsquo;s own SatRank score (floor 0.3, cap 1.0). High-trust reporters have more influence.</li>
@@ -753,13 +753,79 @@ P_empirical = weighted success rate from past reports         // Did other agent
     <li><strong>Self-report rejection:</strong> An agent cannot report on itself.</li>
   </ul>
 
-  <h3>The Feedback Loop</h3>
+  <h3>Feedback Loop</h3>
   <p>
     The decide &rarr; pay &rarr; report cycle creates a closed feedback loop.
     The more agents report outcomes, the more accurate <code>P_empirical</code> becomes,
-    and the better the <code>decide</code> endpoint performs. This is SatRank&rsquo;s flywheel:
+    and the better future decisions perform. This is SatRank&rsquo;s flywheel:
     usage generates data, data improves decisions, better decisions attract more usage.
   </p>
+
+  <!-- Predictive Signals -->
+  <h2 id="predictive-signals">Predictive Signals</h2>
+
+  <p>
+    Scores describe the present. Predictive signals answer: will this node still be here
+    in 7 days? All signals below are derived from data already in the index &mdash; no
+    external dependencies, no machine learning.
+  </p>
+
+  <h3>Survival Score (0&ndash;100)</h3>
+  <p>
+    Predicts whether a node will remain reachable, based on three weighted signals:
+  </p>
+  <table>
+    <thead><tr><th>Signal</th><th>Weight</th><th>Source</th><th>Thresholds</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Score Trajectory</td><td>40%</td><td>Score snapshots (7-day slope)</td>
+        <td>Slope &lt; &minus;2/day: &minus;40. Slope &minus;1 to &minus;2: &minus;20. Stable/positive: 0.</td>
+      </tr>
+      <tr>
+        <td>Probe Stability</td><td>40%</td><td>Probe results (uptime ratio)</td>
+        <td>0% uptime: &minus;40. &lt; 50%: &minus;30. &lt; 80%: &minus;15. &ge; 80%: 0.</td>
+      </tr>
+      <tr>
+        <td>Gossip Freshness</td><td>20%</td><td>Last gossip timestamp</td>
+        <td>&gt; 14 days: &minus;20 (zombie). &gt; 7 days: &minus;10 (stale). &le; 7 days: 0.</td>
+      </tr>
+    </tbody>
+  </table>
+  <pre>survival_score = clamp(0, 100, 100 + sum(adjustments))
+prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre>
+
+  <h3>Channel Flow</h3>
+  <p>
+    Net change in channel count and capacity over 7 days. A node losing 3+ channels/week
+    is <code>declining</code>. A node gaining 3+ is <code>growing</code>. Derived from
+    hourly channel snapshots stored during each LND graph crawl.
+  </p>
+
+  <h3>Capacity Drain Rate</h3>
+  <p>
+    Percentage change in total capacity over 24 hours and 7 days. A drain rate
+    &le; &minus;30% triggers the <code>capacity_drain</code> flag. &le; &minus;50% triggers
+    <code>severe_capacity_drain</code>. A node hemorrhaging capacity is likely closing
+    channels or being force-closed by peers.
+  </p>
+
+  <h3>Fee Volatility Index (FVI)</h3>
+  <p>
+    Measures how often a node changes its fee policies. Computed as the average number
+    of fee changes per channel per day, normalized to 0&ndash;100. Interpretation:
+    &lt; 10 = <code>stable</code>, &lt; 30 = <code>moderate</code>,
+    &ge; 30 = <code>volatile</code>. A node that spikes fees from 1 ppm to 1000 ppm
+    overnight is volatile and may indicate distress or adversarial behavior.
+  </p>
+
+  <h3>Gossip Freshness Flags</h3>
+  <p>
+    Two flags based on the last gossip update timestamp:
+  </p>
+  <ul>
+    <li><code>stale_gossip</code> &mdash; no gossip update in 7&ndash;14 days. The node may be going offline.</li>
+    <li><code>zombie_gossip</code> &mdash; no gossip update in 14+ days. The node is almost certainly dead but its channels haven&rsquo;t expired yet.</li>
+  </ul>
 
   <!-- L402 as Signal -->
   <h2>L402 Payment as Data</h2>

@@ -1,6 +1,8 @@
 // Indexes Lightning Network nodes from our LND node's graph view
 // Primary source — replaces mempool.space for full graph coverage (~17,000 nodes)
 import type { AgentRepository } from '../repositories/agentRepository';
+import type { ChannelSnapshotRepository } from '../repositories/channelSnapshotRepository';
+import type { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import type { LndGraphClient, LndNode, LndEdge, LndNodeInfo } from './lndGraphClient';
 import { sha256 } from '../utils/crypto';
 import { logger } from '../logger';
@@ -27,6 +29,8 @@ export class LndGraphCrawler {
   constructor(
     private client: LndGraphClient,
     private agentRepo: AgentRepository,
+    private channelSnapshotRepo?: ChannelSnapshotRepository,
+    private feeSnapshotRepo?: FeeSnapshotRepository,
   ) {}
 
   async run(): Promise<LndGraphCrawlResult> {
@@ -91,6 +95,37 @@ export class LndGraphCrawler {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         result.errors.push(`node ${node.pub_key.slice(0, 16)}: ${msg}`);
+      }
+    }
+
+    // Store channel snapshots for predictive signals (flow, drain)
+    if (this.channelSnapshotRepo) {
+      const now = Math.floor(Date.now() / 1000);
+      const snapshots = Array.from(nodeStats.entries()).map(([pub, stats]) => ({
+        agent_hash: sha256(pub),
+        channel_count: stats.channels,
+        capacity_sats: stats.capacitySats,
+        snapshot_at: now,
+      }));
+      this.channelSnapshotRepo.insertBatch(snapshots);
+      logger.info({ count: snapshots.length }, 'Channel snapshots stored');
+    }
+
+    // Store fee snapshots for volatility index
+    if (this.feeSnapshotRepo && graph.edges.length > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      const feeSnapshots = graph.edges.map(e => ({
+        channel_id: e.channel_id,
+        node1_pub: e.node1_pub,
+        node2_pub: e.node2_pub,
+        fee_base_msat: 0, // LND graph edges don't include routing policies in describe_graph
+        fee_rate_ppm: 0,  // Fee data requires per-channel queries — deferred to future iteration
+        snapshot_at: now,
+      }));
+      // Only store if we have actual fee data (skip if all zeros)
+      if (feeSnapshots.some(f => f.fee_base_msat > 0 || f.fee_rate_ppm > 0)) {
+        this.feeSnapshotRepo.insertBatch(feeSnapshots);
+        logger.info({ count: feeSnapshots.length }, 'Fee snapshots stored');
       }
     }
 

@@ -1,0 +1,79 @@
+// Survival Score — predicts if a node will still be reachable in 7 days
+// 3 signals: score trajectory, probe stability, gossip freshness
+import type { AgentRepository } from '../repositories/agentRepository';
+import type { ProbeRepository } from '../repositories/probeRepository';
+import type { SnapshotRepository } from '../repositories/snapshotRepository';
+import type { Agent, SurvivalResult, SurvivalPrediction } from '../types';
+import { DAY, SEVEN_DAYS_SEC } from '../utils/constants';
+
+export class SurvivalService {
+  constructor(
+    private agentRepo: AgentRepository,
+    private probeRepo: ProbeRepository,
+    private snapshotRepo: SnapshotRepository,
+  ) {}
+
+  compute(agentHashOrAgent: string | Agent): SurvivalResult {
+    const agent = typeof agentHashOrAgent === 'string'
+      ? this.agentRepo.findByHash(agentHashOrAgent)
+      : agentHashOrAgent;
+
+    if (!agent) {
+      return { score: 0, prediction: 'likely_dead', signals: { scoreTrajectory: 'unknown', probeStability: 'unknown', gossipFreshness: 'unknown' } };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    let adjustment = 0;
+
+    // Signal 1 — Score Trajectory (weight 40%)
+    const scoreNow = agent.avg_score;
+    const score7dAgo = this.snapshotRepo.findScoreAt(agent.public_key_hash, now - SEVEN_DAYS_SEC);
+    let trajectoryLabel: string;
+
+    if (score7dAgo !== null) {
+      const slope = (scoreNow - score7dAgo) / 7;
+      if (slope < -2) { adjustment -= 40; trajectoryLabel = `declining (${slope.toFixed(1)}/day)`; }
+      else if (slope < -1) { adjustment -= 20; trajectoryLabel = `weakening (${slope.toFixed(1)}/day)`; }
+      else if (slope > 1) { trajectoryLabel = `improving (+${slope.toFixed(1)}/day)`; }
+      else { trajectoryLabel = 'stable'; }
+    } else {
+      trajectoryLabel = 'insufficient data';
+    }
+
+    // Signal 2 — Probe Stability (weight 40%)
+    const probeStats = this.probeRepo.computeUptime(agent.public_key_hash, SEVEN_DAYS_SEC);
+    let probeLabel: string;
+
+    if (probeStats !== null) {
+      const totalProbes = this.probeRepo.countByTarget(agent.public_key_hash);
+      if (probeStats === 0) { adjustment -= 40; probeLabel = `0% (0/${totalProbes})`; }
+      else if (probeStats < 0.5) { adjustment -= 30; probeLabel = `${Math.round(probeStats * 100)}% (${totalProbes} probes)`; }
+      else if (probeStats < 0.8) { adjustment -= 15; probeLabel = `${Math.round(probeStats * 100)}% (${totalProbes} probes)`; }
+      else { probeLabel = `${Math.round(probeStats * 100)}% (${totalProbes} probes)`; }
+    } else {
+      probeLabel = 'no probe data';
+    }
+
+    // Signal 3 — Gossip Freshness (weight 20%)
+    const daysSinceGossip = (now - agent.last_seen) / DAY;
+    let gossipLabel: string;
+
+    if (daysSinceGossip > 14) { adjustment -= 20; gossipLabel = `${Math.round(daysSinceGossip)}d ago (zombie)`; }
+    else if (daysSinceGossip > 7) { adjustment -= 10; gossipLabel = `${Math.round(daysSinceGossip)}d ago (stale)`; }
+    else if (daysSinceGossip > 1) { gossipLabel = `${Math.round(daysSinceGossip)}d ago`; }
+    else { const hours = Math.round(daysSinceGossip * 24); gossipLabel = `${hours}h ago`; }
+
+    const score = Math.max(0, Math.min(100, 100 + adjustment));
+    const prediction: SurvivalPrediction = score > 70 ? 'stable' : score > 40 ? 'at_risk' : 'likely_dead';
+
+    return {
+      score,
+      prediction,
+      signals: {
+        scoreTrajectory: trajectoryLabel,
+        probeStability: probeLabel,
+        gossipFreshness: gossipLabel,
+      },
+    };
+  }
+}

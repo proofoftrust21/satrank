@@ -3,6 +3,8 @@ import type { Agent, VerdictFlag } from '../types';
 import { DAY } from './constants';
 
 export const HIGH_DEMAND_THRESHOLD = 50; // M5
+export const STALE_GOSSIP_DAYS = 7;
+export const ZOMBIE_GOSSIP_DAYS = 14;
 
 interface DeltaInput {
   delta7d: number | null;
@@ -20,6 +22,11 @@ export function computeBaseFlags(agent: Agent, delta: DeltaInput, now: number): 
   if (agent.negative_ratings > agent.positive_ratings) flags.push('negative_reputation');
   if (agent.query_count > HIGH_DEMAND_THRESHOLD) flags.push('high_demand');
   if (agent.lnplus_rank === 0 && agent.positive_ratings === 0) flags.push('no_reputation_data');
+
+  // Gossip freshness — last_seen is the last gossip update timestamp
+  const daysSinceGossip = (now - agent.last_seen) / DAY;
+  if (daysSinceGossip > ZOMBIE_GOSSIP_DAYS) flags.push('zombie_gossip');
+  else if (daysSinceGossip > STALE_GOSSIP_DAYS) flags.push('stale_gossip');
 
   return flags;
 }

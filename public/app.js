@@ -160,7 +160,7 @@
       var hash = a.publicKeyHash.slice(0, 8) + '...' + a.publicKeyHash.slice(-6);
 
       var rankCell = tr.insertCell();
-      rankCell.textContent = String(i + 1);
+      rankCell.textContent = a.rank ? String(a.rank) : '--';
 
       var aliasCell = tr.insertCell();
       if (a.alias) {

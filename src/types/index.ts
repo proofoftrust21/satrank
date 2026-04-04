@@ -237,7 +237,11 @@ export type VerdictFlag =
   | 'fraud_reported'
   | 'dispute_reported'
   | 'unreachable'
-  | 'unreachable_from_caller';
+  | 'unreachable_from_caller'
+  | 'stale_gossip'
+  | 'zombie_gossip'
+  | 'capacity_drain'
+  | 'severe_capacity_drain';
 
 export interface PersonalTrust {
   distance: number | null;
@@ -293,6 +297,36 @@ export interface DecideRequest {
   intent?: 'pay' | 'receive';
 }
 
+export type SurvivalPrediction = 'stable' | 'at_risk' | 'likely_dead';
+
+export interface SurvivalResult {
+  score: number;
+  prediction: SurvivalPrediction;
+  signals: {
+    scoreTrajectory: string;
+    probeStability: string;
+    gossipFreshness: string;
+  };
+}
+
+export interface ChannelFlow {
+  net7d: number | null;
+  capacityDelta7d: number | null;
+  trend: 'growing' | 'stable' | 'declining';
+}
+
+export interface CapacityHealth {
+  drainRate24h: number | null;
+  drainRate7d: number | null;
+  trend: 'growing' | 'stable' | 'declining';
+}
+
+export interface FeeVolatility {
+  index: number;
+  interpretation: 'stable' | 'moderate' | 'volatile';
+  changesLast7d: number;
+}
+
 export interface DecideResponse {
   go: boolean;
   successRate: number;
@@ -309,6 +343,7 @@ export interface DecideResponse {
   pathfinding: PathfindingResult | null;
   riskProfile: RiskProfile;
   reason: string;
+  survival: SurvivalResult;
   latencyMs: number;
 }
 
@@ -352,6 +387,10 @@ export interface ProfileResponse {
     successRate: number;
   };
   probeUptime: number | null;
+  survival: SurvivalResult;
+  channelFlow: ChannelFlow | null;
+  capacityHealth: CapacityHealth | null;
+  feeVolatility: FeeVolatility | null;
   delta: ScoreDelta;
   riskProfile: RiskProfile;
   evidence: ScoreEvidence;

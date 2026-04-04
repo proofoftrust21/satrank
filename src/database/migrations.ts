@@ -271,6 +271,35 @@ export function runMigrations(db: Database.Database): void {
     })();
   }
 
+  // v12: channel_snapshots + fee_snapshots for predictive signals
+  if (!hasVersion(db, 12)) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS channel_snapshots (
+          agent_hash TEXT NOT NULL,
+          channel_count INTEGER NOT NULL,
+          capacity_sats INTEGER NOT NULL,
+          snapshot_at INTEGER NOT NULL
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_channel_snapshots_agent ON channel_snapshots(agent_hash, snapshot_at)');
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS fee_snapshots (
+          channel_id TEXT NOT NULL,
+          node1_pub TEXT NOT NULL,
+          node2_pub TEXT NOT NULL,
+          fee_base_msat INTEGER NOT NULL,
+          fee_rate_ppm INTEGER NOT NULL,
+          snapshot_at INTEGER NOT NULL
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_fee_snapshots_node ON fee_snapshots(node1_pub, snapshot_at)');
+
+      recordVersion(db, 12, 'Channel snapshots and fee snapshots for predictive signals');
+    })();
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -280,6 +309,10 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  12: (db) => {
+    db.exec('DROP TABLE IF EXISTS fee_snapshots');
+    db.exec('DROP TABLE IF EXISTS channel_snapshots');
+  },
   11: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_attestations_attester_subject_time');
     try { db.exec('ALTER TABLE attestations DROP COLUMN verified'); } catch { /* SQLite < 3.35 */ }
