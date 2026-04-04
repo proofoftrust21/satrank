@@ -47,7 +47,7 @@ authenticator:
 servicesettings:
   - name: "satrank"
     hostregexp: "satrank.dev"
-    pathregexp: "/api/v1/(agent|agents).*"
+    pathregexp: "/api/v[12]/(agent|agents|decide|profile).*"
     price: 1
     duration: 31536000
     capabilities:
@@ -111,7 +111,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/satrank.dev/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/satrank.dev/privkey.pem;
 
-    # L402-gated endpoints — proxy through Aperture
+    # L402-gated v1 endpoints — proxy through Aperture
     location ~ ^/api/v1/(agent|agents) {
         proxy_pass http://127.0.0.1:8443;
         proxy_set_header Host $host;
@@ -120,7 +120,25 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Free endpoints — direct to Express
+    # L402-gated v2 endpoints — decide and profile through Aperture
+    location ~ ^/api/v2/(decide|profile) {
+        proxy_pass http://127.0.0.1:8443;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Free v2 endpoint — report goes direct to Express (API key auth, no L402)
+    location = /api/v2/report {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Free v1 endpoints — direct to Express
     location /api/v1/ {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
@@ -152,8 +170,10 @@ sudo nginx -t && sudo systemctl reload nginx
 
 **Routing logic:**
 - `/api/v1/agent/*` and `/api/v1/agents/*` → Aperture (L402 required, 1 sat)
+- `/api/v2/decide` and `/api/v2/profile/*` → Aperture (L402 required, 1 sat)
+- `/api/v2/report` → Express direct (API key auth, no L402 — free)
 - `/api/v1/health`, `/api/v1/stats`, `/api/v1/version`, `/api/v1/openapi.json` → Express direct (free)
-- `/api/v1/attestation` → Express direct (API key auth, no L402)
+- `/api/v1/attestations` → Express direct (API key auth, no L402)
 - `/`, `/app.js`, `/favicon.png` → Express static (free)
 
 ## 3. SatRank (Docker)
@@ -194,7 +214,9 @@ curl -H "Authorization: L402 <macaroon>:<preimage>" https://satrank.dev/api/v1/a
 | Secret | Location on server | NOT in repo |
 |--------|--------------------|-------------|
 | API_KEY | `/root/satrank/.env.production` | .gitignore |
+| APERTURE_SHARED_SECRET | `/root/satrank/.env.production` | .gitignore |
 | LND admin macaroon | `/etc/aperture/admin.macaroon` | manual copy |
+| LND readonly macaroon | `/root/satrank/data/readonly.macaroon` | manual copy |
 | LND TLS cert | `/etc/aperture/tls.cert` | manual copy |
 | Let's Encrypt certs | `/etc/letsencrypt/` | certbot |
 
@@ -320,6 +342,9 @@ Each data source runs on its own timer in `--cron` mode. At startup, a full craw
 | `CRAWL_INTERVAL_OBSERVER_MS` | `300000` (5 min) | Observer Protocol transactions |
 | `CRAWL_INTERVAL_LND_GRAPH_MS` | `3600000` (1 hour) | LND full graph (~17k nodes) |
 | `CRAWL_INTERVAL_LNPLUS_MS` | `86400000` (24 hours) | LN+ community ratings |
+| `CRAWL_INTERVAL_PROBE_MS` | `3600000` (1 hour) | Route probe (reachability check) |
+| `PROBE_MAX_PER_SECOND` | `10` | Max probes per second (rate limiter) |
+| `PROBE_AMOUNT_SATS` | `1000` | Amount in sats to test routes with |
 
 Override in `.env.production`:
 

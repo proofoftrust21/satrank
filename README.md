@@ -8,7 +8,6 @@ SatRank is a trust scoring engine for AI agents on the Bitcoin Lightning Network
 
 ```bash
 npm install
-npm run seed    # Generate 50 agents, 2000 transactions, 800 attestations
 npm run dev     # Start development server on :3000
 ```
 
@@ -48,9 +47,28 @@ Composite score 0-100 computed from 5 weighted factors:
 
 ## API
 
-All endpoints are under `/api/v1`. Scored endpoints require L402 authentication (1 sat).
+v1 endpoints provide detailed scores and verdicts. v2 adds decision infrastructure: decide, report, profile.
 
-### Verdict (primary endpoint)
+### v2 — Decision API (primary interface for agents)
+
+```bash
+# GO / NO-GO decision with success probability
+curl -X POST http://localhost:3000/api/v2/decide \
+  -H "Content-Type: application/json" \
+  -d '{"target": "<hash>", "caller": "<your-hash>"}'
+
+# Report transaction outcome (free — no L402)
+curl -X POST http://localhost:3000/api/v2/report \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <key>" \
+  -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success"}'
+
+# Agent profile with reports, uptime, rank
+curl http://localhost:3000/api/v2/profile/<hash>
+```
+
+### v1 — Score & Verdict API
+
 ```bash
 curl http://localhost:3000/api/v1/agent/<hash>/verdict
 # Returns: SAFE / RISKY / UNKNOWN with confidence, flags, risk profile
@@ -117,7 +135,7 @@ npm run mcp        # Development
 npm run mcp:prod   # Production
 ```
 
-Available tools: `get_agent_score`, `get_top_agents`, `search_agents`, `get_network_stats`, `get_verdict`, `get_batch_verdicts`, `get_top_movers`, `submit_attestation`.
+Available tools: `get_agent_score`, `get_verdict`, `get_batch_verdicts`, `decide`, `report`, `get_profile`, `get_top_agents`, `search_agents`, `get_network_stats`, `get_top_movers`, `submit_attestation`.
 
 ## SDK
 
@@ -129,10 +147,17 @@ npm install @satrank/sdk
 import { SatRankClient } from '@satrank/sdk';
 
 const client = new SatRankClient('http://localhost:3000');
+
+// v2 — decision infrastructure
+const decision = await client.decide({ target: '<hash>', caller: '<your-hash>' });
+if (decision.go) { /* proceed */ }
+await client.report({ target: '<hash>', reporter: '<your-hash>', outcome: 'success' });
+const profile = await client.getProfile('<hash>');
+
+// v1 — scores and verdicts
 const verdict = await client.getVerdict('<hash>');
 const score = await client.getScore('<hash>');
 const batch = await client.getBatchVerdicts(['<hash1>', '<hash2>']);
-const movers = await client.getMovers();
 ```
 
 ## Tech Stack
@@ -153,22 +178,24 @@ const movers = await client.getMovers();
 | `npm run build` | TypeScript compilation |
 | `npm start` | Production |
 | `npm test` | Tests (vitest) |
-| `npm run seed` | Generate mock data |
+| `npm run mcp:prod` | MCP server (production) |
 | `npm run lint` | TypeScript check |
 | `npm run mcp` | MCP server (dev) |
 | `npm run crawl` | Observer Protocol crawler |
 
 ## Roadmap
 
-- [ ] Aperture integration (L402 reverse proxy) — monetize queries in sats
+- [x] v2 Decision API — GO/NO-GO with success probability, outcome reports, agent profiles
+- [x] Personalized pathfinding — real-time route from caller to target via LND QueryRoutes
+- [x] Aperture integration (L402 reverse proxy) — monetize queries in sats
 - [x] Observer Protocol crawler — automatic on-chain data ingestion
-- [ ] 4tress connector — verified attestations
 - [x] Lightning graph crawler — channel topology and capacity via LND node
+- [x] Route probe crawler — reachability testing for indexed nodes
 - [x] TypeScript SDK for agents (`@satrank/sdk`)
 - [x] Verdict API — SAFE/RISKY/UNKNOWN binary decision
 - [x] MCP server — agent-native access via stdio
 - [x] Auto-indexation — unknown pubkeys indexed on demand
-- [ ] Real-time scoring with cache invalidation
+- [ ] 4tress connector — verified attestations
 - [ ] Trust network visualization dashboard
 
 ## Vision

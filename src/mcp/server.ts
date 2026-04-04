@@ -79,6 +79,9 @@ const reportArgs = z.object({
   (data) => !data.preimage || !!data.paymentHash,
   { message: 'preimage requires paymentHash', path: ['preimage'] },
 );
+const getProfileArgs = z.object({
+  id: identifierSchema,
+});
 const submitAttestationArgs = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
   attesterHash: hashSchema,
@@ -247,6 +250,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['target', 'reporter', 'outcome'],
       },
     },
+    {
+      name: 'get_profile',
+      description: 'Agent profile with score, report statistics (successes/failures/timeouts), probe uptime, rank, evidence, and flags. The comprehensive v2 view of an agent.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          id: { type: 'string', description: 'Agent identifier: 64-char SHA256 hash or 66-char Lightning pubkey' },
+        },
+        required: ['id'],
+      },
+    },
   ],
 }));
 
@@ -368,6 +382,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const result = await decideService.decide(normalizeId(parsed.data.target), normalizeId(parsed.data.caller), parsed.data.amountSats);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      case 'get_profile': {
+        const parsed = getProfileArgs.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        const id = normalizeId(parsed.data.id);
+        const agent = agentRepo.findByHash(id);
+        if (!agent) {
+          return { content: [{ type: 'text', text: `Agent not found: ${id}` }], isError: true };
+        }
+        const scoreResult = scoringService.getScore(id);
+        const delta = trendService.computeDeltas(id, scoreResult.total);
+        const rank = agentRepo.getRank(id);
+        const reports = attestationRepo.countReportsByOutcome(id);
+        const successRate = reports.total > 0 ? reports.successes / reports.total : 0;
+        const probeUptime = probeRepo.computeUptime(id, 7 * 86400);
+        const riskProfile = riskService.classifyAgent(agent, delta, { regularity: scoreResult.components.regularity });
+        const evidence = agentService.buildEvidence(agent);
+        const { computeBaseFlags } = await import('../utils/flags');
+        const { PROBE_FRESHNESS_TTL } = await import('../config/scoring');
+        const now = Math.floor(Date.now() / 1000);
+        const flags = computeBaseFlags(agent, delta, now);
+        const fraudCount = attestationRepo.countByCategoryForSubject(id, ['fraud']);
+        const disputeCount = attestationRepo.countByCategoryForSubject(id, ['dispute']);
+        if (fraudCount > 0) flags.push('fraud_reported');
+        if (disputeCount > 0) flags.push('dispute_reported');
+        const probe = probeRepo.findLatest(id);
+        if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) flags.push('unreachable');
+        const profile = {
+          agent: { publicKeyHash: agent.public_key_hash, alias: agent.alias, publicKey: agent.public_key, firstSeen: agent.first_seen, lastSeen: agent.last_seen, source: agent.source },
+          score: { total: scoreResult.total, components: scoreResult.components, confidence: scoreResult.confidence, rank },
+          reports: { total: reports.total, successes: reports.successes, failures: reports.failures, timeouts: reports.timeouts, successRate: Math.round(successRate * 1000) / 1000 },
+          probeUptime: probeUptime !== null ? Math.round(probeUptime * 1000) / 1000 : null,
+          delta, riskProfile, evidence, flags,
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(profile, null, 2) }] };
       }
 
       case 'report': {

@@ -168,7 +168,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
 
   <div class="card">
     <div class="card-title">LND Graph (Primary)</div>
-    <p>Full Lightning Network graph from our own LND node via the gossip protocol. Currently indexing <strong>4,500+ Lightning nodes</strong> with public keys, channel counts, total capacity (sats), and last-update timestamps. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes.</p>
+    <p>Full Lightning Network graph from our own LND node via the gossip protocol. Currently indexing <strong>17,000+ Lightning nodes</strong> with public keys, channel counts, total capacity (sats), and last-update timestamps. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes.</p>
   </div>
 
   <div class="card">
@@ -179,6 +179,11 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
   <div class="card">
     <div class="card-title">LightningNetwork.Plus (LN+)</div>
     <p>Community reputation platform. Provides rank (0&ndash;10), positive/negative ratings, and graph centrality metrics (hubness, betweenness, hopness). Used for Lightning node reputation scoring. Verifiable at <code>https://lightningnetwork.plus/nodes/{publicKey}</code>.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Route Probes</div>
+    <p>Periodic reachability checks via LND&rsquo;s <code>QueryRoutes</code> API. Each indexed node is probed hourly to determine whether a route exists from SatRank&rsquo;s node. The <code>unreachable</code> flag in the verdict comes from probe data. Uptime ratios over 7 days are computed and exposed in the <a href="#v2-api">v2 profile</a>.</p>
   </div>
 
   <!-- Anti-Gaming -->
@@ -692,6 +697,68 @@ if delta7d < -2                         → falling</pre>
     <a href="https://amboss.space">Amboss</a> shows node statistics.
     <a href="https://1ml.com">1ML</a> shows connectivity. None of them answer the question:
     &ldquo;Can <em>I</em> pay this node, and what will it cost <em>me</em>?&rdquo;
+  </p>
+
+  <!-- v2 Decision API -->
+  <h2 id="v2-api">v2 Decision API</h2>
+
+  <p>
+    The v1 API answers &ldquo;what is this agent&rsquo;s score?&rdquo; The v2 API answers
+    &ldquo;should I transact with this agent?&rdquo; SatRank v2 transforms from an information
+    service into <strong>decision infrastructure</strong>.
+  </p>
+
+  <h3>Endpoints</h3>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST /api/v2/decide</code></td><td>L402</td><td>GO / NO-GO with success probability</td></tr>
+      <tr><td><code>POST /api/v2/report</code></td><td>API Key</td><td>Report outcome (free)</td></tr>
+      <tr><td><code>GET /api/v2/profile/{id}</code></td><td>L402</td><td>Agent profile with reports, uptime, rank</td></tr>
+    </tbody>
+  </table>
+
+  <h3>The Decide Endpoint</h3>
+  <p>
+    <code>POST /api/v2/decide</code> returns a boolean <code>go</code> (true/false) and a
+    <code>successRate</code> (0&ndash;1) composed from 4 probability signals:
+  </p>
+  <pre>P_trust     = sigmoid(score, midpoint=50, steepness=0.1)   // SatRank score → probability
+P_routable  = 1.0 if pathfinding finds a route, else 0.0    // Can I reach this node?
+P_available = probe uptime over 7 days (0-1)                 // Is this node online?
+P_empirical = weighted success rate from past reports         // Did other agents succeed?</pre>
+
+  <p>When <strong>fewer than 10 reports</strong> exist (proxy mode):</p>
+  <pre>successRate = P_trust * 0.4 + P_routable * 0.3 + P_available * 0.3</pre>
+
+  <p>When <strong>10+ reports</strong> exist (empirical mode):</p>
+  <pre>successRate = P_empirical * 0.5 + P_routable * 0.25 + P_available * 0.25</pre>
+
+  <p>
+    <code>go = true</code> when <code>successRate &ge; 0.5</code> and no critical flags
+    (<code>fraud_reported</code>, <code>negative_reputation</code>).
+  </p>
+
+  <h3>The Report Endpoint</h3>
+  <p>
+    <code>POST /api/v2/report</code> accepts a simplified outcome feedback:
+    <code>success</code>, <code>failure</code>, or <code>timeout</code>. Reports are
+    <strong>free</strong> (no L402 payment) to maximize participation.
+  </p>
+  <ul>
+    <li><strong>Reporter weighting:</strong> Each report&rsquo;s weight is proportional to the reporter&rsquo;s own SatRank score (floor 0.3, cap 1.0). High-trust reporters have more influence.</li>
+    <li><strong>Preimage verification:</strong> If the reporter provides <code>paymentHash</code> + <code>preimage</code> and SHA256(preimage) = paymentHash, the report receives a <strong>1.5&times; weight bonus</strong>. This cryptographic proof of payment makes the report unforgeable.</li>
+    <li><strong>Deduplication:</strong> Maximum 1 report per (reporter, target) per hour.</li>
+    <li><strong>Rate limiting:</strong> Maximum 20 reports per reporter per minute.</li>
+    <li><strong>Self-report rejection:</strong> An agent cannot report on itself.</li>
+  </ul>
+
+  <h3>The Feedback Loop</h3>
+  <p>
+    The decide &rarr; pay &rarr; report cycle creates a closed feedback loop.
+    The more agents report outcomes, the more accurate <code>P_empirical</code> becomes,
+    and the better the <code>decide</code> endpoint performs. This is SatRank&rsquo;s flywheel:
+    usage generates data, data improves decisions, better decisions attract more usage.
   </p>
 
   <!-- L402 as Signal -->

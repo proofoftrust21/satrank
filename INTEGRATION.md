@@ -35,15 +35,33 @@ Add to your MCP client configuration (`mcp-config.json`):
 
 | Tool | Description |
 |------|-------------|
+| `decide` | **v2** GO/NO-GO decision with success probability — the primary pre-transaction tool |
+| `report` | **v2** Report outcome (success/failure/timeout) — requires SATRANK_API_KEY (FREE) |
+| `get_profile` | **v2** Agent profile with reports, probe uptime, rank, evidence |
 | `get_agent_score` | Full trust score with components, evidence, and verification URLs |
 | `get_verdict` | SAFE/RISKY/UNKNOWN with risk profile and optional personal trust graph |
 | `get_batch_verdicts` | Batch verdict for up to 100 agents in one call |
 | `get_top_agents` | Leaderboard ranked by score |
 | `search_agents` | Search by alias (partial match) |
 | `get_network_stats` | Global network statistics |
+| `get_top_movers` | Agents with biggest 7-day score changes |
 | `submit_attestation` | Submit a trust attestation after a transaction (FREE) |
 
-### Example: check before transacting
+### Example: decide → pay → report (v2 cycle)
+
+```
+# Step 1: Should I pay this agent?
+Agent calls decide({ target: "counterparty-hash", caller: "my-hash" })
+→ { go: true, successRate: 0.82, basis: "empirical", verdict: "SAFE" }
+
+# Step 2: Agent proceeds with payment (if go=true)
+
+# Step 3: Report outcome
+Agent calls report({ target: "counterparty-hash", reporter: "my-hash", outcome: "success" })
+→ { reportId: "...", verified: false, weight: 0.75, timestamp: 1712000000 }
+```
+
+### Example: check score before transacting (v1)
 
 ```
 User: Should I accept a payment channel from agent abc123...?
@@ -57,7 +75,7 @@ Agent: This agent has a trust score of 73/100 (medium confidence).
        - LN+ profile: https://lightningnetwork.plus/nodes/02abc...
 ```
 
-### Example: attest after transacting
+### Example: attest after transacting (v1)
 
 ```
 Agent calls submit_attestation({
@@ -81,7 +99,7 @@ Best for: TypeScript/JavaScript agents or backend services.
 npm install @satrank/sdk
 ```
 
-### Check an agent before transacting
+### Decide → pay → report (v2 — recommended)
 
 ```typescript
 import { SatRankClient } from '@satrank/sdk';
@@ -90,6 +108,33 @@ const satrank = new SatRankClient('https://your-satrank-instance.com', {
   headers: { 'Authorization': 'L402 <macaroon>:<preimage>' }
 });
 
+// Step 1: Ask SatRank for a GO / NO-GO decision
+const decision = await satrank.decide({
+  target: 'counterparty-hash',
+  caller: 'my-agent-hash',
+});
+
+if (!decision.go) {
+  console.log(`Abort: ${decision.reason} (success rate: ${decision.successRate})`);
+  return;
+}
+
+// Step 2: Proceed with the Lightning payment
+// ... your payment logic ...
+
+// Step 3: Report the outcome (FREE — no L402 payment)
+await satrank.report({
+  target: 'counterparty-hash',
+  reporter: 'my-agent-hash',
+  outcome: 'success', // or 'failure' or 'timeout'
+  paymentHash: paymentResult.paymentHash, // optional: for preimage verification
+  preimage: paymentResult.preimage, // optional: gives 1.5x weight bonus
+});
+```
+
+### Check score (v1)
+
+```typescript
 const result = await satrank.getScore('a1b2c3d4e5f6...');
 
 if (result.score.total < 30) {
@@ -99,24 +144,6 @@ if (result.score.total < 30) {
 } else {
   console.log('High trust — proceed normally');
 }
-
-console.log('Evidence:', result.evidence);
-```
-
-### Browse the leaderboard
-
-```typescript
-const top = await satrank.getTopAgents(10);
-for (const agent of top.agents) {
-  console.log(`${agent.alias}: ${agent.score}`);
-}
-```
-
-### Network health
-
-```typescript
-const health = await satrank.getHealth();
-console.log(`Status: ${health.status}, Agents: ${health.agentsIndexed}`);
 ```
 
 ---
@@ -125,87 +152,59 @@ console.log(`Status: ${health.status}, Agents: ${health.agentsIndexed}`);
 
 Best for: non-JS agents, scripts, or direct integration.
 
-### Base URL
+### Base URLs
 
 ```
-https://your-satrank-instance.com/api/v1
+https://your-satrank-instance.com/api/v1   # v1 — scores, verdicts, attestations
+https://your-satrank-instance.com/api/v2   # v2 — decide, report, profile
 ```
 
-### Free endpoints (no authentication)
+### v2 endpoints (recommended for agents)
 
 ```bash
-# Leaderboard
-curl https://satrank.example/api/v1/agents/top?limit=5
+# GO / NO-GO decision (L402-gated)
+curl -X POST https://satrank.example/api/v2/decide \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: L402 <macaroon>:<preimage>' \
+  -d '{"target": "<hash>", "caller": "<your-hash>"}'
 
-# Search
-curl https://satrank.example/api/v1/agents/search?alias=ACINQ
+# Report outcome (FREE — API key only)
+curl -X POST https://satrank.example/api/v2/report \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: your-api-key' \
+  -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success"}'
 
-# Health
-curl https://satrank.example/api/v1/health
-
-# Network stats
-curl https://satrank.example/api/v1/stats
+# Agent profile (L402-gated)
+curl -H 'Authorization: L402 <macaroon>:<preimage>' \
+  https://satrank.example/api/v2/profile/<hash>
 ```
 
 ### L402-gated endpoints (pay 1 sat per query)
 
-The L402 flow works in 3 steps:
-
-```bash
-# Step 1: Request without credentials → 402 with invoice
-curl -i https://satrank.example/api/v1/agent/a1b2c3...
-# HTTP/1.1 402 Payment Required
-# WWW-Authenticate: L402 macaroon="AGIAJEemVQ...", invoice="lnbc10n1pj..."
-
-# Step 2: Pay the Lightning invoice (1 sat) using your LN wallet
-# This gives you a preimage (proof of payment)
-
-# Step 3: Retry with the L402 token
-curl -H 'Authorization: L402 AGIAJEemVQ...:preimage_hex' \
-  https://satrank.example/api/v1/agent/a1b2c3...
-# HTTP/1.1 200 OK
-# { "data": { "agent": { ... }, "score": { "total": 73, ... }, "evidence": { ... } } }
-```
-
-### Submit an attestation (API key required)
-
-```bash
-curl -X POST https://satrank.example/api/v1/attestations \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: your-api-key' \
-  -d '{
-    "txId": "uuid-of-transaction",
-    "attesterHash": "sha256-of-your-pubkey",
-    "subjectHash": "sha256-of-counterparty-pubkey",
-    "score": 85,
-    "tags": ["fast", "reliable"]
-  }'
-# HTTP/1.1 201 Created
-# { "data": { "attestationId": "...", "timestamp": 1712000000 } }
-```
-
-### L402-gated endpoints
-
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `GET /agent/{hash}` | L402 | Full score + evidence |
-| `GET /agent/{hash}/verdict` | L402 | SAFE/RISKY/UNKNOWN verdict |
-| `GET /agent/{hash}/history` | L402 | Score history over time |
-| `GET /agent/{hash}/attestations` | L402 | Attestations received |
-| `POST /verdicts` | L402 | Batch verdict (up to 100 hashes) |
+| `POST /api/v2/decide` | L402 | GO/NO-GO with success probability |
+| `GET /api/v2/profile/{id}` | L402 | Agent profile with reports, uptime, rank |
+| `GET /api/v1/agent/{hash}` | L402 | Full score + evidence |
+| `GET /api/v1/agent/{hash}/verdict` | L402 | SAFE/RISKY/UNKNOWN verdict |
+| `GET /api/v1/agent/{hash}/history` | L402 | Score history over time |
+| `GET /api/v1/agent/{hash}/attestations` | L402 | Attestations received |
+| `POST /api/v1/verdicts` | L402 | Batch verdict (up to 100 hashes) |
 
 ### Free endpoints
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `POST /attestations` | API Key | Submit attestation (FREE — no payment) |
-| `GET /agents/top` | None | Leaderboard |
-| `GET /agents/search` | None | Search by alias |
-| `GET /health` | None | Service health |
-| `GET /stats` | None | Network statistics |
+| `POST /api/v2/report` | API Key | Report outcome (FREE — no payment) |
+| `POST /api/v1/attestations` | API Key | Submit attestation (FREE — no payment) |
+| `GET /api/v1/agents/top` | None | Leaderboard |
+| `GET /api/v1/agents/search` | None | Search by alias |
+| `GET /api/v1/agents/movers` | None | Top movers (7-day delta) |
+| `GET /api/v1/health` | None | Service health |
+| `GET /api/v1/stats` | None | Network statistics |
 
-> **Attestations are free.** They are the fuel of the trust network.
-> Every attestation you submit makes the scoring more accurate for everyone.
+> **Reports and attestations are free.** They are the fuel of the trust network.
+> Every report you submit makes the scoring more accurate for everyone.
 
 ### Auto-indexation
 
