@@ -128,6 +128,10 @@ export class HttpLndGraphClient implements LndGraphClient {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('unable to find a path') || msg.includes('FAILURE_REASON')) {
+        // "No route" is a valid LND response, not a connection failure.
+        // request() already called breaker.onFailure() for the HTTP 404 —
+        // compensate with onSuccess() so the breaker stays closed.
+        this.breaker.onSuccess();
         return { routes: [] };
       }
       throw err;
