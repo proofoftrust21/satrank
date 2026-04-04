@@ -1,4 +1,4 @@
-// SatRank API v1 response types
+// SatRank API response types
 // Decoupled from server — do not import from ../src/
 
 export type AgentSource = 'observer_protocol' | '4tress' | 'lightning_graph' | 'manual';
@@ -294,7 +294,7 @@ export interface MoversResponse {
   down: TopMover[];
 }
 
-// --- v2 types ---
+// --- Decision types ---
 
 export type ReportOutcome = 'success' | 'failure' | 'timeout';
 

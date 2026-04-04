@@ -146,13 +146,13 @@ import { SatRankClient } from '@satrank/sdk';
 
 const client = new SatRankClient('http://localhost:3000');
 
-// v2 — decision infrastructure
+// Decision
 const decision = await client.decide({ target: '<hash>', caller: '<your-hash>' });
 if (decision.go) { /* proceed */ }
 await client.report({ target: '<hash>', reporter: '<your-hash>', outcome: 'success' });
 const profile = await client.getProfile('<hash>');
 
-// v1 — scores and verdicts
+// Scores and verdicts
 const verdict = await client.getVerdict('<hash>');
 const score = await client.getScore('<hash>');
 const batch = await client.getBatchVerdicts(['<hash1>', '<hash2>']);
@@ -183,7 +183,7 @@ const batch = await client.getBatchVerdicts(['<hash1>', '<hash2>']);
 
 ## Roadmap
 
-- [x] v2 Decision API — GO/NO-GO with success probability, outcome reports, agent profiles
+- [x] Decision API — GO/NO-GO with success probability, outcome reports, agent profiles
 - [x] Personalized pathfinding — real-time route from caller to target via LND QueryRoutes
 - [x] Aperture integration (L402 reverse proxy) — monetize queries in sats
 - [x] Observer Protocol crawler — automatic on-chain data ingestion

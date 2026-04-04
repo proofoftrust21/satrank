@@ -351,13 +351,13 @@ export const openapiSpec = {
         },
       },
     },
-    // --- v2 endpoints ---
+    // --- Decision endpoints ---
     '/decide': {
       post: {
         summary: 'GO / NO-GO decision with success probability',
         operationId: 'decide',
-        description: 'Returns a boolean go/no-go, success rate (0-1), and the 4 probability components. The primary v2 endpoint for pre-transaction decisions.',
-        tags: ['v2 — Decision'],
+        description: 'Returns a boolean go/no-go, success rate (0-1), and the 4 probability components. The primary endpoint for pre-transaction decisions.',
+        tags: ['Decision'],
         security: [{ l402: [] }],
         requestBody: {
           required: true,
@@ -379,7 +379,7 @@ export const openapiSpec = {
         summary: 'Report transaction outcome',
         operationId: 'report',
         description: 'Submit a success/failure/timeout report. Free (no L402 payment). Weighted by reporter trust score. Preimage verification gives 1.5x weight bonus.',
-        tags: ['v2 — Reports'],
+        tags: ['Reports'],
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { $ref: '#/components/schemas/ReportRequest' } } },
@@ -400,7 +400,7 @@ export const openapiSpec = {
         summary: 'Agent profile with reports and uptime',
         operationId: 'getProfile',
         description: 'Restructured agent view with report statistics, probe uptime, rank, and full evidence.',
-        tags: ['v2 — Profiles'],
+        tags: ['Profiles'],
         security: [{ l402: [] }],
         parameters: [{
           name: 'id',
@@ -829,7 +829,7 @@ export const openapiSpec = {
           version: { type: 'string' },
         },
       },
-      // --- v2 schemas ---
+      // --- Decision schemas ---
       DecideRequest: {
         type: 'object',
         required: ['target', 'caller'],

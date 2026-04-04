@@ -1,4 +1,4 @@
-// HTTP client for the SatRank API v1 — zero dependencies, native fetch()
+// HTTP client for the SatRank API — zero dependencies, native fetch()
 import type {
   AgentScoreResponse,
   TopAgentsResponse,
@@ -129,7 +129,7 @@ export class SatRankClient {
     return envelope.data;
   }
 
-  // --- v2 endpoints ---
+  // --- Decision endpoints ---
 
   /** GO / NO-GO decision with success probability */
   async decide(input: DecideRequest): Promise<DecideResponse> {
