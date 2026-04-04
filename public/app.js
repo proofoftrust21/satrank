@@ -190,11 +190,12 @@
       var rep = (a.components && a.components.reputation) || 0;
       repCell.innerHTML = miniBar(rep, '#00c853');
 
-      // Delta column
+      // Delta column — use delta7d from API (enriched by backend), fallback to movers cross-ref
       var deltaCell = tr.insertCell();
       deltaCell.className = 'delta-cell';
-      if (a._delta7d !== undefined && a._delta7d !== null) {
-        deltaCell.innerHTML = deltaHtml(a._delta7d);
+      var d7 = a.delta7d !== undefined && a.delta7d !== null ? a.delta7d : a._delta7d;
+      if (d7 !== undefined && d7 !== null) {
+        deltaCell.innerHTML = deltaHtml(d7);
       } else {
         deltaCell.innerHTML = '<span class="delta neutral">--</span>';
       }

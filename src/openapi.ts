@@ -681,7 +681,9 @@ export const openapiSpec = {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
           score: { type: 'integer' },
+          totalTransactions: { type: 'integer' },
           source: { type: 'string' },
+          components: { $ref: '#/components/schemas/ScoreComponents' },
         },
       },
       Attestation: {

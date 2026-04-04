@@ -105,14 +105,18 @@ export class AgentController {
       const total = this.agentRepo.count();
 
       res.json({
-        data: agents.map(a => ({
-          publicKeyHash: a.publicKeyHash,
-          alias: a.alias,
-          score: a.score,
-          totalTransactions: a.totalTransactions,
-          source: a.source,
-          components: a.components,
-        })),
+        data: agents.map(a => {
+          const delta = this.trendService.computeDeltas(a.publicKeyHash, a.score);
+          return {
+            publicKeyHash: a.publicKeyHash,
+            alias: a.alias,
+            score: a.score,
+            totalTransactions: a.totalTransactions,
+            source: a.source,
+            components: a.components,
+            delta7d: delta.delta7d,
+          };
+        }),
         meta: { total, limit, offset, sort_by },
       });
     } catch (err) {
@@ -204,13 +208,32 @@ export class AgentController {
       const agents = this.agentService.searchByAlias(alias, limit, offset);
       const total = this.agentRepo.countByAlias(alias);
 
+      // Enrich with components from latest snapshots (same shape as /agents/top)
+      const hashes = agents.map(a => a.public_key_hash);
+      const snapshotMap = this.snapshotRepo.findLatestByAgents(hashes);
+      const defaultComponents = { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 };
+
       res.json({
-        data: agents.map(a => ({
-          publicKeyHash: a.public_key_hash,
-          alias: a.alias,
-          score: a.avg_score,
-          source: a.source,
-        })),
+        data: agents.map(a => {
+          const snap = snapshotMap.get(a.public_key_hash);
+          let components = defaultComponents;
+          if (snap) {
+            const parsed = safeParseJson(snap.components, null);
+            if (parsed && typeof parsed === 'object' && 'volume' in parsed) {
+              components = parsed as typeof defaultComponents;
+            }
+          }
+          const delta = this.trendService.computeDeltas(a.public_key_hash, a.avg_score);
+          return {
+            publicKeyHash: a.public_key_hash,
+            alias: a.alias,
+            score: a.avg_score,
+            totalTransactions: a.total_transactions,
+            source: a.source,
+            components,
+            delta7d: delta.delta7d,
+          };
+        }),
         meta: { total, limit, offset },
       });
     } catch (err) {

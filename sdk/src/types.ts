@@ -112,7 +112,9 @@ export interface SearchAgentsResponse {
     publicKeyHash: string;
     alias: string | null;
     score: number;
+    totalTransactions: number;
     source: AgentSource;
+    components: ScoreComponents;
   }[];
   meta: PaginationMeta;
 }
