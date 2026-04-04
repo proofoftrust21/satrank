@@ -65,6 +65,8 @@ export class AttestationService {
       evidence_hash: input.evidenceHash ?? null,
       timestamp: Math.floor(Date.now() / 1000),
       category: input.category ?? 'general',
+      verified: 0,
+      weight: 1.0,
     };
 
     // Insert + stats update in an atomic transaction

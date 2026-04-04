@@ -11,10 +11,11 @@ export class AttestationRepository {
     ).all(subjectHash, limit, offset) as Attestation[];
   }
 
-  findByAttester(attesterHash: string): Attestation[] {
+  // M3: hard cap to prevent unbounded memory usage for prolific attesters
+  findByAttester(attesterHash: string, limit: number = 1000): Attestation[] {
     return this.db.prepare(
-      'SELECT * FROM attestations WHERE attester_hash = ? ORDER BY timestamp DESC'
-    ).all(attesterHash) as Attestation[];
+      'SELECT * FROM attestations WHERE attester_hash = ? ORDER BY timestamp DESC LIMIT ?'
+    ).all(attesterHash, limit) as Attestation[];
   }
 
   countBySubject(subjectHash: string): number {
@@ -165,6 +166,7 @@ export class AttestationRepository {
 
   countByCategoryForSubject(subjectHash: string, categories: string[]): number {
     if (categories.length === 0) return 0;
+    if (categories.length > 20) throw new Error('categories array exceeds limit');
     const placeholders = categories.map(() => '?').join(',');
     const row = this.db.prepare(
       `SELECT COUNT(*) as count FROM attestations WHERE subject_hash = ? AND category IN (${placeholders})`
@@ -174,12 +176,74 @@ export class AttestationRepository {
 
   insert(attestation: Attestation): void {
     this.db.prepare(`
-      INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, tags, evidence_hash, timestamp, category)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, tags, evidence_hash, timestamp, category, verified, weight)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       attestation.attestation_id, attestation.tx_id, attestation.attester_hash,
       attestation.subject_hash, attestation.score, attestation.tags,
-      attestation.evidence_hash, attestation.timestamp, attestation.category
+      attestation.evidence_hash, attestation.timestamp, attestation.category,
+      attestation.verified, attestation.weight,
     );
+  }
+
+  // --- v2 report queries ---
+
+  /** Find most recent report from attester to subject (for dedup) */
+  findRecentReport(attesterHash: string, subjectHash: string, afterTimestamp: number): Attestation | undefined {
+    return this.db.prepare(
+      'SELECT * FROM attestations WHERE attester_hash = ? AND subject_hash = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT 1'
+    ).get(attesterHash, subjectHash, afterTimestamp) as Attestation | undefined;
+  }
+
+  /** Count reports by outcome category for a subject */
+  countReportsByOutcome(subjectHash: string): { successes: number; failures: number; timeouts: number; total: number } {
+    const rows = this.db.prepare(`
+      SELECT category, COUNT(*) as count FROM attestations
+      WHERE subject_hash = ?
+      AND category IN ('successful_transaction', 'failed_transaction', 'unresponsive')
+      GROUP BY category
+    `).all(subjectHash) as { category: string; count: number }[];
+
+    const counts = { successes: 0, failures: 0, timeouts: 0, total: 0 };
+    for (const row of rows) {
+      if (row.category === 'successful_transaction') counts.successes = row.count;
+      else if (row.category === 'failed_transaction') counts.failures = row.count;
+      else if (row.category === 'unresponsive') counts.timeouts = row.count;
+    }
+    counts.total = counts.successes + counts.failures + counts.timeouts;
+    return counts;
+  }
+
+  /** Weighted success rate: sum(weight * (score >= 50 ? 1 : 0)) / sum(weight) for report-category attestations */
+  weightedSuccessRate(subjectHash: string): { rate: number; dataPoints: number } {
+    const row = this.db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN score >= 50 THEN weight ELSE 0 END), 0) as weighted_successes,
+        COALESCE(SUM(weight), 0) as total_weight,
+        COUNT(*) as data_points
+      FROM attestations
+      WHERE subject_hash = ?
+      AND category IN ('successful_transaction', 'failed_transaction', 'unresponsive')
+    `).get(subjectHash) as { weighted_successes: number; total_weight: number; data_points: number };
+
+    if (row.total_weight === 0) return { rate: 0, dataPoints: 0 };
+    return { rate: row.weighted_successes / row.total_weight, dataPoints: row.data_points };
+  }
+
+  /** Count reports from a specific attester in the last N seconds (rate limiting).
+   *  When categories is provided, only counts attestations in those categories (C8). */
+  countRecentByAttester(attesterHash: string, afterTimestamp: number, categories?: string[]): number {
+    if (categories && categories.length > 0) {
+      if (categories.length > 20) throw new Error('categories array exceeds limit');
+      const placeholders = categories.map(() => '?').join(',');
+      const row = this.db.prepare(
+        `SELECT COUNT(*) as count FROM attestations WHERE attester_hash = ? AND timestamp >= ? AND category IN (${placeholders})`
+      ).get(attesterHash, afterTimestamp, ...categories) as { count: number };
+      return row.count;
+    }
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as count FROM attestations WHERE attester_hash = ? AND timestamp >= ?'
+    ).get(attesterHash, afterTimestamp) as { count: number };
+    return row.count;
   }
 }

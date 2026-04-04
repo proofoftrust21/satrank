@@ -56,9 +56,10 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
 // exposed directly (firewall misconfiguration, Aperture down), paid endpoints
 // remain protected. Aperture must be configured to inject this secret in the
 // X-Aperture-Auth header when forwarding paid requests.
-// In development, allows passthrough when NODE_ENV !== 'production'.
+// M6: data-driven passthrough — matches apiKeyAuth pattern.
+// When APERTURE_SHARED_SECRET is not configured, allows passthrough (dev/test).
 export function apertureGateAuth(req: Request, _res: Response, next: NextFunction): void {
-  if (config.NODE_ENV !== 'production') {
+  if (!config.APERTURE_SHARED_SECRET) {
     next();
     return;
   }
@@ -70,12 +71,6 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
   }
 
   // Verify the shared secret — prevents bypass if Express is reachable directly
-  // Fail closed: if secret is not configured in production, reject the request
-  if (!config.APERTURE_SHARED_SECRET) {
-    next(new PaymentRequiredError());
-    return;
-  }
-
   if (!safeEqual(apertureHeader.trim(), config.APERTURE_SHARED_SECRET)) {
     next(new PaymentRequiredError());
     return;

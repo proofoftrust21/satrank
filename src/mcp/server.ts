@@ -7,8 +7,10 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { config } from '../config';
 import { getDatabase, closeDatabase } from '../database/connection';
 import { runMigrations } from '../database/migrations';
+import { HttpLndGraphClient } from '../crawler/lndGraphClient';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -21,6 +23,8 @@ import { StatsService } from '../services/statsService';
 import { TrendService } from '../services/trendService';
 import { VerdictService } from '../services/verdictService';
 import { RiskService } from '../services/riskService';
+import { DecideService } from '../services/decideService';
+import { ReportService } from '../services/reportService';
 import { attestationCategoryValues } from '../middleware/validation';
 import { logger } from '../logger';
 
@@ -58,6 +62,23 @@ const getTopMoversArgs = z.object({
 const getBatchVerdictsArgs = z.object({
   hashes: z.array(identifierSchema).min(1).max(100),
 });
+const decideArgs = z.object({
+  target: identifierSchema,
+  caller: identifierSchema,
+  amountSats: z.number().int().positive().optional(),
+});
+const reportArgs = z.object({
+  target: identifierSchema,
+  reporter: identifierSchema,
+  outcome: z.enum(['success', 'failure', 'timeout']),
+  paymentHash: z.string().regex(/^[a-f0-9]{64}$/).refine(v => v !== '0'.repeat(64), 'All-zero paymentHash rejected').optional(),
+  preimage: z.string().regex(/^[a-f0-9]{64}$/).refine(v => v !== '0'.repeat(64), 'All-zero preimage rejected').optional(),
+  amountBucket: z.enum(['micro', 'small', 'medium', 'large']).optional(),
+  memo: z.string().max(280).regex(/^[^\x00-\x1f]*$/, 'Memo must not contain control characters').optional(),
+}).refine(
+  (data) => !data.preimage || !!data.paymentHash,
+  { message: 'preimage requires paymentHash', path: ['preimage'] },
+);
 const submitAttestationArgs = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
   attesterHash: hashSchema,
@@ -84,7 +105,15 @@ const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scorin
 const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
 const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 const riskService = new RiskService();
-const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+
+const lndClient = new HttpLndGraphClient({
+  restUrl: config.LND_REST_URL,
+  macaroonPath: config.LND_MACAROON_PATH,
+  timeoutMs: config.LND_TIMEOUT_MS,
+});
+const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
 // MCP server creation (low-level API to avoid TS2589 with .tool())
 const server = new Server(
@@ -134,12 +163,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'get_verdict',
-      description: 'Returns SAFE / RISKY / UNKNOWN verdict for an agent, with risk profile and optional personal trust graph. The primary tool for pre-transaction trust decisions.',
+      description: 'Returns SAFE / RISKY / UNKNOWN verdict for an agent, with risk profile, optional personal trust graph, and personalized pathfinding (real-time route from caller to target via LND). The primary tool for pre-transaction trust decisions.',
       inputSchema: {
         type: 'object' as const,
         properties: {
           publicKeyHash: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'SHA256 hex of the target agent public key' },
-          callerPubkey: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Optional: your own pubkey hash to get personalized trust distance' },
+          callerPubkey: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Optional: your own pubkey hash to get personalized trust distance and real-time pathfinding (route from you to the target)' },
         },
         required: ['publicKeyHash'],
       },
@@ -186,6 +215,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           category: { type: 'string', enum: ['successful_transaction', 'failed_transaction', 'dispute', 'fraud', 'unresponsive', 'general'], description: 'Attestation category (default: general)' },
         },
         required: ['txId', 'attesterHash', 'subjectHash', 'score'],
+      },
+    },
+    {
+      name: 'decide',
+      description: 'GO / NO-GO decision with success probability. The primary v2 tool for pre-transaction decisions. Returns a boolean go, success_rate (0-1), and the 4 probability components (trust, routable, available, empirical).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          target: { type: 'string', description: 'Target agent: 64-char SHA256 hash or 66-char Lightning pubkey' },
+          caller: { type: 'string', description: 'Your identity: 64-char SHA256 hash or 66-char Lightning pubkey' },
+          amountSats: { type: 'number', description: 'Optional: transaction amount in sats for amount-aware routing' },
+        },
+        required: ['target', 'caller'],
+      },
+    },
+    {
+      name: 'report',
+      description: 'Report a transaction outcome (success / failure / timeout). Requires SATRANK_API_KEY. Weighted by reporter trust score. Provide paymentHash + preimage for 1.5x weight bonus.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          target: { type: 'string', description: 'Target agent: 64-char SHA256 hash or 66-char Lightning pubkey' },
+          reporter: { type: 'string', description: 'Your identity: 64-char SHA256 hash or 66-char Lightning pubkey' },
+          outcome: { type: 'string', enum: ['success', 'failure', 'timeout'], description: 'Transaction outcome' },
+          paymentHash: { type: 'string', description: 'Optional: payment hash (64 hex chars) for preimage verification' },
+          preimage: { type: 'string', description: 'Optional: preimage (64 hex chars). SHA256(preimage) must equal paymentHash.' },
+          amountBucket: { type: 'string', enum: ['micro', 'small', 'medium', 'large'], description: 'Optional: transaction size bucket' },
+          memo: { type: 'string', description: 'Optional: free-text note (max 280 chars)' },
+        },
+        required: ['target', 'reporter', 'outcome'],
       },
     },
   ],
@@ -246,7 +305,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!parsed.success) {
           return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
-        const verdict = verdictService.getVerdict(normalizeId(parsed.data.publicKeyHash), parsed.data.callerPubkey);
+        const verdict = await verdictService.getVerdict(normalizeId(parsed.data.publicKeyHash), parsed.data.callerPubkey);
         return { content: [{ type: 'text', text: JSON.stringify(verdict, null, 2) }] };
       }
 
@@ -255,11 +314,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!parsed.success) {
           return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
-        const results = parsed.data.hashes.map(id => ({
-          publicKeyHash: normalizeId(id),
-          ...verdictService.getVerdict(normalizeId(id)),
-        }));
-        return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+        // C4: concurrent execution in chunks of 10
+        const BATCH_CONCURRENCY = 10;
+        const ids = parsed.data.hashes.map(normalizeId);
+        const batchResults: Array<Record<string, unknown>> = [];
+        for (let i = 0; i < ids.length; i += BATCH_CONCURRENCY) {
+          const chunk = ids.slice(i, i + BATCH_CONCURRENCY);
+          const results = await Promise.all(
+            chunk.map(async (id) => {
+              const v = await verdictService.getVerdict(id);
+              return { publicKeyHash: id, ...v };
+            }),
+          );
+          batchResults.push(...results);
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(batchResults, null, 2) }] };
       }
 
       case 'get_top_movers': {
@@ -290,6 +359,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const attestation = attestationService.create(parsed.data);
         return { content: [{ type: 'text', text: JSON.stringify({ attestationId: attestation.attestation_id, subjectHash: attestation.subject_hash, score: attestation.score, timestamp: attestation.timestamp }, null, 2) }] };
+      }
+
+      case 'decide': {
+        const parsed = decideArgs.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        const result = await decideService.decide(normalizeId(parsed.data.target), normalizeId(parsed.data.caller), parsed.data.amountSats);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      case 'report': {
+        // C1: gate report on API key — same pattern as submit_attestation
+        const reportApiKey = process.env.SATRANK_API_KEY;
+        if (!reportApiKey) {
+          return { content: [{ type: 'text', text: 'SATRANK_API_KEY environment variable is required for report operations' }], isError: true };
+        }
+        const parsed = reportArgs.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        const result = reportService.submit({
+          target: normalizeId(parsed.data.target),
+          reporter: normalizeId(parsed.data.reporter),
+          outcome: parsed.data.outcome,
+          paymentHash: parsed.data.paymentHash,
+          preimage: parsed.data.preimage,
+          amountBucket: parsed.data.amountBucket,
+          memo: parsed.data.memo,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
 
       default:

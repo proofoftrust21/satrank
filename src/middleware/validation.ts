@@ -43,3 +43,30 @@ export const topQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   sort_by: z.enum(sortByValues).default('score'),
 });
+
+// --- v2 schemas ---
+
+export const decideSchema = z.object({
+  target: agentIdentifierSchema,
+  caller: agentIdentifierSchema,
+  // H3: amountSats reserved for future amount-aware routing — not yet consumed by DecideService
+  amountSats: z.number().int().positive().optional(),
+});
+
+const reportOutcomeValues = ['success', 'failure', 'timeout'] as const;
+
+export const reportSchema = z.object({
+  target: agentIdentifierSchema,
+  reporter: agentIdentifierSchema,
+  outcome: z.enum(reportOutcomeValues),
+  // L4: reject all-zero values
+  paymentHash: z.string().regex(/^[a-f0-9]{64}$/).refine(v => v !== '0'.repeat(64), 'All-zero paymentHash rejected').optional(),
+  preimage: z.string().regex(/^[a-f0-9]{64}$/).refine(v => v !== '0'.repeat(64), 'All-zero preimage rejected').optional(),
+  amountBucket: z.enum(['micro', 'small', 'medium', 'large']).optional(),
+  // S6: reject control characters in memo
+  memo: z.string().max(280).regex(/^[^\x00-\x1f]*$/, 'Memo must not contain control characters').optional(),
+}).refine(
+  // S5: preimage requires paymentHash
+  (data) => !data.preimage || !!data.paymentHash,
+  { message: 'preimage requires paymentHash', path: ['preimage'] },
+);

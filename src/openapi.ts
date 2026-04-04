@@ -7,7 +7,7 @@ export const openapiSpec = {
     description: 'Trust score for AI agents on Bitcoin Lightning. The PageRank of the agentic economy.',
     license: { name: 'AGPL-3.0' },
   },
-  servers: [{ url: '/api/v1' }],
+  servers: [{ url: '/api/v1' }, { url: '/api/v2', description: 'v2 — decision infrastructure' }],
   paths: {
     '/agent/{publicKeyHash}': {
       get: {
@@ -46,8 +46,8 @@ export const openapiSpec = {
             name: 'caller_pubkey',
             in: 'query',
             required: false,
-            schema: { type: 'string', pattern: '^[a-f0-9]{64}$' },
-            description: 'Your own pubkey hash. Enables personalized trust graph (trust_distance, shared connections). Also accepted as X-Caller-Pubkey header.',
+            schema: { type: 'string', pattern: '^(?:[a-f0-9]{64}|(02|03)[a-f0-9]{64})$' },
+            description: 'Your own pubkey hash (64 hex) or Lightning pubkey (66 hex with 02/03 prefix). Enables personalized trust graph and real-time pathfinding (route from you to the target). Also accepted as X-Caller-Pubkey header.',
           },
         ],
         responses: {
@@ -348,6 +348,74 @@ export const openapiSpec = {
               properties: { data: { $ref: '#/components/schemas/VersionResponse' } },
             } } },
           },
+        },
+      },
+    },
+    // --- v2 endpoints ---
+    '/v2/decide': {
+      post: {
+        summary: 'GO / NO-GO decision with success probability',
+        operationId: 'decide',
+        description: 'Returns a boolean go/no-go, success rate (0-1), and the 4 probability components. The primary v2 endpoint for pre-transaction decisions.',
+        tags: ['v2 — Decision'],
+        security: [{ l402: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/DecideRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Decision result',
+            content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/DecideResponse' } } } } },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
+    '/v2/report': {
+      post: {
+        summary: 'Report transaction outcome',
+        operationId: 'report',
+        description: 'Submit a success/failure/timeout report. Free (no L402 payment). Weighted by reporter trust score. Preimage verification gives 1.5x weight bonus.',
+        tags: ['v2 — Reports'],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/ReportRequest' } } },
+        },
+        responses: {
+          '201': {
+            description: 'Report accepted',
+            content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/ReportResponse' } } } } },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': { description: 'Duplicate report (same reporter+target within 1 hour)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/v2/profile/{id}': {
+      get: {
+        summary: 'Agent profile with reports and uptime',
+        operationId: 'getProfile',
+        description: 'Restructured agent view with report statistics, probe uptime, rank, and full evidence.',
+        tags: ['v2 — Profiles'],
+        security: [{ l402: [] }],
+        parameters: [{
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', pattern: '^(?:[a-f0-9]{64}|(02|03)[a-f0-9]{64})$' },
+          description: '64-char SHA256 hash or 66-char Lightning pubkey',
+        }],
+        responses: {
+          '200': {
+            description: 'Agent profile',
+            content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/ProfileResponse' } } } } },
+          },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
+          '404': { $ref: '#/components/responses/NotFound' },
         },
       },
     },
@@ -658,7 +726,7 @@ export const openapiSpec = {
             type: 'array',
             items: {
               type: 'string',
-              enum: ['new_agent', 'low_volume', 'rapid_decline', 'rapid_rise', 'negative_reputation', 'high_demand', 'no_reputation_data', 'fraud_reported', 'dispute_reported', 'unreachable'],
+              enum: ['new_agent', 'low_volume', 'rapid_decline', 'rapid_rise', 'negative_reputation', 'high_demand', 'no_reputation_data', 'fraud_reported', 'dispute_reported', 'unreachable', 'unreachable_from_caller'],
             },
             description: 'Active flags that influenced the verdict',
           },
@@ -667,8 +735,12 @@ export const openapiSpec = {
             description: 'Personalized trust distance from caller to target. Null if caller_pubkey not provided.',
           },
           riskProfile: { $ref: '#/components/schemas/RiskProfile' },
+          pathfinding: {
+            oneOf: [{ $ref: '#/components/schemas/PathfindingResult' }, { type: 'null' }],
+            description: 'Personalized pathfinding from caller to target. Null if caller_pubkey not provided, or if either node lacks a Lightning pubkey.',
+          },
         },
-        required: ['verdict', 'confidence', 'reason', 'flags', 'personalTrust', 'riskProfile'],
+        required: ['verdict', 'confidence', 'reason', 'flags', 'personalTrust', 'riskProfile', 'pathfinding'],
       },
       PersonalTrust: {
         type: 'object',
@@ -687,6 +759,19 @@ export const openapiSpec = {
           },
         },
         required: ['distance', 'sharedConnections', 'strongestConnection'],
+      },
+      PathfindingResult: {
+        type: 'object',
+        description: 'Real-time personalized route query from the calling agent to the target, via LND QueryRoutes with source_pub_key. This is proprietary data — no free alternative provides personalized pathfinding as a service.',
+        properties: {
+          reachable: { type: 'boolean', description: 'Whether a route exists from the caller to this target' },
+          hops: { type: ['integer', 'null'], description: 'Number of hops in the best route from the caller' },
+          estimatedFeeMsat: { type: ['integer', 'null'], description: 'Estimated total routing fee in millisatoshis from the caller' },
+          alternatives: { type: 'integer', description: 'Number of alternative routes found' },
+          latencyMs: { type: 'integer', description: 'Route query computation time in ms' },
+          source: { type: 'string', enum: ['lnd_queryroutes'], description: 'Pathfinding method used' },
+        },
+        required: ['reachable', 'hops', 'estimatedFeeMsat', 'alternatives', 'latencyMs', 'source'],
       },
       RiskProfile: {
         type: 'object',
@@ -740,6 +825,97 @@ export const openapiSpec = {
           commit: { type: 'string' },
           buildDate: { type: 'string' },
           version: { type: 'string' },
+        },
+      },
+      // --- v2 schemas ---
+      DecideRequest: {
+        type: 'object',
+        required: ['target', 'caller'],
+        properties: {
+          target: { type: 'string', description: '64-char SHA256 hash or 66-char Lightning pubkey of the target agent' },
+          caller: { type: 'string', description: '64-char SHA256 hash or 66-char Lightning pubkey of the calling agent' },
+          amountSats: { type: 'integer', minimum: 1, description: 'Optional: transaction amount in sats (reserved for future amount-aware routing)' },
+        },
+      },
+      DecideResponse: {
+        type: 'object',
+        description: 'GO / NO-GO decision with success probability components.',
+        properties: {
+          go: { type: 'boolean', description: 'true = proceed with transaction, false = abort' },
+          successRate: { type: 'number', minimum: 0, maximum: 1, description: 'Combined success probability (0-1)' },
+          components: {
+            type: 'object',
+            properties: {
+              trustScore: { type: 'number', description: 'P_trust — sigmoid of the SatRank score' },
+              routable: { type: 'number', description: 'P_routable — route exists from caller to target (0 or 1)' },
+              available: { type: 'number', description: 'P_available — probe uptime over 7 days' },
+              empirical: { type: 'number', description: 'P_empirical — historical success rate from reports' },
+            },
+          },
+          basis: { type: 'string', enum: ['proxy', 'empirical'], description: 'proxy = <10 reports (using trust score), empirical = >=10 reports' },
+          confidence: { type: 'string', enum: ['very_low', 'low', 'medium', 'high', 'very_high'] },
+          verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
+          flags: { type: 'array', items: { type: 'string' } },
+          pathfinding: { oneOf: [{ $ref: '#/components/schemas/PathfindingResult' }, { type: 'null' }] },
+          riskProfile: { $ref: '#/components/schemas/RiskProfile' },
+          reason: { type: 'string' },
+          latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },
+        },
+        required: ['go', 'successRate', 'components', 'basis', 'confidence', 'verdict', 'flags', 'reason', 'latencyMs'],
+      },
+      ReportRequest: {
+        type: 'object',
+        required: ['target', 'reporter', 'outcome'],
+        properties: {
+          target: { type: 'string', description: 'Target agent identifier' },
+          reporter: { type: 'string', description: 'Reporter agent identifier' },
+          outcome: { type: 'string', enum: ['success', 'failure', 'timeout'] },
+          paymentHash: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Payment hash for preimage verification' },
+          preimage: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Preimage. SHA256(preimage) must equal paymentHash.' },
+          amountBucket: { type: 'string', enum: ['micro', 'small', 'medium', 'large'] },
+          memo: { type: 'string', maxLength: 280, description: 'Free-text note' },
+        },
+      },
+      ReportResponse: {
+        type: 'object',
+        properties: {
+          reportId: { type: 'string', format: 'uuid' },
+          verified: { type: 'boolean', description: 'true if preimage verified successfully' },
+          weight: { type: 'number', description: 'Applied weight (0.3-1.5)' },
+          timestamp: { type: 'integer' },
+        },
+        required: ['reportId', 'verified', 'weight', 'timestamp'],
+      },
+      ProfileResponse: {
+        type: 'object',
+        description: 'Restructured agent profile with report statistics and probe uptime.',
+        properties: {
+          agent: { type: 'object', properties: {
+            publicKeyHash: { type: 'string' },
+            alias: { type: ['string', 'null'] },
+            publicKey: { type: ['string', 'null'] },
+            firstSeen: { type: 'integer' },
+            lastSeen: { type: 'integer' },
+            source: { type: 'string' },
+          } },
+          score: { type: 'object', properties: {
+            total: { type: 'integer' },
+            components: { $ref: '#/components/schemas/ScoreComponents' },
+            confidence: { type: 'string' },
+            rank: { type: ['integer', 'null'], description: '1-based rank among all agents by score' },
+          } },
+          reports: { type: 'object', properties: {
+            total: { type: 'integer' },
+            successes: { type: 'integer' },
+            failures: { type: 'integer' },
+            timeouts: { type: 'integer' },
+            successRate: { type: 'number', minimum: 0, maximum: 1 },
+          } },
+          probeUptime: { type: ['number', 'null'], description: 'Probe reachability ratio over 7 days (0-1)' },
+          delta: { $ref: '#/components/schemas/ScoreDelta' },
+          riskProfile: { $ref: '#/components/schemas/RiskProfile' },
+          evidence: { $ref: '#/components/schemas/ScoreEvidence' },
+          flags: { type: 'array', items: { type: 'string' } },
         },
       },
     },

@@ -47,8 +47,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(10);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(versions.length).toBe(11);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -64,7 +64,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(10);
+    expect(versions.length).toBe(11);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -143,12 +143,14 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'general',
+      verified: 0,
+      weight: 1.0,
     };
     attestationRepo.insert(att);
     expect(attestationRepo.countBySubject(sha256('subject-b'))).toBe(1);
   });
 
-  it('rejects duplicate attestation from same attester to same subject across different transactions', () => {
+  it('allows multiple attestations from same attester to same subject after v11 (unique constraint dropped)', () => {
     const att1: Attestation = {
       attestation_id: 'att-1',
       tx_id: 'tx-1',
@@ -159,6 +161,8 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       evidence_hash: null,
       timestamp: NOW - DAY,
       category: 'general',
+      verified: 0,
+      weight: 1.0,
     };
     attestationRepo.insert(att1);
 
@@ -172,8 +176,12 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'general',
+      verified: 0,
+      weight: 1.0,
     };
-    expect(() => attestationRepo.insert(att2)).toThrow(/UNIQUE constraint failed/);
+    // v11 dropped the UNIQUE(attester_hash, subject_hash) constraint to support v2 multi-report
+    attestationRepo.insert(att2);
+    expect(attestationRepo.countBySubject(sha256('subject-b'))).toBe(2);
   });
 
   it('allows same attester to attest different subjects', () => {
@@ -201,6 +209,8 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'general',
+      verified: 0,
+      weight: 1.0,
     };
     const att2: Attestation = {
       attestation_id: 'att-2',
@@ -212,6 +222,8 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'general',
+      verified: 0,
+      weight: 1.0,
     };
     attestationRepo.insert(att1);
     attestationRepo.insert(att2);
@@ -219,95 +231,24 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
     expect(attestationRepo.countBySubject(sha256('subject-c'))).toBe(1);
   });
 
-  it('v6 UNIQUE index exists in sqlite_master', () => {
-    const idx = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_attestations_unique_attester_subject'"
-    ).get() as { name: string } | undefined;
-    expect(idx).toBeDefined();
-  });
-
-  it('v6 migration deduplicates existing data and creates index on pre-existing DB', () => {
-    // Simulate a pre-v6 database with duplicate (attester, subject) pairs
-    const freshDb = new Database(':memory:');
-    freshDb.pragma('foreign_keys = ON');
-
-    // Create tables manually without v6 (simulate v1-v5)
-    freshDb.exec(`
-      CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, description TEXT NOT NULL);
-      INSERT INTO schema_version VALUES (1, '2025-01-01T00:00:00Z', 'core tables');
-      INSERT INTO schema_version VALUES (2, '2025-01-01T00:00:00Z', 'capacity_sats');
-      INSERT INTO schema_version VALUES (3, '2025-01-01T00:00:00Z', 'LN+ fields');
-      INSERT INTO schema_version VALUES (4, '2025-01-01T00:00:00Z', 'centrality');
-      INSERT INTO schema_version VALUES (5, '2025-01-01T00:00:00Z', 'triggers');
-
-      CREATE TABLE agents (
-        public_key_hash TEXT PRIMARY KEY, public_key TEXT, alias TEXT,
-        first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
-        source TEXT NOT NULL, total_transactions INTEGER NOT NULL DEFAULT 0,
-        total_attestations_received INTEGER NOT NULL DEFAULT 0,
-        avg_score REAL NOT NULL DEFAULT 0, capacity_sats INTEGER,
-        positive_ratings INTEGER NOT NULL DEFAULT 0, negative_ratings INTEGER NOT NULL DEFAULT 0,
-        lnplus_rank INTEGER NOT NULL DEFAULT 0, hubness_rank INTEGER NOT NULL DEFAULT 0,
-        betweenness_rank INTEGER NOT NULL DEFAULT 0, hopness_rank INTEGER NOT NULL DEFAULT 0,
-        query_count INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE transactions (
-        tx_id TEXT PRIMARY KEY, sender_hash TEXT NOT NULL, receiver_hash TEXT NOT NULL,
-        amount_bucket TEXT NOT NULL, timestamp INTEGER NOT NULL, payment_hash TEXT NOT NULL,
-        preimage TEXT, status TEXT NOT NULL, protocol TEXT NOT NULL
-      );
-      CREATE TABLE attestations (
-        attestation_id TEXT PRIMARY KEY, tx_id TEXT NOT NULL,
-        attester_hash TEXT NOT NULL, subject_hash TEXT NOT NULL,
-        score INTEGER NOT NULL, tags TEXT, evidence_hash TEXT, timestamp INTEGER NOT NULL,
-        UNIQUE(tx_id, attester_hash)
-      );
-      CREATE TABLE score_snapshots (
-        snapshot_id TEXT PRIMARY KEY, agent_hash TEXT NOT NULL,
-        score REAL NOT NULL, components TEXT NOT NULL, computed_at INTEGER NOT NULL
-      );
-    `);
-
-    // Insert agents and transactions
-    const attHash = sha256('dup-attester');
-    const subHash = sha256('dup-subject');
-    freshDb.exec(`
-      INSERT INTO agents (public_key_hash, first_seen, last_seen, source) VALUES ('${attHash}', ${NOW - 90 * DAY}, ${NOW}, 'observer_protocol');
-      INSERT INTO agents (public_key_hash, first_seen, last_seen, source) VALUES ('${subHash}', ${NOW - 90 * DAY}, ${NOW}, 'observer_protocol');
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol)
-        VALUES ('tx-dup-1', '${attHash}', '${subHash}', 'small', ${NOW - DAY}, 'ph1', 'verified', 'l402');
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol)
-        VALUES ('tx-dup-2', '${attHash}', '${subHash}', 'medium', ${NOW}, 'ph2', 'verified', 'bolt11');
-    `);
-
-    // Insert duplicate attestations (same attester+subject, different tx)
-    freshDb.exec(`
-      INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, timestamp)
-        VALUES ('att-old', 'tx-dup-1', '${attHash}', '${subHash}', 70, ${NOW - DAY});
-      INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, timestamp)
-        VALUES ('att-new', 'tx-dup-2', '${attHash}', '${subHash}', 90, ${NOW});
-    `);
-
-    // Verify duplicates exist
-    const beforeCount = (freshDb.prepare('SELECT COUNT(*) as c FROM attestations').get() as { c: number }).c;
-    expect(beforeCount).toBe(2);
-
-    // Run migrations — v6 should deduplicate and create the UNIQUE index
-    runMigrations(freshDb);
-
-    const afterCount = (freshDb.prepare('SELECT COUNT(*) as c FROM attestations').get() as { c: number }).c;
-    expect(afterCount).toBe(1);
-
-    // The kept attestation should be the newer one (higher rowid)
-    const kept = freshDb.prepare('SELECT attestation_id FROM attestations').get() as { attestation_id: string };
-    expect(kept.attestation_id).toBe('att-new');
-
-    // UNIQUE index should exist
-    const idx = freshDb.prepare(
+  it('v11 drops UNIQUE index and adds attester_subject_time composite index', () => {
+    // After v11, the unique index should be gone
+    const uniqueIdx = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_attestations_unique_attester_subject'"
     ).get();
-    expect(idx).toBeDefined();
+    expect(uniqueIdx).toBeUndefined();
 
-    freshDb.close();
+    // But the composite lookup index should exist
+    const compositeIdx = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_attestations_attester_subject_time'"
+    ).get() as { name: string } | undefined;
+    expect(compositeIdx).toBeDefined();
+  });
+
+  it('v11 adds verified and weight columns to attestations', () => {
+    const cols = db.prepare("PRAGMA table_info(attestations)").all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toContain('verified');
+    expect(colNames).toContain('weight');
   });
 });

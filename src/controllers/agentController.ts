@@ -6,18 +6,10 @@ import type { AutoIndexService } from '../services/autoIndexService';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { TrendService } from '../services/trendService';
-import { publicKeyHashSchema, agentIdentifierSchema, paginationSchema, topQuerySchema, searchQuerySchema, batchVerdictsSchema } from '../middleware/validation';
+import { agentIdentifierSchema, paginationSchema, topQuerySchema, searchQuerySchema, batchVerdictsSchema } from '../middleware/validation';
 import { ValidationError, NotFoundError } from '../errors';
-import { sha256 } from '../utils/crypto';
+import { normalizeIdentifier } from '../utils/identifier';
 import { logger } from '../logger';
-
-/** If input is a 66-char Lightning pubkey, return { hash, pubkey }. Otherwise { hash, pubkey: null }. */
-function normalizeIdentifier(input: string): { hash: string; pubkey: string | null } {
-  if (input.length === 66 && /^(02|03)/.test(input)) {
-    return { hash: sha256(input), pubkey: input };
-  }
-  return { hash: input, pubkey: null };
-}
 
 function safeParseJson(value: string, fallback: unknown): unknown {
   try {
@@ -137,25 +129,26 @@ export class AgentController {
     }
   };
 
-  getVerdict = (req: Request, res: Response, next: NextFunction): void => {
+  getVerdict = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = agentIdentifierSchema.safeParse(req.params.publicKeyHash);
       if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
 
       const { hash, pubkey } = normalizeIdentifier(parsed.data);
 
-      // Extract caller pubkey from query param or header (with safe type guard)
+      // Extract caller pubkey from query param or header — accepts 64-char hash or 66-char Lightning pubkey
       const callerRaw = typeof req.query.caller_pubkey === 'string' ? req.query.caller_pubkey
         : typeof req.headers['x-caller-pubkey'] === 'string' ? req.headers['x-caller-pubkey']
         : undefined;
       let callerPubkey: string | undefined;
       if (callerRaw) {
-        const callerParsed = publicKeyHashSchema.safeParse(callerRaw);
-        if (!callerParsed.success) throw new ValidationError('Invalid caller_pubkey: expected 64 hex characters');
-        callerPubkey = callerParsed.data;
+        const callerParsed = agentIdentifierSchema.safeParse(callerRaw);
+        if (!callerParsed.success) throw new ValidationError('Invalid caller_pubkey: expected 64-char SHA256 hash or 66-char Lightning pubkey');
+        // Normalize to hash for internal use (trust graph + pathfinding lookup)
+        callerPubkey = normalizeIdentifier(callerParsed.data).hash;
       }
 
-      const result = this.verdictService.getVerdict(hash, callerPubkey);
+      const result = await this.verdictService.getVerdict(hash, callerPubkey);
 
       // Auto-index if UNKNOWN and input was a Lightning pubkey
       if (result.verdict === 'UNKNOWN' && this.autoIndexService && pubkey) {
@@ -172,7 +165,7 @@ export class AgentController {
     }
   };
 
-  batchVerdicts = (req: Request, res: Response, next: NextFunction): void => {
+  batchVerdicts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = batchVerdictsSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
@@ -180,9 +173,11 @@ export class AgentController {
       const MAX_AUTO_INDEX_PER_BATCH = 2;
       let autoIndexCount = 0;
 
-      const results = parsed.data.hashes.map(identifier => {
+      // Batch verdicts: no caller_pubkey, no pathfinding (would be N * 100ms)
+      const results: Array<{ publicKeyHash: string } & Awaited<ReturnType<typeof this.verdictService.getVerdict>>> = [];
+      for (const identifier of parsed.data.hashes) {
         const { hash, pubkey } = normalizeIdentifier(identifier);
-        const verdict = this.verdictService.getVerdict(hash);
+        const verdict = await this.verdictService.getVerdict(hash);
 
         // Auto-index unknown Lightning pubkeys (capped per batch to prevent abuse)
         if (verdict.verdict === 'UNKNOWN' && this.autoIndexService && pubkey && autoIndexCount < MAX_AUTO_INDEX_PER_BATCH) {
@@ -192,8 +187,8 @@ export class AgentController {
           }
         }
 
-        return { publicKeyHash: hash, ...verdict };
-      });
+        results.push({ publicKeyHash: hash, ...verdict });
+      }
 
       res.json({ data: results });
     } catch (err) {

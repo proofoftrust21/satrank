@@ -14,6 +14,11 @@ import type {
   CreateAttestationInput,
   CreateAttestationResponse,
   MoversResponse,
+  DecideRequest,
+  DecideResponse,
+  ReportRequest,
+  ReportResponse,
+  ProfileResponse,
 } from './types';
 
 export class SatRankError extends Error {
@@ -121,6 +126,26 @@ export class SatRankClient {
   /** Submit an attestation (requires API key in headers) */
   async submitAttestation(input: CreateAttestationInput): Promise<CreateAttestationResponse> {
     const envelope = await this.post<ApiEnvelope<CreateAttestationResponse>>(`/api/v1/attestations`, input);
+    return envelope.data;
+  }
+
+  // --- v2 endpoints ---
+
+  /** GO / NO-GO decision with success probability */
+  async decide(input: DecideRequest): Promise<DecideResponse> {
+    const envelope = await this.post<ApiEnvelope<DecideResponse>>(`/api/v2/decide`, input);
+    return envelope.data;
+  }
+
+  /** Submit outcome report (success / failure / timeout) */
+  async report(input: ReportRequest): Promise<ReportResponse> {
+    const envelope = await this.post<ApiEnvelope<ReportResponse>>(`/api/v2/report`, input);
+    return envelope.data;
+  }
+
+  /** Restructured agent profile with reports, probe uptime, rank */
+  async getProfile(id: string): Promise<ProfileResponse> {
+    const envelope = await this.get<ApiEnvelope<ProfileResponse>>(`/api/v2/profile/${id}`);
     return envelope.data;
   }
 

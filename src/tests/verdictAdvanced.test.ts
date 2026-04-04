@@ -81,62 +81,62 @@ describe('Verdict confidence formula', () => {
 
   afterEach(() => { db.close(); });
 
-  it('returns very_low confidence (0.1) for agent with < 5 data points', () => {
+  it('returns very_low confidence (0.1) for agent with < 5 data points', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('conf-verylow'),
       total_transactions: 2,
       total_attestations_received: 1,
     });
     agentRepo.insert(agent);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.confidence).toBe(0.1);
   });
 
-  it('returns low confidence (0.25) for agent with 5-19 data points', () => {
+  it('returns low confidence (0.25) for agent with 5-19 data points', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('conf-low'),
       total_transactions: 10,
       total_attestations_received: 5,
     });
     agentRepo.insert(agent);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.confidence).toBe(0.25);
   });
 
-  it('returns medium confidence (0.5) for agent with 20-99 data points', () => {
+  it('returns medium confidence (0.5) for agent with 20-99 data points', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('conf-medium'),
       total_transactions: 50,
       total_attestations_received: 30,
     });
     agentRepo.insert(agent);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.confidence).toBe(0.5);
   });
 
-  it('returns high confidence (0.75) for agent with 100-499 data points', () => {
+  it('returns high confidence (0.75) for agent with 100-499 data points', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('conf-high'),
       total_transactions: 200,
       total_attestations_received: 100,
     });
     agentRepo.insert(agent);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.confidence).toBe(0.75);
   });
 
-  it('returns very_high confidence (0.9) for agent with >= 500 data points', () => {
+  it('returns very_high confidence (0.9) for agent with >= 500 data points', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('conf-veryhigh'),
       total_transactions: 300,
       total_attestations_received: 250,
     });
     agentRepo.insert(agent);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.confidence).toBe(0.9);
   });
 
-  it('UNKNOWN (not RISKY) for low score with very_low confidence — insufficient data', () => {
+  it('UNKNOWN (not RISKY) for low score with very_low confidence — insufficient data', async () => {
     // A small LND node with few channels and no reputation data should be UNKNOWN, not RISKY.
     // RISKY requires at least low confidence (some evidence of risk).
     const hash = sha256('conf-insufficient-data');
@@ -157,13 +157,13 @@ describe('Verdict confidence formula', () => {
       INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(uuid(), hash, 15, '{"volume":5,"reputation":0,"seniority":10,"regularity":50,"diversity":1}', NOW);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     // very_low confidence (2 data points) + low score → UNKNOWN, not RISKY
     expect(result.verdict).toBe('UNKNOWN');
     expect(result.confidence).toBe(0.1);
   });
 
-  it('RISKY for low score with sufficient confidence', () => {
+  it('RISKY for low score with sufficient confidence', async () => {
     // An agent with enough data points to have at least low confidence AND a low score is genuinely RISKY
     const hash = sha256('conf-risky-with-evidence');
     const agent = makeAgent({
@@ -180,13 +180,13 @@ describe('Verdict confidence formula', () => {
       INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(uuid(), hash, 20, '{"volume":10,"reputation":5,"seniority":20,"regularity":10,"diversity":5}', NOW);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     // low confidence (15 data points) + low score → RISKY (enough evidence)
     expect(result.verdict).toBe('RISKY');
     expect(result.confidence).toBe(0.25);
   });
 
-  it('UNKNOWN verdict for score 30-49 even with medium confidence', () => {
+  it('UNKNOWN verdict for score 30-49 even with medium confidence', async () => {
     // Score 30-49 should be UNKNOWN, not SAFE or RISKY
     const hash = sha256('conf-unknown-mid');
     const agent = makeAgent({
@@ -203,11 +203,11 @@ describe('Verdict confidence formula', () => {
       INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(uuid(), hash, 40, '{"volume":20,"reputation":30,"seniority":50,"regularity":40,"diversity":30}', NOW);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.verdict).toBe('UNKNOWN');
   });
 
-  it('SAFE requires confidence >= medium (0.5)', () => {
+  it('SAFE requires confidence >= medium (0.5)', async () => {
     // High score but very few data points → should NOT be SAFE
     const hash = sha256('conf-safe-needs-medium');
     const agent = makeAgent({
@@ -227,7 +227,7 @@ describe('Verdict confidence formula', () => {
       INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(uuid(), hash, 80, '{"volume":80,"reputation":80,"seniority":80,"regularity":80,"diversity":80}', NOW);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     // very_low confidence (4 data points) → should be UNKNOWN despite high score
     expect(result.verdict).toBe('UNKNOWN');
     expect(result.confidence).toBe(0.1);
@@ -254,7 +254,7 @@ describe('Risk profile edge cases', () => {
 
   afterEach(() => { db.close(); });
 
-  it('suspicious_rapid_rise takes priority over new_unproven (ordered profiles)', () => {
+  it('suspicious_rapid_rise takes priority over new_unproven (ordered profiles)', async () => {
     // Agent that matches both: < 30 days, < 5 tx, AND rapid rise > 20
     // suspicious_rapid_rise comes first in profile list
     const agent = makeAgent({
@@ -271,13 +271,13 @@ describe('Risk profile edge cases', () => {
       VALUES (?, ?, ?, ?, ?)
     `).run(uuid(), agent.public_key_hash, 30, '{"volume":0,"reputation":0,"seniority":10,"regularity":0,"diversity":0}', NOW - 7 * DAY);
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     // The computed score might differ, but the risk profile logic checks delta
     expect(result.riskProfile.name).toBeDefined();
     expect(['suspicious_rapid_rise', 'new_unproven']).toContain(result.riskProfile.name);
   });
 
-  it('declining_node detected when score drops and trend is falling', () => {
+  it('declining_node detected when score drops and trend is falling', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('risk-declining'),
       avg_score: 50,
@@ -292,12 +292,12 @@ describe('Risk profile edge cases', () => {
       VALUES (?, ?, ?, ?, ?)
     `).run(uuid(), agent.public_key_hash, 70, '{"volume":50,"reputation":50,"seniority":50,"regularity":50,"diversity":50}', NOW - 7 * DAY);
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.riskProfile.name).toBe('declining_node');
     expect(result.riskProfile.riskLevel).toBe('high');
   });
 
-  it('default profile for agent matching no specific profile', () => {
+  it('default profile for agent matching no specific profile', async () => {
     // Mid-age, mid-score, stable — doesn't match any specific profile
     const agent = makeAgent({
       public_key_hash: sha256('risk-default'),
@@ -307,7 +307,7 @@ describe('Risk profile edge cases', () => {
     });
     agentRepo.insert(agent);
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.riskProfile.name).toBe('default');
     expect(result.riskProfile.riskLevel).toBe('unknown');
   });
@@ -334,7 +334,7 @@ describe('Personal trust — distance 2', () => {
 
   afterEach(() => { db.close(); });
 
-  it('returns distance 2 for caller→A→B→target path', () => {
+  it('returns distance 2 for caller→A→B→target path', async () => {
     const caller = makeAgent({ public_key_hash: sha256('d2-caller'), alias: 'Caller' });
     const hopA = makeAgent({ public_key_hash: sha256('d2-hopA'), alias: 'HopA' });
     const hopB = makeAgent({ public_key_hash: sha256('d2-hopB'), alias: 'HopB' });
@@ -351,13 +351,13 @@ describe('Personal trust — distance 2', () => {
     // HopB → Target (score >= 70)
     insertAttestation(db, hopB.public_key_hash, target.public_key_hash, 72);
 
-    const result = verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
     expect(result.personalTrust).not.toBeNull();
     expect(result.personalTrust!.distance).toBe(2);
     expect(result.personalTrust!.sharedConnections).toBeGreaterThanOrEqual(1);
   });
 
-  it('returns null distance when attestation scores are below threshold', () => {
+  it('returns null distance when attestation scores are below threshold', async () => {
     const caller = makeAgent({ public_key_hash: sha256('d2-caller-low'), alias: 'CallerLow' });
     const hop = makeAgent({ public_key_hash: sha256('d2-hop-low'), alias: 'HopLow' });
     const target = makeAgent({ public_key_hash: sha256('d2-target-low'), alias: 'TargetLow' });
@@ -369,7 +369,7 @@ describe('Personal trust — distance 2', () => {
     insertAttestation(db, caller.public_key_hash, hop.public_key_hash, 60);
     insertAttestation(db, hop.public_key_hash, target.public_key_hash, 50);
 
-    const result = verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
     expect(result.personalTrust).not.toBeNull();
     expect(result.personalTrust!.distance).toBeNull();
   });
@@ -394,7 +394,7 @@ describe('4-hop cycle detection', () => {
 
   afterEach(() => { db.close(); });
 
-  it('detects 4-hop cycle A→B→C→D→A', () => {
+  it('detects 4-hop cycle A→B→C→D→A', async () => {
     const a = sha256('cycle4-A');
     const b = sha256('cycle4-B');
     const c = sha256('cycle4-C');
@@ -421,7 +421,7 @@ describe('4-hop cycle detection', () => {
     expect(members).toContain(b);
   });
 
-  it('does not falsely detect cycle in linear chain', () => {
+  it('does not falsely detect cycle in linear chain', async () => {
     const a = sha256('linear-A');
     const b = sha256('linear-B');
     const c = sha256('linear-C');
@@ -440,7 +440,7 @@ describe('4-hop cycle detection', () => {
     expect(members.length).toBe(0);
   });
 
-  it('3-hop cycle also detected at maxDepth=4', () => {
+  it('3-hop cycle also detected at maxDepth=4', async () => {
     const a = sha256('cycle3in4-A');
     const b = sha256('cycle3in4-B');
     const c = sha256('cycle3in4-C');
@@ -458,7 +458,7 @@ describe('4-hop cycle detection', () => {
     expect(members.length).toBeGreaterThan(0);
   });
 
-  it('scoring engine applies penalty to 4-hop cycle attesters', () => {
+  it('scoring engine applies penalty to 4-hop cycle attesters', async () => {
     const target = sha256('cycle4-target');
     const b = sha256('cycle4-attB');
     const c = sha256('cycle4-attC');
@@ -506,7 +506,7 @@ describe('avgScore excludes zero-score agents', () => {
 
   afterEach(() => { db.close(); });
 
-  it('computes average only over agents with score > 0', () => {
+  it('computes average only over agents with score > 0', async () => {
     // Insert 3 agents: scores 80, 60, 0
     agentRepo.insert(makeAgent({ public_key_hash: sha256('avg-a'), avg_score: 80 }));
     agentRepo.insert(makeAgent({ public_key_hash: sha256('avg-b'), avg_score: 60 }));
@@ -517,7 +517,7 @@ describe('avgScore excludes zero-score agents', () => {
     expect(avg).toBe(70);
   });
 
-  it('returns 0 when all agents have score 0', () => {
+  it('returns 0 when all agents have score 0', async () => {
     agentRepo.insert(makeAgent({ public_key_hash: sha256('avg-zero1'), avg_score: 0 }));
     agentRepo.insert(makeAgent({ public_key_hash: sha256('avg-zero2'), avg_score: 0 }));
 

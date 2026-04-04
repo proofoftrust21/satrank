@@ -3,13 +3,19 @@
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
+import type { LndGraphClient } from '../crawler/lndGraphClient';
 import type { ScoringService } from './scoringService';
 import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
-import type { VerdictResponse, VerdictFlag, Verdict, ConfidenceLevel, PersonalTrust } from '../types';
+import type { VerdictResponse, VerdictFlag, Verdict, ConfidenceLevel, PersonalTrust, PathfindingResult } from '../types';
 import { DAY } from '../utils/constants';
+import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL } from '../config/scoring';
+import { config } from '../config';
+import { logger } from '../logger';
 const POSITIVE_ATTESTATION_MIN_SCORE = 70;
+const PATH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const PATH_CACHE_MAX_SIZE = 1000;
 
 const CONFIDENCE_MAP: Record<ConfidenceLevel, number> = {
   very_low: 0.1,
@@ -20,6 +26,8 @@ const CONFIDENCE_MAP: Record<ConfidenceLevel, number> = {
 };
 
 export class VerdictService {
+  private pathCache = new Map<string, { result: PathfindingResult; expiresAt: number }>();
+
   constructor(
     private agentRepo: AgentRepository,
     private attestationRepo: AttestationRepository,
@@ -27,9 +35,10 @@ export class VerdictService {
     private trendService: TrendService,
     private riskService: RiskService,
     private probeRepo?: ProbeRepository,
+    private lndClient?: LndGraphClient,
   ) {}
 
-  getVerdict(publicKeyHash: string, callerPubkey?: string): VerdictResponse {
+  async getVerdict(publicKeyHash: string, callerPubkey?: string): Promise<VerdictResponse> {
     const agent = this.agentRepo.findByHash(publicKeyHash);
     if (!agent) {
       return {
@@ -39,6 +48,7 @@ export class VerdictService {
         flags: [],
         personalTrust: callerPubkey ? { distance: null, sharedConnections: 0, strongestConnection: null } : null,
         riskProfile: { name: 'default', riskLevel: 'unknown', description: 'Agent not found in the SatRank index.' },
+        pathfinding: null,
       };
     }
 
@@ -51,16 +61,8 @@ export class VerdictService {
     const now = Math.floor(Date.now() / 1000);
     const ageDays = (now - agent.first_seen) / DAY;
 
-    // Compute flags
-    const flags: VerdictFlag[] = [];
-
-    if (ageDays < 30) flags.push('new_agent');
-    if (agent.total_transactions < 10) flags.push('low_volume');
-    if (delta.delta7d !== null && delta.delta7d < -10) flags.push('rapid_decline');
-    if (delta.delta7d !== null && delta.delta7d > 15) flags.push('rapid_rise');
-    if (agent.negative_ratings > agent.positive_ratings) flags.push('negative_reputation');
-    if (agent.query_count > 50) flags.push('high_demand');
-    if (agent.lnplus_rank === 0 && agent.positive_ratings === 0) flags.push('no_reputation_data');
+    // Compute flags — M2: shared base flags to avoid drift with v2Controller
+    const flags: VerdictFlag[] = computeBaseFlags(agent, delta, now);
 
     // Check structured negative attestations (fraud / dispute)
     const fraudCount = this.attestationRepo.countByCategoryForSubject(publicKeyHash, ['fraud']);
@@ -110,10 +112,89 @@ export class VerdictService {
       agent, delta, { regularity: scoreResult.components.regularity },
     );
 
+    // Personalized pathfinding — real-time route query from caller to target
+    let pathfinding: PathfindingResult | null = null;
+    if (callerPubkey && this.lndClient) {
+      const callerAgent = this.agentRepo.findByHash(callerPubkey);
+      const callerLnPubkey = callerAgent?.public_key ?? null;
+      const targetLnPubkey = agent.public_key ?? null;
+
+      if (callerLnPubkey && targetLnPubkey) {
+        pathfinding = await this.computePathfinding(callerLnPubkey, targetLnPubkey, callerPubkey, publicKeyHash);
+        if (pathfinding && !pathfinding.reachable) {
+          flags.push('unreachable_from_caller');
+        }
+      }
+    }
+
     // Build human-readable reason
     const reason = this.buildReason(agent, scoreResult.total, delta.delta7d, ageDays, flags);
 
-    return { verdict, confidence: confidenceNum, reason, flags, personalTrust, riskProfile };
+    return { verdict, confidence: confidenceNum, reason, flags, personalTrust, riskProfile, pathfinding };
+  }
+
+  private async computePathfinding(
+    callerLnPubkey: string,
+    targetLnPubkey: string,
+    callerHash: string,
+    targetHash: string,
+  ): Promise<PathfindingResult | null> {
+    if (!this.lndClient) return null;
+
+    // Check cache
+    const cacheKey = `${callerHash}:${targetHash}`;
+    const cached = this.pathCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.result;
+    }
+
+    try {
+      const startMs = Date.now();
+      const response = await this.lndClient.queryRoutes(
+        targetLnPubkey,
+        config.PROBE_AMOUNT_SATS,
+        callerLnPubkey,
+      );
+      const latencyMs = Date.now() - startMs;
+
+      const routes = response.routes ?? [];
+      const hasRoute = routes.length > 0;
+
+      const result: PathfindingResult = {
+        reachable: hasRoute,
+        hops: hasRoute ? routes[0].hops.length : null,
+        estimatedFeeMsat: hasRoute ? parseInt(routes[0].total_fees_msat, 10) || null : null,
+        alternatives: routes.length,
+        latencyMs,
+        source: 'lnd_queryroutes',
+      };
+
+      // Cache result — enforce max size with LRU-style eviction
+      this.pathCache.set(cacheKey, { result, expiresAt: Date.now() + PATH_CACHE_TTL_MS });
+
+      if (this.pathCache.size > PATH_CACHE_MAX_SIZE) {
+        const now = Date.now();
+        for (const [key, entry] of this.pathCache) {
+          if (entry.expiresAt <= now) this.pathCache.delete(key);
+        }
+        // If still over limit after TTL eviction, drop oldest entries (Map iterates in insertion order)
+        if (this.pathCache.size > PATH_CACHE_MAX_SIZE) {
+          const excess = this.pathCache.size - PATH_CACHE_MAX_SIZE;
+          let removed = 0;
+          for (const key of this.pathCache.keys()) {
+            if (removed >= excess) break;
+            this.pathCache.delete(key);
+            removed++;
+          }
+        }
+      }
+
+      return result;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ callerHash, targetHash, error: msg }, 'Pathfinding query failed');
+      return null;
+    }
   }
 
   private computePersonalTrust(callerPubkey: string, targetHash: string): PersonalTrust {

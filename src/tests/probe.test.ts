@@ -14,6 +14,7 @@ import { VerdictService } from '../services/verdictService';
 import { RiskService } from '../services/riskService';
 import { sha256 } from '../utils/crypto';
 import type { Agent } from '../types';
+import type { LndGraphClient, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -286,7 +287,7 @@ describe('Probe verdict integration', () => {
 
   afterEach(() => db.close());
 
-  it('flags unreachable nodes', () => {
+  it('flags unreachable nodes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('unreachable-verdict'), total_transactions: 500, capacity_sats: 10_000_000_000 });
     agentRepo.insert(agent);
 
@@ -300,12 +301,12 @@ describe('Probe verdict integration', () => {
       failure_reason: 'no_route',
     });
 
-    const verdict = verdictService.getVerdict(agent.public_key_hash);
+    const verdict = await verdictService.getVerdict(agent.public_key_hash);
     expect(verdict.flags).toContain('unreachable');
     expect(verdict.verdict).toBe('RISKY');
   });
 
-  it('does not flag reachable nodes', () => {
+  it('does not flag reachable nodes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('reachable-verdict'), total_transactions: 500, capacity_sats: 10_000_000_000 });
     agentRepo.insert(agent);
 
@@ -319,7 +320,7 @@ describe('Probe verdict integration', () => {
       failure_reason: null,
     });
 
-    const verdict = verdictService.getVerdict(agent.public_key_hash);
+    const verdict = await verdictService.getVerdict(agent.public_key_hash);
     expect(verdict.flags).not.toContain('unreachable');
   });
 
@@ -360,5 +361,153 @@ describe('Probe verdict integration', () => {
 
     const result = agentService.getAgentScore(agent.public_key_hash);
     expect(result.evidence.probe).toBeNull();
+  });
+});
+
+// --- Mock LND client for pathfinding tests ---
+function makeMockLndClient(response: LndQueryRoutesResponse): LndGraphClient {
+  return {
+    getInfo: async () => ({ synced_to_graph: true, identity_pubkey: '02aaa', alias: 'mock', num_active_channels: 1, num_peers: 1, block_height: 800000 }),
+    getGraph: async () => ({ nodes: [], edges: [] }),
+    getNodeInfo: async () => null,
+    queryRoutes: async (_pubkey: string, _amt: number, _source?: string) => response,
+  };
+}
+
+const CALLER_PUBKEY = '02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const TARGET_PUBKEY = '03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+describe('Personalized pathfinding', () => {
+  let db: Database.Database;
+  let agentRepo: AgentRepository;
+  let probeRepo: ProbeRepository;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    agentRepo = new AgentRepository(db);
+    probeRepo = new ProbeRepository(db);
+  });
+
+  afterEach(() => db.close());
+
+  function buildVerdictService(lndClient?: LndGraphClient): VerdictService {
+    const txRepo = new TransactionRepository(db);
+    const attestationRepo = new AttestationRepository(db);
+    const snapshotRepo = new SnapshotRepository(db);
+    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
+    const trendService = new TrendService(agentRepo, snapshotRepo);
+    const riskService = new RiskService();
+    return new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient);
+  }
+
+  it('returns pathfinding result when route exists', async () => {
+    const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
+    const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
+    agentRepo.insert(caller);
+    agentRepo.insert(target);
+
+    const mockClient = makeMockLndClient({
+      routes: [{
+        total_time_lock: 100,
+        total_fees: '5',
+        total_fees_msat: '5000',
+        total_amt: '1005',
+        total_amt_msat: '1005000',
+        hops: [
+          { chan_id: '1', chan_capacity: '1000000', amt_to_forward: '1000', fee: '3', fee_msat: '3000', pub_key: '02ccc' },
+          { chan_id: '2', chan_capacity: '500000', amt_to_forward: '1000', fee: '2', fee_msat: '2000', pub_key: TARGET_PUBKEY },
+        ],
+      }],
+    });
+
+    const verdictService = buildVerdictService(mockClient);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+
+    expect(result.pathfinding).not.toBeNull();
+    expect(result.pathfinding!.reachable).toBe(true);
+    expect(result.pathfinding!.hops).toBe(2);
+    expect(result.pathfinding!.estimatedFeeMsat).toBe(5000);
+    expect(result.pathfinding!.alternatives).toBe(1);
+    expect(result.pathfinding!.source).toBe('lnd_queryroutes');
+    expect(result.pathfinding!.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(result.flags).not.toContain('unreachable_from_caller');
+  });
+
+  it('flags unreachable_from_caller when no route exists', async () => {
+    const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
+    const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
+    agentRepo.insert(caller);
+    agentRepo.insert(target);
+
+    const mockClient = makeMockLndClient({ routes: [] });
+    const verdictService = buildVerdictService(mockClient);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+
+    expect(result.pathfinding).not.toBeNull();
+    expect(result.pathfinding!.reachable).toBe(false);
+    expect(result.pathfinding!.hops).toBeNull();
+    expect(result.pathfinding!.estimatedFeeMsat).toBeNull();
+    expect(result.flags).toContain('unreachable_from_caller');
+  });
+
+  it('returns null pathfinding when caller has no Lightning pubkey', async () => {
+    const caller = makeAgent({ public_key_hash: sha256('hash-only-caller'), public_key: null });
+    const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
+    agentRepo.insert(caller);
+    agentRepo.insert(target);
+
+    const mockClient = makeMockLndClient({ routes: [] });
+    const verdictService = buildVerdictService(mockClient);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+
+    expect(result.pathfinding).toBeNull();
+  });
+
+  it('returns null pathfinding when no LND client configured', async () => {
+    const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
+    const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
+    agentRepo.insert(caller);
+    agentRepo.insert(target);
+
+    const verdictService = buildVerdictService(); // no LND client
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+
+    expect(result.pathfinding).toBeNull();
+  });
+
+  it('returns null pathfinding when caller_pubkey not provided', async () => {
+    const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
+    agentRepo.insert(target);
+
+    const mockClient = makeMockLndClient({ routes: [] });
+    const verdictService = buildVerdictService(mockClient);
+    const result = await verdictService.getVerdict(target.public_key_hash);
+
+    expect(result.pathfinding).toBeNull();
+  });
+
+  it('caches pathfinding results', async () => {
+    const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
+    const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
+    agentRepo.insert(caller);
+    agentRepo.insert(target);
+
+    let callCount = 0;
+    const mockClient: LndGraphClient = {
+      ...makeMockLndClient({ routes: [] }),
+      queryRoutes: async () => {
+        callCount++;
+        return { routes: [] };
+      },
+    };
+
+    const verdictService = buildVerdictService(mockClient);
+
+    await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+    await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+
+    expect(callCount).toBe(1); // second call should hit cache
   });
 });

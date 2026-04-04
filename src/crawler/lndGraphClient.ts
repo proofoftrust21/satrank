@@ -62,7 +62,7 @@ export interface LndGraphClient {
   getInfo(): Promise<LndGetInfoResponse>;
   getGraph(): Promise<LndGraph>;
   getNodeInfo(pubkey: string): Promise<LndNodeInfo | null>;
-  queryRoutes(pubkey: string, amountSats: number): Promise<LndQueryRoutesResponse>;
+  queryRoutes(pubkey: string, amountSats: number, sourcePubKey?: string): Promise<LndQueryRoutesResponse>;
 }
 
 export interface LndClientOptions {
@@ -109,16 +109,22 @@ export class HttpLndGraphClient implements LndGraphClient {
     return this.request<LndGraph>('/v1/graph');
   }
 
-  async queryRoutes(pubkey: string, amountSats: number): Promise<LndQueryRoutesResponse> {
+  async queryRoutes(pubkey: string, amountSats: number, sourcePubKey?: string): Promise<LndQueryRoutesResponse> {
     if (!/^(02|03)[a-f0-9]{64}$/.test(pubkey)) {
       throw new Error(`Invalid Lightning pubkey format: ${pubkey.slice(0, 16)}`);
+    }
+    if (sourcePubKey && !/^(02|03)[a-f0-9]{64}$/.test(sourcePubKey)) {
+      throw new Error(`Invalid source pubkey format: ${sourcePubKey.slice(0, 16)}`);
     }
     const sanitizedAmount = Math.floor(amountSats);
     if (sanitizedAmount <= 0 || sanitizedAmount > 10_000_000) {
       throw new Error(`Invalid amountSats: ${amountSats}`);
     }
     try {
-      return await this.request<LndQueryRoutesResponse>(`/v1/graph/routes/${pubkey}/${sanitizedAmount}`);
+      const path = sourcePubKey
+        ? `/v1/graph/routes/${pubkey}/${sanitizedAmount}?source_pub_key=${sourcePubKey}`
+        : `/v1/graph/routes/${pubkey}/${sanitizedAmount}`;
+      return await this.request<LndQueryRoutesResponse>(path);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('unable to find a path') || msg.includes('FAILURE_REASON')) {

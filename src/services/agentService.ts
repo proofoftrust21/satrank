@@ -72,7 +72,16 @@ export class AgentService {
     };
   }
 
-  private buildEvidence(agent: Agent, verifiedTxCount: number): ScoreEvidence {
+  buildEvidence(agentHashOrAgent: string | Agent, verifiedTxCount?: number): ScoreEvidence {
+    const agent = typeof agentHashOrAgent === 'string'
+      ? this.agentRepo.findByHash(agentHashOrAgent)
+      : agentHashOrAgent;
+    if (!agent) {
+      return { transactions: { count: 0, verifiedCount: 0, sample: [] }, lightningGraph: null, reputation: null, popularity: { queryCount: 0, bonusApplied: 0 }, probe: null };
+    }
+    if (verifiedTxCount === undefined) {
+      verifiedTxCount = this.txRepo.countVerifiedByAgent(agent.public_key_hash);
+    }
     const recentTx = this.txRepo.findRecentByAgent(agent.public_key_hash, 5);
     const totalTxCount = agent.total_transactions;
 

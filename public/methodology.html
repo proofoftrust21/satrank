@@ -356,6 +356,8 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
     <li><code>no_reputation_data</code> &mdash; no LN+ data available</li>
     <li><code>fraud_reported</code> &mdash; at least one attestation with category &ldquo;fraud&rdquo;</li>
     <li><code>dispute_reported</code> &mdash; at least one attestation with category &ldquo;dispute&rdquo;</li>
+    <li><code>unreachable</code> &mdash; no route from SatRank&rsquo;s node to the target (fresh probe only)</li>
+    <li><code>unreachable_from_caller</code> &mdash; no route from the caller&rsquo;s position to the target (requires <code>caller_pubkey</code>, see <a href="#pathfinding">Pathfinding</a>)</li>
   </ul>
 
   <h3>Structured Attestation Categories</h3>
@@ -620,6 +622,76 @@ if delta7d < -2                         → falling</pre>
     Alerts differ from verdict flags: flags affect the verdict decision itself
     (<code>fraud_reported</code> forces RISKY), while alerts are informational and do not
     change the verdict outcome.
+  </p>
+
+  <!-- Personalized Pathfinding -->
+  <h2 id="pathfinding">Personalized Pathfinding</h2>
+
+  <p>
+    Probe data tells you whether <em>our</em> node can reach a target. Personalized pathfinding
+    tells you whether <em>you</em> can reach the target. This is the difference between
+    &ldquo;reachable from SatRank&rdquo; and &ldquo;reachable from your position in the graph.&rdquo;
+  </p>
+
+  <p>
+    When calling <code>GET /api/v1/agent/{hash}/verdict</code> with a <code>caller_pubkey</code>,
+    SatRank performs a real-time route query from the caller&rsquo;s position to the target using
+    LND&rsquo;s <code>QueryRoutes</code> API with the <code>source_pub_key</code> parameter.
+    No payment is sent &mdash; this is a read-only graph operation.
+  </p>
+
+  <h3>How It Works</h3>
+  <ol>
+    <li>The caller provides their pubkey hash (or 66-char Lightning pubkey) via <code>caller_pubkey</code></li>
+    <li>SatRank looks up both the caller&rsquo;s and target&rsquo;s Lightning public keys in the agents table</li>
+    <li>If both are indexed Lightning nodes, SatRank calls <code>GET /v1/graph/routes/{target}/{amt}?source_pub_key={caller}</code> on our LND node</li>
+    <li>LND computes Dijkstra pathfinding on the public Lightning graph from the caller&rsquo;s topological position</li>
+    <li>The result is returned as a <code>pathfinding</code> field in the verdict response</li>
+  </ol>
+
+  <h3>Response Fields</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>reachable</code></td><td>boolean</td><td>Whether a route exists from the caller to the target</td></tr>
+      <tr><td><code>hops</code></td><td>integer | null</td><td>Number of hops in the best route</td></tr>
+      <tr><td><code>estimatedFeeMsat</code></td><td>integer | null</td><td>Estimated routing fee in millisatoshis</td></tr>
+      <tr><td><code>alternatives</code></td><td>integer</td><td>Number of alternative routes found</td></tr>
+      <tr><td><code>latencyMs</code></td><td>integer</td><td>Route computation time in milliseconds</td></tr>
+      <tr><td><code>source</code></td><td>string</td><td>Always <code>lnd_queryroutes</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>When Pathfinding Is Unavailable</h3>
+  <p>
+    <code>pathfinding</code> is <code>null</code> when: <code>caller_pubkey</code> is not provided,
+    the caller is not an indexed Lightning node, the target has no Lightning pubkey, or the LND
+    node is unreachable. The verdict still returns normally using cached probe data and the global
+    score &mdash; pathfinding is additive, never blocking.
+  </p>
+
+  <h3>The <code>unreachable_from_caller</code> Flag</h3>
+  <p>
+    When pathfinding finds no route from the caller to the target, the flag
+    <code>unreachable_from_caller</code> is added to the verdict. This is distinct from the
+    <code>unreachable</code> flag (no route from <em>our</em> node). A target can be reachable
+    from SatRank but not from the caller, or vice versa.
+  </p>
+
+  <h3>Caching</h3>
+  <p>
+    Results are cached for 5 minutes per (caller, target) pair. The Lightning graph topology
+    changes slowly enough that a 5-minute TTL provides accurate results while keeping LND
+    query volume manageable.
+  </p>
+
+  <h3>Competitive Advantage</h3>
+  <p>
+    No free Lightning service provides personalized pathfinding as an API.
+    <a href="https://mempool.space">mempool.space</a> shows the graph.
+    <a href="https://amboss.space">Amboss</a> shows node statistics.
+    <a href="https://1ml.com">1ML</a> shows connectivity. None of them answer the question:
+    &ldquo;Can <em>I</em> pay this node, and what will it cost <em>me</em>?&rdquo;
   </p>
 
   <!-- L402 as Signal -->

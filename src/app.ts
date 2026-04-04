@@ -27,6 +27,8 @@ import { StatsService } from './services/statsService';
 import { TrendService } from './services/trendService';
 import { VerdictService } from './services/verdictService';
 import { RiskService } from './services/riskService';
+import { DecideService } from './services/decideService';
+import { ReportService } from './services/reportService';
 import { AutoIndexService } from './services/autoIndexService';
 import { HttpLndGraphClient } from './crawler/lndGraphClient';
 import { LndGraphCrawler } from './crawler/lndGraphCrawler';
@@ -35,11 +37,13 @@ import { LndGraphCrawler } from './crawler/lndGraphCrawler';
 import { AgentController } from './controllers/agentController';
 import { AttestationController } from './controllers/attestationController';
 import { HealthController } from './controllers/healthController';
+import { V2Controller } from './controllers/v2Controller';
 
 // Routes
 import { createAgentRoutes } from './routes/agent';
 import { createAttestationRoutes } from './routes/attestation';
 import { createHealthRoutes } from './routes/health';
+import { createV2Routes } from './routes/v2';
 
 // OpenAPI spec
 import { openapiSpec } from './openapi';
@@ -64,14 +68,15 @@ export function createApp() {
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
   const riskService = new RiskService();
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
 
-  // Auto-indexation: LND graph client for on-demand node lookups
+  // LND graph client — shared between auto-indexation, pathfinding, and verdict
   const lndClient = new HttpLndGraphClient({
     restUrl: config.LND_REST_URL,
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
   });
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+
   const lndGraphCrawler = lndClient.isConfigured()
     ? new LndGraphCrawler(lndClient, agentRepo)
     : null;
@@ -79,9 +84,13 @@ export function createApp() {
     lndGraphCrawler, agentRepo, scoringService, config.AUTO_INDEX_MAX_PER_MINUTE,
   );
 
+  const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+  const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
+
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
+  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs
   app.set('trust proxy', 1);
@@ -176,6 +185,12 @@ export function createApp() {
 </html>`);
   });
   app.use('/api/v1', v1);
+
+  // API v2 routes
+  const v2 = Router();
+  v2.use(apiRateLimit);
+  v2.use(createV2Routes(v2Controller));
+  app.use('/api/v2', v2);
 
   // Error handler (must be the last middleware)
   app.use(errorHandler);

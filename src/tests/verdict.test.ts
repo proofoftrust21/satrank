@@ -75,16 +75,16 @@ describe('VerdictService', () => {
 
   afterEach(() => { db.close(); });
 
-  it('returns UNKNOWN for non-existent agent', () => {
+  it('returns UNKNOWN for non-existent agent', async () => {
     const hash = sha256('nonexistent');
-    const result = verdictService.getVerdict(hash);
+    const result = await verdictService.getVerdict(hash);
     expect(result.verdict).toBe('UNKNOWN');
     expect(result.confidence).toBe(0);
     expect(result.flags).toEqual([]);
     expect(result.reason).toContain('not found');
   });
 
-  it('returns SAFE for high-score agent with real transactions', () => {
+  it('returns SAFE for high-score agent with real transactions', async () => {
     const counterparty = makeAgent({
       public_key_hash: sha256('safe-counterparty'),
       alias: 'Counterparty',
@@ -116,14 +116,14 @@ describe('VerdictService', () => {
       `).run(txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId));
     }
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.verdict).toBe('SAFE');
     expect(result.confidence).toBeGreaterThanOrEqual(0.5);
     expect(result.reason).toContain('200 tx completed');
     expect(result.flags).toContain('high_demand');
   });
 
-  it('returns RISKY for low-score agent', () => {
+  it('returns RISKY for low-score agent', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('risky-agent'),
       alias: 'RiskyNode',
@@ -135,14 +135,14 @@ describe('VerdictService', () => {
     });
     agentRepo.insert(agent);
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.verdict).toBe('RISKY');
     expect(result.flags).toContain('low_volume');
     expect(result.flags).toContain('negative_reputation');
     expect(result.flags).toContain('no_reputation_data');
   });
 
-  it('flags new_agent for recently created agents', () => {
+  it('flags new_agent for recently created agents', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('new-agent'),
       first_seen: NOW - 5 * DAY,
@@ -152,11 +152,11 @@ describe('VerdictService', () => {
     });
     agentRepo.insert(agent);
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.flags).toContain('new_agent');
   });
 
-  it('returns RISKY when fraud attestation exists', () => {
+  it('returns RISKY when fraud attestation exists', async () => {
     // Create attester + subject agents and a transaction between them
     const attester = makeAgent({ public_key_hash: sha256('attester-fraud'), alias: 'Attester' });
     const subject = makeAgent({
@@ -187,15 +187,17 @@ describe('VerdictService', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'fraud',
+      verified: 0,
+      weight: 1.0,
     });
 
-    const result = verdictService.getVerdict(subject.public_key_hash);
+    const result = await verdictService.getVerdict(subject.public_key_hash);
     expect(result.verdict).toBe('RISKY');
     expect(result.flags).toContain('fraud_reported');
     expect(result.reason).toContain('fraud reported');
   });
 
-  it('flags dispute_reported when dispute attestation exists', () => {
+  it('flags dispute_reported when dispute attestation exists', async () => {
     const attester = makeAgent({ public_key_hash: sha256('attester-dispute'), alias: 'DisputeAttester' });
     const subject = makeAgent({
       public_key_hash: sha256('subject-dispute'),
@@ -224,9 +226,11 @@ describe('VerdictService', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'dispute',
+      verified: 0,
+      weight: 1.0,
     });
 
-    const result = verdictService.getVerdict(subject.public_key_hash);
+    const result = await verdictService.getVerdict(subject.public_key_hash);
     expect(result.flags).toContain('dispute_reported');
   });
 });
@@ -253,14 +257,14 @@ describe('VerdictService — personalTrust', () => {
 
   afterEach(() => { db.close(); });
 
-  it('returns personalTrust: null when no callerPubkey', () => {
+  it('returns personalTrust: null when no callerPubkey', async () => {
     const agent = makeAgent({ public_key_hash: sha256('trust-target') });
     agentRepo.insert(agent);
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.personalTrust).toBeNull();
   });
 
-  it('returns distance 0 when caller directly attested target', () => {
+  it('returns distance 0 when caller directly attested target', async () => {
     const caller = makeAgent({ public_key_hash: sha256('trust-caller'), alias: 'Caller' });
     const target = makeAgent({ public_key_hash: sha256('trust-target-d0'), alias: 'Target' });
     agentRepo.insert(caller);
@@ -282,14 +286,16 @@ describe('VerdictService — personalTrust', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'successful_transaction',
+      verified: 0,
+      weight: 1.0,
     });
 
-    const result = verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
     expect(result.personalTrust).not.toBeNull();
     expect(result.personalTrust!.distance).toBe(0);
   });
 
-  it('returns distance 1 when shared connection exists', () => {
+  it('returns distance 1 when shared connection exists', async () => {
     const caller = makeAgent({ public_key_hash: sha256('trust-caller-d1'), alias: 'Caller' });
     const intermediary = makeAgent({ public_key_hash: sha256('trust-intermediary'), alias: 'Intermediary' });
     const target = makeAgent({ public_key_hash: sha256('trust-target-d1'), alias: 'Target' });
@@ -314,6 +320,8 @@ describe('VerdictService — personalTrust', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'successful_transaction',
+      verified: 0,
+      weight: 1.0,
     });
 
     // Intermediary attested target
@@ -333,30 +341,32 @@ describe('VerdictService — personalTrust', () => {
       evidence_hash: null,
       timestamp: NOW,
       category: 'successful_transaction',
+      verified: 0,
+      weight: 1.0,
     });
 
-    const result = verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
     expect(result.personalTrust).not.toBeNull();
     expect(result.personalTrust!.distance).toBe(1);
     expect(result.personalTrust!.sharedConnections).toBeGreaterThanOrEqual(1);
     expect(result.personalTrust!.strongestConnection).toBeTruthy();
   });
 
-  it('returns distance null when no trust path exists', () => {
+  it('returns distance null when no trust path exists', async () => {
     const caller = makeAgent({ public_key_hash: sha256('trust-caller-none'), alias: 'CallerNone' });
     const target = makeAgent({ public_key_hash: sha256('trust-target-none'), alias: 'TargetNone' });
     agentRepo.insert(caller);
     agentRepo.insert(target);
 
-    const result = verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
     expect(result.personalTrust).not.toBeNull();
     expect(result.personalTrust!.distance).toBeNull();
     expect(result.personalTrust!.sharedConnections).toBe(0);
     expect(result.personalTrust!.strongestConnection).toBeNull();
   });
 
-  it('returns personalTrust stub for UNKNOWN agent when callerPubkey provided', () => {
-    const result = verdictService.getVerdict(sha256('nonexistent'), sha256('some-caller'));
+  it('returns personalTrust stub for UNKNOWN agent when callerPubkey provided', async () => {
+    const result = await verdictService.getVerdict(sha256('nonexistent'), sha256('some-caller'));
     expect(result.verdict).toBe('UNKNOWN');
     expect(result.personalTrust).not.toBeNull();
     expect(result.personalTrust!.distance).toBeNull();
@@ -385,7 +395,7 @@ describe('VerdictService — riskProfile', () => {
 
   afterEach(() => { db.close(); });
 
-  it('classifies new unproven agent', () => {
+  it('classifies new unproven agent', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('risk-new'),
       first_seen: NOW - 10 * DAY,
@@ -395,23 +405,23 @@ describe('VerdictService — riskProfile', () => {
     });
     agentRepo.insert(agent);
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.riskProfile).toBeDefined();
     expect(result.riskProfile.name).toBe('new_unproven');
     expect(result.riskProfile.riskLevel).toBe('high');
   });
 
-  it('returns default riskProfile for UNKNOWN agent', () => {
-    const result = verdictService.getVerdict(sha256('nonexistent-risk'));
+  it('returns default riskProfile for UNKNOWN agent', async () => {
+    const result = await verdictService.getVerdict(sha256('nonexistent-risk'));
     expect(result.riskProfile.name).toBe('default');
     expect(result.riskProfile.riskLevel).toBe('unknown');
   });
 
-  it('riskProfile always has name, riskLevel, and description', () => {
+  it('riskProfile always has name, riskLevel, and description', async () => {
     const agent = makeAgent({ public_key_hash: sha256('risk-shape') });
     agentRepo.insert(agent);
 
-    const result = verdictService.getVerdict(agent.public_key_hash);
+    const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(typeof result.riskProfile.name).toBe('string');
     expect(typeof result.riskProfile.riskLevel).toBe('string');
     expect(typeof result.riskProfile.description).toBe('string');

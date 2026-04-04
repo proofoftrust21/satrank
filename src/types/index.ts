@@ -50,6 +50,8 @@ export interface Attestation {
   evidence_hash: string | null;
   timestamp: number;
   category: AttestationCategory;
+  verified: number; // SQLite boolean: 0 or 1
+  weight: number;
 }
 
 export interface ScoreSnapshot {
@@ -234,7 +236,8 @@ export type VerdictFlag =
   | 'no_reputation_data'
   | 'fraud_reported'
   | 'dispute_reported'
-  | 'unreachable';
+  | 'unreachable'
+  | 'unreachable_from_caller';
 
 export interface PersonalTrust {
   distance: number | null;
@@ -259,6 +262,16 @@ export interface RiskProfile {
   description: string;
 }
 
+// Personalized pathfinding — real-time route query from caller to target via LND
+export interface PathfindingResult {
+  reachable: boolean;
+  hops: number | null;
+  estimatedFeeMsat: number | null;
+  alternatives: number;
+  latencyMs: number;
+  source: 'lnd_queryroutes';
+}
+
 export interface VerdictResponse {
   verdict: Verdict;
   confidence: number;
@@ -266,4 +279,81 @@ export interface VerdictResponse {
   flags: VerdictFlag[];
   personalTrust: PersonalTrust | null;
   riskProfile: RiskProfile;
+  pathfinding: PathfindingResult | null;
+}
+
+// --- v2 types ---
+
+export type ReportOutcome = 'success' | 'failure' | 'timeout';
+
+export interface DecideRequest {
+  target: string;
+  caller: string;
+  amountSats?: number;
+  intent?: 'pay' | 'receive';
+}
+
+export interface DecideResponse {
+  go: boolean;
+  successRate: number;
+  components: {
+    trustScore: number;
+    routable: number;
+    available: number;
+    empirical: number;
+  };
+  basis: 'proxy' | 'empirical';
+  confidence: ConfidenceLevel;
+  verdict: Verdict;
+  flags: VerdictFlag[];
+  pathfinding: PathfindingResult | null;
+  riskProfile: RiskProfile;
+  reason: string;
+  latencyMs: number;
+}
+
+export interface ReportRequest {
+  target: string;
+  reporter: string;
+  outcome: ReportOutcome;
+  paymentHash?: string;
+  preimage?: string;
+  amountBucket?: AmountBucket;
+  memo?: string;
+}
+
+export interface ReportResponse {
+  reportId: string;
+  verified: boolean;
+  weight: number;
+  timestamp: number;
+}
+
+export interface ProfileResponse {
+  agent: {
+    publicKeyHash: string;
+    alias: string | null;
+    publicKey: string | null;
+    firstSeen: number;
+    lastSeen: number;
+    source: AgentSource;
+  };
+  score: {
+    total: number;
+    components: ScoreComponents;
+    confidence: ConfidenceLevel;
+    rank: number | null;
+  };
+  reports: {
+    total: number;
+    successes: number;
+    failures: number;
+    timeouts: number;
+    successRate: number;
+  };
+  probeUptime: number | null;
+  delta: ScoreDelta;
+  riskProfile: RiskProfile;
+  evidence: ScoreEvidence;
+  flags: VerdictFlag[];
 }

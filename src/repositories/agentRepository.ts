@@ -186,4 +186,27 @@ export class AgentRepository {
   incrementQueryCount(hash: string): void {
     this.db.prepare('UPDATE agents SET query_count = query_count + 1 WHERE public_key_hash = ?').run(hash);
   }
+
+  /** Atomic SQL increment — avoids read-modify-write race (C3) */
+  incrementTotalTransactions(hash: string): void {
+    this.db.prepare('UPDATE agents SET total_transactions = total_transactions + 1 WHERE public_key_hash = ?').run(hash);
+  }
+
+  /** H1: narrow update — only refreshes attestation count, leaves avg_score for periodic scoring */
+  updateAttestationCount(hash: string, totalAttestations: number): void {
+    this.db.prepare('UPDATE agents SET total_attestations_received = ? WHERE public_key_hash = ?').run(totalAttestations, hash);
+  }
+
+  /** Rank of an agent by avg_score (1-based, null if not found).
+   *  C1: checks existence first to avoid returning rank 1 for nonexistent agents. */
+  getRank(hash: string): number | null {
+    const exists = this.db.prepare('SELECT 1 FROM agents WHERE public_key_hash = ?').get(hash);
+    if (!exists) return null;
+    const row = this.db.prepare(`
+      SELECT COUNT(*) + 1 as rank FROM agents WHERE avg_score > (
+        SELECT avg_score FROM agents WHERE public_key_hash = ?
+      )
+    `).get(hash) as { rank: number };
+    return row.rank;
+  }
 }

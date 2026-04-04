@@ -247,6 +247,30 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 10, 'Probe results table for route probing data');
   }
 
+  // v11: v2 report support — verified/weight columns, relax unique constraint
+  // C5: wrapped in transaction so partial failure doesn't leave schema in limbo
+  if (!hasVersion(db, 11)) {
+    db.transaction(() => {
+      db.exec('DROP INDEX IF EXISTS idx_attestations_unique_attester_subject');
+
+      const v11Columns: [string, string][] = [
+        ['verified', 'INTEGER NOT NULL DEFAULT 0'],
+        ['weight', 'REAL NOT NULL DEFAULT 1.0'],
+      ];
+      for (const [col, def] of v11Columns) {
+        try {
+          db.exec(`ALTER TABLE attestations ADD COLUMN ${col} ${def}`);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('duplicate column name')) throw err;
+        }
+      }
+
+      db.exec('CREATE INDEX IF NOT EXISTS idx_attestations_attester_subject_time ON attestations(attester_hash, subject_hash, timestamp)');
+      recordVersion(db, 11, 'v2 report support: verified/weight columns, relax unique constraint for multi-report');
+    })();
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -256,6 +280,18 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  11: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_attestations_attester_subject_time');
+    try { db.exec('ALTER TABLE attestations DROP COLUMN verified'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE attestations DROP COLUMN weight'); } catch { /* SQLite < 3.35 */ }
+    // Restore the unique index (deduplicate first)
+    db.exec(`
+      DELETE FROM attestations WHERE rowid NOT IN (
+        SELECT MAX(rowid) FROM attestations GROUP BY attester_hash, subject_hash
+      )
+    `);
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_attestations_unique_attester_subject ON attestations(attester_hash, subject_hash)');
+  },
   10: (db) => {
     db.exec('DROP TABLE IF EXISTS probe_results');
   },

@@ -57,6 +57,17 @@ export class ProbeRepository {
     return row.count;
   }
 
+  /** Compute uptime ratio over a time window (reachable / total probes) */
+  computeUptime(targetHash: string, windowSec: number): number | null {
+    const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as total, SUM(CASE WHEN reachable = 1 THEN 1 ELSE 0 END) as reachable
+      FROM probe_results WHERE target_hash = ? AND probed_at >= ?
+    `).get(targetHash, cutoff) as { total: number; reachable: number };
+    if (row.total === 0) return null;
+    return row.reachable / row.total;
+  }
+
   /** Purge probe results older than maxAgeSec */
   purgeOlderThan(maxAgeSec: number): number {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
