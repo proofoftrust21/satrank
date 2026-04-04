@@ -47,7 +47,7 @@ export class ProbeCrawler {
     };
 
     const agents = this.agentRepo.findLightningAgentsWithPubkey();
-    logger.info({ count: agents.length }, 'Starting probe crawl');
+    logger.info({ count: agents.length }, `Starting probe crawl: ${agents.length} agents to probe`);
 
     for (let i = 0; i < agents.length; i++) {
       const agent = agents[i];

@@ -208,27 +208,31 @@ async function runFullCrawl(
   await crawlObserver(observerCrawler);
   await crawlLightning(lndGraphCrawler, mempoolCrawler);
 
-  // Score immediately after LND crawl — don't wait for LN+
+  // Score immediately after LND crawl — don't wait for LN+ or probes
   bulkScoreAll(agentRepo, scoringService, snapshotRepo);
 
-  try {
-    await crawlLnplus(lnplusCrawler);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
-  }
+  // LN+ and probe run in parallel — both depend on LND graph data, neither on each other
+  const parallelTasks: Promise<void>[] = [];
 
-  // Probe routing — after LND crawl so we have all pubkeys
-  if (probeCrawlerInstance) {
-    try {
-      await crawlProbe(probeCrawlerInstance, probeRepo);
-    } catch (err: unknown) {
+  parallelTasks.push(
+    crawlLnplus(lnplusCrawler).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ error: msg }, 'Probe crawl failed, skipping');
-    }
+      logger.warn({ error: msg }, 'LN+ unavailable, skipping ratings crawl');
+    }),
+  );
+
+  if (probeCrawlerInstance) {
+    parallelTasks.push(
+      crawlProbe(probeCrawlerInstance, probeRepo).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ error: msg }, 'Probe crawl failed, skipping');
+      }),
+    );
   } else {
     logger.warn('Probe crawler not configured — LND macaroon missing or unreadable. Skipping probe crawl.');
   }
+
+  await Promise.all(parallelTasks);
 
   // Rescore with LN+ and probe data
   bulkScoreAll(agentRepo, scoringService, snapshotRepo);
