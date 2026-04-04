@@ -319,7 +319,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
     agent should not have to answer in real-time.
   </p>
   <p>
-    The Verdict API (<code>GET /api/v1/agent/{hash}/verdict</code>) returns a single, actionable
+    The Verdict API (<code>GET /api/agent/{hash}/verdict</code>) returns a single, actionable
     decision: <strong>SAFE</strong>, <strong>RISKY</strong>, or <strong>UNKNOWN</strong>.
     No interpretation required.
   </p>
@@ -367,7 +367,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
 
   <h3>Structured Attestation Categories</h3>
   <p>
-    When submitting attestations via <code>POST /api/v1/attestation</code>, agents can now include
+    When submitting attestations via <code>POST /api/attestation</code>, agents can now include
     a <code>category</code> field: <code>successful_transaction</code>,
     <code>failed_transaction</code>, <code>dispute</code>, <code>fraud</code>,
     <code>unresponsive</code>, or <code>general</code> (default).
@@ -396,14 +396,14 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
     prevent abuse, and deduplicates concurrent requests for the same pubkey.
   </p>
   <p>
-    Batch verdicts (<code>POST /api/v1/verdicts</code>) also trigger auto-indexation for unknown
+    Batch verdicts (<code>POST /api/verdicts</code>) also trigger auto-indexation for unknown
     Lightning pubkeys, capped at 2 per batch to prevent a single request from consuming the
     entire rate budget.
   </p>
 
   <h3>Batch Verdict</h3>
   <p>
-    <code>POST /api/v1/verdicts</code> accepts up to 100 hashes in a single request, returning an
+    <code>POST /api/verdicts</code> accepts up to 100 hashes in a single request, returning an
     array of verdicts. This is 10x more efficient than individual queries for agents that need to
     screen multiple counterparties before transacting. Unknown Lightning pubkeys trigger
     auto-indexation automatically.
@@ -419,7 +419,7 @@ diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
   </p>
 
   <p>
-    When calling <code>GET /api/v1/agent/{hash}/verdict</code>, pass your own pubkey hash via the
+    When calling <code>GET /api/agent/{hash}/verdict</code>, pass your own pubkey hash via the
     <code>caller_pubkey</code> query parameter or <code>X-Caller-Pubkey</code> header. SatRank
     traverses the attestation graph to compute a <strong>trust distance</strong>:
   </p>
@@ -563,7 +563,7 @@ if delta7d < -2                         → falling</pre>
 
   <h3>History Endpoint</h3>
   <p>
-    <code>GET /api/v1/agent/{hash}/history</code> returns paginated score snapshots with per-entry
+    <code>GET /api/agent/{hash}/history</code> returns paginated score snapshots with per-entry
     deltas (difference from previous snapshot), plus an aggregate delta summary for the agent:
   </p>
   <pre>{
@@ -578,7 +578,7 @@ if delta7d < -2                         → falling</pre>
 
   <h3>Top Movers</h3>
   <p>
-    <code>GET /api/v1/agents/movers</code> returns the 5 agents with the largest score increases
+    <code>GET /api/agents/movers</code> returns the 5 agents with the largest score increases
     and the 5 with the largest decreases over the past 7 days. This surfaces emerging trust
     signals and developing problems before they reach the individual agent level.
   </p>
@@ -587,7 +587,7 @@ if delta7d < -2                         → falling</pre>
   <h2 id="alerts">Alerts</h2>
 
   <p>
-    The score response (<code>GET /api/v1/agent/{hash}</code>) includes an <code>alerts</code>
+    The score response (<code>GET /api/agent/{hash}</code>) includes an <code>alerts</code>
     array with machine-readable signals about the agent's current state. Alerts are computed
     from deltas, age, and activity:
   </p>
@@ -639,7 +639,7 @@ if delta7d < -2                         → falling</pre>
   </p>
 
   <p>
-    When calling <code>GET /api/v1/agent/{hash}/verdict</code> with a <code>caller_pubkey</code>,
+    When calling <code>GET /api/agent/{hash}/verdict</code> with a <code>caller_pubkey</code>,
     SatRank performs a real-time route query from the caller&rsquo;s position to the target using
     LND&rsquo;s <code>QueryRoutes</code> API with the <code>source_pub_key</code> parameter.
     No payment is sent &mdash; this is a read-only graph operation.
@@ -712,9 +712,9 @@ if delta7d < -2                         → falling</pre>
   <table>
     <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>POST /api/v2/decide</code></td><td>1 sat</td><td>GO / NO-GO with success probability</td></tr>
-      <tr><td><code>POST /api/v2/report</code></td><td>API Key</td><td>Report transaction outcome (free)</td></tr>
-      <tr><td><code>GET /api/v2/profile/{id}</code></td><td>1 sat</td><td>Agent profile with reports, uptime, rank</td></tr>
+      <tr><td><code>POST /api/decide</code></td><td>1 sat</td><td>GO / NO-GO with success probability</td></tr>
+      <tr><td><code>POST /api/report</code></td><td>API Key</td><td>Report transaction outcome (free)</td></tr>
+      <tr><td><code>GET /api/profile/{id}</code></td><td>1 sat</td><td>Agent profile with reports, uptime, rank</td></tr>
     </tbody>
   </table>
 
@@ -851,7 +851,7 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   <div class="container">
     SatRank &mdash; Trust score for AI agents on Bitcoin Lightning
     <br>
-    <a href="/">Home</a> &middot; <a href="/api/v1/docs">API Docs</a> &middot; <a href="/api/v1/openapi.json">OpenAPI Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
+    <a href="/">Home</a> &middot; <a href="/api/docs">API Docs</a> &middot; <a href="/api/openapi.json">OpenAPI Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
   </div>
 </footer>
 

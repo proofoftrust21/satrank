@@ -58,74 +58,74 @@ export class SatRankClient {
 
   /** Detailed agent score */
   async getScore(publicKeyHash: string): Promise<AgentScoreResponse> {
-    const envelope = await this.get<ApiEnvelope<AgentScoreResponse>>(`/api/v1/agent/${publicKeyHash}`);
+    const envelope = await this.get<ApiEnvelope<AgentScoreResponse>>(`/api/agent/${publicKeyHash}`);
     return envelope.data;
   }
 
   /** Top agents leaderboard */
   async getTopAgents(limit = 20, offset = 0): Promise<TopAgentsResponse> {
-    const envelope = await this.get<ApiEnvelope<TopAgentsResponse['agents']>>(`/api/v1/agents/top?limit=${limit}&offset=${offset}`);
+    const envelope = await this.get<ApiEnvelope<TopAgentsResponse['agents']>>(`/api/agents/top?limit=${limit}&offset=${offset}`);
     return { agents: envelope.data, meta: envelope.meta! };
   }
 
   /** Search agents by alias */
   async searchAgents(alias: string, limit = 20, offset = 0): Promise<SearchAgentsResponse> {
-    const envelope = await this.get<ApiEnvelope<SearchAgentsResponse['agents']>>(`/api/v1/agents/search?alias=${encodeURIComponent(alias)}&limit=${limit}&offset=${offset}`);
+    const envelope = await this.get<ApiEnvelope<SearchAgentsResponse['agents']>>(`/api/agents/search?alias=${encodeURIComponent(alias)}&limit=${limit}&offset=${offset}`);
     return { agents: envelope.data, meta: envelope.meta! };
   }
 
   /** Agent score history */
   async getHistory(publicKeyHash: string, limit = 20, offset = 0): Promise<HistoryResponse> {
-    const envelope = await this.get<ApiEnvelope<HistoryResponse['snapshots']>>(`/api/v1/agent/${publicKeyHash}/history?limit=${limit}&offset=${offset}`);
+    const envelope = await this.get<ApiEnvelope<HistoryResponse['snapshots']>>(`/api/agent/${publicKeyHash}/history?limit=${limit}&offset=${offset}`);
     return { snapshots: envelope.data, meta: envelope.meta! };
   }
 
   /** Attestations received by an agent */
   async getAttestations(publicKeyHash: string, limit = 20, offset = 0): Promise<AttestationsResponse> {
-    const envelope = await this.get<ApiEnvelope<AttestationsResponse['attestations']>>(`/api/v1/agent/${publicKeyHash}/attestations?limit=${limit}&offset=${offset}`);
+    const envelope = await this.get<ApiEnvelope<AttestationsResponse['attestations']>>(`/api/agent/${publicKeyHash}/attestations?limit=${limit}&offset=${offset}`);
     return { attestations: envelope.data, meta: envelope.meta! };
   }
 
   /** Global network statistics */
   async getStats(): Promise<NetworkStats> {
-    const envelope = await this.get<ApiEnvelope<NetworkStats>>(`/api/v1/stats`);
+    const envelope = await this.get<ApiEnvelope<NetworkStats>>(`/api/stats`);
     return envelope.data;
   }
 
   /** Service health status */
   async getHealth(): Promise<HealthResponse> {
-    const envelope = await this.get<ApiEnvelope<HealthResponse>>(`/api/v1/health`);
+    const envelope = await this.get<ApiEnvelope<HealthResponse>>(`/api/health`);
     return envelope.data;
   }
 
   /** Service version */
   async getVersion(): Promise<VersionResponse> {
-    const envelope = await this.get<ApiEnvelope<VersionResponse>>(`/api/v1/version`);
+    const envelope = await this.get<ApiEnvelope<VersionResponse>>(`/api/version`);
     return envelope.data;
   }
 
   /** Agent verdict (SAFE / RISKY / UNKNOWN) */
   async getVerdict(publicKeyHash: string, callerPubkey?: string): Promise<VerdictResponse> {
     const qs = callerPubkey ? `?caller_pubkey=${callerPubkey}` : '';
-    const envelope = await this.get<ApiEnvelope<VerdictResponse>>(`/api/v1/agent/${publicKeyHash}/verdict${qs}`);
+    const envelope = await this.get<ApiEnvelope<VerdictResponse>>(`/api/agent/${publicKeyHash}/verdict${qs}`);
     return envelope.data;
   }
 
   /** Batch verdicts — up to 100 hashes in one request */
   async getBatchVerdicts(hashes: string[]): Promise<BatchVerdictItem[]> {
-    const envelope = await this.post<ApiEnvelope<BatchVerdictItem[]>>(`/api/v1/verdicts`, { hashes });
+    const envelope = await this.post<ApiEnvelope<BatchVerdictItem[]>>(`/api/verdicts`, { hashes });
     return envelope.data;
   }
 
   /** Top movers — agents with biggest score changes in 7 days */
   async getMovers(): Promise<MoversResponse> {
-    const envelope = await this.get<ApiEnvelope<MoversResponse>>(`/api/v1/agents/movers`);
+    const envelope = await this.get<ApiEnvelope<MoversResponse>>(`/api/agents/movers`);
     return envelope.data;
   }
 
   /** Submit an attestation (requires API key in headers) */
   async submitAttestation(input: CreateAttestationInput): Promise<CreateAttestationResponse> {
-    const envelope = await this.post<ApiEnvelope<CreateAttestationResponse>>(`/api/v1/attestations`, input);
+    const envelope = await this.post<ApiEnvelope<CreateAttestationResponse>>(`/api/attestations`, input);
     return envelope.data;
   }
 
@@ -133,19 +133,19 @@ export class SatRankClient {
 
   /** GO / NO-GO decision with success probability */
   async decide(input: DecideRequest): Promise<DecideResponse> {
-    const envelope = await this.post<ApiEnvelope<DecideResponse>>(`/api/v2/decide`, input);
+    const envelope = await this.post<ApiEnvelope<DecideResponse>>(`/api/decide`, input);
     return envelope.data;
   }
 
   /** Submit outcome report (success / failure / timeout) */
   async report(input: ReportRequest): Promise<ReportResponse> {
-    const envelope = await this.post<ApiEnvelope<ReportResponse>>(`/api/v2/report`, input);
+    const envelope = await this.post<ApiEnvelope<ReportResponse>>(`/api/report`, input);
     return envelope.data;
   }
 
   /** Restructured agent profile with reports, probe uptime, rank */
   async getProfile(id: string): Promise<ProfileResponse> {
-    const envelope = await this.get<ApiEnvelope<ProfileResponse>>(`/api/v2/profile/${id}`);
+    const envelope = await this.get<ApiEnvelope<ProfileResponse>>(`/api/profile/${id}`);
     return envelope.data;
   }
 

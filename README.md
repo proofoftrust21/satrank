@@ -47,74 +47,72 @@ Composite score 0-100 computed from 5 weighted factors:
 
 ## API
 
-v1 endpoints provide detailed scores and verdicts. v2 adds decision infrastructure: decide, report, profile.
-
-### v2 — Decision API (primary interface for agents)
+### Decision API (primary interface for agents)
 
 ```bash
 # GO / NO-GO decision with success probability
-curl -X POST http://localhost:3000/api/v2/decide \
+curl -X POST http://localhost:3000/api/decide \
   -H "Content-Type: application/json" \
   -d '{"target": "<hash>", "caller": "<your-hash>"}'
 
 # Report transaction outcome (free — no L402)
-curl -X POST http://localhost:3000/api/v2/report \
+curl -X POST http://localhost:3000/api/report \
   -H "Content-Type: application/json" \
   -H "X-API-Key: <key>" \
   -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success"}'
 
 # Agent profile with reports, uptime, rank
-curl http://localhost:3000/api/v2/profile/<hash>
+curl http://localhost:3000/api/profile/<hash>
 ```
 
-### v1 — Score & Verdict API
+### Score & Verdict API
 
 ```bash
-curl http://localhost:3000/api/v1/agent/<hash>/verdict
+curl http://localhost:3000/api/agent/<hash>/verdict
 # Returns: SAFE / RISKY / UNKNOWN with confidence, flags, risk profile
 ```
 
 ### Batch Verdicts
 ```bash
-curl -X POST http://localhost:3000/api/v1/verdicts \
+curl -X POST http://localhost:3000/api/verdicts \
   -H "Content-Type: application/json" \
   -d '{"hashes": ["abc123...", "def456..."]}'
 ```
 
 ### Agent Score
 ```bash
-curl http://localhost:3000/api/v1/agent/<hash>
+curl http://localhost:3000/api/agent/<hash>
 # Returns: score, components, evidence, delta, alerts
 ```
 
 ### Score History
 ```bash
-curl http://localhost:3000/api/v1/agent/<hash>/history?limit=10
+curl http://localhost:3000/api/agent/<hash>/history?limit=10
 ```
 
 ### Received Attestations
 ```bash
-curl http://localhost:3000/api/v1/agent/<hash>/attestations?limit=20
+curl http://localhost:3000/api/agent/<hash>/attestations?limit=20
 ```
 
 ### Leaderboard
 ```bash
-curl http://localhost:3000/api/v1/agents/top?limit=20&sort_by=score
+curl http://localhost:3000/api/agents/top?limit=20&sort_by=score
 ```
 
 ### Top Movers
 ```bash
-curl http://localhost:3000/api/v1/agents/movers
+curl http://localhost:3000/api/agents/movers
 ```
 
 ### Search by Alias
 ```bash
-curl http://localhost:3000/api/v1/agents/search?alias=atlas
+curl http://localhost:3000/api/agents/search?alias=atlas
 ```
 
 ### Submit Attestation (free — no L402)
 ```bash
-curl -X POST http://localhost:3000/api/v1/attestations \
+curl -X POST http://localhost:3000/api/attestations \
   -H "Content-Type: application/json" \
   -H "X-API-Key: <your-key>" \
   -d '{"txId": "...", "attesterHash": "...", "subjectHash": "...", "score": 85, "category": "successful_transaction"}'
@@ -122,8 +120,8 @@ curl -X POST http://localhost:3000/api/v1/attestations \
 
 ### Health & Stats
 ```bash
-curl http://localhost:3000/api/v1/health
-curl http://localhost:3000/api/v1/stats
+curl http://localhost:3000/api/health
+curl http://localhost:3000/api/stats
 ```
 
 ## MCP Server

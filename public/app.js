@@ -1,5 +1,5 @@
 (function () {
-  var API = '/api/v1';
+  var API = '/api';
 
   // -- Helpers --
   function fmt(n) {

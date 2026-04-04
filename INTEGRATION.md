@@ -35,9 +35,9 @@ Add to your MCP client configuration (`mcp-config.json`):
 
 | Tool | Description |
 |------|-------------|
-| `decide` | **v2** GO/NO-GO decision with success probability — the primary pre-transaction tool |
-| `report` | **v2** Report outcome (success/failure/timeout) — requires SATRANK_API_KEY (FREE) |
-| `get_profile` | **v2** Agent profile with reports, probe uptime, rank, evidence |
+| `decide` | GO/NO-GO decision with success probability — the primary pre-transaction tool |
+| `report` | Report outcome (success/failure/timeout) — requires SATRANK_API_KEY (FREE) |
+| `get_profile` | Agent profile with reports, probe uptime, rank, evidence |
 | `get_agent_score` | Full trust score with components, evidence, and verification URLs |
 | `get_verdict` | SAFE/RISKY/UNKNOWN with risk profile and optional personal trust graph |
 | `get_batch_verdicts` | Batch verdict for up to 100 agents in one call |
@@ -47,8 +47,7 @@ Add to your MCP client configuration (`mcp-config.json`):
 | `get_top_movers` | Agents with biggest 7-day score changes |
 | `submit_attestation` | Submit a trust attestation after a transaction (FREE) |
 
-### Example: decide → pay → report (v2 cycle)
-
+### Example: decide → pay → report
 ```
 # Step 1: Should I pay this agent?
 Agent calls decide({ target: "counterparty-hash", caller: "my-hash" })
@@ -61,8 +60,7 @@ Agent calls report({ target: "counterparty-hash", reporter: "my-hash", outcome: 
 → { reportId: "...", verified: false, weight: 0.75, timestamp: 1712000000 }
 ```
 
-### Example: check score before transacting (v1)
-
+### Example: check score before transacting
 ```
 User: Should I accept a payment channel from agent abc123...?
 
@@ -75,8 +73,7 @@ Agent: This agent has a trust score of 73/100 (medium confidence).
        - LN+ profile: https://lightningnetwork.plus/nodes/02abc...
 ```
 
-### Example: attest after transacting (v1)
-
+### Example: attest after transacting
 ```
 Agent calls submit_attestation({
   txId: "uuid-of-the-transaction",
@@ -99,7 +96,7 @@ Best for: TypeScript/JavaScript agents or backend services.
 npm install @satrank/sdk
 ```
 
-### Decide → pay → report (v2 — recommended)
+### Decide → pay → report (recommended)
 
 ```typescript
 import { SatRankClient } from '@satrank/sdk';
@@ -132,8 +129,7 @@ await satrank.report({
 });
 ```
 
-### Check score (v1)
-
+### Check score
 ```typescript
 const result = await satrank.getScore('a1b2c3d4e5f6...');
 
@@ -152,56 +148,55 @@ if (result.score.total < 30) {
 
 Best for: non-JS agents, scripts, or direct integration.
 
-### Base URLs
+### Base URL
 
 ```
-https://your-satrank-instance.com/api/v1   # v1 — scores, verdicts, attestations
-https://your-satrank-instance.com/api/v2   # v2 — decide, report, profile
+https://your-satrank-instance.com/api
 ```
 
-### v2 endpoints (recommended for agents)
+### Decision endpoints (recommended for agents)
 
 ```bash
 # GO / NO-GO decision (L402-gated)
-curl -X POST https://satrank.example/api/v2/decide \
+curl -X POST https://satrank.example/api/decide \
   -H 'Content-Type: application/json' \
   -H 'Authorization: L402 <macaroon>:<preimage>' \
   -d '{"target": "<hash>", "caller": "<your-hash>"}'
 
 # Report outcome (FREE — API key only)
-curl -X POST https://satrank.example/api/v2/report \
+curl -X POST https://satrank.example/api/report \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-api-key' \
   -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success"}'
 
 # Agent profile (L402-gated)
 curl -H 'Authorization: L402 <macaroon>:<preimage>' \
-  https://satrank.example/api/v2/profile/<hash>
+  https://satrank.example/api/profile/<hash>
 ```
 
 ### L402-gated endpoints (pay 1 sat per query)
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `POST /api/v2/decide` | L402 | GO/NO-GO with success probability |
-| `GET /api/v2/profile/{id}` | L402 | Agent profile with reports, uptime, rank |
-| `GET /api/v1/agent/{hash}` | L402 | Full score + evidence |
-| `GET /api/v1/agent/{hash}/verdict` | L402 | SAFE/RISKY/UNKNOWN verdict |
-| `GET /api/v1/agent/{hash}/history` | L402 | Score history over time |
-| `GET /api/v1/agent/{hash}/attestations` | L402 | Attestations received |
-| `POST /api/v1/verdicts` | L402 | Batch verdict (up to 100 hashes) |
+| `POST /api/decide` | L402 | GO/NO-GO with success probability |
+| `GET /api/profile/{id}` | L402 | Agent profile with reports, uptime, rank |
+| `GET /api/agent/{hash}` | L402 | Full score + evidence |
+| `GET /api/agent/{hash}/verdict` | L402 | SAFE/RISKY/UNKNOWN verdict |
+| `GET /api/agent/{hash}/history` | L402 | Score history over time |
+| `GET /api/agent/{hash}/attestations` | L402 | Attestations received |
+| `POST /api/verdicts` | L402 | Batch verdict (up to 100 hashes) |
 
 ### Free endpoints
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `POST /api/v2/report` | API Key | Report outcome (FREE — no payment) |
-| `POST /api/v1/attestations` | API Key | Submit attestation (FREE — no payment) |
-| `GET /api/v1/agents/top` | None | Leaderboard |
-| `GET /api/v1/agents/search` | None | Search by alias |
-| `GET /api/v1/agents/movers` | None | Top movers (7-day delta) |
-| `GET /api/v1/health` | None | Service health |
-| `GET /api/v1/stats` | None | Network statistics |
+| `POST /api/report` | API Key | Report outcome (FREE — no payment) |
+| `POST /api/attestations` | API Key | Submit attestation (FREE — no payment) |
+| `GET /api/agents/top` | None | Leaderboard |
+| `GET /api/agents/search` | None | Search by alias |
+| `GET /api/agents/movers` | None | Top movers (7-day delta) |
+| `GET /api/health` | None | Service health |
+| `GET /api/stats` | None | Network statistics |
 
 > **Reports and attestations are free.** They are the fuel of the trust network.
 > Every report you submit makes the scoring more accurate for everyone.

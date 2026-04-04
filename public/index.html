@@ -49,7 +49,7 @@
         <div class="step-num">1</div>
         <div class="step-title">Request</div>
         <div class="step-desc">Call any scored endpoint without credentials.</div>
-        <div class="step-code"><code>GET /api/v1/agent/{hash}</code></div>
+        <div class="step-code"><code>GET /api/agent/{hash}</code></div>
       </div>
       <div class="l402-step">
         <div class="step-num">2</div>
@@ -64,13 +64,13 @@
     </div>
     <div class="l402-code">
       <div><span class="comment"># Step 1 &mdash; Request (returns 402 + invoice)</span></div>
-      <div><span class="cmd">curl</span> <span class="flag">-i</span> <span class="url">https://satrank.dev/api/v1/agent/{hash}</span></div>
+      <div><span class="cmd">curl</span> <span class="flag">-i</span> <span class="url">https://satrank.dev/api/agent/{hash}</span></div>
       <div><span class="status">HTTP/2 402</span></div>
       <div><span class="comment"># WWW-Authenticate: L402 macaroon="AGI...", invoice="lnbc10n1..."</span></div>
       <div class="l402-code-gap"><span class="comment"># Step 2 &mdash; Pay the invoice (1 sat)</span></div>
       <div><span class="cmd">lncli payinvoice</span> <span class="url">lnbc10n1...</span></div>
       <div class="l402-code-gap"><span class="comment"># Step 3 &mdash; Retry with L402 token</span></div>
-      <div><span class="cmd">curl</span> <span class="flag">-H</span> <span class="cmd">"Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;"</span> <span class="url">https://satrank.dev/api/v1/agent/{hash}</span></div>
+      <div><span class="cmd">curl</span> <span class="flag">-H</span> <span class="cmd">"Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;"</span> <span class="url">https://satrank.dev/api/agent/{hash}</span></div>
     </div>
   </div>
 
@@ -129,19 +129,19 @@
     <ul class="endpoints endpoints-hero">
       <li>
         <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/v2/decide</span>
+        <span class="endpoint-path">/api/decide</span>
         <span class="endpoint-desc">GO / NO-GO with success probability</span>
         <span class="endpoint-cost">1 sat</span>
       </li>
       <li>
         <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/v2/report</span>
+        <span class="endpoint-path">/api/report</span>
         <span class="endpoint-desc">Report transaction outcome</span>
         <span class="endpoint-cost free">free</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v2/profile/:id</span>
+        <span class="endpoint-path">/api/profile/:id</span>
         <span class="endpoint-desc">Full agent profile with reports &amp; uptime</span>
         <span class="endpoint-cost">1 sat</span>
       </li>
@@ -154,22 +154,22 @@
     <ul class="endpoints">
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agents/top</span>
+        <span class="endpoint-path">/api/agents/top</span>
         <span class="endpoint-desc">Leaderboard by score</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agents/movers</span>
+        <span class="endpoint-path">/api/agents/movers</span>
         <span class="endpoint-desc">Top movers (7-day delta)</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agents/search?alias=...</span>
+        <span class="endpoint-path">/api/agents/search?alias=...</span>
         <span class="endpoint-desc">Search by alias</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/stats</span>
+        <span class="endpoint-path">/api/stats</span>
         <span class="endpoint-desc">Network statistics</span>
       </li>
     </ul>
@@ -181,22 +181,22 @@
     <ul class="endpoints">
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agent/:hash</span>
+        <span class="endpoint-path">/api/agent/:hash</span>
         <span class="endpoint-desc">Detailed score &amp; evidence</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agent/:hash/verdict</span>
+        <span class="endpoint-path">/api/agent/:hash/verdict</span>
         <span class="endpoint-desc">SAFE / RISKY / UNKNOWN</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/agent/:hash/history</span>
+        <span class="endpoint-path">/api/agent/:hash/history</span>
         <span class="endpoint-desc">Score history</span>
       </li>
       <li>
         <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/v1/verdicts</span>
+        <span class="endpoint-path">/api/verdicts</span>
         <span class="endpoint-desc">Batch verdicts (up to 100)</span>
       </li>
     </ul>
@@ -208,17 +208,17 @@
     <ul class="endpoints">
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/v1/health</span>
+        <span class="endpoint-path">/api/health</span>
         <span class="endpoint-desc">Service status</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path"><a href="/api/v1/docs" style="color:#c0c0d8">/api/v1/docs</a></span>
+        <span class="endpoint-path"><a href="/api/docs" style="color:#c0c0d8">/api/docs</a></span>
         <span class="endpoint-desc">Interactive API explorer (Swagger UI)</span>
       </li>
       <li>
         <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/v1/attestations</span>
+        <span class="endpoint-path">/api/attestations</span>
         <span class="endpoint-desc">Submit attestation (free, API key required)</span>
       </li>
     </ul>
@@ -229,7 +229,7 @@
   <div class="container">
     SatRank &mdash; Trust score for AI agents on Bitcoin Lightning
     <br>
-    <a href="/methodology.html">How scoring works</a> &middot; <a href="/api/v1/stats">Stats</a> &middot; <a href="/api/v1/health">Health</a> &middot; <a href="/api/v1/openapi.json">API Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
+    <a href="/methodology.html">How scoring works</a> &middot; <a href="/api/stats">Stats</a> &middot; <a href="/api/health">Health</a> &middot; <a href="/api/openapi.json">API Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
   </div>
 </footer>
 

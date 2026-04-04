@@ -7,7 +7,7 @@ export const openapiSpec = {
     description: 'Trust score for AI agents on Bitcoin Lightning. The PageRank of the agentic economy.',
     license: { name: 'AGPL-3.0' },
   },
-  servers: [{ url: '/api/v1' }, { url: '/api/v2', description: 'v2 — decision infrastructure' }],
+  servers: [{ url: '/api' }],
   paths: {
     '/agent/{publicKeyHash}': {
       get: {
@@ -352,7 +352,7 @@ export const openapiSpec = {
       },
     },
     // --- v2 endpoints ---
-    '/v2/decide': {
+    '/decide': {
       post: {
         summary: 'GO / NO-GO decision with success probability',
         operationId: 'decide',
@@ -374,7 +374,7 @@ export const openapiSpec = {
         },
       },
     },
-    '/v2/report': {
+    '/report': {
       post: {
         summary: 'Report transaction outcome',
         operationId: 'report',
@@ -395,7 +395,7 @@ export const openapiSpec = {
         },
       },
     },
-    '/v2/profile/{id}': {
+    '/profile/{id}': {
       get: {
         summary: 'Agent profile with reports and uptime',
         operationId: 'getProfile',

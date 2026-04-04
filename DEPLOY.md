@@ -47,7 +47,7 @@ authenticator:
 servicesettings:
   - name: "satrank"
     hostregexp: "satrank.dev"
-    pathregexp: "/api/v[12]/(agent|agents|decide|profile).*"
+    pathregexp: "/api/(v[12]/)?(agent|agents|decide|profile).*"
     price: 1
     duration: 31536000
     capabilities:
@@ -111,8 +111,10 @@ server {
     ssl_certificate /etc/letsencrypt/live/satrank.dev/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/satrank.dev/privkey.pem;
 
-    # L402-gated v1 endpoints — proxy through Aperture
-    location ~ ^/api/v1/(agent|agents) {
+    # L402-gated endpoints — proxy through Aperture
+    # Matches: /api/agent/*, /api/agents/*, /api/decide, /api/profile/*
+    # Also matches legacy versioned routes: /api/v1/agent/*, /api/v2/decide, etc.
+    location ~ ^/api/(v[12]/)?(agent|agents|decide|profile) {
         proxy_pass http://127.0.0.1:8443;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -120,17 +122,8 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # L402-gated v2 endpoints — decide and profile through Aperture
-    location ~ ^/api/v2/(decide|profile) {
-        proxy_pass http://127.0.0.1:8443;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # Free v2 endpoint — report goes direct to Express (API key auth, no L402)
-    location = /api/v2/report {
+    # Free endpoint — report goes direct to Express (API key auth, no L402)
+    location ~ ^/api/(v[12]/)?report$ {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -138,8 +131,8 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Free v1 endpoints — direct to Express
-    location /api/v1/ {
+    # Free endpoints — direct to Express (health, stats, attestations, etc.)
+    location /api/ {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -169,12 +162,11 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 **Routing logic:**
-- `/api/v1/agent/*` and `/api/v1/agents/*` → Aperture (L402 required, 1 sat)
-- `/api/v2/decide` and `/api/v2/profile/*` → Aperture (L402 required, 1 sat)
-- `/api/v2/report` → Express direct (API key auth, no L402 — free)
-- `/api/v1/health`, `/api/v1/stats`, `/api/v1/version`, `/api/v1/openapi.json` → Express direct (free)
-- `/api/v1/attestations` → Express direct (API key auth, no L402)
+- `/api/agent/*`, `/api/agents/*`, `/api/decide`, `/api/profile/*` → Aperture (L402, 1 sat)
+- `/api/report` → Express direct (API key auth, free)
+- `/api/health`, `/api/stats`, `/api/attestations`, `/api/docs` → Express direct (free)
 - `/`, `/app.js`, `/favicon.png` → Express static (free)
+- Legacy versioned routes (`/api/v1/...`, `/api/v2/...`) continue to work
 
 ## 3. SatRank (Docker)
 
@@ -197,16 +189,16 @@ docker compose up -d
 
 ```bash
 # Health (free, bypasses Aperture)
-curl https://satrank.dev/api/v1/health
+curl https://satrank.dev/api/health
 
 # L402-gated endpoint — should return 402
-curl -i https://satrank.dev/api/v1/agents/top
+curl -i https://satrank.dev/api/agents/top
 # HTTP/2 402
 # WWW-Authenticate: L402 macaroon="...", invoice="lnbc10n1..."
 
 # Pay with lncli and retry
 lncli payinvoice lnbc10n1...
-curl -H "Authorization: L402 <macaroon>:<preimage>" https://satrank.dev/api/v1/agents/top
+curl -H "Authorization: L402 <macaroon>:<preimage>" https://satrank.dev/api/agents/top
 ```
 
 ## 4. Secrets management
