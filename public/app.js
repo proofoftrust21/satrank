@@ -205,7 +205,7 @@
       sourceCell.textContent = a.source;
 
       tr.addEventListener('click', function () {
-        showAgentDetail(a.publicKeyHash);
+        showAgentDetail(a);
       });
 
       tbody.appendChild(tr);
@@ -278,44 +278,14 @@
     loadTopAgents();
   });
 
-  // -- Agent detail --
-  function showAgentDetail(hash) {
+  // -- Agent detail (built from leaderboard/search data — no extra API call) --
+  function showAgentDetail(agent) {
     detailPanel.classList.add('visible');
-    detailPanel.innerHTML = '<div class="detail-loading">Loading agent details...</div>';
     detailPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    fetchJSON(API + '/agent/' + encodeURIComponent(hash))
-      .then(function (d) {
-        try {
-          renderDetail(d.data);
-        } catch (e) {
-          detailPanel.innerHTML =
-            '<div class="detail-loading" style="color:#ff5252">Failed to render agent details</div>';
-        }
-      })
-      .catch(function (err) {
-        var code = err.message;
-        if (code === '402') {
-          detailPanel.innerHTML =
-            '<div class="detail-loading">This endpoint requires L402 payment (1 sat). Use the SDK or curl with an L402 token.</div>';
-        } else {
-          detailPanel.innerHTML =
-            '<div class="detail-loading" style="color:#ff5252">Failed to load agent details</div>';
-        }
-      });
-  }
-
-  function renderDetail(r) {
-    var agent = r.agent;
-    var score = r.score;
-    var comp = score.components;
-    var ev = r.evidence;
-    var delta = r.delta;
-    var alerts = r.alerts;
-
-    var alias = agent.alias ? escapeHtml(agent.alias) : '<span class="mono">' + escapeHtml(agent.publicKeyHash) + '</span>';
-
-    var maxComp = 100;
+    var alias = agent.alias ? escapeHtml(agent.alias) : '<span class="mono">' + escapeHtml(agent.publicKeyHash.slice(0, 16) + '...') + '</span>';
+    var comp = agent.components || {};
+    var d7 = agent.delta7d !== undefined && agent.delta7d !== null ? agent.delta7d : agent._delta7d;
 
     var html = '';
     html += '<div class="detail-header">';
@@ -326,30 +296,15 @@
     html += '  <button class="detail-close" id="detail-close-btn">Close</button>';
     html += '</div>';
 
-    // Big score with deltas
-    html += '<div class="detail-score-big" style="color:' + scoreColor(score.total) + '">';
-    html += escapeHtml(score.total);
-    html += '<span class="confidence">confidence: ' + escapeHtml(score.confidence) + '</span>';
+    // Score + rank + delta
+    html += '<div class="detail-score-big" style="color:' + scoreColor(agent.score) + '">';
+    html += escapeHtml(agent.score);
+    if (agent.rank) html += '<span class="confidence">#' + escapeHtml(agent.rank) + ' of 17,000+ agents</span>';
     html += '</div>';
 
-    // Delta badges
-    if (delta) {
+    if (d7 !== undefined && d7 !== null) {
       html += '<div class="delta-badges">';
-      html += '  <span class="delta-badge">24h: ' + deltaHtml(delta.delta24h) + '</span>';
-      html += '  <span class="delta-badge">7d: ' + deltaHtml(delta.delta7d) + '</span>';
-      html += '  <span class="delta-badge">30d: ' + deltaHtml(delta.delta30d) + '</span>';
-      html += '  <span class="trend-badge trend-' + escapeHtml(delta.trend) + '">' + escapeHtml(delta.trend) + '</span>';
-      html += '</div>';
-    }
-
-    // Alerts
-    if (alerts && alerts.length > 0) {
-      html += '<div class="alerts-section">';
-      alerts.forEach(function (alert) {
-        html += '<div class="alert alert-' + escapeHtml(alert.severity) + '">';
-        html += escapeHtml(alert.message);
-        html += '</div>';
-      });
+      html += '  <span class="delta-badge">7d: ' + deltaHtml(d7) + '</span>';
       html += '</div>';
     }
 
@@ -358,7 +313,7 @@
     html += '<div class="component-bars">';
     components.forEach(function (name) {
       var val = comp[name] || 0;
-      var pct = Math.min(100, Math.round((val / maxComp) * 100));
+      var pct = Math.min(100, Math.round(val));
       html += '<div class="bar-row">';
       html += '  <span class="bar-label">' + name + '</span>';
       html += '  <div class="bar-track"><div class="bar-fill ' + name + '" style="width:' + pct + '%"></div></div>';
@@ -367,52 +322,27 @@
     });
     html += '</div>';
 
-    // Evidence
-    html += '<div class="evidence-section"><h3>Evidence</h3><div class="evidence-grid">';
-
-    // Transactions
-    html += '<div class="evidence-item">';
-    html += '  <div class="ev-label">Transactions</div>';
-    html += '  <div class="ev-value">' + escapeHtml(ev.transactions.count) + ' total, ' + escapeHtml(ev.transactions.verifiedCount) + ' verified</div>';
+    // Teaser — what the full API returns
+    html += '<div class="detail-teaser">';
+    html += '  <div class="teaser-title">Full API response includes</div>';
+    html += '  <div class="teaser-grid">';
+    html += '    <span class="teaser-item">Verdict (SAFE / RISKY / UNKNOWN)</span>';
+    html += '    <span class="teaser-item">Survival score &amp; prediction</span>';
+    html += '    <span class="teaser-item">Probe reachability &amp; uptime</span>';
+    html += '    <span class="teaser-item">Personalized pathfinding</span>';
+    html += '    <span class="teaser-item">Risk profile classification</span>';
+    html += '    <span class="teaser-item">Channel flow &amp; drain rate</span>';
+    html += '    <span class="teaser-item">Evidence (tx samples, LN+ ratings, mempool links)</span>';
+    html += '    <span class="teaser-item">24h / 7d / 30d deltas &amp; trend</span>';
+    html += '  </div>';
+    html += '  <div class="teaser-cta">';
+    html += '    <code>curl https://satrank.dev/api/agent/' + escapeHtml(agent.publicKeyHash) + '</code>';
+    html += '  </div>';
+    html += '  <div class="teaser-links">';
+    html += '    <a href="/api/docs">API Explorer</a>';
+    html += '    <a href="/methodology.html">Methodology</a>';
+    html += '  </div>';
     html += '</div>';
-
-    // Lightning graph
-    if (ev.lightningGraph) {
-      var lg = ev.lightningGraph;
-      html += '<div class="evidence-item">';
-      html += '  <div class="ev-label">Public Key</div>';
-      html += '  <div class="ev-value mono" style="font-size:0.8rem;word-break:break-all">' + escapeHtml(lg.publicKey) + '</div>';
-      html += '  <a href="' + safeUrl(lg.sourceUrl) + '" target="_blank" rel="noopener">View on mempool.space</a>';
-      html += '</div>';
-
-      html += '<div class="evidence-item">';
-      html += '  <div class="ev-label">Capacity</div>';
-      html += '  <div class="ev-value">' + escapeHtml(fmt(lg.capacitySats)) + ' sats (' + escapeHtml(lg.channels) + ' channels)</div>';
-      html += '</div>';
-    }
-
-    // Reputation
-    if (ev.reputation) {
-      var rep = ev.reputation;
-      html += '<div class="evidence-item">';
-      html += '  <div class="ev-label">LN+ Ratings</div>';
-      html += '  <div class="ev-value">+' + escapeHtml(rep.positiveRatings) + ' / -' + escapeHtml(rep.negativeRatings) + '</div>';
-      html += '  <a href="' + safeUrl(rep.sourceUrl) + '" target="_blank" rel="noopener">View on LN+</a>';
-      html += '</div>';
-
-      html += '<div class="evidence-item">';
-      html += '  <div class="ev-label">Centrality Ranks</div>';
-      html += '  <div class="ev-value">LN+ #' + escapeHtml(rep.lnplusRank) + ' &middot; Hubness #' + escapeHtml(rep.hubnessRank) + ' &middot; Betweenness #' + escapeHtml(rep.betweennessRank) + '</div>';
-      html += '</div>';
-    }
-
-    // Popularity
-    html += '<div class="evidence-item">';
-    html += '  <div class="ev-label">Popularity</div>';
-    html += '  <div class="ev-value">' + escapeHtml(ev.popularity.queryCount) + ' queries (bonus: +' + escapeHtml(ev.popularity.bonusApplied) + ')</div>';
-    html += '</div>';
-
-    html += '</div></div>';
 
     detailPanel.innerHTML = html;
 

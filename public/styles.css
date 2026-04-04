@@ -317,6 +317,17 @@ tr.clickable { cursor: pointer; }
 .evidence-item a:hover { text-decoration: underline; }
 .detail-loading { text-align: center; color: #555570; padding: 40px 0; }
 
+/* Detail teaser */
+.detail-teaser { border-top: 1px solid #1a1a2e; padding-top: 20px; margin-top: 8px; }
+.teaser-title { font-size: 0.85rem; color: #8888a0; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+.teaser-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.teaser-item { font-size: 0.8rem; color: #6666a0; background: #12121e; border: 1px solid #1e1e30; border-radius: 6px; padding: 4px 10px; }
+.teaser-cta { margin-bottom: 12px; }
+.teaser-cta code { font-size: 0.75rem; color: #f7931a; background: #1a1a2e; padding: 8px 12px; border-radius: 6px; display: block; overflow-x: auto; white-space: nowrap; }
+.teaser-links { display: flex; gap: 16px; }
+.teaser-links a { font-size: 0.85rem; color: #f7931a; text-decoration: none; }
+.teaser-links a:hover { text-decoration: underline; }
+
 /* API docs */
 .endpoints { list-style: none; }
 .endpoints li {
