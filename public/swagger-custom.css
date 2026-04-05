@@ -640,3 +640,88 @@ html, body {
 .swagger-ui p {
   color: inherit;
 }
+
+/* ===== Kill ALL grey backgrounds from Swagger defaults ===== */
+/* These override Swagger's inline and class-based grey backgrounds */
+.swagger-ui .model-box-control,
+.swagger-ui .models-control,
+.swagger-ui .expand-methods,
+.swagger-ui .expand-operation,
+.swagger-ui .opblock-control-arrow,
+.swagger-ui .model-toggle,
+.swagger-ui .model-hint,
+.swagger-ui .btn--default {
+  background: transparent !important;
+  border: none;
+  color: #c0c0d8;
+}
+.swagger-ui .model-box-control:hover,
+.swagger-ui .models-control:hover,
+.swagger-ui .expand-methods:hover,
+.swagger-ui .expand-operation:hover,
+.swagger-ui .btn--default:hover {
+  color: #e0e0e8;
+}
+
+/* Schema name badges (PaginationMeta, ErrorResponse, etc.) */
+.swagger-ui .model-title,
+.swagger-ui .model-title__text,
+.swagger-ui span[class*="model-title"] {
+  background: transparent !important;
+  border: 1px solid #333350;
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: #e0e0e8;
+  font-weight: 600;
+}
+
+/* Schema containers in models section */
+.swagger-ui section.models .model-container {
+  background: #0d0d18;
+}
+.swagger-ui section.models .model-container:hover {
+  background: #10101c;
+}
+
+/* Global nuke: any remaining inline grey backgrounds */
+.swagger-ui [style*="background-color"],
+.swagger-ui .model-box,
+.swagger-ui .model-container .model-box {
+  background-color: transparent !important;
+}
+/* Restore only code blocks */
+.swagger-ui pre,
+.swagger-ui .highlight-code,
+.swagger-ui .microlight,
+.swagger-ui .example-value pre {
+  background: #0d0d18 !important;
+}
+/* Restore operation blocks */
+.swagger-ui .opblock {
+  background: #12121e !important;
+}
+.swagger-ui .opblock.opblock-get {
+  background: rgba(0, 200, 83, 0.05) !important;
+}
+.swagger-ui .opblock.opblock-post {
+  background: rgba(247, 147, 26, 0.05) !important;
+}
+/* Restore section headers */
+.swagger-ui .opblock .opblock-section-header {
+  background: #0d0d18 !important;
+}
+/* Restore models section */
+.swagger-ui section.models {
+  background: #12121e !important;
+}
+/* Restore input fields */
+.swagger-ui input[type=text],
+.swagger-ui textarea,
+.swagger-ui select {
+  background: #0d0d18 !important;
+}
+/* Restore modal */
+.swagger-ui .dialog-ux .modal-ux,
+.swagger-ui .dialog-ux .modal-ux-content {
+  background: #12121e !important;
+}
