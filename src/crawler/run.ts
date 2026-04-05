@@ -336,9 +336,12 @@ async function main(): Promise<void> {
 
     // Nostr score publisher — dynamic import to avoid ESM/CJS conflict at module load
     let timerNostr: ReturnType<typeof setInterval> | null = null;
+    logger.info({ hasKey: !!config.NOSTR_PRIVATE_KEY, keyLen: config.NOSTR_PRIVATE_KEY?.length ?? 0 }, 'Nostr publisher check');
     if (config.NOSTR_PRIVATE_KEY) {
+      logger.info('Nostr private key found — loading publisher module');
       try {
         const { NostrPublisher } = await import('../nostr/publisher');
+        logger.info('Nostr publisher module loaded successfully');
         const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
         const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
           privateKeyHex: config.NOSTR_PRIVATE_KEY,
@@ -346,20 +349,27 @@ async function main(): Promise<void> {
           minScore: config.NOSTR_MIN_SCORE,
         });
 
-        // Publish after initial crawl
-        nostrPublisher.publishScores().catch(err =>
-          logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial Nostr publish failed'),
-        );
+        // Publish after initial crawl — await to see errors immediately
+        logger.info('Starting initial Nostr publish');
+        try {
+          const result = await nostrPublisher.publishScores();
+          logger.info({ published: result.published, errors: result.errors }, 'Initial Nostr publish complete');
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Initial Nostr publish failed');
+        }
 
         timerNostr = setInterval(() => {
-          nostrPublisher.publishScores().catch(err =>
-            logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr publish error'),
-          );
+          logger.info('Nostr cron publish triggered');
+          nostrPublisher.publishScores()
+            .then(result => logger.info({ published: result.published, errors: result.errors }, 'Nostr cron publish complete'))
+            .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr cron publish error'));
         }, config.NOSTR_PUBLISH_INTERVAL_MS);
         logger.info({ intervalMs: config.NOSTR_PUBLISH_INTERVAL_MS, relays: config.NOSTR_RELAYS }, 'Nostr publisher started');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        logger.error({ error: msg }, 'Failed to load Nostr publisher — ESM/CJS incompatibility or missing dependency');
+        const stack = err instanceof Error ? err.stack : '';
+        logger.error({ error: msg, stack }, 'Failed to load Nostr publisher');
       }
     } else {
       logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
