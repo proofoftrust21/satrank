@@ -26,6 +26,7 @@ function makeAgent(pubkey: string, alias: string): Agent {
     hubness_rank: 0,
     betweenness_rank: 0,
     hopness_rank: 0,
+    unique_peers: null,
     query_count: 0,
   };
 }
@@ -118,6 +119,7 @@ describe('LnplusCrawler', () => {
       hubness_rank: 0,
       betweenness_rank: 0,
       hopness_rank: 0,
+      unique_peers: null,
       query_count: 0,
     });
 

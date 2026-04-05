@@ -27,6 +27,7 @@ function ensureAgent(agentRepo: AgentRepository, hash: string): void {
       hubness_rank: 0,
       betweenness_rank: 0,
       hopness_rank: 0,
+      unique_peers: null,
       query_count: 0,
     });
   }
@@ -55,7 +56,10 @@ describe('SnapshotRepository.purgeOldSnapshots', () => {
     runMigrations(db);
     agentRepo = new AgentRepository(db);
     repo = new SnapshotRepository(db);
+    // Snap to midday UTC to avoid day-boundary flakiness (purgeOldSnapshots
+    // uses its own Date.now() which may differ by 1-2 seconds)
     now = Math.floor(Date.now() / 1000);
+    now = now - (now % 86400) + 43200;
   });
 
   afterEach(() => {

@@ -32,6 +32,11 @@
   <p>The final score is a weighted sum of 5 components, each scored 0&ndash;100:</p>
 
   <pre>score = volume * 0.25 + reputation * 0.30 + seniority * 0.15 + regularity * 0.15 + diversity * 0.15</pre>
+  <p>
+    <strong>When LN+ data is absent</strong> (no rank, no ratings), reputation is 0 and its weight is
+    redistributed to the other 4 components: <code>volume * 0.36 + seniority * 0.21 + regularity * 0.21 + diversity * 0.21</code>.
+    This avoids penalizing nodes for not being registered on a third-party platform.
+  </p>
 
   <table>
     <thead>
@@ -70,11 +75,9 @@
   <h2>Formulas</h2>
 
   <h3>Volume (Lightning nodes)</h3>
-  <p>Network-relative channel count with a power curve for distribution spread:</p>
-  <pre>reference = maxNetworkChannels * 1.1
-ratio = min(1, channels / reference)
-volume = min(100, round(ratio^0.4 * 100))</pre>
-  <p><em>A node with 1988 channels in a network whose largest node has ~2000 channels scores ~95.</em></p>
+  <p>Logarithmic scale with a fixed reference of 500 channels. Spreads the full 0&ndash;100 range across the real network distribution:</p>
+  <pre>volume = min(100, round(log(channels + 1) / log(501) * 100))</pre>
+  <p><em>5 channels: ~26. 20: ~48. 50: ~63. 100: ~74. 500+: 100.</em></p>
 
   <h3>Volume (Observer Protocol agents)</h3>
   <p>Logarithmic scale normalized to a reference of 1000 verified transactions:</p>
@@ -102,15 +105,19 @@ reputation = clamp(0, 100, round(score))</pre>
   </p>
 
   <h3>Seniority</h3>
-  <p>Exponential growth curve with diminishing returns:</p>
+  <p>Exponential growth curve with diminishing returns (2-year half-life):</p>
   <pre>days = (now - firstSeen) / 86400
-seniority = round(100 * (1 - exp(-days / 180)))</pre>
-  <p><em>30 days: ~15. 6 months: ~63. 1 year: ~87. 3 years: ~100.</em></p>
+seniority = round(100 * (1 - exp(-days / 730)))</pre>
+  <p><em>30 days: ~4. 6 months: ~22. 1 year: ~39. 2 years: ~61. 3 years: ~78. 5 years: ~93.</em></p>
 
   <h3>Regularity (Lightning nodes)</h3>
-  <p>Recency-based with 30-day exponential decay:</p>
-  <pre>daysSinceUpdate = (now - lastSeen) / 86400
-regularity = min(100, round(100 * exp(-daysSinceUpdate / 30)))</pre>
+  <p>Probe consistency over 7 days. If at least 3 probes exist, regularity equals the reachability ratio. Otherwise, falls back to gossip recency with 90-day decay:</p>
+  <pre>// Primary: probe consistency (requires >= 3 probes in 7 days)
+regularity = round(reachable_probes / total_probes * 100)
+
+// Fallback: gossip recency (when < 3 probes available)
+regularity = min(100, round(100 * exp(-daysSinceGossip / 90)))</pre>
+  <p><em>100% uptime: 100. 80% uptime: 80. 0% (dead node): 0.</em></p>
 
   <h3>Regularity (Observer Protocol agents)</h3>
   <p>
@@ -121,10 +128,10 @@ regularity = min(100, round(100 * exp(-daysSinceUpdate / 30)))</pre>
 regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <h3>Diversity (Lightning nodes)</h3>
-  <p>Capacity as a proxy for network participation breadth:</p>
-  <pre>btc = capacitySats / 100_000_000
-diversity = min(100, round(log10(btc * 10 + 1) / log10(1001) * 100))</pre>
-  <p><em>0.05 BTC: ~6. 5 BTC: ~57. 59 BTC: ~92.</em></p>
+  <p>Number of unique peers (distinct nodes sharing a channel). Same formula as Observer Protocol counterparties:</p>
+  <pre>diversity = min(100, round(log(unique_peers + 1) / log(51) * 100))</pre>
+  <p><em>3 peers: ~28. 10: ~60. 25: ~82. 50: 100.</em></p>
+  <p>Falls back to capacity-based scoring if peer data is not yet available.</p>
 
   <h3>Diversity (Observer Protocol agents)</h3>
   <pre>diversity = min(100, round(log(uniqueCounterparties + 1) / log(51) * 100))</pre>

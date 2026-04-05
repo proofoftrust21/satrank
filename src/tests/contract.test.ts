@@ -108,6 +108,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       hubness_rank: 10,
       betweenness_rank: 20,
       hopness_rank: 5,
+      unique_peers: null,
       query_count: 10,
     };
     const agent2: Agent = {
@@ -127,6 +128,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       hubness_rank: 0,
       betweenness_rank: 0,
       hopness_rank: 0,
+      unique_peers: null,
       query_count: 0,
     };
     testApp.agentRepo.insert(agent);

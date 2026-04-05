@@ -24,6 +24,7 @@ export interface Agent {
   betweenness_rank: number;
   hopness_rank: number;
   query_count: number;
+  unique_peers: number | null;
 }
 
 export interface Transaction {

@@ -50,6 +50,7 @@ const alice: Agent = {
   hubness_rank: 20,
   betweenness_rank: 40,
   hopness_rank: 10,
+  unique_peers: null,
   query_count: 0,
 };
 
@@ -70,6 +71,7 @@ const bob: Agent = {
   hubness_rank: 5,
   betweenness_rank: 8,
   hopness_rank: 2,
+  unique_peers: null,
   query_count: 0,
 };
 

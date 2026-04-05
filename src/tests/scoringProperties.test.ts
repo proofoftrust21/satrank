@@ -32,6 +32,7 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
     hubness_rank: 0,
     betweenness_rank: 0,
     hopness_rank: 0,
+    unique_peers: null,
     query_count: 0,
     ...overrides,
   };
@@ -286,14 +287,11 @@ describe('Scoring properties', () => {
 
     const result = scoring.computeScore(sha256('no-queries'));
     // With 0 queries, the popularity bonus should not have been added
-    // Compute without popularity: the base score
-    const base = Math.round(
-      result.components.volume * 0.25 +
-      result.components.reputation * 0.30 +
-      result.components.seniority * 0.15 +
-      result.components.regularity * 0.15 +
-      result.components.diversity * 0.15
-    );
+    // Compute base score — uses renormalized weights when reputation = 0 (no LN+ data)
+    const c = result.components;
+    const base = c.reputation === 0
+      ? Math.round(c.volume * (0.25/0.70) + c.seniority * (0.15/0.70) + c.regularity * (0.15/0.70) + c.diversity * (0.15/0.70))
+      : Math.round(c.volume * 0.25 + c.reputation * 0.30 + c.seniority * 0.15 + c.regularity * 0.15 + c.diversity * 0.15);
     // Total should equal base (no popularity bonus, no verified tx bonus for LN agents without observer tx)
     expect(result.total).toBe(base);
   });

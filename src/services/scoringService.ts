@@ -115,20 +115,35 @@ export class ScoringService {
         : this.computeReputation(agentHash, now),
       seniority: this.computeSeniority(agent.first_seen, now),
       regularity: isLightningGraph
-        ? this.computeLightningRegularity(agent.last_seen, now)
+        ? this.computeLightningRegularity(agentHash, agent.last_seen, now)
         : this.computeRegularity(agentHash),
       diversity: isLightningGraph
-        ? this.computeLightningDiversity(agent.capacity_sats)
+        ? this.computeLightningDiversity(agent.capacity_sats, agent.unique_peers)
         : this.computeDiversity(agentHash),
     };
 
-    let total = Math.round(
-      components.volume * WEIGHTS.volume +
-      components.reputation * WEIGHTS.reputation +
-      components.seniority * WEIGHTS.seniority +
-      components.regularity * WEIGHTS.regularity +
-      components.diversity * WEIGHTS.diversity
-    );
+    // Renormalize weights when LN+ data is absent — don't penalize 30% for missing a third-party source
+    const hasLnplusData = agent.lnplus_rank > 0 || agent.positive_ratings > 0 || agent.negative_ratings > 0;
+    const noReputationData = isLightningGraph && !hasLnplusData && components.reputation === 0;
+    let total: number;
+    if (noReputationData) {
+      // Redistribute reputation weight (0.30) across the other 4 components (sum = 0.70)
+      const w = { volume: WEIGHTS.volume / 0.70, seniority: WEIGHTS.seniority / 0.70, regularity: WEIGHTS.regularity / 0.70, diversity: WEIGHTS.diversity / 0.70 };
+      total = Math.round(
+        components.volume * w.volume +
+        components.seniority * w.seniority +
+        components.regularity * w.regularity +
+        components.diversity * w.diversity
+      );
+    } else {
+      total = Math.round(
+        components.volume * WEIGHTS.volume +
+        components.reputation * WEIGHTS.reputation +
+        components.seniority * WEIGHTS.seniority +
+        components.regularity * WEIGHTS.regularity +
+        components.diversity * WEIGHTS.diversity
+      );
+    }
 
     // "manual" source penalty: linear ramp from 0.5 (0 tx) to 1.0 (150 tx)
     if (agent.source === 'manual' && verifiedTxCount < MANUAL_SOURCE_PENALTY_THRESHOLD) {
@@ -197,25 +212,37 @@ export class ScoringService {
 
   // --- Lightning graph scoring ---
 
-  private computeLightningVolume(channels: number, maxNetworkChannels: number): number {
-    if (channels === 0 || maxNetworkChannels === 0) return 0;
-    // Network-relative: score proportional to max, with power curve for spread
-    // ACINQ (1988ch, max ~2000) → ~95, 120ch → ~30
-    const reference = maxNetworkChannels * LN_VOLUME_HEADROOM;
-    const ratio = Math.min(1, channels / reference);
-    return Math.min(100, Math.round(Math.pow(ratio, LN_VOLUME_POWER) * 100));
+  private computeLightningVolume(channels: number, _maxNetworkChannels: number): number {
+    if (channels === 0) return 0;
+    // Log scale with fixed reference (500 channels = 100).
+    // Spreads the full 0-100 range across the real network distribution.
+    // 5ch → 26, 20ch → 48, 50ch → 63, 100ch → 74, 500ch → 100
+    const LN_VOLUME_REFERENCE = 500;
+    return Math.min(100, Math.round(Math.log(channels + 1) / Math.log(LN_VOLUME_REFERENCE + 1) * 100));
   }
 
-  private computeLightningRegularity(lastSeen: number, now: number): number {
-    // Score based on recency of node update — 30-day decay
+  private computeLightningRegularity(agentHash: string, lastSeen: number, now: number): number {
+    // Probe consistency: use real reachability data if >= 3 probes exist
+    if (this.probeRepo) {
+      const uptime = this.probeRepo.computeUptime(agentHash, 7 * 86400);
+      const total = this.probeRepo.countByTarget(agentHash);
+      if (uptime !== null && total >= 3) {
+        return Math.round(uptime * 100);
+      }
+    }
+    // Fallback: gossip recency with 90-day decay (slower than the old 30-day)
     const daysSinceUpdate = (now - lastSeen) / 86400;
     if (daysSinceUpdate <= 0) return 100;
-    return Math.min(100, Math.round(100 * Math.exp(-daysSinceUpdate / LN_REGULARITY_DECAY_DAYS)));
+    return Math.min(100, Math.round(100 * Math.exp(-daysSinceUpdate / 90)));
   }
 
-  private computeLightningDiversity(capacitySats: number | null): number {
-    // Capacity as diversity proxy — more BTC locked = broader network participation
-    // 59 BTC → ~92, 5 BTC → ~57, 0.05 BTC → ~6
+  private computeLightningDiversity(capacitySats: number | null, uniquePeers: number | null): number {
+    // Unique peers: true diversity measure (distinct nodes you share channels with)
+    // 3 peers → 28, 10 → 60, 25 → 82, 50 → 100
+    if (uniquePeers !== null && uniquePeers !== undefined && uniquePeers > 0) {
+      return Math.min(100, Math.round(Math.log(uniquePeers + 1) / Math.log(51) * 100));
+    }
+    // Fallback: capacity-based (for agents not yet crawled with edge data)
     if (!capacitySats || capacitySats <= 0) return 0;
     const btc = capacitySats / SATS_PER_BTC;
     const score = (Math.log10(btc * LN_DIVERSITY_BTC_MULTIPLIER + 1) / Math.log10(LN_DIVERSITY_LOG_BASE)) * 100;

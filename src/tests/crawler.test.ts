@@ -188,6 +188,7 @@ describe('Crawler', () => {
       hubness_rank: 0,
       betweenness_rank: 0,
       hopness_rank: 0,
+      unique_peers: null,
       query_count: 0,
     });
 

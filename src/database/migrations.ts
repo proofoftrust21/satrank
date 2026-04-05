@@ -271,7 +271,7 @@ export function runMigrations(db: Database.Database): void {
     })();
   }
 
-  // v12: channel_snapshots + fee_snapshots for predictive signals
+  // v12: channel_snapshots + fee_snapshots for predictive signals + unique_peers column
   if (!hasVersion(db, 12)) {
     db.transaction(() => {
       db.exec(`
@@ -296,7 +296,15 @@ export function runMigrations(db: Database.Database): void {
       `);
       db.exec('CREATE INDEX IF NOT EXISTS idx_fee_snapshots_node ON fee_snapshots(node1_pub, snapshot_at)');
 
-      recordVersion(db, 12, 'Channel snapshots and fee snapshots for predictive signals');
+      // unique_peers column for diversity scoring (number of distinct peers)
+      try {
+        db.exec('ALTER TABLE agents ADD COLUMN unique_peers INTEGER');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('duplicate column name')) throw err;
+      }
+
+      recordVersion(db, 12, 'Channel/fee snapshots, unique_peers for diversity scoring');
     })();
   }
 

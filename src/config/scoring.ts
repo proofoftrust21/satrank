@@ -106,8 +106,9 @@ export const VOLUME_LOG_BASE = 1001;
 /** Logarithmic denominator for counterparty diversity scoring */
 export const DIVERSITY_LOG_BASE = 51;
 
-/** Half-life for seniority exponential growth curve (days) */
-export const SENIORITY_HALF_LIFE_DAYS = 180;
+/** Half-life for seniority exponential growth curve (days).
+ *  730 = 2 years. Differentiates nodes up to ~5 years instead of saturating at 2-3. */
+export const SENIORITY_HALF_LIFE_DAYS = 730;
 
 // --- Confidence thresholds ---
 // dataPoints = totalTransactions + totalAttestations

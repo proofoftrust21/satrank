@@ -23,6 +23,7 @@ interface ParsedNode {
   lastUpdate: number;
   channels: number;
   capacitySats: number;
+  uniquePeers: number;
 }
 
 export class LndGraphCrawler {
@@ -81,13 +82,14 @@ export class LndGraphCrawler {
     // Index each node
     for (const node of graph.nodes) {
       try {
-        const stats = nodeStats.get(node.pub_key) ?? { channels: 0, capacitySats: 0 };
+        const stats = nodeStats.get(node.pub_key) ?? { channels: 0, capacitySats: 0, uniquePeers: 0 };
         const parsed: ParsedNode = {
           pubKey: node.pub_key,
           alias: node.alias || node.pub_key.slice(0, 20),
           lastUpdate: node.last_update,
           channels: stats.channels,
           capacitySats: stats.capacitySats,
+          uniquePeers: stats.uniquePeers,
         };
         const action = this.indexNode(parsed);
         if (action === 'created') result.newAgents++;
@@ -160,27 +162,39 @@ export class LndGraphCrawler {
       lastUpdate: nodeInfo.node.last_update,
       channels: nodeInfo.num_channels,
       capacitySats: Number(nodeInfo.total_capacity),
+      uniquePeers: 0, // Single-node fetch doesn't have edge data; updated on next full crawl
     };
 
     return this.indexNode(parsed);
   }
 
-  private aggregateEdges(edges: LndEdge[]): Map<string, { channels: number; capacitySats: number }> {
-    const stats = new Map<string, { channels: number; capacitySats: number }>();
+  private aggregateEdges(edges: LndEdge[]): Map<string, { channels: number; capacitySats: number; uniquePeers: number }> {
+    const channels = new Map<string, { count: number; capacitySats: number }>();
+    const peers = new Map<string, Set<string>>();
 
     for (const edge of edges) {
       const cap = Number(edge.capacity);
 
       for (const pub of [edge.node1_pub, edge.node2_pub]) {
-        const existing = stats.get(pub);
+        const existing = channels.get(pub);
         if (existing) {
-          stats.set(pub, { channels: existing.channels + 1, capacitySats: existing.capacitySats + cap });
+          channels.set(pub, { count: existing.count + 1, capacitySats: existing.capacitySats + cap });
         } else {
-          stats.set(pub, { channels: 1, capacitySats: cap });
+          channels.set(pub, { count: 1, capacitySats: cap });
         }
       }
+
+      // Track unique peers for each node
+      if (!peers.has(edge.node1_pub)) peers.set(edge.node1_pub, new Set());
+      if (!peers.has(edge.node2_pub)) peers.set(edge.node2_pub, new Set());
+      peers.get(edge.node1_pub)!.add(edge.node2_pub);
+      peers.get(edge.node2_pub)!.add(edge.node1_pub);
     }
 
+    const stats = new Map<string, { channels: number; capacitySats: number; uniquePeers: number }>();
+    for (const [pub, ch] of channels) {
+      stats.set(pub, { channels: ch.count, capacitySats: ch.capacitySats, uniquePeers: peers.get(pub)?.size ?? 0 });
+    }
     return stats;
   }
 
@@ -190,21 +204,26 @@ export class LndGraphCrawler {
     const publicKeyHash = sha256(node.pubKey);
     const existing = this.agentRepo.findByHash(publicKeyHash);
     const now = Math.floor(Date.now() / 1000);
+    // Only use lastUpdate if it's a real gossip timestamp (> 0).
+    // Never inject Date.now() as proxy — it corrupts regularity scoring for dead nodes.
+    const validLastUpdate = node.lastUpdate > 0 ? node.lastUpdate : null;
 
     if (existing) {
       if (!existing.public_key) {
         this.agentRepo.updatePublicKey(publicKeyHash, node.pubKey);
       }
+      const lastSeen = validLastUpdate ?? existing.last_seen;
       if (existing.source === 'lightning_graph') {
         this.agentRepo.updateLightningStats(
           publicKeyHash,
           node.channels,
           node.capacitySats,
           node.alias,
-          node.lastUpdate || now,
+          lastSeen,
+          node.uniquePeers,
         );
       } else {
-        this.agentRepo.updateCapacity(publicKeyHash, node.capacitySats, node.lastUpdate || now);
+        this.agentRepo.updateCapacity(publicKeyHash, node.capacitySats, lastSeen);
       }
       return 'updated';
     }
@@ -214,7 +233,7 @@ export class LndGraphCrawler {
     const aliasMatch = this.agentRepo.findByExactAlias(node.alias);
     if (aliasMatch && aliasMatch.public_key_hash !== publicKeyHash && !aliasMatch.public_key) {
       this.agentRepo.updatePublicKey(aliasMatch.public_key_hash, node.pubKey);
-      this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacitySats, node.lastUpdate || now);
+      this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacitySats, validLastUpdate ?? aliasMatch.last_seen);
       return 'updated';
     }
 
@@ -222,8 +241,8 @@ export class LndGraphCrawler {
       public_key_hash: publicKeyHash,
       public_key: node.pubKey,
       alias: node.alias,
-      first_seen: node.lastUpdate || now,
-      last_seen: node.lastUpdate || now,
+      first_seen: validLastUpdate ?? now,
+      last_seen: validLastUpdate ?? now,
       source: 'lightning_graph',
       total_transactions: node.channels,
       total_attestations_received: 0,
@@ -236,6 +255,7 @@ export class LndGraphCrawler {
       betweenness_rank: 0,
       hopness_rank: 0,
       query_count: 0,
+      unique_peers: node.uniquePeers > 0 ? node.uniquePeers : null,
     });
 
     return 'created';
