@@ -725,3 +725,48 @@ html, body {
 .swagger-ui .dialog-ux .modal-ux-content {
   background: #12121e !important;
 }
+
+/* ===== AGGRESSIVE RESET — zero grey backgrounds ===== */
+.swagger-ui .model-toggle,
+.swagger-ui .model-box,
+.swagger-ui .model-box-control,
+.swagger-ui .model-container,
+.swagger-ui .models-control,
+.swagger-ui .expand-methods,
+.swagger-ui .expand-operation,
+.swagger-ui button.model-box-control,
+.swagger-ui span.model-box-control,
+.swagger-ui .model-toggle::after,
+.swagger-ui .opblock-tag,
+.swagger-ui .opblock-summary-control,
+.swagger-ui [class*="model"],
+.swagger-ui [class*="expand"],
+.swagger-ui [class*="collapse"] {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+/* Buttons: only execute/authorize/try-out keep their styled backgrounds */
+.swagger-ui .btn {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+.swagger-ui .btn.execute {
+  background: #f7931a !important;
+}
+.swagger-ui .btn.authorize,
+.swagger-ui .btn.modal-btn.auth {
+  background: #00c853 !important;
+}
+.swagger-ui .btn.cancel {
+  background: transparent !important;
+}
+.swagger-ui .btn.try-out__btn {
+  background: transparent !important;
+}
+.swagger-ui .btn.modal-btn {
+  background: #1a1a2e !important;
+}
+/* Restore copy-to-clipboard button */
+.swagger-ui .copy-to-clipboard {
+  background: #1a1a2e !important;
+}
