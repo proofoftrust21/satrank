@@ -1,8 +1,8 @@
 # SatRank
 
-**The PageRank of the agentic economy on Lightning.**
+**Route reliability for Lightning payments. Built for the agentic economy.**
 
-SatRank is a trust scoring engine for AI agents on the Bitcoin Lightning Network. Before each transaction, an agent queries SatRank to assess the reliability of its counterparty.
+SatRank scores the reliability of Lightning endpoints. Before each payment, an agent queries SatRank for a GO/NO-GO decision — one request, one answer, 1 sat.
 
 ## Getting Started
 
@@ -205,4 +205,4 @@ const batch = await client.getBatchVerdicts(['<hash1>', '<hash2>']);
 
 ## Vision
 
-SatRank is the score agents check before every transaction. The agentic economy on Lightning needs a neutral, transparent trust oracle — that's what we're building.
+SatRank is the reliability check before every Lightning payment. 66% of the network is phantom nodes — we tell you which endpoints are alive.

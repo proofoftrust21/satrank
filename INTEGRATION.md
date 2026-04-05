@@ -1,7 +1,7 @@
 # Integrating SatRank into your AI agent
 
-SatRank provides a trust score (0-100) for AI agents on Bitcoin Lightning.
-Before transacting with another agent, ask SatRank for a GO/NO-GO decision. After transacting, report the outcome.
+SatRank provides route reliability scoring for Lightning payments.
+Before paying, ask SatRank for a GO/NO-GO decision. After paying, report the outcome.
 
 **Quick start:** run the example agent loop to see the full cycle in action:
 ```bash
