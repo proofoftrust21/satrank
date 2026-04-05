@@ -207,12 +207,23 @@ async function runFullCrawl(
   agentRepo: AgentRepository,
   scoringService: ScoringService,
   snapshotRepo: SnapshotRepository,
+  nostrPublishFn?: () => Promise<void>,
 ): Promise<void> {
   await crawlObserver(observerCrawler);
   await crawlLightning(lndGraphCrawler, mempoolCrawler);
 
   // Score immediately after LND crawl — don't wait for LN+ or probes
   bulkScoreAll(agentRepo, scoringService, snapshotRepo);
+
+  // Publish scores to Nostr right after scoring — before LN+ (2.5h) and probes (35min)
+  if (nostrPublishFn) {
+    try {
+      await nostrPublishFn();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ error: msg }, 'Nostr publish in runFullCrawl failed');
+    }
+  }
 
   // LN+ and probe run in parallel — both depend on LND graph data, neither on each other
   const parallelTasks: Promise<void>[] = [];
@@ -309,10 +320,49 @@ async function main(): Promise<void> {
       probeMs: intervals.probe,
     }, 'Cron mode enabled — per-source intervals');
 
-    // Initial full crawl at startup
+    // Nostr publisher — init before runFullCrawl so it publishes right after bulk scoring
+    let nostrPublishFn: (() => Promise<void>) | undefined;
+    let timerNostr: ReturnType<typeof setInterval> | null = null;
+    logger.info({ hasKey: !!config.NOSTR_PRIVATE_KEY, keyLen: config.NOSTR_PRIVATE_KEY?.length ?? 0 }, 'Nostr publisher check');
+    if (config.NOSTR_PRIVATE_KEY) {
+      logger.info('Nostr private key found — loading publisher module');
+      try {
+        const { NostrPublisher } = await import('../nostr/publisher');
+        logger.info('Nostr publisher module loaded successfully');
+        const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
+        const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
+          privateKeyHex: config.NOSTR_PRIVATE_KEY,
+          relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
+          minScore: config.NOSTR_MIN_SCORE,
+        });
+
+        nostrPublishFn = async () => {
+          logger.info('Starting Nostr publish');
+          const result = await nostrPublisher.publishScores();
+          logger.info({ published: result.published, errors: result.errors }, 'Nostr publish complete');
+        };
+
+        timerNostr = setInterval(() => {
+          logger.info('Nostr cron publish triggered');
+          nostrPublisher.publishScores()
+            .then(result => logger.info({ published: result.published, errors: result.errors }, 'Nostr cron publish complete'))
+            .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr cron publish error'));
+        }, config.NOSTR_PUBLISH_INTERVAL_MS);
+        logger.info({ intervalMs: config.NOSTR_PUBLISH_INTERVAL_MS, relays: config.NOSTR_RELAYS }, 'Nostr publisher started');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : '';
+        logger.error({ error: msg, stack }, 'Failed to load Nostr publisher');
+      }
+    } else {
+      logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
+    }
+
+    // Initial full crawl — Nostr publish happens inside, right after bulk scoring
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
       lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService, snapshotRepo,
+      nostrPublishFn,
     );
 
     // Per-source timers
@@ -333,47 +383,6 @@ async function main(): Promise<void> {
         .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
     }, intervals.lnplus);
-
-    // Nostr score publisher — dynamic import to avoid ESM/CJS conflict at module load
-    let timerNostr: ReturnType<typeof setInterval> | null = null;
-    logger.info({ hasKey: !!config.NOSTR_PRIVATE_KEY, keyLen: config.NOSTR_PRIVATE_KEY?.length ?? 0 }, 'Nostr publisher check');
-    if (config.NOSTR_PRIVATE_KEY) {
-      logger.info('Nostr private key found — loading publisher module');
-      try {
-        const { NostrPublisher } = await import('../nostr/publisher');
-        logger.info('Nostr publisher module loaded successfully');
-        const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
-        const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
-          privateKeyHex: config.NOSTR_PRIVATE_KEY,
-          relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
-          minScore: config.NOSTR_MIN_SCORE,
-        });
-
-        // Publish after initial crawl — await to see errors immediately
-        logger.info('Starting initial Nostr publish');
-        try {
-          const result = await nostrPublisher.publishScores();
-          logger.info({ published: result.published, errors: result.errors }, 'Initial Nostr publish complete');
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          logger.error({ error: msg }, 'Initial Nostr publish failed');
-        }
-
-        timerNostr = setInterval(() => {
-          logger.info('Nostr cron publish triggered');
-          nostrPublisher.publishScores()
-            .then(result => logger.info({ published: result.published, errors: result.errors }, 'Nostr cron publish complete'))
-            .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr cron publish error'));
-        }, config.NOSTR_PUBLISH_INTERVAL_MS);
-        logger.info({ intervalMs: config.NOSTR_PUBLISH_INTERVAL_MS, relays: config.NOSTR_RELAYS }, 'Nostr publisher started');
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const stack = err instanceof Error ? err.stack : '';
-        logger.error({ error: msg, stack }, 'Failed to load Nostr publisher');
-      }
-    } else {
-      logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
-    }
 
     let timerProbe: ReturnType<typeof setInterval> | null = null;
     if (probeCrawlerInstance) {
