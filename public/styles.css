@@ -335,7 +335,7 @@ tr.clickable { cursor: pointer; }
 .decide-code-block { position: relative; background: #0a0a14; border: 1px solid #f7931a30; border-radius: 10px; padding: 16px 20px; text-align: left; margin: 0 auto 12px; max-width: 640px; }
 .decide-code-block pre { margin: 0; color: #c0c0d8; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all; }
 .copy-btn { position: absolute; top: 10px; right: 10px; background: #1e1e30; color: #f7931a; border: 1px solid #f7931a40; border-radius: 6px; padding: 4px 12px; font-size: 0.75rem; cursor: pointer; font-family: inherit; }
-.copy-btn:hover { background: #f7931a20; }
+.copy-btn:hover { background: #f7931a; color: #0a0a14; }
 .decide-response { background: #0d0d18; border: 1px solid #1e1e30; border-radius: 10px; padding: 12px 20px; text-align: left; margin: 0 auto 12px; max-width: 640px; }
 .decide-response pre { margin: 0; color: #00c853; font-size: 0.85rem; white-space: pre-wrap; }
 .decide-cost { color: #f7931a; font-weight: 700; font-size: 0.9rem; }
