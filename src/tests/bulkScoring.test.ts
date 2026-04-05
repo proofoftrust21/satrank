@@ -209,11 +209,12 @@ describe('Bulk scoring — LND nodes get scored', () => {
 
     expect(result.total).toBeGreaterThanOrEqual(5);
     expect(result.total).toBeLessThanOrEqual(40);
-    // Reputation should be 0 (no LN+ data)
-    expect(result.components.reputation).toBe(0);
+    // Reputation: no centrality, but has peer trust (0.5BTC/5ch = 0.1 BTC/ch)
+    // Peer trust = log10(0.1*100+1)/log10(201)*50 ≈ 23
+    expect(result.components.reputation).toBeGreaterThan(0);
   });
 
-  it('scoring a node with LN+ data but no capacity uses reputation', () => {
+  it('scoring a node with LN+ data but no capacity gets LN+ bonus on total', () => {
     const lnplusNode = makeLndAgent('lnplus-only', {
       total_transactions: 0,
       capacity_sats: null,
@@ -227,8 +228,11 @@ describe('Bulk scoring — LND nodes get scored', () => {
 
     const result = scoringService.computeScore(lnplusNode.public_key_hash);
 
-    expect(result.components.reputation).toBeGreaterThan(50);
+    // Reputation is 0: no centrality (hubness/betweenness = 0), no capacity for peer trust
+    expect(result.components.reputation).toBe(0);
     expect(result.components.diversity).toBe(0); // no capacity
+    // But total > 0 from seniority + regularity + LN+ bonus
+    // LN+ bonus: min(8, log2(31) * (30/32) * 3) ≈ min(8, 14) = 8
     expect(result.total).toBeGreaterThan(0);
   });
 
@@ -303,11 +307,11 @@ describe('Bulk scoring — LND nodes get scored', () => {
     expect(JSON.parse(snapshot!.components)).toHaveProperty('volume');
   });
 
-  it('LN reputation formula uses positive_ratings, lnplus_rank, and centrality', () => {
-    // Two agents: one with LN+ data, one without
+  it('LN reputation formula uses centrality and peer trust; LN+ ratings add bonus', () => {
+    // Two agents: one with centrality + LN+ data, one without centrality
     agentRepo.insert(makeLndAgent('with-lnplus', {
       total_transactions: 50,
-      capacity_sats: 2_000_000_000,
+      capacity_sats: 2_000_000_000, // 20 BTC, 50 ch → 0.4 BTC/ch
       positive_ratings: 40,
       negative_ratings: 1,
       lnplus_rank: 9,
@@ -316,16 +320,17 @@ describe('Bulk scoring — LND nodes get scored', () => {
     }));
     agentRepo.insert(makeLndAgent('without-lnplus', {
       total_transactions: 50,
-      capacity_sats: 2_000_000_000,
+      capacity_sats: 2_000_000_000, // same capacity/channels → same peer trust
     }));
 
     const withLnplus = scoringService.computeScore(sha256('with-lnplus'));
     const withoutLnplus = scoringService.computeScore(sha256('without-lnplus'));
 
-    // Agent with LN+ data should have higher reputation
-    expect(withLnplus.components.reputation).toBeGreaterThan(50);
-    expect(withoutLnplus.components.reputation).toBe(0);
-    // And higher total score
+    // Agent with centrality should have higher reputation (centrality + same peer trust)
+    expect(withLnplus.components.reputation).toBeGreaterThan(withoutLnplus.components.reputation);
+    // Without-lnplus still has peer trust from capacity (0.4 BTC/ch)
+    expect(withoutLnplus.components.reputation).toBeGreaterThan(0);
+    // And higher total score (centrality reputation + LN+ bonus)
     expect(withLnplus.total).toBeGreaterThan(withoutLnplus.total);
   });
 
@@ -359,22 +364,26 @@ describe('Bulk scoring — LND nodes get scored', () => {
   });
 
   it('rescore updates existing agents with new data', () => {
-    // Insert and score an agent
+    // Insert and score an agent — has peer trust from capacity but no centrality
     agentRepo.insert(makeLndAgent('rescore-test', {
       total_transactions: 10,
-      capacity_sats: 500_000_000,
+      capacity_sats: 500_000_000, // 5 BTC, 10 ch → 0.5 BTC/ch
     }));
     const firstScore = scoringService.computeScore(sha256('rescore-test'));
 
-    // Simulate LN+ crawl updating the agent
+    // First score: peer trust only (no centrality)
+    // Peer trust: log10(0.5*100+1)/log10(201)*50 ≈ 34
+    expect(firstScore.components.reputation).toBeGreaterThan(0);
+
+    // Simulate LN+ crawl updating the agent — adds centrality
     agentRepo.updateLnplusRatings(sha256('rescore-test'), 30, 0, 8, 10, 20, 0);
 
-    // Rescore — should improve with reputation data
+    // Rescore — should improve with centrality + LN+ bonus
     const secondScore = scoringService.computeScore(sha256('rescore-test'));
 
     expect(secondScore.total).toBeGreaterThan(firstScore.total);
-    expect(secondScore.components.reputation).toBeGreaterThan(0);
-    expect(firstScore.components.reputation).toBe(0);
+    // Second score: centrality + peer trust > peer trust only
+    expect(secondScore.components.reputation).toBeGreaterThan(firstScore.components.reputation);
   });
 
   it('findScoredAgents returns agents for rescore after initial scoring', () => {

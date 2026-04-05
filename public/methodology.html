@@ -32,11 +32,6 @@
   <p>The final score is a weighted sum of 5 components, each scored 0&ndash;100:</p>
 
   <pre>score = volume * 0.25 + reputation * 0.30 + seniority * 0.15 + regularity * 0.15 + diversity * 0.15</pre>
-  <p>
-    <strong>When LN+ data is absent</strong> (no rank, no ratings), reputation is 0 and its weight is
-    redistributed to the other 4 components: <code>volume * 0.36 + seniority * 0.21 + regularity * 0.21 + diversity * 0.21</code>.
-    This avoids penalizing nodes for not being registered on a third-party platform.
-  </p>
 
   <table>
     <thead>
@@ -84,17 +79,24 @@
   <pre>volume = min(100, round(log(count + 1) / log(1001) * 100))</pre>
 
   <h3>Reputation (Lightning nodes)</h3>
-  <p>Combines LN+ rank, community ratings ratio, negative ratings penalty, and graph centrality:</p>
-  <pre>score  = lnplusRank * 5                              // 0-50 points from rank (0-10 scale)
-score += positive / (positive + negative + 1) * 50   // 0-50 points from ratings ratio
-score -= negative / (positive + negative + 1) * 20   // penalty for negative ratings
-score += 5 * exp(-hubnessRank / 50)                   // centrality bonus (exponential decay)
-score += 5 * exp(-betweennessRank / 50)               // centrality bonus
-reputation = clamp(0, 100, round(score))</pre>
+  <p>Combines two objective, on-chain signals: graph centrality and peer trust.</p>
+  <pre>// Centrality (max 50 pts) — position in the network graph
+centrality = 25 * exp(-hubnessRank / 100) + 25 * exp(-betweennessRank / 100)
+
+// Peer trust (max 50 pts) — how much BTC others lock in channels with you
+btcPerChannel = capacitySats / 100_000_000 / channels
+peerTrust = min(50, round(log10(btcPerChannel * 100 + 1) / log10(201) * 50))
+
+reputation = min(100, centrality + peerTrust)</pre>
   <p>
-    The centrality curve <code>5 * exp(-rank / 50)</code> gives ~5 points at rank 1,
-    ~1.8 points at rank 50, and decays smoothly toward 0 for higher ranks. This rewards
-    well-connected nodes without cliff effects.
+    Centrality measures how well-connected a node is in the Lightning graph. Peer trust
+    measures how much real capital other nodes commit to channels with you &mdash; skin in the game.
+    Neither signal depends on external platforms or user ratings.
+  </p>
+  <p>
+    <strong>LN+ community ratings</strong> (from <a href="https://lightningnetwork.plus" style="color:#f7931a">lightningnetwork.plus</a>)
+    contribute a separate bonus of up to +8 points on the final score. This keeps the social signal
+    without making 30% of the score depend on a third-party platform.
   </p>
 
   <h3>Reputation (Observer Protocol agents)</h3>

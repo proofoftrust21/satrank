@@ -92,6 +92,9 @@ export const LNPLUS_RATINGS_WEIGHT = 50;
 /** Penalty weight for negative ratings: score -= (neg / (pos + neg + 1)) * this */
 export const NEGATIVE_RATINGS_PENALTY = 20;
 
+/** Max bonus points from LN+ community ratings (applied as bonus, not in reputation component) */
+export const LNPLUS_BONUS_CAP = 8;
+
 /** Centrality bonus multiplier (applied to exp decay) */
 export const CENTRALITY_BONUS_MULTIPLIER = 5;
 

@@ -396,46 +396,55 @@ describe('ScoringService', () => {
       expect(result.components.diversity).toBeGreaterThan(0);
     });
 
-    it('computes reputation from LN+ ratings', () => {
-      const ratedNode = makeAgent('ln-rated', {
+    it('computes reputation from centrality and peer trust', () => {
+      const centralNode = makeAgent('ln-rated', {
         source: 'lightning_graph',
         total_transactions: 500,
-        capacity_sats: 5_000_000_000,
+        capacity_sats: 5_000_000_000, // 50 BTC, 500 channels → 0.1 BTC/ch
         positive_ratings: 42,
         negative_ratings: 2,
         lnplus_rank: 8,
         hubness_rank: 25,
         betweenness_rank: 30,
       });
-      const unratedNode = makeAgent('ln-unrated', {
+      const noCentralityNode = makeAgent('ln-unrated', {
         source: 'lightning_graph',
         total_transactions: 500,
         capacity_sats: 5_000_000_000,
         positive_ratings: 0,
         negative_ratings: 0,
         lnplus_rank: 0,
+        hubness_rank: 0,
+        betweenness_rank: 0,
       });
-      agentRepo.insert(ratedNode);
-      agentRepo.insert(unratedNode);
+      agentRepo.insert(centralNode);
+      agentRepo.insert(noCentralityNode);
 
-      const scoreRated = scoring.computeScore(ratedNode.public_key_hash);
-      const scoreUnrated = scoring.computeScore(unratedNode.public_key_hash);
+      const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
+      const scoreNoCentrality = scoring.computeScore(noCentralityNode.public_key_hash);
 
-      // Rated: 8*5 + (42/(42+2+1))*50 + 5*exp(-25/50) + 5*exp(-30/50) = 40 + 46.7 + 3.0 + 2.7 = 92.5
-      expect(scoreRated.components.reputation).toBeGreaterThan(80);
-      // Unrated: 0
-      expect(scoreUnrated.components.reputation).toBe(0);
-      // Rated node should score higher than unrated (renormalized weights reduce the gap)
-      expect(scoreRated.total).toBeGreaterThan(scoreUnrated.total);
+      // Reputation is now centrality (max 50) + peer trust (max 50)
+      // Central node: hubness_rank=25 → 25*exp(-25/100)=19.5, betweenness=30 → 25*exp(-30/100)=18.5 → ~38 centrality
+      // Peer trust: 50BTC/500ch = 0.1 BTC/ch → log10(0.1*100+1)/log10(201)*50 ≈ 21
+      // Total reputation ≈ 59
+      expect(scoreCentral.components.reputation).toBeGreaterThan(40);
+      // No centrality node still gets peer trust (same capacity/channels)
+      // Peer trust: same as above ≈ 21
+      expect(scoreNoCentrality.components.reputation).toBeGreaterThan(0);
+      // Centrality gives the rated node higher reputation
+      expect(scoreCentral.components.reputation).toBeGreaterThan(scoreNoCentrality.components.reputation);
+      // LN+ ratings add bonus to total score, so rated node total > unrated
+      expect(scoreCentral.total).toBeGreaterThan(scoreNoCentrality.total);
     });
 
-    it('LN+ reputation formula: rank * 5 + ratio * 50 + centrality bonuses', () => {
-      // Exact formula test: 10 positive, 0 negative, rank 5, no centrality bonuses
-      // score = 5 * 5 + (10 / (10 + 0 + 1)) * 50 = 25 + 45.45 = 70.45 → 70
+    it('reputation formula: centrality + peer trust (no LN+ rank/ratings)', () => {
+      // Exact formula test: no centrality, 100 channels, 10 BTC capacity
+      // Centrality: 0 (no hubness/betweenness)
+      // Peer trust: btcPerChannel = 10/100 = 0.1, log10(0.1*100+1)/log10(201)*50 = log10(11)/log10(201)*50 ≈ 22.6 → 23
       const node = makeAgent('ln-formula', {
         source: 'lightning_graph',
         total_transactions: 100,
-        capacity_sats: 1_000_000_000,
+        capacity_sats: 1_000_000_000, // 10 BTC
         positive_ratings: 10,
         negative_ratings: 0,
         lnplus_rank: 5,
@@ -443,14 +452,15 @@ describe('ScoringService', () => {
       agentRepo.insert(node);
 
       const result = scoring.computeScore(node.public_key_hash);
-      expect(result.components.reputation).toBe(70);
+      // Peer trust only (no centrality): log10(0.1*100+1)/log10(201)*50 ≈ 23
+      expect(result.components.reputation).toBe(23);
     });
 
     it('centrality bonuses use continuous exponential curve', () => {
       const centralNode = makeAgent('ln-central', {
         source: 'lightning_graph',
         total_transactions: 100,
-        capacity_sats: 1_000_000_000,
+        capacity_sats: 1_000_000_000, // 10 BTC, 100 ch → 0.1 BTC/ch
         positive_ratings: 10,
         negative_ratings: 0,
         lnplus_rank: 5,
@@ -460,7 +470,7 @@ describe('ScoringService', () => {
       const peripheralNode = makeAgent('ln-peripheral', {
         source: 'lightning_graph',
         total_transactions: 100,
-        capacity_sats: 1_000_000_000,
+        capacity_sats: 1_000_000_000, // 10 BTC, 100 ch → 0.1 BTC/ch
         positive_ratings: 10,
         negative_ratings: 0,
         lnplus_rank: 5,
@@ -473,15 +483,21 @@ describe('ScoringService', () => {
       const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
       const scorePeripheral = scoring.computeScore(peripheralNode.public_key_hash);
 
-      // Central: 25 + 45.45 + 5*exp(-20/50) + 5*exp(-30/50) = 25 + 45.45 + 3.35 + 2.74 = 76.54 → 77
-      expect(scoreCentral.components.reputation).toBe(77);
-      // Peripheral: 25 + 45.45 + 5*exp(-200/50) + 5*exp(-300/50) ≈ 25 + 45.45 + ~0 = 70.55 → 71
-      expect(scorePeripheral.components.reputation).toBe(71);
-      // Continuous curve: central bonus > peripheral, but not binary +10
+      // Central: centrality = 25*exp(-20/100) + 25*exp(-30/100) = 20.5 + 18.5 = 39
+      // Peer trust = log10(0.1*100+1)/log10(201)*50 ≈ 23
+      // Total reputation ≈ 62
+      expect(scoreCentral.components.reputation).toBe(62);
+      // Peripheral: centrality = 25*exp(-200/100) + 25*exp(-300/100) ≈ 3.4 + 1.2 = 4.6
+      // Peer trust ≈ 23
+      // Total reputation ≈ 28
+      expect(scorePeripheral.components.reputation).toBe(28);
+      // Continuous curve: central bonus > peripheral
       expect(scoreCentral.components.reputation).toBeGreaterThan(scorePeripheral.components.reputation);
     });
 
-    it('negative ratings reduce reputation', () => {
+    it('negative ratings reduce total score via LN+ bonus', () => {
+      // Reputation component is now objective (centrality + peer trust) — same for both
+      // LN+ ratings affect the TOTAL score as a bonus, not the reputation component
       const goodNode = makeAgent('ln-good', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -504,7 +520,12 @@ describe('ScoringService', () => {
       const scoreGood = scoring.computeScore(goodNode.public_key_hash);
       const scoreMixed = scoring.computeScore(mixedNode.public_key_hash);
 
-      expect(scoreGood.components.reputation).toBeGreaterThan(scoreMixed.components.reputation);
+      // Reputation component is the same (same centrality + peer trust)
+      expect(scoreGood.components.reputation).toBe(scoreMixed.components.reputation);
+      // LN+ bonus: good = min(8, log2(11) * (10/11) * 3) ≈ 9.4 → 8 (capped)
+      // LN+ bonus: mixed = min(8, log2(11) * (10/21) * 3) ≈ 4.9 → 5
+      // Good node total > mixed node total due to higher LN+ bonus
+      expect(scoreGood.total).toBeGreaterThan(scoreMixed.total);
     });
 
     it('verified transaction bonus boosts observer_protocol agents above small LN nodes', () => {

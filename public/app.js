@@ -281,7 +281,6 @@
   // -- Agent detail (built from leaderboard/search data — no extra API call) --
   function showAgentDetail(agent) {
     detailPanel.classList.add('visible');
-    detailPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
     var alias = agent.alias ? escapeHtml(agent.alias) : '<span class="mono">' + escapeHtml(agent.publicKeyHash.slice(0, 16) + '...') + '</span>';
     var comp = agent.components || {};
@@ -345,6 +344,11 @@
     html += '</div>';
 
     detailPanel.innerHTML = html;
+
+    // Scroll after content is injected so the browser knows the panel's full height
+    requestAnimationFrame(function () {
+      detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
 
     var closeBtn = document.getElementById('detail-close-btn');
     if (closeBtn) {

@@ -113,18 +113,23 @@ describe('Scoring properties', () => {
 
   // --- Reputation ---
 
-  it('agent with lnp_rank 10 and 50 positive > agent with lnp_rank 3 and 0 ratings in reputation', () => {
+  it('agent with centrality and capacity > agent without in reputation; LN+ ratings boost total', () => {
+    // Reputation now depends on centrality + peer trust, not LN+ rank/ratings
     agentRepo.insert(makeAgent('top-rated', {
       source: 'lightning_graph',
       total_transactions: 100,
+      capacity_sats: 5_000_000_000, // 50 BTC, 100 ch → 0.5 BTC/ch
       positive_ratings: 50,
       negative_ratings: 2,
       lnplus_rank: 10,
+      hubness_rank: 10,
+      betweenness_rank: 20,
       first_seen: NOW - 365 * DAY,
     }));
     agentRepo.insert(makeAgent('low-rated', {
       source: 'lightning_graph',
       total_transactions: 100,
+      capacity_sats: 500_000_000, // 5 BTC, 100 ch → 0.05 BTC/ch
       positive_ratings: 0,
       negative_ratings: 0,
       lnplus_rank: 3,
@@ -134,7 +139,10 @@ describe('Scoring properties', () => {
     const top = scoring.computeScore(sha256('top-rated'));
     const low = scoring.computeScore(sha256('low-rated'));
 
+    // Top has centrality + higher peer trust → higher reputation
     expect(top.components.reputation).toBeGreaterThan(low.components.reputation);
+    // Top also has LN+ bonus → higher total
+    expect(top.total).toBeGreaterThan(low.total);
   });
 
   it('agent with only negative ratings has lower reputation than agent with no ratings', () => {
@@ -287,11 +295,11 @@ describe('Scoring properties', () => {
 
     const result = scoring.computeScore(sha256('no-queries'));
     // With 0 queries, the popularity bonus should not have been added
-    // Compute base score — uses renormalized weights when reputation = 0 (no LN+ data)
+    // Compute base score — standard weights (no renormalization)
     const c = result.components;
-    const base = c.reputation === 0
-      ? Math.round(c.volume * (0.25/0.70) + c.seniority * (0.15/0.70) + c.regularity * (0.15/0.70) + c.diversity * (0.15/0.70))
-      : Math.round(c.volume * 0.25 + c.reputation * 0.30 + c.seniority * 0.15 + c.regularity * 0.15 + c.diversity * 0.15);
+    const base = Math.round(
+      c.volume * 0.25 + c.reputation * 0.30 + c.seniority * 0.15 + c.regularity * 0.15 + c.diversity * 0.15
+    );
     // Total should equal base (no popularity bonus, no verified tx bonus for LN agents without observer tx)
     expect(result.total).toBe(base);
   });
@@ -359,10 +367,13 @@ describe('Scoring properties', () => {
     expect(first.total).toBe(second.total);
   });
 
-  it('higher positive/negative ratio yields higher reputation', () => {
+  it('higher positive/negative ratio yields higher LN+ bonus on total score', () => {
+    // Reputation component is objective (centrality + peer trust) — same for both
+    // LN+ ratings affect the total score via bonus, not the reputation component
     agentRepo.insert(makeAgent('good-ratio', {
       source: 'lightning_graph',
       total_transactions: 100,
+      capacity_sats: 1_000_000_000, // 10 BTC, 100 ch
       positive_ratings: 50,
       negative_ratings: 2,
       lnplus_rank: 5,
@@ -371,6 +382,7 @@ describe('Scoring properties', () => {
     agentRepo.insert(makeAgent('bad-ratio', {
       source: 'lightning_graph',
       total_transactions: 100,
+      capacity_sats: 1_000_000_000, // same capacity/channels
       positive_ratings: 10,
       negative_ratings: 8,
       lnplus_rank: 5,
@@ -380,6 +392,9 @@ describe('Scoring properties', () => {
     const good = scoring.computeScore(sha256('good-ratio'));
     const bad = scoring.computeScore(sha256('bad-ratio'));
 
-    expect(good.components.reputation).toBeGreaterThan(bad.components.reputation);
+    // Same reputation component (same centrality + peer trust)
+    expect(good.components.reputation).toBe(bad.components.reputation);
+    // Higher ratio yields higher LN+ bonus → higher total
+    expect(good.total).toBeGreaterThan(bad.total);
   });
 });

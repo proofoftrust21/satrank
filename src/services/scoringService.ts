@@ -34,6 +34,7 @@ import {
   LNPLUS_RANK_MULTIPLIER,
   LNPLUS_RATINGS_WEIGHT,
   NEGATIVE_RATINGS_PENALTY,
+  LNPLUS_BONUS_CAP,
   CENTRALITY_BONUS_MULTIPLIER,
   CENTRALITY_DECAY_CONSTANT,
   VOLUME_LOG_BASE,
@@ -111,7 +112,7 @@ export class ScoringService {
         ? this.computeLightningVolume(agent.total_transactions, maxNetworkChannels)
         : this.computeVolume(verifiedTxCount),
       reputation: isLightningGraph
-        ? this.computeLightningReputation(agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.hubness_rank, agent.betweenness_rank)
+        ? this.computeLightningReputation(agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
         : this.computeReputation(agentHash, now),
       seniority: this.computeSeniority(agent.first_seen, now),
       regularity: isLightningGraph
@@ -122,28 +123,13 @@ export class ScoringService {
         : this.computeDiversity(agentHash),
     };
 
-    // Renormalize weights when LN+ data is absent — don't penalize 30% for missing a third-party source
-    const hasLnplusData = agent.lnplus_rank > 0 || agent.positive_ratings > 0 || agent.negative_ratings > 0;
-    const noReputationData = isLightningGraph && !hasLnplusData && components.reputation === 0;
-    let total: number;
-    if (noReputationData) {
-      // Redistribute reputation weight (0.30) across the other 4 components (sum = 0.70)
-      const w = { volume: WEIGHTS.volume / 0.70, seniority: WEIGHTS.seniority / 0.70, regularity: WEIGHTS.regularity / 0.70, diversity: WEIGHTS.diversity / 0.70 };
-      total = Math.round(
-        components.volume * w.volume +
-        components.seniority * w.seniority +
-        components.regularity * w.regularity +
-        components.diversity * w.diversity
-      );
-    } else {
-      total = Math.round(
-        components.volume * WEIGHTS.volume +
-        components.reputation * WEIGHTS.reputation +
-        components.seniority * WEIGHTS.seniority +
-        components.regularity * WEIGHTS.regularity +
-        components.diversity * WEIGHTS.diversity
-      );
-    }
+    let total = Math.round(
+      components.volume * WEIGHTS.volume +
+      components.reputation * WEIGHTS.reputation +
+      components.seniority * WEIGHTS.seniority +
+      components.regularity * WEIGHTS.regularity +
+      components.diversity * WEIGHTS.diversity
+    );
 
     // "manual" source penalty: linear ramp from 0.5 (0 tx) to 1.0 (150 tx)
     if (agent.source === 'manual' && verifiedTxCount < MANUAL_SOURCE_PENALTY_THRESHOLD) {
@@ -165,6 +151,16 @@ export class ScoringService {
     const popularityBonus = computePopularityBonus(agent.query_count);
     if (popularityBonus > 0) {
       total = Math.min(100, total + popularityBonus);
+    }
+
+    // LN+ community ratings bonus — social signal, max +8 pts
+    // Separate from the reputation component (which is now objective: centrality + peer trust)
+    if (isLightningGraph && agent.positive_ratings > 0) {
+      const ratingsRatio = agent.positive_ratings / (agent.positive_ratings + agent.negative_ratings + 1);
+      const lnplusBonus = Math.min(LNPLUS_BONUS_CAP, Math.round(Math.log2(agent.positive_ratings + 1) * ratingsRatio * 3));
+      if (lnplusBonus > 0) {
+        total = Math.min(100, total + lnplusBonus);
+      }
     }
 
     // Probe routing bonus/penalty — proprietary reachability data
@@ -249,23 +245,24 @@ export class ScoringService {
     return Math.min(100, Math.round(score));
   }
 
-  // LN+ ratings-based reputation for Lightning nodes
-  // See config/scoring.ts for LNPLUS_RANK_MULTIPLIER, LNPLUS_RATINGS_WEIGHT, CENTRALITY_* constants
-  private computeLightningReputation(positive: number, negative: number, lnpRank: number, hubnessRank: number, betweennessRank: number): number {
-    if (positive === 0 && negative === 0 && lnpRank === 0 && hubnessRank === 0 && betweennessRank === 0) return 0;
-    let score = lnpRank * LNPLUS_RANK_MULTIPLIER;
-    if (positive > 0) {
-      const ratio = positive / (positive + negative + 1);
-      score += ratio * LNPLUS_RATINGS_WEIGHT;
+  // Reputation for Lightning nodes: centrality + peer trust (objective, on-chain signals)
+  // LN+ ratings are a separate bonus applied after the base score.
+  private computeLightningReputation(hubnessRank: number, betweennessRank: number, capacitySats: number | null, channels: number): number {
+    // Centrality (max 50 pts): how well-connected is this node in the graph?
+    // Hubness and betweenness each contribute up to 25 pts with exponential decay
+    let centrality = 0;
+    if (hubnessRank > 0) centrality += 25 * Math.exp(-hubnessRank / 100);
+    if (betweennessRank > 0) centrality += 25 * Math.exp(-betweennessRank / 100);
+
+    // Peer trust (max 50 pts): BTC per channel as inbound confidence proxy
+    // Others lock real sats in channels with you — that's skin-in-the-game trust
+    let peerTrust = 0;
+    if (capacitySats && capacitySats > 0 && channels > 0) {
+      const btcPerChannel = capacitySats / SATS_PER_BTC / channels;
+      peerTrust = Math.min(50, Math.round(Math.log10(btcPerChannel * 100 + 1) / Math.log10(201) * 50));
     }
-    // Negative ratings penalty: reduces score when negatives dominate
-    if (negative > 0) {
-      const negRatio = negative / (positive + negative + 1);
-      score -= negRatio * NEGATIVE_RATINGS_PENALTY;
-    }
-    if (hubnessRank > 0) score += CENTRALITY_BONUS_MULTIPLIER * Math.exp(-hubnessRank / CENTRALITY_DECAY_CONSTANT);
-    if (betweennessRank > 0) score += CENTRALITY_BONUS_MULTIPLIER * Math.exp(-betweennessRank / CENTRALITY_DECAY_CONSTANT);
-    return Math.min(100, Math.max(0, Math.round(score)));
+
+    return Math.min(100, Math.round(centrality + peerTrust));
   }
 
   private computeVolume(count: number): number {
