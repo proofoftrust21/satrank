@@ -12,7 +12,8 @@ const configSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
-  CORS_ORIGIN: z.string().url('CORS_ORIGIN must be a valid URL').default('http://localhost:3000'),
+  CORS_ORIGIN: z.string().url('CORS_ORIGIN must be a valid URL').default('http://localhost:3000')
+    .refine(v => process.env.NODE_ENV !== 'production' || v.startsWith('https://'), 'CORS_ORIGIN must use https:// in production'),
   // API key for write endpoints — will be replaced by L402/Aperture
   API_KEY: z.string().min(1).optional(),
   // Shared secret between Aperture and Express — defense in depth for L402 gate

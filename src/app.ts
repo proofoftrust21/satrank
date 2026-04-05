@@ -103,7 +103,9 @@ export function createApp() {
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService);
 
-  // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs
+  // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
+  // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.
+  // Wrong value = rate limiter keys on proxy IP instead of client IP.
   app.set('trust proxy', 1);
 
   // Global middleware
@@ -111,8 +113,8 @@ export function createApp() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
-        styleSrc: ["'self'", "https://cdn.jsdelivr.net"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'"],
         imgSrc: ["'self'", "data:"],
         connectSrc: ["'self'"],
         frameAncestors: ["'none'"],
@@ -147,8 +149,15 @@ export function createApp() {
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', 'public') }));
 
-  // Prometheus metrics endpoint — before rate limiter, not L402 gated
-  app.get('/metrics', async (_req, res) => {
+  // Prometheus metrics endpoint — restricted to localhost/internal
+  app.get('/metrics', (req, res, next) => {
+    const ip = req.ip ?? req.socket.remoteAddress ?? '';
+    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
+      next();
+    } else {
+      res.status(403).end('Forbidden');
+    }
+  }, async (_req, res) => {
     try {
       const stats = statsService.getNetworkStats();
       agentsTotal.set(stats.totalAgents);
@@ -185,12 +194,12 @@ export function createApp() {
 <head>
   <meta charset="UTF-8">
   <title>SatRank API Docs</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="/swagger-ui.css">
   <link rel="stylesheet" href="/swagger-custom.css">
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="/swagger-ui-bundle.js"></script>
   <script src="/swagger-init.js"></script>
 </body>
 </html>`);
@@ -219,12 +228,12 @@ export function createApp() {
 <head>
   <meta charset="UTF-8">
   <title>SatRank API Docs</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="/swagger-ui.css">
   <link rel="stylesheet" href="/swagger-custom.css">
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="/swagger-ui-bundle.js"></script>
   <script src="/swagger-init.js"></script>
 </body>
 </html>`);

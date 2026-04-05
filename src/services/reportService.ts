@@ -63,7 +63,7 @@ export class ReportService {
       const hash = createHash('sha256').update(Buffer.from(input.preimage, 'hex')).digest('hex');
       verified = hash === input.paymentHash;
       if (!verified) {
-        logger.warn({ reporter: input.reporter, target: input.target }, 'Preimage verification failed');
+        logger.warn({ reporter: input.reporter.slice(0, 12), target: input.target.slice(0, 12) }, 'Preimage verification failed');
       }
     }
 

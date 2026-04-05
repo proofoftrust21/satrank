@@ -15,7 +15,7 @@ function safeParseJson(value: string, fallback: unknown): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    logger.warn({ value: value.slice(0, 100) }, 'JSON.parse failed, using fallback');
+    logger.warn({ len: value.length }, 'JSON.parse failed on snapshot components, using fallback');
     return fallback;
   }
 }

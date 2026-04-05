@@ -28,10 +28,14 @@ function safeEqual(provided: string, expected: string): boolean {
 }
 
 // Protects write endpoints with an API key via X-API-Key header
-// In dev without API_KEY configured, allows passthrough (easier development)
-// In production, API_KEY is required (validated in config.ts)
+// Fail-closed: if API_KEY is not configured, reject in production.
+// In dev/test (no API_KEY set), allows passthrough for easier development.
 export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): void {
   if (!config.API_KEY) {
+    if (config.NODE_ENV === 'production') {
+      next(new AuthenticationError('API key not configured'));
+      return;
+    }
     next();
     return;
   }
@@ -56,10 +60,14 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
 // exposed directly (firewall misconfiguration, Aperture down), paid endpoints
 // remain protected. Aperture must be configured to inject this secret in the
 // X-Aperture-Auth header when forwarding paid requests.
-// M6: data-driven passthrough — matches apiKeyAuth pattern.
-// When APERTURE_SHARED_SECRET is not configured, allows passthrough (dev/test).
+// Fail-closed: if APERTURE_SHARED_SECRET is not configured, reject in production.
+// In dev/test (no secret set), allows passthrough for easier development.
 export function apertureGateAuth(req: Request, _res: Response, next: NextFunction): void {
   if (!config.APERTURE_SHARED_SECRET) {
+    if (config.NODE_ENV === 'production') {
+      next(new PaymentRequiredError());
+      return;
+    }
     next();
     return;
   }

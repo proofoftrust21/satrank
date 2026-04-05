@@ -102,7 +102,7 @@ export class MempoolCrawler {
     const aliasMatch = this.agentRepo.findByExactAlias(node.alias);
     if (aliasMatch && aliasMatch.public_key_hash !== publicKeyHash) {
       this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacity, node.updatedAt);
-      logger.info({ existingHash: aliasMatch.public_key_hash, alias: node.alias }, 'Cross-source enrichment (alias match)');
+      logger.info({ existingHash: aliasMatch.public_key_hash.slice(0, 12), alias: node.alias }, 'Cross-source enrichment (alias match)');
       return 'updated';
     }
 

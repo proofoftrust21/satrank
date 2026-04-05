@@ -176,10 +176,17 @@ const batch = await client.getBatchVerdicts(['<hash1>', '<hash2>']);
 | `npm run build` | TypeScript compilation |
 | `npm start` | Production |
 | `npm test` | Tests (vitest) |
-| `npm run mcp:prod` | MCP server (production) |
 | `npm run lint` | TypeScript check |
-| `npm run mcp` | MCP server (dev) |
 | `npm run crawl` | Observer Protocol crawler |
+| `npm run crawl:cron` | Crawler en mode cron |
+| `npm run mcp` | MCP server (dev) |
+| `npm run mcp:prod` | MCP server (production) |
+| `npm run purge` | Purge stale data |
+| `npm run backup` | Database backup |
+| `npm run rollback` | Database rollback |
+| `npm run calibrate` | Scoring calibration report |
+| `npm run demo` | Attestation demo script |
+| `npm run sdk:build` | Build TypeScript SDK |
 
 ## Roadmap
 

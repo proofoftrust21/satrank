@@ -88,7 +88,6 @@ export class HttpLndGraphClient implements LndGraphClient {
       logger.debug({
         url: this.restUrl,
         macaroonLen: this.macaroonHex.length,
-        macaroonPrefix: this.macaroonHex.slice(0, 16) + '...',
       }, 'LND client initialized');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

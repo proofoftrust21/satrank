@@ -154,7 +154,7 @@ function scoreBatch(agents: { public_key_hash: string }[], scoringService: Scori
         errors++;
         if (errors <= 5) {
           const msg = err instanceof Error ? err.message : String(err);
-          logger.warn({ agentHash: agent.public_key_hash, error: msg }, `Scoring error (${label})`);
+          logger.warn({ agentHash: agent.public_key_hash.slice(0, 12), error: msg }, `Scoring error (${label})`);
         }
       }
     }
