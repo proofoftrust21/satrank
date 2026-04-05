@@ -43,6 +43,10 @@ export class AgentRepository {
     `).all() as Agent[];
   }
 
+  findScoredAbove(minScore: number): Agent[] {
+    return this.db.prepare('SELECT * FROM agents WHERE avg_score >= ? ORDER BY avg_score DESC').all(minScore) as Agent[];
+  }
+
   /** Returns all agents that have been scored (avg_score > 0) for periodic rescore. */
   findScoredAgents(): Agent[] {
     return this.db.prepare('SELECT * FROM agents WHERE avg_score > 0').all() as Agent[];

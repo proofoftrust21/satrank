@@ -23,6 +23,8 @@ import { ProbeRepository } from '../repositories/probeRepository';
 import { ChannelSnapshotRepository } from '../repositories/channelSnapshotRepository';
 import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
+import { SurvivalService } from '../services/survivalService';
+import { NostrPublisher } from '../nostr/publisher';
 
 // --- Per-source crawl functions ---
 
@@ -333,6 +335,31 @@ async function main(): Promise<void> {
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
     }, intervals.lnplus);
 
+    // Nostr score publisher — publishes NIP-85 kind 30382 events
+    let timerNostr: ReturnType<typeof setInterval> | null = null;
+    if (config.NOSTR_PRIVATE_KEY) {
+      const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
+      const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
+        privateKeyHex: config.NOSTR_PRIVATE_KEY,
+        relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
+        minScore: config.NOSTR_MIN_SCORE,
+      });
+
+      // Publish after initial crawl
+      nostrPublisher.publishScores().catch(err =>
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial Nostr publish failed'),
+      );
+
+      timerNostr = setInterval(() => {
+        nostrPublisher.publishScores().catch(err =>
+          logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr publish error'),
+        );
+      }, config.NOSTR_PUBLISH_INTERVAL_MS);
+      logger.info({ intervalMs: config.NOSTR_PUBLISH_INTERVAL_MS, relays: config.NOSTR_RELAYS }, 'Nostr publisher started');
+    } else {
+      logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
+    }
+
     let timerProbe: ReturnType<typeof setInterval> | null = null;
     if (probeCrawlerInstance) {
       timerProbe = setInterval(() => {
@@ -351,6 +378,7 @@ async function main(): Promise<void> {
       clearInterval(timerLnd);
       clearInterval(timerLnplus);
       if (timerProbe) clearInterval(timerProbe);
+      if (timerNostr) clearInterval(timerNostr);
       closeDatabase();
       process.exit(0);
     }

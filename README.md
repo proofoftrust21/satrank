@@ -159,6 +159,43 @@ const profile = await client.getProfile('<hash>');
 const verdict = await client.getVerdict('<hash>');
 ```
 
+## Nostr Integration
+
+SatRank publishes trust scores for Lightning nodes as [NIP-85 Trusted Assertions](https://github.com/nostr-protocol/nips/blob/master/85.md) (kind 30382).
+
+**What's published:** composite score (0-100), verdict (SAFE/RISKY/UNKNOWN), reachability, survival prediction, and 5 scoring components for ~3,900 nodes with score >= 30.
+
+**Frequency:** every 6 hours.
+
+**Event format:**
+```json
+{
+  "kind": 30382,
+  "tags": [
+    ["d", "<lightning_pubkey>"],
+    ["n", "lightning"],
+    ["alias", "Kraken"],
+    ["score", "94"],
+    ["verdict", "SAFE"],
+    ["reachable", "true"],
+    ["survival", "stable"],
+    ["volume", "100"],
+    ["reputation", "79"],
+    ["seniority", "87"],
+    ["regularity", "100"],
+    ["diversity", "100"]
+  ],
+  "content": ""
+}
+```
+
+**Query assertions from any Nostr client:**
+```
+["REQ", "satrank", {"kinds": [30382], "authors": ["<SATRANK_NOSTR_PUBKEY>"]}]
+```
+
+**Why free?** Global scores are the trailer. The personalized `/api/decide` (pathfinding from YOUR position, survival, P_empirical) is the film — 1 sat via L402.
+
 ## Tech Stack
 
 - **TypeScript** strict mode

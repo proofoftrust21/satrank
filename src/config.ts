@@ -38,6 +38,11 @@ const configSchema = z.object({
   PROBE_AMOUNT_SATS: z.coerce.number().int().positive().default(1000),
   // Node pubkey — shown in API responses so agents can open a direct channel
   NODE_PUBKEY: z.string().regex(/^(02|03)[a-f0-9]{64}$/).optional(),
+  // Nostr — publish scores as NIP-85 kind 30382 events
+  NOSTR_PRIVATE_KEY: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  NOSTR_RELAYS: z.string().default('wss://relay.damus.io,wss://nos.lol,wss://relay.nostr.band'),
+  NOSTR_PUBLISH_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000), // 6 hours
+  NOSTR_MIN_SCORE: z.coerce.number().int().min(0).default(30), // only publish nodes with score >= this
 });
 
 const parsed = configSchema.safeParse(process.env);

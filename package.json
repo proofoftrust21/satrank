@@ -39,6 +39,7 @@
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.1.0",
+    "nostr-tools": "^2.23.3",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
     "prom-client": "^15.1.3",
