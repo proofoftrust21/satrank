@@ -92,37 +92,6 @@
     })
     .catch(setStatError);
 
-  // -- Top Movers --
-  fetchWithRetry(API + '/agents/movers', 1)
-    .then(function (d) {
-      renderMovers('movers-up', d.data.up, true);
-      renderMovers('movers-down', d.data.down, false);
-    })
-    .catch(function () {
-      document.getElementById('movers-up').innerHTML = '<div style="color:#555570">No data yet</div>';
-      document.getElementById('movers-down').innerHTML = '<div style="color:#555570">No data yet</div>';
-    });
-
-  function renderMovers(containerId, movers, isUp) {
-    var container = document.getElementById(containerId);
-    if (!movers || movers.length === 0) {
-      container.innerHTML = '<div style="color:#555570">No movers yet</div>';
-      return;
-    }
-    var html = '';
-    movers.forEach(function (m) {
-      var name = m.alias ? escapeHtml(m.alias) : escapeHtml(m.publicKeyHash.slice(0, 10) + '...');
-      var deltaClass = isUp ? 'positive' : 'negative';
-      var deltaSign = isUp ? '+' : '';
-      html += '<div class="mover-item">';
-      html += '  <span class="mover-name">' + name + '</span>';
-      html += '  <span class="mover-score">' + escapeHtml(m.score) + '</span>';
-      html += '  <span class="delta ' + deltaClass + '">' + deltaSign + escapeHtml(m.delta7d) + '</span>';
-      html += '</div>';
-    });
-    container.innerHTML = html;
-  }
-
   // -- Agent table rendering --
   var tbody = document.getElementById('top-agents');
   var heading = document.getElementById('agents-heading');
