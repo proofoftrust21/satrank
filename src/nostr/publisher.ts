@@ -86,22 +86,27 @@ export class NostrPublisher {
       });
     }
 
-    logger.info({ count: events.length, minScore: this.minScore }, 'Publishing scores to Nostr');
+    logger.info({ count: events.length, minScore: this.minScore, relays: this.relays }, 'Publishing scores to Nostr');
 
     let published = 0;
     let errors = 0;
+    const CONNECT_TIMEOUT_MS = 10_000;
+    const PUBLISH_TIMEOUT_MS = 5_000;
 
-    // Connect to relays
+    // Connect to relays with timeout — continue with those that work
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const connections: any[] = [];
+    const connections: { relay: any; url: string }[] = [];
     for (const url of this.relays) {
       try {
-        const relay = await Relay.connect(url);
-        connections.push(relay);
+        const relay = await Promise.race([
+          Relay.connect(url),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), CONNECT_TIMEOUT_MS)),
+        ]);
+        connections.push({ relay, url });
+        logger.info({ relay: url }, 'Nostr relay connected');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        logger.warn({ relay: url, error: msg }, 'Failed to connect to Nostr relay');
-        errors++;
+        logger.warn({ relay: url, error: msg }, 'Nostr relay connection failed — skipping');
       }
     }
 
@@ -109,6 +114,8 @@ export class NostrPublisher {
       logger.error('No Nostr relays connected — aborting publish');
       return { published: 0, errors: events.length };
     }
+
+    logger.info({ connected: connections.length, total: this.relays.length }, 'Nostr relay connections established');
 
     // Publish events with throttle (20/sec to avoid relay rate limits)
     for (const ev of events) {
@@ -135,13 +142,15 @@ export class NostrPublisher {
 
         const signed = finalizeEvent(template, sk);
 
-        for (const relay of connections) {
-          try {
-            await relay.publish(signed);
-          } catch {
-            // Individual relay publish failures are non-fatal
-          }
-        }
+        // Publish to all connected relays in parallel with timeout
+        await Promise.allSettled(
+          connections.map(({ relay }) =>
+            Promise.race([
+              relay.publish(signed),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Publish timeout')), PUBLISH_TIMEOUT_MS)),
+            ]).catch(() => { /* individual relay failures are non-fatal */ }),
+          ),
+        );
 
         published++;
 
@@ -149,18 +158,23 @@ export class NostrPublisher {
         if (published % 20 === 0) {
           await new Promise(resolve => setTimeout(resolve, 1000));
         }
+
+        // Progress log every 500 events
+        if (published % 500 === 0) {
+          logger.info({ published, total: events.length }, 'Nostr publish progress');
+        }
       } catch (err: unknown) {
         errors++;
         if (errors <= 5) {
           const msg = err instanceof Error ? err.message : String(err);
-          logger.warn({ lnPubkey: ev.lnPubkey.slice(0, 12), error: msg }, 'Failed to publish Nostr event');
+          logger.warn({ lnPubkey: ev.lnPubkey.slice(0, 12), error: msg }, 'Failed to sign/publish Nostr event');
         }
       }
     }
 
     // Close connections
-    for (const relay of connections) {
-      try { relay.close(); } catch { /* ignore */ }
+    for (const { relay, url } of connections) {
+      try { relay.close(); } catch { logger.warn({ relay: url }, 'Failed to close relay connection'); }
     }
 
     logger.info({ published, errors, relays: connections.length }, 'Nostr score publish complete');
