@@ -36,11 +36,13 @@
   }
 
   function setStatError() {
-    ['stat-agents', 'stat-channels', 'stat-rated', 'stat-avg-score'].forEach(function (id) {
+    ['stat-endpoints', 'stat-ai-agents', 'stat-channels', 'stat-avg-score'].forEach(function (id) {
       var el = document.getElementById(id);
-      el.textContent = 'API unavailable';
-      el.classList.remove('loading');
-      el.style.fontSize = '0.9rem';
+      if (el) {
+        el.textContent = 'API unavailable';
+        el.classList.remove('loading');
+        el.style.fontSize = '0.9rem';
+      }
     });
   }
 
@@ -79,12 +81,12 @@
   fetchWithRetry(API + '/stats', 1)
     .then(function (d) {
       var s = d.data;
-      document.getElementById('stat-agents').textContent = fmt(s.totalAgents);
-      document.getElementById('stat-agents').classList.remove('loading');
+      document.getElementById('stat-endpoints').textContent = fmt(s.totalEndpoints);
+      document.getElementById('stat-endpoints').classList.remove('loading');
+      document.getElementById('stat-ai-agents').textContent = String(s.totalAiAgents);
+      document.getElementById('stat-ai-agents').classList.remove('loading');
       document.getElementById('stat-channels').textContent = fmt(s.totalChannels);
       document.getElementById('stat-channels').classList.remove('loading');
-      document.getElementById('stat-rated').textContent = fmt(s.nodesWithRatings);
-      document.getElementById('stat-rated').classList.remove('loading');
       document.getElementById('stat-avg-score').textContent = s.avgScore;
       document.getElementById('stat-avg-score').classList.remove('loading');
 

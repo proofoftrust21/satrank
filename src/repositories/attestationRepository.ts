@@ -215,19 +215,20 @@ export class AttestationRepository {
   }
 
   /** Weighted success rate: sum(weight * (score >= 50 ? 1 : 0)) / sum(weight) for report-category attestations */
-  weightedSuccessRate(subjectHash: string): { rate: number; dataPoints: number } {
+  weightedSuccessRate(subjectHash: string): { rate: number; dataPoints: number; uniqueReporters: number } {
     const row = this.db.prepare(`
       SELECT
         COALESCE(SUM(CASE WHEN score >= 50 THEN weight ELSE 0 END), 0) as weighted_successes,
         COALESCE(SUM(weight), 0) as total_weight,
-        COUNT(*) as data_points
+        COUNT(*) as data_points,
+        COUNT(DISTINCT attester_hash) as unique_reporters
       FROM attestations
       WHERE subject_hash = ?
       AND category IN ('successful_transaction', 'failed_transaction', 'unresponsive')
-    `).get(subjectHash) as { weighted_successes: number; total_weight: number; data_points: number };
+    `).get(subjectHash) as { weighted_successes: number; total_weight: number; data_points: number; unique_reporters: number };
 
-    if (row.total_weight === 0) return { rate: 0, dataPoints: 0 };
-    return { rate: row.weighted_successes / row.total_weight, dataPoints: row.data_points };
+    if (row.total_weight === 0) return { rate: 0, dataPoints: 0, uniqueReporters: 0 };
+    return { rate: row.weighted_successes / row.total_weight, dataPoints: row.data_points, uniqueReporters: row.unique_reporters };
   }
 
   /** Count reports from a specific attester in the last N seconds (rate limiting).

@@ -426,7 +426,7 @@ describe('ReportService', () => {
     // Weight is computed from scoringService.getScore() (computed, not avg_score field)
     // Just verify it's within the valid range
     expect(result.weight).toBeGreaterThanOrEqual(0.3);
-    expect(result.weight).toBeLessThanOrEqual(1.5); // max with preimage bonus
+    expect(result.weight).toBeLessThanOrEqual(2.0); // max with preimage bonus
   });
 
   it('maps outcomes to correct scores', () => {

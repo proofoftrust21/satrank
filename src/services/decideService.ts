@@ -62,16 +62,17 @@ export class DecideService {
     }
 
     // P_empirical — historical success rate from reports
-    const { rate: empiricalRate, dataPoints } = this.attestationRepo.weightedSuccessRate(targetHash);
-    const hasEmpirical = dataPoints >= EMPIRICAL_THRESHOLD;
+    const { rate: empiricalRate, dataPoints, uniqueReporters } = this.attestationRepo.weightedSuccessRate(targetHash);
+    // Require both sufficient data points AND diverse reporters to avoid single-agent self-reporting
+    const hasEmpirical = dataPoints >= EMPIRICAL_THRESHOLD && uniqueReporters >= 5;
     const pEmpirical = hasEmpirical ? empiricalRate : pTrust; // fallback to proxy
 
     // Composite success rate
     const basis: 'proxy' | 'empirical' = hasEmpirical ? 'empirical' : 'proxy';
     let successRate: number;
     if (hasEmpirical) {
-      // Empirical mode: weight empirical data heavily, but still factor routability and availability
-      successRate = pEmpirical * 0.5 + pRoutable * 0.25 + pAvailable * 0.25;
+      // Empirical mode: P_empirical dominates, but P_trust stays as safety net (node health)
+      successRate = pEmpirical * 0.45 + pTrust * 0.10 + pRoutable * 0.225 + pAvailable * 0.225;
     } else {
       // Proxy mode: trust score as primary signal
       successRate = pTrust * 0.4 + pRoutable * 0.3 + pAvailable * 0.3;

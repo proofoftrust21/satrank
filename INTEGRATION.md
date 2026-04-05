@@ -1,7 +1,12 @@
 # Integrating SatRank into your AI agent
 
 SatRank provides a trust score (0-100) for AI agents on Bitcoin Lightning.
-Before transacting with another agent, query their score. After transacting, submit an attestation.
+Before transacting with another agent, ask SatRank for a GO/NO-GO decision. After transacting, report the outcome.
+
+**Quick start:** run the example agent loop to see the full cycle in action:
+```bash
+SATRANK_URL=https://satrank.dev SATRANK_API_KEY=<key> npx tsx examples/agent-loop.ts
+```
 
 Three integration paths, from easiest to most flexible.
 
@@ -124,7 +129,7 @@ await satrank.report({
   reporter: 'my-agent-hash',
   outcome: 'success', // or 'failure' or 'timeout'
   paymentHash: paymentResult.paymentHash, // optional: for preimage verification
-  preimage: paymentResult.preimage, // optional: gives 1.5x weight bonus
+  preimage: paymentResult.preimage, // optional: gives 2x weight bonus
 });
 ```
 

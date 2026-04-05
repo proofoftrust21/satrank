@@ -235,7 +235,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'report',
-      description: 'Report a transaction outcome (success / failure / timeout). Requires SATRANK_API_KEY. Weighted by reporter trust score. Provide paymentHash + preimage for 1.5x weight bonus.',
+      description: 'Report a transaction outcome (success / failure / timeout). Requires SATRANK_API_KEY. Weighted by reporter trust score. Provide paymentHash + preimage for 2x weight bonus.',
       inputSchema: {
         type: 'object' as const,
         properties: {

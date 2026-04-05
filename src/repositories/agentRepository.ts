@@ -66,6 +66,11 @@ export class AgentRepository {
     ).all(`%${escaped}%`, limit, offset) as Agent[];
   }
 
+  countBySource(source: string): number {
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM agents WHERE source = ?').get(source) as { count: number };
+    return row.count;
+  }
+
   countByAlias(alias: string): number {
     const escaped = alias.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
     const row = this.db.prepare(

@@ -123,13 +123,28 @@ export class ScoringService {
         : this.computeDiversity(agentHash),
     };
 
-    let total = Math.round(
-      components.volume * WEIGHTS.volume +
-      components.reputation * WEIGHTS.reputation +
-      components.seniority * WEIGHTS.seniority +
-      components.regularity * WEIGHTS.regularity +
-      components.diversity * WEIGHTS.diversity
-    );
+    // Observer agents without attestations have reputation=0. Renormalize to avoid
+    // penalizing 30% of the score for a signal that requires community adoption.
+    // LN nodes don't need this — their reputation is objective (centrality + peer trust).
+    const noAttestationRep = !isLightningGraph && components.reputation === 0;
+    let total: number;
+    if (noAttestationRep) {
+      const w = { volume: WEIGHTS.volume / 0.70, seniority: WEIGHTS.seniority / 0.70, regularity: WEIGHTS.regularity / 0.70, diversity: WEIGHTS.diversity / 0.70 };
+      total = Math.round(
+        components.volume * w.volume +
+        components.seniority * w.seniority +
+        components.regularity * w.regularity +
+        components.diversity * w.diversity
+      );
+    } else {
+      total = Math.round(
+        components.volume * WEIGHTS.volume +
+        components.reputation * WEIGHTS.reputation +
+        components.seniority * WEIGHTS.seniority +
+        components.regularity * WEIGHTS.regularity +
+        components.diversity * WEIGHTS.diversity
+      );
+    }
 
     // "manual" source penalty: linear ramp from 0.5 (0 tx) to 1.0 (150 tx)
     if (agent.source === 'manual' && verifiedTxCount < MANUAL_SOURCE_PENALTY_THRESHOLD) {

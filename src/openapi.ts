@@ -378,7 +378,7 @@ export const openapiSpec = {
       post: {
         summary: 'Report transaction outcome',
         operationId: 'report',
-        description: 'Submit a success/failure/timeout report. Free (no L402 payment). Weighted by reporter trust score. Preimage verification gives 1.5x weight bonus.',
+        description: 'Submit a success/failure/timeout report. Free (no L402 payment). Weighted by reporter trust score. Preimage verification gives 2x weight bonus.',
         tags: ['Reports'],
         requestBody: {
           required: true,
@@ -898,7 +898,7 @@ export const openapiSpec = {
         properties: {
           reportId: { type: 'string', format: 'uuid' },
           verified: { type: 'boolean', description: 'true if preimage verified successfully' },
-          weight: { type: 'number', description: 'Applied weight (0.3-1.5)' },
+          weight: { type: 'number', description: 'Applied weight (0.3-2.0)' },
           timestamp: { type: 'integer' },
         },
         required: ['reportId', 'verified', 'weight', 'timestamp'],

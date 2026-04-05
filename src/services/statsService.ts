@@ -57,6 +57,8 @@ export class StatsService {
 
     return {
       totalAgents: this.agentRepo.count(),
+      totalEndpoints: this.agentRepo.countBySource('lightning_graph'),
+      totalAiAgents: this.agentRepo.countBySource('observer_protocol'),
       totalChannels: this.agentRepo.sumChannels(),
       nodesWithRatings: this.agentRepo.countWithRatings(),
       networkCapacityBtc: this.agentRepo.networkCapacityBtc(),

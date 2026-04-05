@@ -155,6 +155,8 @@ export interface HealthResponse {
 
 export interface NetworkStats {
   totalAgents: number;
+  totalEndpoints: number;
+  totalAiAgents: number;
   totalChannels: number;
   nodesWithRatings: number;
   networkCapacityBtc: number;
