@@ -14,7 +14,7 @@
   <div class="container">
     <img src="/logo.png" alt="SatRank logo" class="header-logo">
     <h1>SatRank</h1>
-    <p>The PageRank of the agentic economy on Bitcoin Lightning. The trust score agents check before every transaction.</p>
+    <p>Route reliability for Lightning payments. Built for the agentic economy.</p>
     <span class="badge">L402 — 1 sat per query ⚡</span>
   </div>
 </header>
@@ -23,21 +23,20 @@
   <!-- Live stats -->
   <div class="stats">
     <div class="stat-card">
-      <div class="value loading" id="stat-endpoints">--</div>
-      <div class="label">Lightning Endpoints</div>
+      <div class="value loading" id="stat-probed">--</div>
+      <div class="label">Nodes Probed</div>
     </div>
     <div class="stat-card">
-      <div class="value loading" id="stat-ai-agents">--</div>
-      <div class="label">AI Agents</div>
+      <div class="value loading" id="stat-phantom">--</div>
+      <div class="label">Phantom Nodes Detected</div>
     </div>
     <div class="stat-card">
-      <div class="value loading" id="stat-channels">--</div>
-      <div class="label">Channels</div>
+      <div class="value loading" id="stat-reachable">--</div>
+      <div class="label">Verified Reachable</div>
     </div>
     <div class="stat-card">
-      <div class="value loading" id="stat-avg-score">--</div>
-      <div class="label">Avg Score</div>
-      <div class="stat-delta" id="stat-avg-delta"></div>
+      <div class="value loading" id="stat-probes-24h">--</div>
+      <div class="label">Probes / 24h</div>
     </div>
   </div>
 
@@ -95,10 +94,10 @@
 
   <!-- Top agents -->
   <div class="section">
-    <h2 id="agents-heading">Top Agents</h2>
+    <h2 id="agents-heading">Leaderboard</h2>
     <div class="search-bar">
       <span class="search-icon">&#128269;</span>
-      <input type="text" id="search-input" placeholder="Search agents by alias..." autocomplete="off">
+      <input type="text" id="search-input" placeholder="Search by name..." autocomplete="off">
       <button class="search-clear" id="search-clear">&times;</button>
     </div>
     <table>
@@ -227,7 +226,7 @@
 
 <footer>
   <div class="container">
-    SatRank &mdash; Trust score for AI agents on Bitcoin Lightning
+    SatRank &mdash; Route reliability for Lightning payments
     <br>
     <a href="/methodology.html">How scoring works</a> &middot; <a href="/api/stats">Stats</a> &middot; <a href="/api/health">Health</a> &middot; <a href="/api/openapi.json">API Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
   </div>

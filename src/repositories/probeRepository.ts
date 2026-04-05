@@ -57,6 +57,12 @@ export class ProbeRepository {
     return row.count;
   }
 
+  countProbesLast24h(): number {
+    const cutoff = Math.floor(Date.now() / 1000) - 86400;
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM probe_results WHERE probed_at >= ?').get(cutoff) as { count: number };
+    return row.count;
+  }
+
   /** Compute uptime ratio over a time window (reachable / total probes) */
   computeUptime(targetHash: string, windowSec: number): number | null {
     const cutoff = Math.floor(Date.now() / 1000) - windowSec;

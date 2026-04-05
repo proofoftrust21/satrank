@@ -178,6 +178,10 @@ export interface NetworkStats {
   totalAgents: number;
   totalEndpoints: number;
   totalAiAgents: number;
+  nodesProbed: number;
+  phantomRate: number;
+  verifiedReachable: number;
+  probes24h: number;
   totalChannels: number;
   nodesWithRatings: number;
   networkCapacityBtc: number;

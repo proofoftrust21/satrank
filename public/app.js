@@ -36,7 +36,7 @@
   }
 
   function setStatError() {
-    ['stat-endpoints', 'stat-ai-agents', 'stat-channels', 'stat-avg-score'].forEach(function (id) {
+    ['stat-probed', 'stat-phantom', 'stat-reachable', 'stat-probes-24h'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) {
         el.textContent = 'API unavailable';
@@ -81,23 +81,14 @@
   fetchWithRetry(API + '/stats', 1)
     .then(function (d) {
       var s = d.data;
-      document.getElementById('stat-endpoints').textContent = fmt(s.totalEndpoints);
-      document.getElementById('stat-endpoints').classList.remove('loading');
-      document.getElementById('stat-ai-agents').textContent = String(s.totalAiAgents);
-      document.getElementById('stat-ai-agents').classList.remove('loading');
-      document.getElementById('stat-channels').textContent = fmt(s.totalChannels);
-      document.getElementById('stat-channels').classList.remove('loading');
-      document.getElementById('stat-avg-score').textContent = s.avgScore;
-      document.getElementById('stat-avg-score').classList.remove('loading');
-
-      // Network trend delta
-      if (s.trends && s.trends.avgScoreDelta7d !== 0) {
-        var deltaEl = document.getElementById('stat-avg-delta');
-        if (deltaEl) {
-          var val = s.trends.avgScoreDelta7d;
-          deltaEl.innerHTML = deltaHtml(val) + ' <span class="delta-period">7d</span>';
-        }
-      }
+      document.getElementById('stat-probed').textContent = fmt(s.nodesProbed);
+      document.getElementById('stat-probed').classList.remove('loading');
+      document.getElementById('stat-phantom').textContent = s.phantomRate + '%';
+      document.getElementById('stat-phantom').classList.remove('loading');
+      document.getElementById('stat-reachable').textContent = fmt(s.verifiedReachable);
+      document.getElementById('stat-reachable').classList.remove('loading');
+      document.getElementById('stat-probes-24h').textContent = fmt(s.probes24h);
+      document.getElementById('stat-probes-24h').classList.remove('loading');
     })
     .catch(setStatError);
 
@@ -255,7 +246,7 @@
     clearTimeout(debounceTimer);
 
     if (!query) {
-      heading.textContent = 'Top Agents';
+      heading.textContent = 'Leaderboard';
       loadTopAgents();
       return;
     }
@@ -275,7 +266,7 @@
   clearBtn.addEventListener('click', function () {
     searchInput.value = '';
     clearBtn.style.display = 'none';
-    heading.textContent = 'Top Agents';
+    heading.textContent = 'Leaderboard';
     detailPanel.classList.remove('visible');
     loadTopAgents();
   });

@@ -71,7 +71,7 @@ export function createApp() {
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
+  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService, probeRepo);
   const riskService = new RiskService();
 
   // LND graph client — shared between auto-indexation, pathfinding, and verdict
