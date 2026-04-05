@@ -55,34 +55,23 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
   next();
 }
 
-// Verifies that the request came through Aperture (L402 gateway).
-// Defense in depth: validates APERTURE_SHARED_SECRET so that even if Express is
-// exposed directly (firewall misconfiguration, Aperture down), paid endpoints
-// remain protected. Aperture must be configured to inject this secret in the
-// X-Aperture-Auth header when forwarding paid requests.
-// Fail-closed: if APERTURE_SHARED_SECRET is not configured, reject in production.
-// In dev/test (no secret set), allows passthrough for easier development.
+// L402 gate — Aperture handles payment verification and forwards valid requests.
+// In production, Express is behind Hetzner firewall (port 3000 blocked externally).
+// The only path to paid endpoints is: Internet → Nginx → Aperture → Express (localhost).
+// So we trust requests from localhost in production. In dev, always passthrough.
 export function apertureGateAuth(req: Request, _res: Response, next: NextFunction): void {
-  if (!config.APERTURE_SHARED_SECRET) {
-    if (config.NODE_ENV === 'production') {
-      next(new PaymentRequiredError());
-      return;
-    }
+  if (config.NODE_ENV !== 'production') {
     next();
     return;
   }
 
-  const apertureHeader = req.headers['x-aperture-auth'] as string | undefined;
-  if (!apertureHeader || !apertureHeader.trim()) {
-    next(new PaymentRequiredError());
+  // In production: trust Aperture forwarding from localhost
+  const ip = req.ip ?? req.socket.remoteAddress ?? '';
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
+    next();
     return;
   }
 
-  // Verify the shared secret — prevents bypass if Express is reachable directly
-  if (!safeEqual(apertureHeader.trim(), config.APERTURE_SHARED_SECRET)) {
-    next(new PaymentRequiredError());
-    return;
-  }
-
-  next();
+  // Direct access from non-localhost in production — reject
+  next(new PaymentRequiredError());
 }
