@@ -81,6 +81,18 @@
       </div>
     </div>
     <p class="cycle-flywheel">Your reports make future decisions better for every agent on the network.</p>
+
+    <div class="sdk-oneliner">
+      <p class="sdk-label">With the SDK, the full cycle is one line:</p>
+      <div class="decide-code-block">
+        <button class="copy-btn" id="copy-sdk" title="Copy to clipboard">Copy</button>
+        <pre id="sdk-code">const result = await satrank.transact(target, myHash, async () => {
+  const payment = await myLnWallet.pay(invoice);
+  return { success: payment.ok, preimage: payment.preimage, paymentHash: payment.hash };
+});</pre>
+      </div>
+      <p class="sdk-install"><code>npm install @satrank/sdk</code></p>
+    </div>
   </div>
 
   <!-- Leaderboard -->

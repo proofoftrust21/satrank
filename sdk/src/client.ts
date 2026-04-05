@@ -19,6 +19,8 @@ import type {
   ReportRequest,
   ReportResponse,
   ProfileResponse,
+  PaymentResult,
+  TransactResult,
 } from './types';
 
 export class SatRankError extends Error {
@@ -147,6 +149,40 @@ export class SatRankClient {
   async getProfile(id: string): Promise<ProfileResponse> {
     const envelope = await this.get<ApiEnvelope<ProfileResponse>>(`/api/profile/${id}`);
     return envelope.data;
+  }
+
+  /**
+   * Decide → Pay → Report in one call. The full cycle.
+   *
+   * @param target - Target agent hash or Lightning pubkey
+   * @param caller - Your agent hash or Lightning pubkey
+   * @param payFn - Your payment function. Called only if decide returns go=true.
+   *                Must return { success, preimage?, paymentHash? }.
+   *                Provide preimage + paymentHash for 2x weight bonus on the report.
+   * @returns { paid, decision, report? }
+   */
+  async transact(
+    target: string,
+    caller: string,
+    payFn: () => Promise<PaymentResult>,
+  ): Promise<TransactResult> {
+    const decision = await this.decide({ target, caller });
+
+    if (!decision.go) {
+      return { paid: false, decision };
+    }
+
+    const payment = await payFn();
+
+    const report = await this.report({
+      target,
+      reporter: caller,
+      outcome: payment.success ? 'success' : 'failure',
+      preimage: payment.preimage,
+      paymentHash: payment.paymentHash,
+    });
+
+    return { paid: payment.success, decision, report };
   }
 
   private async get<T>(path: string): Promise<T> {

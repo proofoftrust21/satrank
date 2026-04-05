@@ -340,6 +340,12 @@ tr.clickable { cursor: pointer; }
 .decide-response pre { margin: 0; color: #00c853; font-size: 0.85rem; white-space: pre-wrap; }
 .decide-cost { color: #f7931a; font-weight: 700; font-size: 0.9rem; }
 
+/* SDK one-liner */
+.sdk-oneliner { margin-top: 20px; padding-top: 16px; border-top: 1px solid #1a1a2e; }
+.sdk-label { color: #8888a0; font-size: 0.85rem; margin-bottom: 8px; text-align: center; }
+.sdk-install { text-align: center; margin-top: 8px; }
+.sdk-install code { font-size: 0.8rem; color: #f7931a; background: #1a1a2e; padding: 4px 10px; border-radius: 4px; }
+
 /* Decide → Pay → Report cycle */
 .cycle-section { padding: 16px 0 32px; }
 .cycle-steps { display: flex; align-items: flex-start; justify-content: center; gap: 12px; flex-wrap: wrap; }

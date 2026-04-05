@@ -77,19 +77,23 @@
     } catch (e) { return '#'; }
   }
 
-  // -- Copy button --
-  var copyBtn = document.getElementById('copy-decide');
-  if (copyBtn) {
-    copyBtn.addEventListener('click', function () {
-      var code = document.getElementById('decide-curl');
-      if (code) {
-        navigator.clipboard.writeText(code.textContent).then(function () {
-          copyBtn.textContent = 'Copied!';
-          setTimeout(function () { copyBtn.textContent = 'Copy'; }, 2000);
-        });
-      }
-    });
+  // -- Copy buttons --
+  function setupCopyBtn(btnId, codeId) {
+    var btn = document.getElementById(btnId);
+    if (btn) {
+      btn.addEventListener('click', function () {
+        var code = document.getElementById(codeId);
+        if (code) {
+          navigator.clipboard.writeText(code.textContent).then(function () {
+            btn.textContent = 'Copied!';
+            setTimeout(function () { btn.textContent = 'Copy'; }, 2000);
+          });
+        }
+      });
+    }
   }
+  setupCopyBtn('copy-decide', 'decide-curl');
+  setupCopyBtn('copy-sdk', 'sdk-code');
 
   // -- Stats --
   fetchWithRetry(API + '/stats', 1)

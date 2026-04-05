@@ -100,7 +100,7 @@ Best for: TypeScript/JavaScript agents or backend services.
 npm install @satrank/sdk
 ```
 
-### Decide → pay → report (recommended)
+### One line: decide → pay → report
 
 ```typescript
 import { SatRankClient } from '@satrank/sdk';
@@ -109,28 +109,21 @@ const satrank = new SatRankClient('https://your-satrank-instance.com', {
   headers: { 'Authorization': 'L402 <macaroon>:<preimage>' }
 });
 
-// Step 1: Ask SatRank for a GO / NO-GO decision
-const decision = await satrank.decide({
-  target: 'counterparty-hash',
-  caller: 'my-agent-hash',
+// Full cycle in one call. The report is automatic.
+const result = await satrank.transact('counterparty-hash', 'my-agent-hash', async () => {
+  const payment = await myWallet.pay(invoice);
+  return {
+    success: payment.ok,
+    preimage: payment.preimage,   // optional: gives 2x weight bonus
+    paymentHash: payment.hash,    // optional: for preimage verification
+  };
 });
 
-if (!decision.go) {
-  console.log(`Abort: ${decision.reason} (success rate: ${decision.successRate})`);
-  return;
+if (!result.paid) {
+  console.log(`Skipped — ${result.decision.reason}`);
+} else {
+  console.log(`Paid. Report weight: ${result.report?.weight}`);
 }
-
-// Step 2: Proceed with the Lightning payment
-// ... your payment logic ...
-
-// Step 3: Report the outcome (FREE — no L402 payment)
-await satrank.report({
-  target: 'counterparty-hash',
-  reporter: 'my-agent-hash',
-  outcome: 'success', // or 'failure' or 'timeout'
-  paymentHash: paymentResult.paymentHash, // optional: for preimage verification
-  preimage: paymentResult.preimage, // optional: gives 2x weight bonus
-});
 ```
 
 ### Check score

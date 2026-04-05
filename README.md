@@ -146,16 +146,17 @@ import { SatRankClient } from '@satrank/sdk';
 
 const client = new SatRankClient('http://localhost:3000');
 
-// Decision
-const decision = await client.decide({ target: '<hash>', caller: '<your-hash>' });
-if (decision.go) { /* proceed */ }
-await client.report({ target: '<hash>', reporter: '<your-hash>', outcome: 'success' });
-const profile = await client.getProfile('<hash>');
+// Full cycle in one line: decide → pay → report
+const result = await client.transact('<target-hash>', '<your-hash>', async () => {
+  const payment = await myWallet.pay(invoice);
+  return { success: payment.ok, preimage: payment.preimage, paymentHash: payment.hash };
+});
+// result.paid, result.decision.go, result.report.weight
 
-// Scores and verdicts
+// Or step by step
+const decision = await client.decide({ target: '<hash>', caller: '<your-hash>' });
+const profile = await client.getProfile('<hash>');
 const verdict = await client.getVerdict('<hash>');
-const score = await client.getScore('<hash>');
-const batch = await client.getBatchVerdicts(['<hash1>', '<hash2>']);
 ```
 
 ## Tech Stack
