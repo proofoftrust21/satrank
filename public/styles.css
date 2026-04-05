@@ -328,6 +328,29 @@ tr.clickable { cursor: pointer; }
 .teaser-links a { font-size: 0.85rem; color: #f7931a; text-decoration: none; }
 .teaser-links a:hover { text-decoration: underline; }
 
+/* Decide hero */
+.decide-hero { text-align: center; padding: 40px 0 24px; }
+.decide-hero h2 { font-size: 1.8rem; color: #f7931a; margin-bottom: 8px; }
+.decide-subtitle { color: #8888a0; font-size: 1rem; margin-bottom: 24px; }
+.decide-code-block { position: relative; background: #0a0a14; border: 1px solid #f7931a30; border-radius: 10px; padding: 16px 20px; text-align: left; margin: 0 auto 12px; max-width: 640px; }
+.decide-code-block pre { margin: 0; color: #c0c0d8; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all; }
+.copy-btn { position: absolute; top: 10px; right: 10px; background: #1e1e30; color: #f7931a; border: 1px solid #f7931a40; border-radius: 6px; padding: 4px 12px; font-size: 0.75rem; cursor: pointer; font-family: inherit; }
+.copy-btn:hover { background: #f7931a20; }
+.decide-response { background: #0d0d18; border: 1px solid #1e1e30; border-radius: 10px; padding: 12px 20px; text-align: left; margin: 0 auto 12px; max-width: 640px; }
+.decide-response pre { margin: 0; color: #00c853; font-size: 0.85rem; white-space: pre-wrap; }
+.decide-cost { color: #f7931a; font-weight: 700; font-size: 0.9rem; }
+
+/* Decide → Pay → Report cycle */
+.cycle-section { padding: 16px 0 32px; }
+.cycle-steps { display: flex; align-items: flex-start; justify-content: center; gap: 12px; flex-wrap: wrap; }
+.cycle-step { background: #12121e; border: 1px solid #1e1e30; border-radius: 10px; padding: 16px 20px; flex: 0 1 180px; text-align: center; }
+.cycle-step .step-num { font-size: 1.4rem; font-weight: 700; color: #f7931a; margin-bottom: 4px; }
+.cycle-step .step-title { font-size: 1rem; font-weight: 600; color: #e0e0e8; margin-bottom: 6px; }
+.cycle-step .step-desc { font-size: 0.8rem; color: #6666a0; line-height: 1.4; }
+.cycle-step .step-cost { font-size: 0.8rem; font-weight: 700; margin-top: 8px; }
+.cycle-arrow { font-size: 1.5rem; color: #333; align-self: center; padding-top: 10px; }
+.cycle-flywheel { text-align: center; color: #8888a0; font-size: 0.85rem; margin-top: 16px; font-style: italic; }
+
 /* API docs */
 .endpoints { list-style: none; }
 .endpoints li {

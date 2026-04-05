@@ -40,37 +40,47 @@
     </div>
   </div>
 
-  <!-- L402 how-to -->
-  <div class="l402-flow">
-    <h2>How to query (L402)</h2>
-    <div class="l402-steps">
-      <div class="l402-step">
+  <!-- Hero — Should you pay? -->
+  <div class="section decide-hero">
+    <h2>Should you pay this node?</h2>
+    <p class="decide-subtitle">One request. One answer. 66% of the network is dead &mdash; we tell you which nodes are alive.</p>
+
+    <div class="decide-code-block">
+      <button class="copy-btn" id="copy-decide" title="Copy to clipboard">Copy</button>
+      <pre id="decide-curl">curl -X POST https://satrank.dev/api/decide \
+  -H "Content-Type: application/json" \
+  -d '{"target": "02abc...def", "caller": "your-agent-hash"}'</pre>
+    </div>
+    <div class="decide-response">
+      <pre>{ "go": true, "successRate": 0.827, "verdict": "SAFE", "survival": { "prediction": "stable" } }</pre>
+    </div>
+    <p class="decide-cost">1 sat &middot; &lt; 50ms</p>
+  </div>
+
+  <!-- The cycle: decide → pay → report -->
+  <div class="section cycle-section">
+    <div class="cycle-steps">
+      <div class="cycle-step">
         <div class="step-num">1</div>
-        <div class="step-title">Request</div>
-        <div class="step-desc">Call any scored endpoint without credentials.</div>
-        <div class="step-code"><code>GET /api/agent/{hash}</code></div>
+        <div class="step-title">Decide</div>
+        <div class="step-desc"><code>POST /api/decide</code> &mdash; GO or NO-GO with success probability.</div>
+        <div class="step-cost accent">1 sat</div>
       </div>
-      <div class="l402-step">
+      <div class="cycle-arrow">&rarr;</div>
+      <div class="cycle-step">
         <div class="step-num">2</div>
-        <div class="step-title">Receive invoice</div>
-        <div class="step-desc">Server returns <code>HTTP 402</code> with a Lightning invoice in the <code>WWW-Authenticate</code> header. Cost: <strong class="accent">1 sat</strong>.</div>
+        <div class="step-title">Pay</div>
+        <div class="step-desc">If <code>go: true</code>, proceed with the Lightning payment to your counterparty.</div>
       </div>
-      <div class="l402-step">
+      <div class="cycle-arrow">&rarr;</div>
+      <div class="cycle-step">
         <div class="step-num">3</div>
-        <div class="step-title">Pay & retry</div>
-        <div class="step-desc">Pay the invoice, then resend your request with the L402 token to get the score.</div>
+        <div class="step-title">Report</div>
+        <div class="step-desc"><code>POST /api/report</code> &mdash; success, failure, or timeout.</div>
+        <div class="step-cost" style="color:#00c853">free</div>
       </div>
     </div>
-    <div class="l402-code">
-      <div><span class="comment"># Step 1 &mdash; Request (returns 402 + invoice)</span></div>
-      <div><span class="cmd">curl</span> <span class="flag">-i</span> <span class="url">https://satrank.dev/api/agent/{hash}</span></div>
-      <div><span class="status">HTTP/2 402</span></div>
-      <div><span class="comment"># WWW-Authenticate: L402 macaroon="AGI...", invoice="lnbc10n1..."</span></div>
-      <div class="l402-code-gap"><span class="comment"># Step 2 &mdash; Pay the invoice (1 sat)</span></div>
-      <div><span class="cmd">lncli payinvoice</span> <span class="url">lnbc10n1...</span></div>
-      <div class="l402-code-gap"><span class="comment"># Step 3 &mdash; Retry with L402 token</span></div>
-      <div><span class="cmd">curl</span> <span class="flag">-H</span> <span class="cmd">"Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;"</span> <span class="url">https://satrank.dev/api/agent/{hash}</span></div>
-    </div>
+    <p class="cycle-flywheel">Your reports make future decisions better for every agent on the network.</p>
   </div>
 
   <!-- Leaderboard -->

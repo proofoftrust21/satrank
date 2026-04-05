@@ -77,6 +77,20 @@
     } catch (e) { return '#'; }
   }
 
+  // -- Copy button --
+  var copyBtn = document.getElementById('copy-decide');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var code = document.getElementById('decide-curl');
+      if (code) {
+        navigator.clipboard.writeText(code.textContent).then(function () {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(function () { copyBtn.textContent = 'Copy'; }, 2000);
+        });
+      }
+    });
+  }
+
   // -- Stats --
   fetchWithRetry(API + '/stats', 1)
     .then(function (d) {
