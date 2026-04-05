@@ -151,14 +151,18 @@ export class AgentRepository {
 
   updateLightningStats(hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number, uniquePeers?: number): void {
     if (uniquePeers !== undefined && uniquePeers > 0) {
-      this.db.prepare(
-        'UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ? WHERE public_key_hash = ?'
-      ).run(channels, capacitySats, alias, lastSeen, uniquePeers, hash);
-    } else {
-      this.db.prepare(
-        'UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ? WHERE public_key_hash = ?'
-      ).run(channels, capacitySats, alias, lastSeen, hash);
+      try {
+        this.db.prepare(
+          'UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ? WHERE public_key_hash = ?'
+        ).run(channels, capacitySats, alias, lastSeen, uniquePeers, hash);
+        return;
+      } catch {
+        // unique_peers column may not exist yet (migration pending) — fallback without it
+      }
     }
+    this.db.prepare(
+      'UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ? WHERE public_key_hash = ?'
+    ).run(channels, capacitySats, alias, lastSeen, hash);
   }
 
   updatePublicKey(hash: string, publicKey: string): void {
