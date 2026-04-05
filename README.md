@@ -32,7 +32,7 @@ Composite score 0-100 computed from 5 weighted factors:
 | Factor | Weight | Description |
 |--------|--------|-------------|
 | **Volume** | 25% | Verified transactions, log-normalized |
-| **Reputation** | 30% | Attestations weighted by temporal decay (30-day half-life) and attester score |
+| **Reputation** | 30% | Graph centrality + peer trust (BTC/channel). LN+ ratings as bonus (+8 max) |
 | **Seniority** | 15% | Days since first seen, diminishing returns |
 | **Regularity** | 15% | Inverse coefficient of variation of transaction intervals |
 | **Diversity** | 15% | Unique counterparties, log-normalized |

@@ -67,10 +67,9 @@ User: Should I accept a payment channel from agent abc123...?
 Agent calls get_agent_score({ publicKeyHash: "abc123..." })
 
 Agent: This agent has a trust score of 73/100 (medium confidence).
-       They have 450 verified transactions, a 9.1/10 LN+ community rating,
-       and a seniority of 180 days. The score is verifiable:
+       450 channels, centrality rank #12, peer trust 0.3 BTC/channel,
+       active for 730 days. Verifiable:
        - Lightning node: https://mempool.space/lightning/node/02abc...
-       - LN+ profile: https://lightningnetwork.plus/nodes/02abc...
 ```
 
 ### Example: attest after transacting
@@ -215,12 +214,12 @@ SatRank computes a composite trust score (0-100) from 5 weighted factors:
 | Factor | Weight | Source |
 |--------|--------|--------|
 | Volume | 25% | Verified transaction count (log-normalized) |
-| Reputation | 30% | LN+ ratings with exponential decay + centrality bonuses |
+| Reputation | 30% | Graph centrality + peer trust (BTC/channel). LN+ ratings as bonus (+8 max) |
 | Seniority | 15% | Days since first seen (diminishing returns) |
 | Regularity | 15% | Consistency of transaction intervals |
 | Diversity | 15% | Unique counterparties (log-normalized) |
 
-Anti-gaming: mutual-loop detection (70% penalty), minimum 7-day seniority to attest, attestation concentration limits.
+Anti-gaming: mutual-loop detection (95% penalty), cycle detection up to 4 hops (90% penalty), minimum 7-day seniority to attest, attestation concentration limits.
 
 Full methodology: `/methodology` on any SatRank instance.
 
@@ -231,7 +230,7 @@ Full methodology: `/methodology` on any SatRank instance.
 | | SatRank | Web of Trust (WoT) | Score.Kred | NaN Mesh |
 |---|---|---|---|---|
 | **Scoring method** | Composite 5-factor (volume, reputation, seniority, regularity, diversity) | Binary trust/distrust edges | Social influence aggregation | Behavioral clustering |
-| **Data sources** | Lightning transactions, LN+ ratings, graph centrality | User-created trust assertions | Twitter, GitHub, LinkedIn | On-chain transactions |
+| **Data sources** | Lightning graph (centrality, capacity), route probes, LN+ ratings (bonus) | User-created trust assertions | Twitter, GitHub, LinkedIn | On-chain transactions |
 | **Payment model** | L402 micropayments (1 sat/query) | Free | Freemium SaaS | Not public |
 | **Anti-gaming** | Mutual-loop detection, attestation concentration limits, seniority gates | Sybil-vulnerable (trust is free) | Relies on social platform identity | On-chain cost as barrier |
 | **Evidence transparency** | Full: verification URLs to mempool.space, LN+, raw transaction samples | Partial: trust graph visible | Opaque scoring | Opaque scoring |

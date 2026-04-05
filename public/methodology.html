@@ -46,7 +46,7 @@
       <tr>
         <td><strong>Reputation</strong></td>
         <td><span class="weight-bar wb-reputation wb-30"></span>30%</td>
-        <td>Community ratings, attestations, centrality</td>
+        <td>Graph centrality, peer trust (BTC/channel), attestations</td>
       </tr>
       <tr>
         <td><strong>Seniority</strong></td>
@@ -151,6 +151,11 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <p>Each scored query is a demand signal. The bonus is <code>min(10, round(log2(queryCount + 1) * 2))</code>. An agent queried 100 times receives +13 (capped at +10).</p>
   </div>
 
+  <div class="card">
+    <div class="card-title">LN+ Community Ratings Bonus (max +8)</div>
+    <p>Positive ratings from <a href="https://lightningnetwork.plus" style="color:#f7931a">LN+</a> contribute a bonus: <code>min(8, round(log2(positive + 1) * ratingsRatio * 3))</code> where ratingsRatio = positive / (positive + negative + 1). This keeps the social signal as a reward, not a requirement.</p>
+  </div>
+
   <!-- Confidence -->
   <h2>Confidence Levels</h2>
   <p>
@@ -187,7 +192,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <div class="card">
     <div class="card-title">LightningNetwork.Plus (LN+)</div>
-    <p>Community reputation platform. Provides rank (0&ndash;10), positive/negative ratings, and graph centrality metrics (hubness, betweenness, hopness). Used for Lightning node reputation scoring. Verifiable at <code>https://lightningnetwork.plus/nodes/{publicKey}</code>.</p>
+    <p>Community reputation platform. Provides positive/negative ratings and graph centrality metrics (hubness, betweenness, hopness). Centrality data feeds the reputation component; user ratings contribute a separate bonus (max +8 pts). Verifiable at <code>https://lightningnetwork.plus/nodes/{publicKey}</code>.</p>
   </div>
 
   <div class="card">
@@ -209,14 +214,14 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <li><strong>New attester weight reduction.</strong> Attesters younger than a minimum age carry significantly reduced weight. This prevents rapid bootstrapping of fake reputation.</li>
     <li><strong>Attester reliability weighting.</strong> Each attester's weight is proportional to their own score. Unknown attesters (score 0) carry minimal weight.</li>
     <li><strong>Temporal decay.</strong> Attestation weight decays exponentially over time. Old attestations matter less than recent ones. This ensures scores reflect current behavior.</li>
-    <li><strong>Negative ratings penalty.</strong> Community negative ratings actively reduce the reputation score, not just dilute it. A node with only negative ratings scores lower than one with no ratings at all.</li>
+    <li><strong>Negative ratings dilution.</strong> Community negative ratings on LN+ reduce the LN+ bonus. A node with more negatives than positives receives no bonus.</li>
     <li><strong>Manual source penalty.</strong> Agents registered manually (not discovered via protocol or graph) face a linear penalty until they accumulate sufficient verified transactions.</li>
   </ul>
 
   <!-- Limitations -->
   <h2 id="limitations">Limitations &amp; Centralization Risk</h2>
   <p>
-    Our scores correlate with node size. Volume, capacity, seniority, and LN+ rank all favor
+    Our scores correlate with node size. Volume, capacity, seniority, and peer trust all favor
     large, established nodes. Using the total score as the sole routing criterion will concentrate
     traffic on dominant nodes.
   </p>
@@ -243,7 +248,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <ul>
     <li><strong>Transactions:</strong> Total count, verified count, and a sample of the 5 most recent transactions with tx IDs, protocol, amount bucket, and verification status.</li>
     <li><strong>Lightning Graph:</strong> Public key, channel count, capacity in sats, and a link to <code>mempool.space</code> where you can independently verify.</li>
-    <li><strong>Reputation:</strong> Positive/negative ratings, LN+ rank, hubness and betweenness ranks, and a link to <code>lightningnetwork.plus</code> for independent verification.</li>
+    <li><strong>Reputation:</strong> Hubness and betweenness centrality ranks, BTC per channel (peer trust), and a link to <code>lightningnetwork.plus</code> for independent verification of community ratings.</li>
     <li><strong>Popularity:</strong> Query count and the computed popularity bonus, showing how much demand contributed to the score.</li>
   </ul>
 
@@ -255,8 +260,8 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <!-- Worked Example -->
   <h2>Worked Example: ACINQ</h2>
   <p>
-    ACINQ is a major Lightning node operator. Here is how their score of <strong>84</strong> is computed
-    (approximate values from a recent crawl):
+    ACINQ is a major Lightning node operator with ~2,095 channels and 382 BTC of capacity.
+    Here is how the score is computed:
   </p>
 
   <table>
@@ -264,59 +269,56 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <tbody>
       <tr>
         <td>Volume</td>
-        <td>~1988 channels (network max ~2000)</td>
-        <td>96</td>
-        <td>96 &times; 0.25 = 24.0</td>
+        <td>2,095 channels (log scale, ref 500)</td>
+        <td>100</td>
+        <td>100 &times; 0.25 = 25.0</td>
       </tr>
       <tr>
         <td>Reputation</td>
-        <td>LN+ rank 7, 20+ positive ratings, hubness rank 15, betweenness rank 30</td>
-        <td>~71</td>
-        <td>71 &times; 0.30 = 21.3</td>
+        <td>Hubness #4, betweenness #1, 0.18 BTC/channel</td>
+        <td>~60</td>
+        <td>60 &times; 0.30 = 18.0</td>
       </tr>
       <tr>
         <td>Seniority</td>
-        <td>First seen ~90 days ago (from crawl start)</td>
-        <td>~39</td>
-        <td>39 &times; 0.15 = 5.9</td>
+        <td>~2,921 days (8 years, half-life 730d)</td>
+        <td>~98</td>
+        <td>98 &times; 0.15 = 14.7</td>
       </tr>
       <tr>
         <td>Regularity</td>
-        <td>Last seen yesterday (1 day ago)</td>
-        <td>~97</td>
-        <td>97 &times; 0.15 = 14.6</td>
+        <td>5/5 probes reachable (100% uptime)</td>
+        <td>100</td>
+        <td>100 &times; 0.15 = 15.0</td>
       </tr>
       <tr>
         <td>Diversity</td>
-        <td>~59 BTC capacity</td>
-        <td>~92</td>
-        <td>92 &times; 0.15 = 13.8</td>
+        <td>382 BTC capacity (fallback, unique_peers pending)</td>
+        <td>100</td>
+        <td>100 &times; 0.15 = 15.0</td>
       </tr>
     </tbody>
     <tfoot>
       <tr>
         <td colspan="3"><strong>Base score (rounded)</strong></td>
-        <td><strong>80</strong></td>
+        <td><strong>88</strong></td>
       </tr>
       <tr>
-        <td colspan="3">+ Popularity bonus (42 queries &rarr; +5)</td>
-        <td>+5</td>
+        <td colspan="3">+ Probe low latency bonus</td>
+        <td>+3</td>
+      </tr>
+      <tr>
+        <td colspan="3">+ Probe short hop bonus</td>
+        <td>+2</td>
       </tr>
       <tr>
         <td colspan="3"><strong>Final score</strong></td>
-        <td><strong>84*</strong></td>
+        <td><strong>~93*</strong></td>
       </tr>
     </tfoot>
   </table>
 
-  <p><em>* Values approximate as of launch (April 2026). Actual scores are computed in real-time and may differ.</em></p>
-
-  <div class="note">
-    <strong>Note on seniority:</strong> ACINQ's seniority score is only ~39 because SatRank's
-    <code>first_seen</code> reflects when the node was first indexed by SatRank's crawler, not
-    the node's actual creation date on the Lightning Network. As the crawler accumulates history,
-    seniority scores will increase.
-  </div>
+  <p><em>* Values approximate. Actual scores are computed in real-time and may differ slightly. ACINQ has 0 LN+ ratings, so no LN+ bonus is applied.</em></p>
 
   <!-- Verdict API -->
   <h2 id="verdict">Verdict API &mdash; SAFE / RISKY / UNKNOWN</h2>
@@ -372,6 +374,10 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <li><code>dispute_reported</code> &mdash; at least one attestation with category &ldquo;dispute&rdquo;</li>
     <li><code>unreachable</code> &mdash; no route from SatRank&rsquo;s node to the target (fresh probe only)</li>
     <li><code>unreachable_from_caller</code> &mdash; no route from the caller&rsquo;s position to the target (requires <code>caller_pubkey</code>, see <a href="#pathfinding">Pathfinding</a>)</li>
+    <li><code>stale_gossip</code> &mdash; no gossip update in 7&ndash;14 days</li>
+    <li><code>zombie_gossip</code> &mdash; no gossip update in 14+ days</li>
+    <li><code>capacity_drain</code> &mdash; capacity dropped 30%+ in 24 hours</li>
+    <li><code>severe_capacity_drain</code> &mdash; capacity dropped 50%+ in 24 hours</li>
   </ul>
 
   <h3>Structured Attestation Categories</h3>
