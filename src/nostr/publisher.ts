@@ -1,13 +1,6 @@
 // Nostr publisher — publishes SatRank scores as NIP-85 kind 30382 events
 // Each active Lightning node gets a signed assertion with score, verdict, components, and reachability.
-// Agents and wallets can subscribe to these events to make trust decisions without the API.
-// nostr-tools uses ESM subpath exports — tsx handles this at runtime,
-// but tsc with moduleResolution "node" can't resolve the types.
-// @ts-expect-error — runtime import works via tsx
-import { finalizeEvent, type EventTemplate } from 'nostr-tools/pure';
-// @ts-expect-error — runtime import works via tsx
-import { Relay } from 'nostr-tools/relay';
-import { hexToBytes } from '@noble/hashes/utils';
+// nostr-tools is ESM-only — all imports are dynamic to work in both tsx (dev) and node CJS (production).
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
@@ -34,7 +27,7 @@ interface ScoreEvent {
 }
 
 export class NostrPublisher {
-  private sk: Uint8Array;
+  private skHex: string;
   private relays: string[];
   private minScore: number;
 
@@ -46,12 +39,20 @@ export class NostrPublisher {
     private survivalService: SurvivalService,
     options: NostrPublisherOptions,
   ) {
-    this.sk = hexToBytes(options.privateKeyHex);
+    this.skHex = options.privateKeyHex;
     this.relays = options.relays;
     this.minScore = options.minScore;
   }
 
   async publishScores(): Promise<{ published: number; errors: number }> {
+    // Dynamic imports — nostr-tools is ESM-only, must use import() in CJS runtime
+    // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath, works at runtime
+    const { finalizeEvent } = await import('nostr-tools/pure');
+    // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath, works at runtime
+    const { Relay } = await import('nostr-tools/relay');
+    const { hexToBytes } = await import('@noble/hashes/utils');
+    const sk = hexToBytes(this.skHex);
+
     const agents = this.agentRepo.findScoredAbove(this.minScore);
     const reachableSet = new Set(
       this.probeRepo ? this.getReachableHashes() : [],
@@ -91,7 +92,8 @@ export class NostrPublisher {
     let errors = 0;
 
     // Connect to relays
-    const connections: Relay[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const connections: any[] = [];
     for (const url of this.relays) {
       try {
         const relay = await Relay.connect(url);
@@ -111,7 +113,7 @@ export class NostrPublisher {
     // Publish events with throttle (20/sec to avoid relay rate limits)
     for (const ev of events) {
       try {
-        const template: EventTemplate = {
+        const template = {
           kind: KIND_TRUSTED_ASSERTION,
           created_at: Math.floor(Date.now() / 1000),
           tags: [
@@ -131,7 +133,7 @@ export class NostrPublisher {
           content: '',
         };
 
-        const signed = finalizeEvent(template, this.sk);
+        const signed = finalizeEvent(template, sk);
 
         for (const relay of connections) {
           try {

@@ -24,7 +24,6 @@ import { ChannelSnapshotRepository } from '../repositories/channelSnapshotReposi
 import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
 import { SurvivalService } from '../services/survivalService';
-import { NostrPublisher } from '../nostr/publisher';
 
 // --- Per-source crawl functions ---
 
@@ -335,27 +334,33 @@ async function main(): Promise<void> {
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
     }, intervals.lnplus);
 
-    // Nostr score publisher — publishes NIP-85 kind 30382 events
+    // Nostr score publisher — dynamic import to avoid ESM/CJS conflict at module load
     let timerNostr: ReturnType<typeof setInterval> | null = null;
     if (config.NOSTR_PRIVATE_KEY) {
-      const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
-      const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
-        privateKeyHex: config.NOSTR_PRIVATE_KEY,
-        relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
-        minScore: config.NOSTR_MIN_SCORE,
-      });
+      try {
+        const { NostrPublisher } = await import('../nostr/publisher');
+        const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
+        const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
+          privateKeyHex: config.NOSTR_PRIVATE_KEY,
+          relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
+          minScore: config.NOSTR_MIN_SCORE,
+        });
 
-      // Publish after initial crawl
-      nostrPublisher.publishScores().catch(err =>
-        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial Nostr publish failed'),
-      );
-
-      timerNostr = setInterval(() => {
+        // Publish after initial crawl
         nostrPublisher.publishScores().catch(err =>
-          logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr publish error'),
+          logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial Nostr publish failed'),
         );
-      }, config.NOSTR_PUBLISH_INTERVAL_MS);
-      logger.info({ intervalMs: config.NOSTR_PUBLISH_INTERVAL_MS, relays: config.NOSTR_RELAYS }, 'Nostr publisher started');
+
+        timerNostr = setInterval(() => {
+          nostrPublisher.publishScores().catch(err =>
+            logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr publish error'),
+          );
+        }, config.NOSTR_PUBLISH_INTERVAL_MS);
+        logger.info({ intervalMs: config.NOSTR_PUBLISH_INTERVAL_MS, relays: config.NOSTR_RELAYS }, 'Nostr publisher started');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ error: msg }, 'Failed to load Nostr publisher — ESM/CJS incompatibility or missing dependency');
+      }
     } else {
       logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
     }

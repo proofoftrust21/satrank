@@ -44,7 +44,7 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: satrank-crawler
     restart: unless-stopped
-    entrypoint: ["node", "dist/crawler/run.js", "--cron"]
+    entrypoint: ["node", "--experimental-require-module", "dist/crawler/run.js", "--cron"]
     env_file:
       - .env.production
     environment:
