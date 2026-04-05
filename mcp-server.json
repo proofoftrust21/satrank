@@ -1,0 +1,70 @@
+{
+  "name": "satrank",
+  "display_name": "SatRank — Lightning Trust Scoring",
+  "description": "Route reliability oracle for Lightning Network payments. GO/NO-GO decisions with personalized pathfinding, trust scores for 17,000+ nodes, probe-verified reachability. Built for autonomous AI agents.",
+  "version": "0.1.0",
+  "homepage": "https://satrank.dev",
+  "repository": "https://github.com/proofoftrust21/satrank",
+  "license": "AGPL-3.0",
+  "author": "SatRank",
+  "categories": ["finance", "lightning", "bitcoin", "trust", "agents"],
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["tsx", "src/mcp/server.ts"],
+  "env": {
+    "DB_PATH": {
+      "description": "Path to the SQLite database",
+      "default": "./data/satrank.db"
+    },
+    "SATRANK_API_KEY": {
+      "description": "API key for write operations (report, attestation). Generate with: openssl rand -hex 32",
+      "required": false
+    }
+  },
+  "tools": [
+    {
+      "name": "decide",
+      "description": "GO/NO-GO decision with success probability. Returns go (boolean), successRate (0-1), verdict (SAFE/RISKY/UNKNOWN), pathfinding, survival prediction, and risk profile."
+    },
+    {
+      "name": "report",
+      "description": "Report a transaction outcome (success/failure/timeout). Free. Weighted by reporter trust score. Preimage verification gives 2x weight bonus."
+    },
+    {
+      "name": "get_profile",
+      "description": "Full agent profile: score, components, report statistics, probe uptime, rank, evidence, flags, survival prediction."
+    },
+    {
+      "name": "get_agent_score",
+      "description": "Detailed trust score with 5 components (volume, reputation, seniority, regularity, diversity), evidence, and verification URLs."
+    },
+    {
+      "name": "get_verdict",
+      "description": "SAFE/RISKY/UNKNOWN verdict with risk profile, personal trust graph, and personalized pathfinding."
+    },
+    {
+      "name": "get_batch_verdicts",
+      "description": "Batch verdict for up to 100 agents in one call."
+    },
+    {
+      "name": "get_top_agents",
+      "description": "Leaderboard ranked by trust score."
+    },
+    {
+      "name": "search_agents",
+      "description": "Search agents by alias (partial match)."
+    },
+    {
+      "name": "get_network_stats",
+      "description": "Global network statistics: nodes probed, phantom rate, reachable count, probes/24h."
+    },
+    {
+      "name": "get_top_movers",
+      "description": "Agents with the biggest score changes over 7 days."
+    },
+    {
+      "name": "submit_attestation",
+      "description": "Submit a trust attestation after a transaction. Requires SATRANK_API_KEY."
+    }
+  ]
+}

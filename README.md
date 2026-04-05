@@ -126,14 +126,62 @@ curl http://localhost:3000/api/stats
 
 ## MCP Server
 
-SatRank exposes an MCP (Model Context Protocol) server for agent-native access via stdio:
+SatRank exposes an MCP (Model Context Protocol) server for agent-native access via stdio. 11 tools covering trust decisions, scoring, search, and reporting.
+
+### Install in Claude Code
+
+```bash
+claude mcp add satrank -- npx tsx src/mcp/server.ts
+```
+
+Or with environment variables:
+
+```bash
+claude mcp add satrank -e DB_PATH=./data/satrank.db -e SATRANK_API_KEY=<key> -- npx tsx src/mcp/server.ts
+```
+
+### Install in Cursor / VS Code
+
+Add to `.cursor/mcp.json` or `.vscode/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "satrank": {
+      "command": "npx",
+      "args": ["tsx", "src/mcp/server.ts"],
+      "cwd": "/path/to/satrank",
+      "env": {
+        "DB_PATH": "./data/satrank.db",
+        "SATRANK_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+### Available tools (11)
+
+| Tool | Description |
+|------|-------------|
+| `decide` | GO/NO-GO with success probability — the primary pre-transaction tool |
+| `report` | Report outcome (success/failure/timeout) — requires API key |
+| `get_profile` | Full agent profile with reports, uptime, rank, evidence |
+| `get_agent_score` | Detailed trust score with components and evidence |
+| `get_verdict` | SAFE/RISKY/UNKNOWN with risk profile and pathfinding |
+| `get_batch_verdicts` | Batch verdict for up to 100 agents |
+| `get_top_agents` | Leaderboard ranked by score |
+| `search_agents` | Search by alias (partial match) |
+| `get_network_stats` | Global network statistics |
+| `get_top_movers` | Agents with biggest 7-day score changes |
+| `submit_attestation` | Submit a trust attestation — requires API key |
+
+### Run manually
 
 ```bash
 npm run mcp        # Development
 npm run mcp:prod   # Production
 ```
-
-Available tools: `get_agent_score`, `get_verdict`, `get_batch_verdicts`, `decide`, `report`, `get_profile`, `get_top_agents`, `search_agents`, `get_network_stats`, `get_top_movers`, `submit_attestation`.
 
 ## SDK
 
