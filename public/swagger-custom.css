@@ -530,3 +530,113 @@ html, body {
 .swagger-ui .expand-operation svg {
   fill: #8888a0;
 }
+
+/* ===== Type badges (string, integer, uuid, array, etc.) ===== */
+.swagger-ui .prop-type,
+.swagger-ui .parameter__type,
+.swagger-ui span.model-title__text,
+.swagger-ui .json-schema-2020-12-keyword--type {
+  color: #aa88ff;
+}
+.swagger-ui .prop-format,
+.swagger-ui .parameter__extension,
+.swagger-ui .json-schema-2020-12-keyword--format {
+  color: #8888c0;
+}
+
+/* ===== Descriptions that remain too dark ===== */
+.swagger-ui .markdown p,
+.swagger-ui .markdown li,
+.swagger-ui .renderedMarkdown p,
+.swagger-ui .renderedMarkdown li,
+.swagger-ui .opblock-description-wrapper p,
+.swagger-ui .opblock-external-docs-wrapper p {
+  color: #c0c0d8;
+}
+.swagger-ui .opblock-summary-description {
+  color: #a0a0b8;
+}
+
+/* ===== Expand/collapse buttons and toggles ===== */
+.swagger-ui .expand-methods svg,
+.swagger-ui .expand-operation svg,
+.swagger-ui .model-toggle::after,
+.swagger-ui .opblock-tag svg {
+  fill: #a0a0b8;
+}
+.swagger-ui .opblock-tag:hover svg,
+.swagger-ui .expand-operation:hover svg {
+  fill: #e0e0e8;
+}
+.swagger-ui .model-toggle {
+  color: #c0c0d8;
+}
+.swagger-ui .model-toggle:hover {
+  color: #e0e0e8;
+}
+
+/* ===== Parameter names and required markers ===== */
+.swagger-ui .parameter__name {
+  color: #e0e0e8;
+}
+.swagger-ui .parameter__name.required {
+  color: #e0e0e8;
+  font-weight: 700;
+}
+.swagger-ui .parameter__name.required::after {
+  color: #ff5252;
+}
+.swagger-ui .parameter__in {
+  color: #6666a0;
+}
+
+/* ===== Response status codes ===== */
+.swagger-ui .response-col_status {
+  color: #e0e0e8;
+  font-weight: 600;
+}
+.swagger-ui .response-col_description {
+  color: #c0c0d8;
+}
+
+/* ===== Schema enum values ===== */
+.swagger-ui .prop-enum {
+  color: #f7931a;
+}
+.swagger-ui .model .prop-enum .prop-enum-value {
+  background: #1a1a2e;
+  border: 1px solid #333350;
+  color: #f7931a;
+}
+
+/* ===== Example values in schemas ===== */
+.swagger-ui .example-value,
+.swagger-ui .model-example pre {
+  background: #0d0d18;
+  color: #c0c0d8;
+}
+
+/* ===== Try it out response body ===== */
+.swagger-ui .live-responses-table .response-col_description pre {
+  background: #0d0d18;
+  color: #e0e0e8;
+}
+.swagger-ui .responses-header td {
+  color: #a0a0b8;
+}
+
+/* ===== oneOf/allOf/anyOf selectors ===== */
+.swagger-ui .json-schema-2020-12-keyword--oneOf,
+.swagger-ui .json-schema-2020-12-keyword--allOf {
+  color: #8888c0;
+}
+
+/* ===== Ensure all remaining text is legible ===== */
+.swagger-ui span,
+.swagger-ui div,
+.swagger-ui td,
+.swagger-ui th,
+.swagger-ui li,
+.swagger-ui p {
+  color: inherit;
+}
