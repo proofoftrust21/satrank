@@ -187,7 +187,7 @@ export function createApp() {
   // Tip header — help agents reduce routing fees by opening a direct channel
   if (config.NODE_PUBKEY) {
     api.use((_req, res, next) => {
-      res.setHeader('X-SatRank-Tip', `Save on routing fees — open a channel to ${config.NODE_PUBKEY}`);
+      res.setHeader('X-SatRank-Tip', `Save on routing fees - open a channel to ${config.NODE_PUBKEY}`);
       next();
     });
   }
