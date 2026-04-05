@@ -145,6 +145,24 @@ export function createApp() {
   app.use(requestIdMiddleware);
   app.use(requestTimeout(30_000));
 
+  // NIP-05 — Nostr identity verification (must be before static middleware)
+  app.get('/.well-known/nostr.json', (_req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    res.json({
+      names: {
+        satrank: '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4',
+      },
+      relays: {
+        '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4': [
+          'wss://relay.damus.io',
+          'wss://nos.lol',
+          'wss://relay.nostr.band',
+        ],
+      },
+    });
+  });
+
   // Static landing page
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', 'public') }));
