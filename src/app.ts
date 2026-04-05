@@ -183,6 +183,14 @@ export function createApp() {
   // API routes — single namespace /api/
   const api = Router();
   api.use(apiRateLimit);
+
+  // Tip header — help agents reduce routing fees by opening a direct channel
+  if (config.NODE_PUBKEY) {
+    api.use((_req, res, next) => {
+      res.setHeader('X-SatRank-Tip', `Save on routing fees — open a channel to ${config.NODE_PUBKEY}`);
+      next();
+    });
+  }
   api.use(createV2Routes(v2Controller));                  // decide, report, profile
   api.use(createAgentRoutes(agentController));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController));// attestations

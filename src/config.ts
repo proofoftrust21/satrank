@@ -36,6 +36,8 @@ const configSchema = z.object({
   PROBE_MAX_PER_SECOND: z.coerce.number().int().positive().default(10),
   // Probe routing: amount in sats to test routes with
   PROBE_AMOUNT_SATS: z.coerce.number().int().positive().default(1000),
+  // Node pubkey — shown in API responses so agents can open a direct channel
+  NODE_PUBKEY: z.string().regex(/^(02|03)[a-f0-9]{64}$/).optional(),
 });
 
 const parsed = configSchema.safeParse(process.env);

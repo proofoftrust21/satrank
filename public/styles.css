@@ -339,6 +339,7 @@ tr.clickable { cursor: pointer; }
 .decide-response { background: #0d0d18; border: 1px solid #1e1e30; border-radius: 10px; padding: 12px 20px; text-align: left; margin: 0 auto 12px; max-width: 640px; }
 .decide-response pre { margin: 0; color: #00c853; font-size: 0.85rem; white-space: pre-wrap; }
 .decide-cost { color: #f7931a; font-weight: 700; font-size: 0.9rem; }
+.decide-personal { color: #8888a0; font-size: 0.85rem; margin-top: 4px; font-style: italic; }
 
 /* SDK one-liner */
 .sdk-oneliner { margin-top: 20px; padding-top: 16px; border-top: 1px solid #1a1a2e; }
