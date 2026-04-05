@@ -1,4 +1,4 @@
-// v2 routes — decide, report, profile
+// Decision routes — decide, report, profile
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { V2Controller } from '../controllers/v2Controller';

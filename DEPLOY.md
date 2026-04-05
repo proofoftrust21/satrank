@@ -47,7 +47,7 @@ authenticator:
 servicesettings:
   - name: "satrank"
     hostregexp: "satrank.dev"
-    pathregexp: "/api/(v[12]/)?(agent|agents|decide|profile).*"
+    pathregexp: "/api/(agent|agents|decide|profile).*"
     price: 1
     duration: 31536000
     capabilities:
@@ -113,8 +113,7 @@ server {
 
     # L402-gated endpoints — proxy through Aperture
     # Matches: /api/agent/*, /api/agents/*, /api/decide, /api/profile/*
-    # Also matches legacy versioned routes: /api/v1/agent/*, /api/v2/decide, etc.
-    location ~ ^/api/(v[12]/)?(agent|agents|decide|profile) {
+    location ~ ^/api/(agent|agents|decide|profile) {
         proxy_pass http://127.0.0.1:8443;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -123,7 +122,7 @@ server {
     }
 
     # Free endpoint — report goes direct to Express (API key auth, no L402)
-    location ~ ^/api/(v[12]/)?report$ {
+    location = /api/report {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -166,7 +165,6 @@ sudo nginx -t && sudo systemctl reload nginx
 - `/api/report` → Express direct (API key auth, free)
 - `/api/health`, `/api/stats`, `/api/attestations`, `/api/docs` → Express direct (free)
 - `/`, `/app.js`, `/favicon.png` → Express static (free)
-- Legacy versioned routes (`/api/v1/...`, `/api/v2/...`) continue to work
 
 ## 3. SatRank (Docker)
 

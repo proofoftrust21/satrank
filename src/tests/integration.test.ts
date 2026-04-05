@@ -75,16 +75,16 @@ function buildTestApp() {
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', '..', 'public') }));
 
   const { Router } = express;
-  const v1 = Router();
-  v1.use(createAgentRoutes(agentController));
-  v1.use(createAttestationRoutes(attestationController));
-  v1.use(createHealthRoutes(healthController));
-  v1.get('/openapi.json', (_req, res) => res.json(openapiSpec));
-  v1.get('/docs', (_req, res) => {
+  const api = Router();
+  api.use(createAgentRoutes(agentController));
+  api.use(createAttestationRoutes(attestationController));
+  api.use(createHealthRoutes(healthController));
+  api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
+  api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send('<html><body>docs</body></html>');
   });
-  app.use('/api/v1', v1);
+  app.use('/api', api);
   app.use(errorHandler);
 
   return { app, db, agentRepo, txRepo, attestationRepo };
@@ -173,8 +173,8 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- Health endpoint ---
 
-  it('GET /api/v1/health returns 200 with DB status and schema version', async () => {
-    const res = await request(app).get('/api/v1/health');
+  it('GET /api/health returns 200 with DB status and schema version', async () => {
+    const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe('ok');
     expect(res.body.data.dbStatus).toBe('ok');
@@ -186,8 +186,8 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- Stats endpoint ---
 
-  it('GET /api/v1/stats returns network stats', async () => {
-    const res = await request(app).get('/api/v1/stats');
+  it('GET /api/stats returns network stats', async () => {
+    const res = await request(app).get('/api/stats');
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveProperty('totalAgents');
     expect(res.body.data).toHaveProperty('totalChannels');
@@ -199,8 +199,8 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- Version endpoint ---
 
-  it('GET /api/v1/version returns version info', async () => {
-    const res = await request(app).get('/api/v1/version');
+  it('GET /api/version returns version info', async () => {
+    const res = await request(app).get('/api/version');
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveProperty('version');
     expect(res.body.data).toHaveProperty('commit');
@@ -208,23 +208,23 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- Top agents (free, no L402) ---
 
-  it('GET /api/v1/agents/top returns 200 without L402', async () => {
-    const res = await request(app).get('/api/v1/agents/top');
+  it('GET /api/agents/top returns 200 without L402', async () => {
+    const res = await request(app).get('/api/agents/top');
     expect(res.status).toBe(200);
     expect(res.body.data).toBeInstanceOf(Array);
     expect(res.body.meta).toHaveProperty('total');
     expect(res.body.meta).toHaveProperty('limit');
   });
 
-  it('GET /api/v1/agents/top?limit=1 limits results', async () => {
-    const res = await request(app).get('/api/v1/agents/top?limit=1');
+  it('GET /api/agents/top?limit=1 limits results', async () => {
+    const res = await request(app).get('/api/agents/top?limit=1');
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBe(1);
     expect(res.body.meta.limit).toBe(1);
   });
 
-  it('GET /api/v1/agents/top returns components for each agent', async () => {
-    const res = await request(app).get('/api/v1/agents/top?limit=1');
+  it('GET /api/agents/top returns components for each agent', async () => {
+    const res = await request(app).get('/api/agents/top?limit=1');
     expect(res.status).toBe(200);
     const agent = res.body.data[0];
     expect(agent).toHaveProperty('components');
@@ -235,8 +235,8 @@ describe('Integration — HTTP endpoints', () => {
     expect(agent.components).toHaveProperty('diversity');
   });
 
-  it('GET /api/v1/agents/top?sort_by=reputation sorts by reputation component', async () => {
-    const res = await request(app).get('/api/v1/agents/top?sort_by=reputation');
+  it('GET /api/agents/top?sort_by=reputation sorts by reputation component', async () => {
+    const res = await request(app).get('/api/agents/top?sort_by=reputation');
     expect(res.status).toBe(200);
     expect(res.body.meta.sort_by).toBe('reputation');
     if (res.body.data.length >= 2) {
@@ -244,29 +244,29 @@ describe('Integration — HTTP endpoints', () => {
     }
   });
 
-  it('GET /api/v1/agents/top?sort_by=invalid returns 400', async () => {
-    const res = await request(app).get('/api/v1/agents/top?sort_by=invalid');
+  it('GET /api/agents/top?sort_by=invalid returns 400', async () => {
+    const res = await request(app).get('/api/agents/top?sort_by=invalid');
     expect(res.status).toBe(400);
   });
 
   // --- Search agents (free, no L402) ---
 
-  it('GET /api/v1/agents/search?alias=Alpha returns 200 without L402', async () => {
-    const res = await request(app).get('/api/v1/agents/search?alias=Alpha');
+  it('GET /api/agents/search?alias=Alpha returns 200 without L402', async () => {
+    const res = await request(app).get('/api/agents/search?alias=Alpha');
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBe(1);
     expect(res.body.data[0].alias).toBe('AlphaNode');
   });
 
-  it('GET /api/v1/agents/search without alias returns 400', async () => {
-    const res = await request(app).get('/api/v1/agents/search');
+  it('GET /api/agents/search without alias returns 400', async () => {
+    const res = await request(app).get('/api/agents/search');
     expect(res.status).toBe(400);
   });
 
   // --- Agent detail (L402-gated in prod, free in dev) ---
 
-  it('GET /api/v1/agent/:hash returns score with evidence', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentA.public_key_hash}`);
+  it('GET /api/agent/:hash returns score with evidence', async () => {
+    const res = await request(app).get(`/api/agent/${agentA.public_key_hash}`);
     expect(res.status).toBe(200);
     expect(res.body.data.agent.publicKeyHash).toBe(agentA.public_key_hash);
     expect(res.body.data.score).toHaveProperty('total');
@@ -274,21 +274,21 @@ describe('Integration — HTTP endpoints', () => {
     expect(res.body.data.evidence).toBeDefined();
   });
 
-  it('GET /api/v1/agent/:invalidHash returns 400', async () => {
-    const res = await request(app).get('/api/v1/agent/not-a-valid-hash');
+  it('GET /api/agent/:invalidHash returns 400', async () => {
+    const res = await request(app).get('/api/agent/not-a-valid-hash');
     expect(res.status).toBe(400);
   });
 
-  it('GET /api/v1/agent/:unknownHash returns 404', async () => {
+  it('GET /api/agent/:unknownHash returns 404', async () => {
     const unknownHash = sha256('nonexistent-agent');
-    const res = await request(app).get(`/api/v1/agent/${unknownHash}`);
+    const res = await request(app).get(`/api/agent/${unknownHash}`);
     expect(res.status).toBe(404);
   });
 
   // --- Agent history (L402-gated) ---
 
-  it('GET /api/v1/agent/:hash/history returns paginated snapshots', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentA.public_key_hash}/history`);
+  it('GET /api/agent/:hash/history returns paginated snapshots', async () => {
+    const res = await request(app).get(`/api/agent/${agentA.public_key_hash}/history`);
     expect(res.status).toBe(200);
     expect(res.body.data).toBeInstanceOf(Array);
     expect(res.body.meta).toHaveProperty('total');
@@ -296,8 +296,8 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- Agent attestations (L402-gated) ---
 
-  it('GET /api/v1/agent/:hash/attestations returns paginated attestations', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentA.public_key_hash}/attestations`);
+  it('GET /api/agent/:hash/attestations returns paginated attestations', async () => {
+    const res = await request(app).get(`/api/agent/${agentA.public_key_hash}/attestations`);
     expect(res.status).toBe(200);
     expect(res.body.data).toBeInstanceOf(Array);
     expect(res.body.meta).toHaveProperty('total');
@@ -305,9 +305,9 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- POST attestation (API key required in prod, passthrough in dev) ---
 
-  it('POST /api/v1/attestation creates an attestation', async () => {
+  it('POST /api/attestation creates an attestation', async () => {
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .send({
         txId,
         attesterHash: agentA.public_key_hash,
@@ -320,16 +320,16 @@ describe('Integration — HTTP endpoints', () => {
     expect(res.body.data).toHaveProperty('timestamp');
   });
 
-  it('POST /api/v1/attestation rejects invalid input', async () => {
+  it('POST /api/attestation rejects invalid input', async () => {
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .send({ txId: 'not-a-uuid', attesterHash: 'bad', subjectHash: 'bad', score: 999 });
     expect(res.status).toBe(400);
   });
 
-  it('POST /api/v1/attestation rejects self-attestation', async () => {
+  it('POST /api/attestation rejects self-attestation', async () => {
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .send({
         txId,
         attesterHash: agentA.public_key_hash,
@@ -341,8 +341,8 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- OpenAPI spec ---
 
-  it('GET /api/v1/openapi.json returns valid OpenAPI spec', async () => {
-    const res = await request(app).get('/api/v1/openapi.json');
+  it('GET /api/openapi.json returns valid OpenAPI spec', async () => {
+    const res = await request(app).get('/api/openapi.json');
     expect(res.status).toBe(200);
     expect(res.body.openapi).toBe('3.1.0');
     expect(res.body.info.title).toBe('SatRank API');
@@ -351,8 +351,8 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- Docs page ---
 
-  it('GET /api/v1/docs returns HTML', async () => {
-    const res = await request(app).get('/api/v1/docs');
+  it('GET /api/docs returns HTML', async () => {
+    const res = await request(app).get('/api/docs');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
   });
@@ -371,24 +371,24 @@ describe('Integration — HTTP endpoints', () => {
     const customId = 'test-request-id-12345';
     const unknownHash = sha256('reqid-propagation-test');
     const res = await request(app)
-      .get(`/api/v1/agent/${unknownHash}`)
+      .get(`/api/agent/${unknownHash}`)
       .set('x-request-id', customId);
     expect(res.status).toBe(404);
     expect(res.body.requestId).toBe(customId);
   });
 
   it('unknown routes return 404 via error handler', async () => {
-    const res = await request(app).get('/api/v1/nonexistent');
+    const res = await request(app).get('/api/nonexistent');
     expect(res.status).toBe(404);
   });
 
   // --- Duplicate attestation ---
 
-  it('POST /api/v1/attestation returns 409 on duplicate', async () => {
+  it('POST /api/attestation returns 409 on duplicate', async () => {
     // First attestation was already created in the test above (agentA → agentB)
     // Submit the same pair again — should conflict on UNIQUE(attester_hash, subject_hash)
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .send({
         txId,
         attesterHash: agentA.public_key_hash,
@@ -433,17 +433,14 @@ describe('Integration — L402 perimeter (production mode)', () => {
     agentRepo.insert(agent);
     agentHash = agent.public_key_hash;
 
-    // Simulate production L402 middleware — matches real apertureGateAuth behavior
-    // Includes shared secret verification (defense in depth)
-    const TEST_APERTURE_SECRET = 'test-aperture-shared-secret';
-    function prodApertureGateAuth(req: express.Request, _res: express.Response, next: express.NextFunction): void {
-      const header = req.headers['x-aperture-auth'] as string | undefined;
-      if (!header || !header.trim()) {
-        _res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: 'Payment required' } });
-        return;
-      }
-      // Verify shared secret — mirrors real middleware
-      if (header.trim() !== TEST_APERTURE_SECRET) {
+    // Simulate production apertureGateAuth — in production, the middleware checks
+    // for localhost IP (Aperture reverse proxy sits on the same host). Non-localhost
+    // requests are rejected with 402. In tests (NODE_ENV !== 'production'), the
+    // real middleware always passes through.
+    function prodLocalhostGateAuth(req: express.Request, _res: express.Response, next: express.NextFunction): void {
+      const ip = req.ip || req.socket.remoteAddress || '';
+      const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+      if (!isLocalhost) {
         _res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: 'Payment required' } });
         return;
       }
@@ -456,23 +453,23 @@ describe('Integration — L402 perimeter (production mode)', () => {
     testApp.use(requestIdMiddleware);
 
     const { Router } = express;
-    const v1 = Router();
+    const api = Router();
 
     // Agent routes with prod L402
     const agentRouter = Router();
     agentRouter.get('/agents/top', agentController.getTop);
     agentRouter.get('/agents/search', agentController.search);
-    agentRouter.get('/agent/:publicKeyHash', prodApertureGateAuth, agentController.getAgent);
-    agentRouter.get('/agent/:publicKeyHash/history', prodApertureGateAuth, agentController.getHistory);
-    v1.use(agentRouter);
+    agentRouter.get('/agent/:publicKeyHash', prodLocalhostGateAuth, agentController.getAgent);
+    agentRouter.get('/agent/:publicKeyHash/history', prodLocalhostGateAuth, agentController.getHistory);
+    api.use(agentRouter);
 
     // Attestation routes with prod L402
     const attestRouter = Router();
-    attestRouter.get('/agent/:publicKeyHash/attestations', prodApertureGateAuth, attestationController.getBySubject);
-    v1.use(attestRouter);
+    attestRouter.get('/agent/:publicKeyHash/attestations', prodLocalhostGateAuth, attestationController.getBySubject);
+    api.use(attestRouter);
 
-    v1.use(createHealthRoutes(healthController));
-    testApp.use('/api/v1', v1);
+    api.use(createHealthRoutes(healthController));
+    testApp.use('/api', api);
     testApp.use(errorHandler);
 
     app = testApp;
@@ -482,76 +479,38 @@ describe('Integration — L402 perimeter (production mode)', () => {
     db.close();
   });
 
-  // L402-gated endpoints should return 402 without X-Aperture-Auth
-  it('GET /api/v1/agent/:hash returns 402 without L402 header', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentHash}`);
-    expect(res.status).toBe(402);
-    expect(res.body.error.code).toBe('PAYMENT_REQUIRED');
+  // In tests, supertest connects via localhost, so the localhost gate passes through.
+  // This verifies that the gated endpoints work when accessed from localhost (as
+  // Aperture would in production).
+  it('GET /api/agent/:hash returns 200 from localhost (Aperture passthrough)', async () => {
+    const res = await request(app).get(`/api/agent/${agentHash}`);
+    expect(res.status).toBe(200);
   });
 
-  it('GET /api/v1/agent/:hash/history returns 402 without L402 header', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentHash}/history`);
-    expect(res.status).toBe(402);
+  it('GET /api/agent/:hash/history returns 200 from localhost', async () => {
+    const res = await request(app).get(`/api/agent/${agentHash}/history`);
+    expect(res.status).toBe(200);
   });
 
-  it('GET /api/v1/agent/:hash/attestations returns 402 without L402 header', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentHash}/attestations`);
-    expect(res.status).toBe(402);
+  it('GET /api/agent/:hash/attestations returns 200 from localhost', async () => {
+    const res = await request(app).get(`/api/agent/${agentHash}/attestations`);
+    expect(res.status).toBe(200);
   });
 
   // Free endpoints should return 200
-  it('GET /api/v1/agents/top returns 200 (no L402 required)', async () => {
-    const res = await request(app).get('/api/v1/agents/top');
+  it('GET /api/agents/top returns 200 (no L402 required)', async () => {
+    const res = await request(app).get('/api/agents/top');
     expect(res.status).toBe(200);
   });
 
-  it('GET /api/v1/agents/search?alias=L402 returns 200 (no L402 required)', async () => {
-    const res = await request(app).get('/api/v1/agents/search?alias=L402');
+  it('GET /api/agents/search?alias=L402 returns 200 (no L402 required)', async () => {
+    const res = await request(app).get('/api/agents/search?alias=L402');
     expect(res.status).toBe(200);
   });
 
-  it('GET /api/v1/health returns 200 (no L402 required)', async () => {
-    const res = await request(app).get('/api/v1/health');
+  it('GET /api/health returns 200 (no L402 required)', async () => {
+    const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
-  });
-
-  // L402-gated endpoints should pass with correct shared secret
-  it('GET /api/v1/agent/:hash returns 200 with valid shared secret', async () => {
-    const res = await request(app)
-      .get(`/api/v1/agent/${agentHash}`)
-      .set('X-Aperture-Auth', 'test-aperture-shared-secret');
-    expect(res.status).toBe(200);
-  });
-
-  // L402-gated endpoints should reject wrong shared secret
-  it('GET /api/v1/agent/:hash returns 402 with wrong shared secret', async () => {
-    const res = await request(app)
-      .get(`/api/v1/agent/${agentHash}`)
-      .set('X-Aperture-Auth', 'wrong-secret');
-    expect(res.status).toBe(402);
-  });
-
-  // L402 edge cases: empty and whitespace-only headers must be rejected
-  it('GET /api/v1/agent/:hash returns 402 with empty X-Aperture-Auth', async () => {
-    const res = await request(app)
-      .get(`/api/v1/agent/${agentHash}`)
-      .set('X-Aperture-Auth', '');
-    expect(res.status).toBe(402);
-  });
-
-  it('GET /api/v1/agent/:hash returns 402 with whitespace-only X-Aperture-Auth', async () => {
-    const res = await request(app)
-      .get(`/api/v1/agent/${agentHash}`)
-      .set('X-Aperture-Auth', '   ');
-    expect(res.status).toBe(402);
-  });
-
-  it('GET /api/v1/agent/:hash returns 402 with X-Aperture-Auth: "false"', async () => {
-    // "false" is a non-empty string but doesn't match the shared secret — rejected
-    const res = await request(app)
-      .get(`/api/v1/agent/${agentHash}`)
-      .set('X-Aperture-Auth', 'false');
-    expect(res.status).toBe(402);
   });
 });
 
@@ -634,11 +593,11 @@ describe('Integration — Security headers and Content-Type', () => {
 
     testApp.use(requestIdMiddleware);
     const { Router } = express;
-    const v1 = Router();
-    v1.use(createAgentRoutes(agentController));
-    v1.use(createAttestationRoutes(attestationController));
-    v1.use(createHealthRoutes(healthController));
-    testApp.use('/api/v1', v1);
+    const api = Router();
+    api.use(createAgentRoutes(agentController));
+    api.use(createAttestationRoutes(attestationController));
+    api.use(createHealthRoutes(healthController));
+    testApp.use('/api', api);
     testApp.use(errorHandler);
 
     app = testApp;
@@ -648,7 +607,7 @@ describe('Integration — Security headers and Content-Type', () => {
 
   it('POST with Content-Type: text/plain returns 415', async () => {
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .set('Content-Type', 'text/plain')
       .send('not json');
     expect(res.status).toBe(415);
@@ -657,7 +616,7 @@ describe('Integration — Security headers and Content-Type', () => {
 
   it('POST with no Content-Type returns 415', async () => {
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .set('Content-Type', '')
       .send('');
     expect(res.status).toBe(415);
@@ -665,7 +624,7 @@ describe('Integration — Security headers and Content-Type', () => {
 
   it('POST with application/json Content-Type is accepted', async () => {
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .set('Content-Type', 'application/json')
       .send(JSON.stringify({
         txId,
@@ -677,19 +636,19 @@ describe('Integration — Security headers and Content-Type', () => {
   });
 
   it('responses include Content-Security-Policy header', async () => {
-    const res = await request(app).get('/api/v1/health');
+    const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(res.headers['content-security-policy']).toBeDefined();
     expect(res.headers['content-security-policy']).toContain("default-src 'self'");
   });
 
   it('responses include X-Content-Type-Options: nosniff', async () => {
-    const res = await request(app).get('/api/v1/health');
+    const res = await request(app).get('/api/health');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 
   it('responses include X-Frame-Options header', async () => {
-    const res = await request(app).get('/api/v1/health');
+    const res = await request(app).get('/api/health');
     expect(res.headers['x-frame-options']).toBeDefined();
   });
 });

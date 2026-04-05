@@ -59,11 +59,11 @@ function buildTestApp() {
 
   app.use(metricsMiddleware);
 
-  const v1 = express.Router();
-  v1.use(createAgentRoutes(agentController));
-  v1.use(createAttestationRoutes(attestationController));
-  v1.use(createHealthRoutes(healthController));
-  app.use('/api/v1', v1);
+  const api = express.Router();
+  api.use(createAgentRoutes(agentController));
+  api.use(createAttestationRoutes(attestationController));
+  api.use(createHealthRoutes(healthController));
+  app.use('/api', api);
 
   // Metrics endpoint
   app.get('/metrics', async (_req, res) => {
@@ -90,12 +90,12 @@ describe('X-API-Version header', () => {
   afterAll(() => db.close());
 
   it('returns X-API-Version: 1.0 on health', async () => {
-    const res = await request(app).get('/api/v1/health');
+    const res = await request(app).get('/api/health');
     expect(res.headers['x-api-version']).toBe('1.0');
   });
 
   it('returns X-API-Version: 1.0 on stats', async () => {
-    const res = await request(app).get('/api/v1/stats');
+    const res = await request(app).get('/api/stats');
     expect(res.headers['x-api-version']).toBe('1.0');
   });
 });
@@ -137,7 +137,7 @@ describe('Healthcheck with schema version', () => {
   afterAll(() => db.close());
 
   it('returns expectedSchemaVersion and schemaVersion in health', async () => {
-    const res = await request(app).get('/api/v1/health');
+    const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     const data = res.body.data;
     expect(data.schemaVersion).toBe(EXPECTED_SCHEMA_VERSION);

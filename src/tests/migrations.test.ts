@@ -180,7 +180,7 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
       verified: 0,
       weight: 1.0,
     };
-    // v11 dropped the UNIQUE(attester_hash, subject_hash) constraint to support v2 multi-report
+    // v11 dropped the UNIQUE(attester_hash, subject_hash) constraint to support multi-report
     attestationRepo.insert(att2);
     expect(attestationRepo.countBySubject(sha256('subject-b'))).toBe(2);
   });

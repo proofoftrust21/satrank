@@ -291,24 +291,24 @@ describe('Batch verdict endpoint', () => {
     app.use(express.json());
     app.use(requestIdMiddleware);
     const { Router } = express;
-    const v1 = Router();
-    v1.use(createAgentRoutes(agentController));
-    v1.use(createAttestationRoutes(attestationController));
-    v1.use(createHealthRoutes(healthController));
-    app.use('/api/v1', v1);
+    const api = Router();
+    api.use(createAgentRoutes(agentController));
+    api.use(createAttestationRoutes(attestationController));
+    api.use(createHealthRoutes(healthController));
+    app.use('/api', api);
     app.use(errorHandler);
   });
 
   afterEach(() => { db.close(); });
 
-  it('POST /api/v1/verdicts returns verdicts for multiple hashes', async () => {
+  it('POST /api/verdicts returns verdicts for multiple hashes', async () => {
     const agent1 = makeAgent({ public_key_hash: sha256('batch-a1'), alias: 'BatchA1' });
     const agent2 = makeAgent({ public_key_hash: sha256('batch-a2'), alias: 'BatchA2' });
     agentRepo.insert(agent1);
     agentRepo.insert(agent2);
 
     const res = await request(app)
-      .post('/api/v1/verdicts')
+      .post('/api/verdicts')
       .send({ hashes: [agent1.public_key_hash, agent2.public_key_hash] });
 
     expect(res.status).toBe(200);
@@ -319,37 +319,37 @@ describe('Batch verdict endpoint', () => {
     expect(res.body.data[1].publicKeyHash).toBe(agent2.public_key_hash);
   });
 
-  it('POST /api/v1/verdicts returns UNKNOWN for missing hashes', async () => {
+  it('POST /api/verdicts returns UNKNOWN for missing hashes', async () => {
     const unknownHash = sha256('definitely-unknown-batch');
 
     const res = await request(app)
-      .post('/api/v1/verdicts')
+      .post('/api/verdicts')
       .send({ hashes: [unknownHash] });
 
     expect(res.status).toBe(200);
     expect(res.body.data[0].verdict).toBe('UNKNOWN');
   });
 
-  it('POST /api/v1/verdicts rejects empty array', async () => {
+  it('POST /api/verdicts rejects empty array', async () => {
     const res = await request(app)
-      .post('/api/v1/verdicts')
+      .post('/api/verdicts')
       .send({ hashes: [] });
 
     expect(res.status).toBe(400);
   });
 
-  it('POST /api/v1/verdicts rejects invalid hashes', async () => {
+  it('POST /api/verdicts rejects invalid hashes', async () => {
     const res = await request(app)
-      .post('/api/v1/verdicts')
+      .post('/api/verdicts')
       .send({ hashes: ['not-a-hash'] });
 
     expect(res.status).toBe(400);
   });
 
-  it('POST /api/v1/verdicts rejects more than 100 hashes', async () => {
+  it('POST /api/verdicts rejects more than 100 hashes', async () => {
     const hashes = Array.from({ length: 101 }, (_, i) => sha256(`overflow-${i}`));
     const res = await request(app)
-      .post('/api/v1/verdicts')
+      .post('/api/verdicts')
       .send({ hashes });
 
     expect(res.status).toBe(400);
@@ -384,11 +384,11 @@ describe('Free attestations verification', () => {
     app.use(express.json());
     app.use(requestIdMiddleware);
     const { Router } = express;
-    const v1 = Router();
-    v1.use(createAgentRoutes(agentController));
-    v1.use(createAttestationRoutes(attestationController));
-    v1.use(createHealthRoutes(healthController));
-    app.use('/api/v1', v1);
+    const api = Router();
+    api.use(createAgentRoutes(agentController));
+    api.use(createAttestationRoutes(attestationController));
+    api.use(createHealthRoutes(healthController));
+    app.use('/api', api);
     app.use(errorHandler);
   });
 
@@ -410,7 +410,7 @@ describe('Free attestations verification', () => {
     `).run(txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId));
 
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .send({
         txId,
         attesterHash: attester.public_key_hash,

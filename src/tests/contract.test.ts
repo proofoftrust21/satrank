@@ -56,12 +56,12 @@ function buildContractApp() {
   app.use(requestIdMiddleware);
 
   const { Router } = express;
-  const v1 = Router();
-  v1.use(createAgentRoutes(agentController));
-  v1.use(createAttestationRoutes(attestationController));
-  v1.use(createHealthRoutes(healthController));
-  v1.get('/openapi.json', (_req, res) => res.json(openapiSpec));
-  app.use('/api/v1', v1);
+  const api = Router();
+  api.use(createAgentRoutes(agentController));
+  api.use(createAttestationRoutes(attestationController));
+  api.use(createHealthRoutes(healthController));
+  api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
+  app.use('/api', api);
   app.use(errorHandler);
 
   return { app, db, agentRepo, txRepo };
@@ -153,8 +153,8 @@ describe('Contract tests — responses match OpenAPI spec', () => {
 
   // --- OpenAPI spec served correctly ---
 
-  it('GET /api/v1/openapi.json returns the spec with correct version', async () => {
-    const res = await request(app).get('/api/v1/openapi.json');
+  it('GET /api/openapi.json returns the spec with correct version', async () => {
+    const res = await request(app).get('/api/openapi.json');
     expect(res.status).toBe(200);
     expect(res.body.openapi).toBe('3.1.0');
     expect(res.body.info.title).toBe('SatRank API');
@@ -165,7 +165,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- AgentScoreResponse matches schema ---
 
   it('GET /agent/{hash} response matches AgentScoreResponse schema', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentHash}`);
+    const res = await request(app).get(`/api/agent/${agentHash}`);
     expect(res.status).toBe(200);
     const data = res.body.data;
 
@@ -220,7 +220,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- Top agents matches AgentSummary schema ---
 
   it('GET /agents/top response matches AgentSummary[] schema', async () => {
-    const res = await request(app).get('/api/v1/agents/top');
+    const res = await request(app).get('/api/agents/top');
     expect(res.status).toBe(200);
 
     // meta
@@ -243,7 +243,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- Search matches AgentSearchResult schema ---
 
   it('GET /agents/search response matches AgentSearchResult[] schema', async () => {
-    const res = await request(app).get('/api/v1/agents/search?alias=Contract');
+    const res = await request(app).get('/api/agents/search?alias=Contract');
     expect(res.status).toBe(200);
 
     assertShape(res.body.meta, { total: 'number', limit: 'number', offset: 'number' });
@@ -261,7 +261,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- Health matches HealthResponse schema ---
 
   it('GET /health response matches HealthResponse schema', async () => {
-    const res = await request(app).get('/api/v1/health');
+    const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     assertShape(res.body.data, {
       status: 'string',
@@ -276,7 +276,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- Stats matches NetworkStats schema ---
 
   it('GET /stats response matches NetworkStats schema', async () => {
-    const res = await request(app).get('/api/v1/stats');
+    const res = await request(app).get('/api/stats');
     expect(res.status).toBe(200);
     assertShape(res.body.data, {
       totalAgents: 'number',
@@ -297,7 +297,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- Version matches VersionResponse schema ---
 
   it('GET /version response matches VersionResponse schema', async () => {
-    const res = await request(app).get('/api/v1/version');
+    const res = await request(app).get('/api/version');
     expect(res.status).toBe(200);
     assertShape(res.body.data, {
       commit: 'string',
@@ -309,7 +309,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- History matches ScoreSnapshot[] schema ---
 
   it('GET /agent/{hash}/history response matches ScoreSnapshot[] schema', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentHash}/history`);
+    const res = await request(app).get(`/api/agent/${agentHash}/history`);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
     assertShape(res.body.meta, { total: 'number', limit: 'number', offset: 'number' });
@@ -319,7 +319,7 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- Attestations matches Attestation[] schema ---
 
   it('GET /agent/{hash}/attestations response matches Attestation[] schema', async () => {
-    const res = await request(app).get(`/api/v1/agent/${agentHash}/attestations`);
+    const res = await request(app).get(`/api/agent/${agentHash}/attestations`);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
     assertShape(res.body.meta, { total: 'number', limit: 'number', offset: 'number' });
@@ -328,14 +328,14 @@ describe('Contract tests — responses match OpenAPI spec', () => {
   // --- Error responses match ErrorResponse schema ---
 
   it('404 response matches ErrorResponse schema', async () => {
-    const res = await request(app).get(`/api/v1/agent/${sha256('nonexistent-contract')}`);
+    const res = await request(app).get(`/api/agent/${sha256('nonexistent-contract')}`);
     expect(res.status).toBe(404);
     assertShape(res.body.error, { code: 'string', message: 'string' });
     expect(res.body).toHaveProperty('requestId');
   });
 
   it('400 response matches ErrorResponse schema', async () => {
-    const res = await request(app).get('/api/v1/agent/invalid-hash');
+    const res = await request(app).get('/api/agent/invalid-hash');
     expect(res.status).toBe(400);
     assertShape(res.body.error, { code: 'string', message: 'string' });
   });

@@ -222,7 +222,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'decide',
-      description: 'GO / NO-GO decision with success probability. The primary v2 tool for pre-transaction decisions. Returns a boolean go, success_rate (0-1), and the 4 probability components (trust, routable, available, empirical).',
+      description: 'GO / NO-GO decision with success probability. The primary tool for pre-transaction decisions. Returns a boolean go, success_rate (0-1), and the 4 probability components (trust, routable, available, empirical).',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -252,7 +252,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'get_profile',
-      description: 'Agent profile with score, report statistics (successes/failures/timeouts), probe uptime, rank, evidence, and flags. The comprehensive v2 view of an agent.',
+      description: 'Agent profile with score, report statistics (successes/failures/timeouts), probe uptime, rank, evidence, and flags. The comprehensive view of an agent.',
       inputSchema: {
         type: 'object' as const,
         properties: {

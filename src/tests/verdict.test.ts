@@ -458,26 +458,26 @@ describe('Verdict endpoint integration', () => {
     app.use(express.json());
     app.use(requestIdMiddleware);
     const { Router } = express;
-    const v1 = Router();
-    v1.use(createAgentRoutes(agentController));
-    v1.use(createAttestationRoutes(attestationController));
-    v1.use(createHealthRoutes(healthController));
-    app.use('/api/v1', v1);
+    const api = Router();
+    api.use(createAgentRoutes(agentController));
+    api.use(createAttestationRoutes(attestationController));
+    api.use(createHealthRoutes(healthController));
+    app.use('/api', api);
     app.use(errorHandler);
   });
 
   afterEach(() => { db.close(); });
 
-  it('GET /api/v1/agent/:hash/verdict returns UNKNOWN for missing agent', async () => {
+  it('GET /api/agent/:hash/verdict returns UNKNOWN for missing agent', async () => {
     const hash = sha256('unknown-agent');
-    const res = await request(app).get(`/api/v1/agent/${hash}/verdict`);
+    const res = await request(app).get(`/api/agent/${hash}/verdict`);
     expect(res.status).toBe(200);
     expect(res.body.data.verdict).toBe('UNKNOWN');
     expect(res.body.data.confidence).toBe(0);
     expect(res.body.data.flags).toEqual([]);
   });
 
-  it('GET /api/v1/agent/:hash/verdict returns SAFE for good agent', async () => {
+  it('GET /api/agent/:hash/verdict returns SAFE for good agent', async () => {
     const counterparty = makeAgent({
       public_key_hash: sha256('verdict-counterparty'),
       alias: 'Counterparty2',
@@ -508,7 +508,7 @@ describe('Verdict endpoint integration', () => {
       `).run(txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId));
     }
 
-    const res = await request(app).get(`/api/v1/agent/${agent.public_key_hash}/verdict`);
+    const res = await request(app).get(`/api/agent/${agent.public_key_hash}/verdict`);
     expect(res.status).toBe(200);
     expect(res.body.data.verdict).toBe('SAFE');
     expect(res.body.data.confidence).toBeGreaterThan(0);
@@ -516,12 +516,12 @@ describe('Verdict endpoint integration', () => {
     expect(Array.isArray(res.body.data.flags)).toBe(true);
   });
 
-  it('GET /api/v1/agent/invalid/verdict returns 400', async () => {
-    const res = await request(app).get('/api/v1/agent/not-a-hash/verdict');
+  it('GET /api/agent/invalid/verdict returns 400', async () => {
+    const res = await request(app).get('/api/agent/not-a-hash/verdict');
     expect(res.status).toBe(400);
   });
 
-  it('POST /api/v1/attestation accepts category field', async () => {
+  it('POST /api/attestation accepts category field', async () => {
     const attester = makeAgent({ public_key_hash: sha256('cat-attester'), alias: 'CatAttester' });
     const subject = makeAgent({ public_key_hash: sha256('cat-subject'), alias: 'CatSubject' });
     agentRepo.insert(attester);
@@ -534,7 +534,7 @@ describe('Verdict endpoint integration', () => {
     `).run(txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId));
 
     const res = await request(app)
-      .post('/api/v1/attestation')
+      .post('/api/attestation')
       .set('Content-Type', 'application/json')
       .set('X-API-Key', process.env.SATRANK_API_KEY || 'test-key')
       .send({

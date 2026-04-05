@@ -1,4 +1,4 @@
-// OpenAPI 3.1 specification for SatRank API v1
+// OpenAPI 3.1 specification for SatRank API
 export const openapiSpec = {
   openapi: '3.1.0',
   info: {

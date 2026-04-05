@@ -1,4 +1,4 @@
-// v2 API tests — decide, report, profile
+// API tests — decide, report, profile
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import request from 'supertest';
@@ -97,7 +97,7 @@ function buildTestApp() {
   v2.post('/decide', v2Controller.decide);
   v2.post('/report', v2Controller.report);
   v2.get('/profile/:id', v2Controller.profile);
-  app.use('/api/v2', v2);
+  app.use('/api', v2);
   app.use(errorHandler);
 
   // Seed test agents
@@ -115,12 +115,12 @@ function buildTestApp() {
 beforeAll(() => { buildTestApp(); });
 afterAll(() => { db.close(); });
 
-// --- POST /api/v2/decide ---
+// --- POST /api/decide ---
 
-describe('POST /api/v2/decide', () => {
+describe('POST /api/decide', () => {
   it('returns go=true for a well-known agent', async () => {
     const res = await request(app)
-      .post('/api/v2/decide')
+      .post('/api/decide')
       .send({ target: sha256('bob'), caller: sha256('alice') })
       .set('Content-Type', 'application/json');
 
@@ -139,7 +139,7 @@ describe('POST /api/v2/decide', () => {
 
   it('returns go=false for unknown target', async () => {
     const res = await request(app)
-      .post('/api/v2/decide')
+      .post('/api/decide')
       .send({ target: sha256('unknown-agent'), caller: sha256('alice') })
       .set('Content-Type', 'application/json');
 
@@ -151,7 +151,7 @@ describe('POST /api/v2/decide', () => {
 
   it('validates input — rejects missing target', async () => {
     const res = await request(app)
-      .post('/api/v2/decide')
+      .post('/api/decide')
       .send({ caller: sha256('alice') })
       .set('Content-Type', 'application/json');
 
@@ -165,7 +165,7 @@ describe('POST /api/v2/decide', () => {
     agentRepo.insert(makeAgent('lightning-agent', { public_key_hash: hash, public_key: pubkey }));
 
     const res = await request(app)
-      .post('/api/v2/decide')
+      .post('/api/decide')
       .send({ target: pubkey, caller: sha256('alice') })
       .set('Content-Type', 'application/json');
 
@@ -175,7 +175,7 @@ describe('POST /api/v2/decide', () => {
 
   it('accepts amountSats parameter', async () => {
     const res = await request(app)
-      .post('/api/v2/decide')
+      .post('/api/decide')
       .send({ target: sha256('bob'), caller: sha256('alice'), amountSats: 50000 })
       .set('Content-Type', 'application/json');
 
@@ -183,12 +183,12 @@ describe('POST /api/v2/decide', () => {
   });
 });
 
-// --- POST /api/v2/report ---
+// --- POST /api/report ---
 
-describe('POST /api/v2/report', () => {
+describe('POST /api/report', () => {
   it('submits a success report', async () => {
     const res = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('bob'),
         reporter: sha256('alice'),
@@ -207,7 +207,7 @@ describe('POST /api/v2/report', () => {
     // Need a different target to avoid dedup
     agentRepo.insert(makeAgent('charlie'));
     const res = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('charlie'),
         reporter: sha256('alice'),
@@ -223,7 +223,7 @@ describe('POST /api/v2/report', () => {
   it('submits a timeout report', async () => {
     agentRepo.insert(makeAgent('dave'));
     const res = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('dave'),
         reporter: sha256('alice'),
@@ -241,7 +241,7 @@ describe('POST /api/v2/report', () => {
 
     agentRepo.insert(makeAgent('eve'));
     const res = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('eve'),
         reporter: sha256('alice'),
@@ -259,7 +259,7 @@ describe('POST /api/v2/report', () => {
 
   it('rejects self-report', async () => {
     const res = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('alice'),
         reporter: sha256('alice'),
@@ -275,7 +275,7 @@ describe('POST /api/v2/report', () => {
 
     // First report
     const res1 = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('frank'),
         reporter: sha256('alice'),
@@ -286,7 +286,7 @@ describe('POST /api/v2/report', () => {
 
     // Second report — same reporter + target within 1 hour
     const res2 = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('frank'),
         reporter: sha256('alice'),
@@ -298,7 +298,7 @@ describe('POST /api/v2/report', () => {
 
   it('rejects report for unknown target', async () => {
     const res = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('nonexistent'),
         reporter: sha256('alice'),
@@ -311,7 +311,7 @@ describe('POST /api/v2/report', () => {
 
   it('validates outcome enum', async () => {
     const res = await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({
         target: sha256('bob'),
         reporter: sha256('alice'),
@@ -323,12 +323,12 @@ describe('POST /api/v2/report', () => {
   });
 });
 
-// --- GET /api/v2/profile/:id ---
+// --- GET /api/profile/:id ---
 
-describe('GET /api/v2/profile/:id', () => {
+describe('GET /api/profile/:id', () => {
   it('returns profile for known agent', async () => {
     const res = await request(app)
-      .get(`/api/v2/profile/${sha256('bob')}`);
+      .get(`/api/profile/${sha256('bob')}`);
 
     expect(res.status).toBe(200);
     expect(res.body.data.agent.publicKeyHash).toBe(sha256('bob'));
@@ -347,7 +347,7 @@ describe('GET /api/v2/profile/:id', () => {
 
   it('returns 404 for unknown agent', async () => {
     const res = await request(app)
-      .get(`/api/v2/profile/${sha256('nobody')}`);
+      .get(`/api/profile/${sha256('nobody')}`);
 
     expect(res.status).toBe(404);
   });
@@ -358,7 +358,7 @@ describe('GET /api/v2/profile/:id', () => {
     agentRepo.insert(makeAgent('profile-ln-agent', { public_key_hash: hash, public_key: pubkey }));
 
     const res = await request(app)
-      .get(`/api/v2/profile/${pubkey}`);
+      .get(`/api/profile/${pubkey}`);
 
     expect(res.status).toBe(200);
     expect(res.body.data.agent.publicKeyHash).toBe(hash);
@@ -368,11 +368,11 @@ describe('GET /api/v2/profile/:id', () => {
     // Submit a report first
     agentRepo.insert(makeAgent('grace'));
     await request(app)
-      .post('/api/v2/report')
+      .post('/api/report')
       .send({ target: sha256('grace'), reporter: sha256('bob'), outcome: 'success' })
       .set('Content-Type', 'application/json');
 
-    const res = await request(app).get(`/api/v2/profile/${sha256('grace')}`);
+    const res = await request(app).get(`/api/profile/${sha256('grace')}`);
 
     expect(res.status).toBe(200);
     expect(res.body.data.reports.total).toBeGreaterThanOrEqual(1);
@@ -380,7 +380,7 @@ describe('GET /api/v2/profile/:id', () => {
   });
 
   it('validates invalid hash format', async () => {
-    const res = await request(app).get('/api/v2/profile/invalid-hash');
+    const res = await request(app).get('/api/profile/invalid-hash');
     expect(res.status).toBe(400);
   });
 });

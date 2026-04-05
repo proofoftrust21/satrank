@@ -49,11 +49,11 @@ function buildProdTestApp() {
   app.use(requestIdMiddleware);
 
   const { Router } = express;
-  const v1 = Router();
-  v1.use(createAgentRoutes(agentController));
-  v1.use(createAttestationRoutes(attestationController));
-  v1.use(createHealthRoutes(healthController));
-  app.use('/api/v1', v1);
+  const api = Router();
+  api.use(createAgentRoutes(agentController));
+  api.use(createAttestationRoutes(attestationController));
+  api.use(createHealthRoutes(healthController));
+  app.use('/api', api);
   app.use(errorHandler);
 
   return { app, db };
@@ -80,7 +80,7 @@ describe('Production — Graceful shutdown', () => {
     });
 
     // Verify server is accepting requests
-    const res = await request(app).get('/api/v1/health');
+    const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
 
     // Close the server
@@ -99,7 +99,7 @@ describe('Production — Graceful shutdown', () => {
     dbToClose = db;
 
     // Add a slow endpoint to simulate in-flight request
-    app.get('/api/v1/slow', (_req, res) => {
+    app.get('/api/slow', (_req, res) => {
       setTimeout(() => res.json({ data: 'done' }), 50);
     });
 
@@ -114,7 +114,7 @@ describe('Production — Graceful shutdown', () => {
     if (!addr || typeof addr === 'string') throw new Error('No address');
 
     // Start a request and immediately close the server
-    const reqPromise = request(app).get('/api/v1/slow');
+    const reqPromise = request(app).get('/api/slow');
     server.close();
 
     // The in-flight request should still complete
@@ -130,7 +130,7 @@ describe('Production — Request ID middleware', () => {
     const UUID_RE = /^[\w-]{1,64}$/;
 
     // Make a request that triggers the error handler (which includes requestId in response)
-    const res = await request(app).get('/api/v1/agent/invalid-hash');
+    const res = await request(app).get('/api/agent/invalid-hash');
     expect(res.status).toBe(400);
     expect(res.body.requestId).toBeDefined();
     expect(UUID_RE.test(res.body.requestId)).toBe(true);
@@ -143,7 +143,7 @@ describe('Production — Request ID middleware', () => {
     const customId = 'my-trace-id-abc123';
 
     const res = await request(app)
-      .get('/api/v1/agent/invalid-hash')
+      .get('/api/agent/invalid-hash')
       .set('x-request-id', customId);
     expect(res.status).toBe(400);
     expect(res.body.requestId).toBe(customId);
@@ -155,7 +155,7 @@ describe('Production — Request ID middleware', () => {
     const { app, db } = buildProdTestApp();
 
     const res = await request(app)
-      .get('/api/v1/agent/invalid-hash')
+      .get('/api/agent/invalid-hash')
       .set('x-request-id', '<script>alert(1)</script>');
     expect(res.status).toBe(400);
     // Should NOT use the injected value
@@ -168,13 +168,13 @@ describe('Production — Request ID middleware', () => {
     const { app, db } = buildProdTestApp();
 
     // 400 — validation error
-    const r400 = await request(app).get('/api/v1/agent/bad');
+    const r400 = await request(app).get('/api/agent/bad');
     expect(r400.body).toHaveProperty('requestId');
 
     // 404 — not found (need valid hash format)
     const crypto = await import('crypto');
     const hash = crypto.createHash('sha256').update('nonexistent').digest('hex');
-    const r404 = await request(app).get(`/api/v1/agent/${hash}`);
+    const r404 = await request(app).get(`/api/agent/${hash}`);
     expect(r404.body).toHaveProperty('requestId');
 
     db.close();

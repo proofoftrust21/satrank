@@ -1,4 +1,4 @@
-// Report engine — simplified outcome feedback for v2
+// Report engine — outcome feedback (success / failure / timeout)
 // Converts success/failure/timeout into weighted attestations
 import { createHash } from 'node:crypto';
 import { v4 as uuid } from 'uuid';

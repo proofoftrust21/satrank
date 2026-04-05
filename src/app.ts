@@ -180,14 +180,15 @@ export function createApp() {
     message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
   });
 
-  // API v1 routes
-  const v1 = Router();
-  v1.use(apiRateLimit);
-  v1.use(createAgentRoutes(agentController));
-  v1.use(createAttestationRoutes(attestationController));
-  v1.use(createHealthRoutes(healthController));
-  v1.get('/openapi.json', (_req, res) => res.json(openapiSpec));
-  v1.get('/docs', (_req, res) => {
+  // API routes — single namespace /api/
+  const api = Router();
+  api.use(apiRateLimit);
+  api.use(createV2Routes(v2Controller));                  // decide, report, profile
+  api.use(createAgentRoutes(agentController));            // agent/:hash, verdict, top, search, movers
+  api.use(createAttestationRoutes(attestationController));// attestations
+  api.use(createHealthRoutes(healthController));          // health, stats, version
+  api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
+  api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -204,41 +205,7 @@ export function createApp() {
 </body>
 </html>`);
   });
-  app.use('/api/v1', v1);
-
-  // API v2 routes
-  const v2 = Router();
-  v2.use(apiRateLimit);
-  v2.use(createV2Routes(v2Controller));
-  app.use('/api/v2', v2);
-
-  // Version-free routes — clean namespace for agents (/api/decide, /api/agent/:hash, etc.)
-  // Maps to the same handlers as v1/v2. Versioned routes remain for backwards compatibility.
-  const unified = Router();
-  unified.use(apiRateLimit);
-  unified.use(createV2Routes(v2Controller));                  // decide, report, profile
-  unified.use(createAgentRoutes(agentController));            // agent/:hash, verdict, top, search, movers
-  unified.use(createAttestationRoutes(attestationController));// attestations
-  unified.use(createHealthRoutes(healthController));          // health, stats, version
-  unified.get('/openapi.json', (_req, res) => res.json(openapiSpec));
-  unified.get('/docs', (_req, res) => {
-    res.setHeader('Content-Type', 'text/html');
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>SatRank API Docs</title>
-  <link rel="stylesheet" href="/swagger-ui.css">
-  <link rel="stylesheet" href="/swagger-custom.css">
-</head>
-<body>
-  <div id="swagger-ui"></div>
-  <script src="/swagger-ui-bundle.js"></script>
-  <script src="/swagger-init.js"></script>
-</body>
-</html>`);
-  });
-  app.use('/api', unified);
+  app.use('/api', api);
 
   // Error handler (must be the last middleware)
   app.use(errorHandler);

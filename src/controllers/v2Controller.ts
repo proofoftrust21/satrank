@@ -1,4 +1,4 @@
-// v2 API controller — decide, report, profile
+// Decision API controller — decide, report, profile
 import type { Request, Response, NextFunction } from 'express';
 import type { DecideService } from '../services/decideService';
 import type { ReportService } from '../services/reportService';

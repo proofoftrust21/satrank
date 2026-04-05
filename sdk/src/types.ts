@@ -410,3 +410,17 @@ export interface ProfileResponse {
   evidence: ScoreEvidence;
   flags: VerdictFlag[];
 }
+
+// --- Transact (decide → pay → report in one call) ---
+
+export interface PaymentResult {
+  success: boolean;
+  preimage?: string;
+  paymentHash?: string;
+}
+
+export interface TransactResult {
+  paid: boolean;
+  decision: DecideResponse;
+  report?: ReportResponse;
+}
