@@ -20,22 +20,22 @@
 </header>
 
 <main class="container">
-  <!-- Live stats -->
+  <!-- Live stats — static values shown immediately, updated by JS when API responds -->
   <div class="stats">
     <div class="stat-card">
-      <div class="value loading" id="stat-probed">--</div>
+      <div class="value" id="stat-probed">17.4k</div>
       <div class="label">Nodes Probed</div>
     </div>
     <div class="stat-card">
-      <div class="value loading" id="stat-phantom">--</div>
+      <div class="value" id="stat-phantom">66%</div>
       <div class="label">Phantom Nodes Detected</div>
     </div>
     <div class="stat-card">
-      <div class="value loading" id="stat-reachable">--</div>
+      <div class="value" id="stat-reachable">5.9k</div>
       <div class="label">Verified Reachable</div>
     </div>
     <div class="stat-card">
-      <div class="value loading" id="stat-probes-24h">--</div>
+      <div class="value" id="stat-probes-24h">38.7k</div>
       <div class="label">Probes / 24h</div>
     </div>
   </div>
@@ -117,7 +117,16 @@
         </tr>
       </thead>
       <tbody id="top-agents">
-        <tr><td colspan="7" class="table-loading">Loading...</td></tr>
+        <tr><td>1</td><td>Kraken</td><td><span class="score-badge score-high">94</span></td><td>100</td><td>79</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>2</td><td>Sunny Sarah</td><td><span class="score-badge score-high">90</span></td><td>54</td><td>100</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>3</td><td>cyberdyne.sh</td><td><span class="score-badge score-high">89</span></td><td>44</td><td>100</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>4</td><td>Megalithic.me</td><td><span class="score-badge score-high">88</span></td><td>39</td><td>100</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>5</td><td>1sats.com</td><td><span class="score-badge score-high">87</span></td><td>40</td><td>100</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>6</td><td>Garlic</td><td><span class="score-badge score-high">87</span></td><td>39</td><td>100</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>7</td><td>Authenticity</td><td><span class="score-badge score-high">87</span></td><td>37</td><td>100</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>8</td><td>LQwD-Canada</td><td><span class="score-badge score-high">86</span></td><td>56</td><td>98</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>9</td><td>Vix18</td><td><span class="score-badge score-high">86</span></td><td>49</td><td>100</td><td>--</td><td class="mono">lightning_graph</td></tr>
+        <tr><td>10</td><td>WalletOfSatoshi.com</td><td><span class="score-badge score-high">85</span></td><td>76</td><td>59</td><td>--</td><td class="mono">lightning_graph</td></tr>
       </tbody>
     </table>
     <div class="agent-detail" id="agent-detail"></div>

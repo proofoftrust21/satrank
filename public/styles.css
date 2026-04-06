@@ -358,6 +358,10 @@ tr.clickable { cursor: pointer; }
 .cycle-arrow { font-size: 1.5rem; color: #333; align-self: center; padding-top: 10px; }
 .cycle-flywheel { text-align: center; color: #8888a0; font-size: 0.85rem; margin-top: 16px; font-style: italic; }
 
+/* Fade transitions for live data updates */
+.fade-out { opacity: 0; transition: opacity 0.2s ease; }
+.fade-in { opacity: 1; transition: opacity 0.2s ease; }
+
 /* API docs */
 .endpoints { list-style: none; }
 .endpoints li {

@@ -77,6 +77,30 @@
     } catch (e) { return '#'; }
   }
 
+  // Fade-update: fade out element, change content, fade back in
+  function fadeUpdate(el, newContent) {
+    if (!el || el.textContent === newContent) return;
+    el.classList.add('fade-out');
+    setTimeout(function () {
+      el.textContent = newContent;
+      el.classList.remove('fade-out');
+      el.classList.add('fade-in');
+      setTimeout(function () { el.classList.remove('fade-in'); }, 200);
+    }, 200);
+  }
+
+  // Fade-update innerHTML (for tables)
+  function fadeUpdateHtml(el, newHtml) {
+    if (!el) return;
+    el.classList.add('fade-out');
+    setTimeout(function () {
+      el.innerHTML = newHtml;
+      el.classList.remove('fade-out');
+      el.classList.add('fade-in');
+      setTimeout(function () { el.classList.remove('fade-in'); }, 200);
+    }, 200);
+  }
+
   // -- Copy buttons --
   function setupCopyBtn(btnId, codeId) {
     var btn = document.getElementById(btnId);
@@ -99,16 +123,12 @@
   fetchWithRetry(API + '/stats', 1)
     .then(function (d) {
       var s = d.data;
-      document.getElementById('stat-probed').textContent = fmt(s.nodesProbed);
-      document.getElementById('stat-probed').classList.remove('loading');
-      document.getElementById('stat-phantom').textContent = s.phantomRate + '%';
-      document.getElementById('stat-phantom').classList.remove('loading');
-      document.getElementById('stat-reachable').textContent = fmt(s.verifiedReachable);
-      document.getElementById('stat-reachable').classList.remove('loading');
-      document.getElementById('stat-probes-24h').textContent = fmt(s.probes24h);
-      document.getElementById('stat-probes-24h').classList.remove('loading');
+      fadeUpdate(document.getElementById('stat-probed'), fmt(s.nodesProbed));
+      fadeUpdate(document.getElementById('stat-phantom'), s.phantomRate + '%');
+      fadeUpdate(document.getElementById('stat-reachable'), fmt(s.verifiedReachable));
+      fadeUpdate(document.getElementById('stat-probes-24h'), fmt(s.probes24h));
     })
-    .catch(setStatError);
+    .catch(function () { /* static values remain visible — no error state needed */ });
 
   // Leaderboard loads in parallel with stats (not sequentially)
   loadTopAgents();
@@ -124,7 +144,18 @@
   }
 
   function renderAgentRows(agents, isSearch) {
-    tbody.innerHTML = '';
+    // Fade out old content, replace, fade in
+    tbody.classList.add('fade-out');
+    setTimeout(function () {
+      tbody.innerHTML = '';
+      renderAgentRowsInner(agents, isSearch);
+      tbody.classList.remove('fade-out');
+      tbody.classList.add('fade-in');
+      setTimeout(function () { tbody.classList.remove('fade-in'); }, 200);
+    }, 200);
+  }
+
+  function renderAgentRowsInner(agents, isSearch) {
     if (agents.length === 0) {
       var tr = document.createElement('tr');
       var td = document.createElement('td');
