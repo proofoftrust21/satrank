@@ -354,6 +354,19 @@ async function main(): Promise<void> {
         const stack = err instanceof Error ? err.stack : '';
         logger.error({ error: msg, stack }, 'Failed to load Nostr publisher');
       }
+      // Start DVM (NIP-90) — listens for trust-check job requests in background
+      try {
+        const { SatRankDvm } = await import('../nostr/dvm');
+        const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService,
+          lndClient.isConfigured() ? lndClient : undefined, {
+            privateKeyHex: config.NOSTR_PRIVATE_KEY,
+            relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
+          });
+        await dvm.start();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ error: msg }, 'Failed to start DVM');
+      }
     } else {
       logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
     }
