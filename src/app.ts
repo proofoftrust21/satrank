@@ -43,12 +43,14 @@ import { AgentController } from './controllers/agentController';
 import { AttestationController } from './controllers/attestationController';
 import { HealthController } from './controllers/healthController';
 import { V2Controller } from './controllers/v2Controller';
+import { PingController } from './controllers/pingController';
 
 // Routes
 import { createAgentRoutes } from './routes/agent';
 import { createAttestationRoutes } from './routes/attestation';
 import { createHealthRoutes } from './routes/health';
 import { createV2Routes } from './routes/v2';
+import { createPingRoutes } from './routes/ping';
 
 // OpenAPI spec
 import { openapiSpec } from './openapi';
@@ -102,6 +104,7 @@ export function createApp() {
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService);
+  const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
   // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.
@@ -210,6 +213,7 @@ export function createApp() {
     });
   }
   api.use(createV2Routes(v2Controller));                  // decide, report, profile
+  api.use(createPingRoutes(pingController));              // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController));// attestations
   api.use(createHealthRoutes(healthController));          // health, stats, version

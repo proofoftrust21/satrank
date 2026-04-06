@@ -261,6 +261,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['id'],
       },
     },
+    {
+      name: 'ping',
+      description: 'Real-time reachability check via QueryRoutes. Returns whether a Lightning node is reachable right now, number of hops, and routing fee. Free, no payment required.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          pubkey: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$', description: 'Lightning pubkey (66 hex chars)' },
+          from: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$', description: 'Optional: your Lightning pubkey for personalized pathfinding' },
+        },
+        required: ['pubkey'],
+      },
+    },
   ],
 }));
 
@@ -442,6 +454,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           memo: parsed.data.memo,
         });
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      case 'ping': {
+        const pingSchema = z.object({ pubkey: z.string().regex(/^(02|03)[a-f0-9]{64}$/), from: z.string().regex(/^(02|03)[a-f0-9]{64}$/).optional() });
+        const parsed = pingSchema.safeParse(args);
+        if (!parsed.success) {
+          return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+        }
+        if (!lndClient.isConfigured()) {
+          return { content: [{ type: 'text', text: JSON.stringify({ pubkey: parsed.data.pubkey, reachable: null, error: 'lnd_not_configured' }, null, 2) }] };
+        }
+        const startMs = Date.now();
+        try {
+          const response = await Promise.race([
+            lndClient.queryRoutes(parsed.data.pubkey, 1000, parsed.data.from),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+          ]);
+          const routes = response.routes ?? [];
+          const hasRoute = routes.length > 0;
+          return { content: [{ type: 'text', text: JSON.stringify({
+            pubkey: parsed.data.pubkey, reachable: hasRoute,
+            hops: hasRoute ? routes[0].hops.length : null,
+            totalFeeMsat: hasRoute ? parseInt(routes[0].total_fees_msat, 10) || null : null,
+            fromCaller: !!parsed.data.from, latencyMs: Date.now() - startMs,
+          }, null, 2) }] };
+        } catch {
+          return { content: [{ type: 'text', text: JSON.stringify({ pubkey: parsed.data.pubkey, reachable: false, error: 'no_route', latencyMs: Date.now() - startMs }, null, 2) }] };
+        }
       }
 
       default:

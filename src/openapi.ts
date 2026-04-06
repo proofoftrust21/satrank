@@ -419,6 +419,36 @@ export const openapiSpec = {
         },
       },
     },
+    '/ping/{pubkey}': {
+      get: {
+        summary: 'Real-time reachability check',
+        operationId: 'ping',
+        description: 'QueryRoutes in real-time via LND. Returns whether a Lightning node is reachable right now, hops, and fees. Free — no L402 required. Use ?from=<your_pubkey> for personalized pathfinding.',
+        tags: ['Discovery'],
+        parameters: [
+          { name: 'pubkey', in: 'path', required: true, schema: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$' }, description: '66-char Lightning pubkey' },
+          { name: 'from', in: 'query', required: false, schema: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$' }, description: 'Optional: your Lightning pubkey for personalized pathfinding' },
+        ],
+        responses: {
+          '200': {
+            description: 'Reachability result',
+            content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'object', properties: {
+              pubkey: { type: 'string' },
+              reachable: { type: ['boolean', 'null'] },
+              hops: { type: ['integer', 'null'] },
+              totalFeeMsat: { type: ['integer', 'null'] },
+              routeFound: { type: 'boolean' },
+              fromCaller: { type: 'boolean' },
+              checkedAt: { type: 'integer' },
+              latencyMs: { type: 'integer' },
+              error: { type: ['string', 'null'] },
+            } } } } } },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '429': { description: 'Rate limited (10 requests/minute)' },
+        },
+      },
+    },
     '/openapi.json': {
       get: {
         summary: 'OpenAPI specification',
