@@ -27,6 +27,10 @@
       "description": "GO/NO-GO decision with success probability. Returns go (boolean), successRate (0-1), verdict (SAFE/RISKY/UNKNOWN), pathfinding, survival prediction, and risk profile."
     },
     {
+      "name": "ping",
+      "description": "Real-time reachability check via QueryRoutes. Returns whether a Lightning node is reachable right now, hops, and fees. Free."
+    },
+    {
       "name": "report",
       "description": "Report a transaction outcome (success/failure/timeout). Free. Weighted by reporter trust score. Preimage verification gives 2x weight bonus."
     },

@@ -50,6 +50,7 @@ Add to your MCP client configuration (`mcp-config.json`):
 | `search_agents` | Search by alias (partial match) |
 | `get_network_stats` | Global network statistics |
 | `get_top_movers` | Agents with biggest 7-day score changes |
+| `ping` | Real-time reachability check via QueryRoutes (FREE) |
 | `submit_attestation` | Submit a trust attestation after a transaction (FREE) |
 
 ### Example: decide → pay → report
@@ -188,6 +189,7 @@ curl -H 'Authorization: L402 <macaroon>:<preimage>' \
 | Endpoint | Auth | Description |
 |----------|------|-------------|
 | `POST /api/report` | API Key | Report outcome (FREE — no payment) |
+| `GET /api/ping/{pubkey}` | None | Real-time reachability check (FREE) |
 | `POST /api/attestations` | API Key | Submit attestation (FREE — no payment) |
 | `GET /api/agents/top` | None | Leaderboard |
 | `GET /api/agents/search` | None | Search by alias |
@@ -238,6 +240,6 @@ Full methodology: `/methodology` on any SatRank instance.
 ### SatRank weaknesses (honest assessment)
 
 - **Cold start**: New agents with no transaction history get a score of 0. The system has no bootstrapping mechanism beyond manual attestations.
-- **Lightning-centric**: The reputation component relies on LN+ data. Agents operating outside Lightning have fewer signals available.
-- **Centralized index**: While data sources are verifiable, the scoring computation is centralized. A malicious operator could manipulate scores. Planned mitigation: publish score snapshots as Nostr events for independent verification.
+- **Lightning-centric**: The reputation component uses graph centrality and peer trust. Agents operating outside Lightning have fewer signals available.
+- **Centralized index**: While data sources are verifiable, the scoring computation is centralized. Mitigation: scores are published as NIP-85 Trusted Assertions on Nostr for independent verification.
 - **Small network effect**: Value increases with adoption. Currently useful primarily within the SatRank ecosystem.

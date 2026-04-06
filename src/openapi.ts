@@ -892,6 +892,7 @@ export const openapiSpec = {
           riskProfile: { $ref: '#/components/schemas/RiskProfile' },
           reason: { type: 'string' },
           survival: { $ref: '#/components/schemas/SurvivalResult' },
+          lastProbeAgeMs: { type: ['integer', 'null'], description: 'Milliseconds since the last probe for this node. Null if never probed.' },
           latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },
         },
         required: ['go', 'successRate', 'components', 'basis', 'confidence', 'verdict', 'flags', 'reason', 'survival', 'latencyMs'],

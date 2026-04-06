@@ -63,6 +63,10 @@ curl -X POST http://localhost:3000/api/report \
 
 # Agent profile with reports, uptime, rank
 curl http://localhost:3000/api/profile/<hash>
+
+# Real-time reachability check (free)
+curl http://localhost:3000/api/ping/<ln-pubkey>
+curl "http://localhost:3000/api/ping/<ln-pubkey>?from=<your-ln-pubkey>"
 ```
 
 ### Score & Verdict API
@@ -126,7 +130,7 @@ curl http://localhost:3000/api/stats
 
 ## MCP Server
 
-SatRank exposes an MCP (Model Context Protocol) server for agent-native access via stdio. 11 tools covering trust decisions, scoring, search, and reporting.
+SatRank exposes an MCP (Model Context Protocol) server for agent-native access via stdio. 12 tools covering trust decisions, scoring, search, and reporting.
 
 ### Install in Claude Code
 
@@ -160,11 +164,12 @@ Add to `.cursor/mcp.json` or `.vscode/mcp.json`:
 }
 ```
 
-### Available tools (11)
+### Available tools (12)
 
 | Tool | Description |
 |------|-------------|
 | `decide` | GO/NO-GO with success probability — the primary pre-transaction tool |
+| `ping` | Real-time reachability check via QueryRoutes (free) |
 | `report` | Report outcome (success/failure/timeout) — requires API key |
 | `get_profile` | Full agent profile with reports, uptime, rank, evidence |
 | `get_agent_score` | Detailed trust score with components and evidence |
@@ -243,6 +248,10 @@ SatRank publishes trust scores for Lightning nodes as [NIP-85 Trusted Assertions
 ```
 
 **Why free?** Global scores are the trailer. The personalized `/api/decide` (pathfinding from YOUR position, survival, P_empirical) is the film — 1 sat via L402.
+
+### DVM — Data Vending Machine (NIP-90)
+
+SatRank runs a DVM that responds to trust-check job requests on Nostr. Any agent can publish a kind 5900 event with `["j", "trust-check"]` and `["i", "<ln_pubkey>", "text"]`, and SatRank responds with the score, verdict, and reachability. Free, no payment required.
 
 ## Tech Stack
 
