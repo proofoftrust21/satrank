@@ -205,6 +205,21 @@ export class AgentRepository {
     this.db.prepare('UPDATE agents SET query_count = query_count + 1 WHERE public_key_hash = ?').run(hash);
   }
 
+  touchLastQueried(hash: string): void {
+    try {
+      this.db.prepare('UPDATE agents SET last_queried_at = ? WHERE public_key_hash = ?').run(Math.floor(Date.now() / 1000), hash);
+    } catch { /* column may not exist yet */ }
+  }
+
+  findHotNodes(withinSec: number): Agent[] {
+    try {
+      const cutoff = Math.floor(Date.now() / 1000) - withinSec;
+      return this.db.prepare(
+        "SELECT * FROM agents WHERE last_queried_at >= ? AND public_key IS NOT NULL AND source = 'lightning_graph' ORDER BY last_queried_at DESC"
+      ).all(cutoff) as Agent[];
+    } catch { return []; /* column may not exist yet */ }
+  }
+
   /** Atomic SQL increment — avoids read-modify-write race (C3) */
   incrementTotalTransactions(hash: string): void {
     this.db.prepare('UPDATE agents SET total_transactions = total_transactions + 1 WHERE public_key_hash = ?').run(hash);

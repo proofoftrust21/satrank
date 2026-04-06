@@ -46,8 +46,13 @@ export class ProbeCrawler {
       errors: [],
     };
 
-    const agents = this.agentRepo.findLightningAgentsWithPubkey();
-    logger.info({ count: agents.length }, `Starting probe crawl: ${agents.length} agents to probe`);
+    // Hot nodes first (recently queried via /decide or /ping), then the rest
+    const hotNodes = this.agentRepo.findHotNodes(7200); // queried in last 2h
+    const allAgents = this.agentRepo.findLightningAgentsWithPubkey();
+    const hotSet = new Set(hotNodes.map(a => a.public_key_hash));
+    const coldAgents = allAgents.filter(a => !hotSet.has(a.public_key_hash));
+    const agents = [...hotNodes, ...coldAgents];
+    logger.info({ total: agents.length, hot: hotNodes.length }, `Starting probe crawl: ${agents.length} agents to probe (${hotNodes.length} hot)`);
 
     for (let i = 0; i < agents.length; i++) {
       const agent = agents[i];

@@ -358,6 +358,7 @@ export interface DecideResponse {
   riskProfile: RiskProfile;
   reason: string;
   survival: SurvivalResult;
+  lastProbeAgeMs: number | null;
   latencyMs: number;
 }
 

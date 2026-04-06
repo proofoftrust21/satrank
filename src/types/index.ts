@@ -25,6 +25,7 @@ export interface Agent {
   hopness_rank: number;
   query_count: number;
   unique_peers: number | null;
+  last_queried_at: number | null;
 }
 
 export interface Transaction {
@@ -351,6 +352,7 @@ export interface DecideResponse {
   riskProfile: RiskProfile;
   reason: string;
   survival: SurvivalResult;
+  lastProbeAgeMs: number | null;
   latencyMs: number;
 }
 

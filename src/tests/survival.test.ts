@@ -41,6 +41,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     betweenness_rank: 0,
     hopness_rank: 0,
     unique_peers: null,
+    last_queried_at: null,
     query_count: 10,
     ...overrides,
   };

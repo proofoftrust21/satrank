@@ -104,7 +104,7 @@ export function createApp() {
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService);
-  const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined);
+  const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
   // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.

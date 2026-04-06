@@ -39,6 +39,9 @@ export class DecideService {
   ): Promise<DecideResponse> {
     const startMs = Date.now();
 
+    // Mark as hot node for priority probing
+    this.agentRepo.touchLastQueried(targetHash);
+
     // Get the full verdict (reuses pathfinding, personal trust, flags, risk profile)
     const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash);
 
@@ -54,10 +57,15 @@ export class DecideService {
 
     // P_available — probe uptime over 7 days
     let pAvailable = 0.5; // default when no probe data
+    let lastProbeAgeMs: number | null = null;
     if (this.probeRepo) {
       const uptime = this.probeRepo.computeUptime(targetHash, SEVEN_DAYS_SEC);
       if (uptime !== null) {
         pAvailable = uptime;
+      }
+      const lastProbe = this.probeRepo.findLatest(targetHash);
+      if (lastProbe) {
+        lastProbeAgeMs = Math.round(Date.now() - lastProbe.probed_at * 1000);
       }
     }
 
@@ -109,6 +117,7 @@ export class DecideService {
       riskProfile: verdictResult.riskProfile,
       reason: verdictResult.reason,
       survival,
+      lastProbeAgeMs,
       latencyMs,
     };
   }

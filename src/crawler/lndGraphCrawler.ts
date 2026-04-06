@@ -256,6 +256,7 @@ export class LndGraphCrawler {
       hopness_rank: 0,
       query_count: 0,
       unique_peers: node.uniquePeers > 0 ? node.uniquePeers : null,
+      last_queried_at: null,
     });
 
     return 'created';

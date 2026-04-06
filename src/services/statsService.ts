@@ -11,7 +11,7 @@ import type { HealthResponse, NetworkStats } from '../types';
 const startTime = Date.now();
 
 // Must match the latest migration version in migrations.ts
-const EXPECTED_SCHEMA_VERSION = 12;
+const EXPECTED_SCHEMA_VERSION = 13;
 
 export class StatsService {
   constructor(

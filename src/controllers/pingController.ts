@@ -2,7 +2,10 @@
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
+import type { AgentRepository } from '../repositories/agentRepository';
+import type { ProbeRepository } from '../repositories/probeRepository';
 import { ValidationError } from '../errors';
+import { sha256 } from '../utils/crypto';
 import { logger } from '../logger';
 
 const pubkeySchema = z.string().regex(/^(02|03)[a-f0-9]{64}$/, 'Expected 66-char Lightning pubkey (02/03 prefix)');
@@ -10,13 +13,25 @@ const DEFAULT_AMOUNT_SATS = 1000;
 const QUERY_TIMEOUT_MS = 5000;
 
 export class PingController {
-  constructor(private lndClient?: LndGraphClient) {}
+  constructor(
+    private lndClient?: LndGraphClient,
+    private agentRepo?: AgentRepository,
+    private probeRepo?: ProbeRepository,
+  ) {}
 
   ping = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = pubkeySchema.safeParse(req.params.pubkey);
       if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
       const pubkey = parsed.data;
+
+      // Mark as hot node for priority probing
+      const hash = sha256(pubkey);
+      this.agentRepo?.touchLastQueried(hash);
+
+      // Last probe age
+      const lastProbe = this.probeRepo?.findLatest(hash);
+      const lastProbeAgeMs = lastProbe ? (Date.now() - lastProbe.probed_at * 1000) : null;
 
       // Optional caller for personalized pathfinding
       const fromRaw = typeof req.query.from === 'string' ? req.query.from : undefined;
@@ -38,6 +53,7 @@ export class PingController {
             fromCaller: !!fromPubkey,
             checkedAt: Math.floor(Date.now() / 1000),
             latencyMs: 0,
+            lastProbeAgeMs: lastProbeAgeMs !== null ? Math.round(lastProbeAgeMs) : null,
             error: 'lnd_not_configured',
           },
         });
@@ -64,6 +80,7 @@ export class PingController {
           fromCaller: !!fromPubkey,
           checkedAt: Math.floor(Date.now() / 1000),
           latencyMs,
+          lastProbeAgeMs: lastProbeAgeMs !== null ? Math.round(lastProbeAgeMs) : null,
           error: hasRoute ? null : 'no_route',
         };
 
@@ -83,6 +100,7 @@ export class PingController {
             fromCaller: !!fromPubkey,
             checkedAt: Math.floor(Date.now() / 1000),
             latencyMs,
+            lastProbeAgeMs: lastProbeAgeMs !== null ? Math.round(lastProbeAgeMs) : null,
             error: msg.includes('timeout') ? 'timeout' : 'no_route',
           },
         });

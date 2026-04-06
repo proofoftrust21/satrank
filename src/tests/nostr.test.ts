@@ -39,6 +39,7 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
     hopness_rank: 0,
     query_count: 10,
     unique_peers: null,
+    last_queried_at: null,
     ...overrides,
   };
 }

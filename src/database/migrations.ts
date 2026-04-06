@@ -308,6 +308,17 @@ export function runMigrations(db: Database.Database): void {
     })();
   }
 
+  // v13: last_queried_at for hot node priority probing
+  if (!hasVersion(db, 13)) {
+    try {
+      db.exec('ALTER TABLE agents ADD COLUMN last_queried_at INTEGER');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    recordVersion(db, 13, 'last_queried_at for hot node priority probing');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -317,6 +328,9 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  13: (db) => {
+    try { db.exec('ALTER TABLE agents DROP COLUMN last_queried_at'); } catch { /* SQLite < 3.35 */ }
+  },
   12: (db) => {
     db.exec('DROP TABLE IF EXISTS fee_snapshots');
     db.exec('DROP TABLE IF EXISTS channel_snapshots');
