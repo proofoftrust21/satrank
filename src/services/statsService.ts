@@ -54,21 +54,26 @@ export class StatsService {
     };
   }
 
-  getNetworkStats(): NetworkStats {
-    const buckets = this.txRepo.countByBucket();
+  private statsCache: { data: NetworkStats; expiresAt: number } | null = null;
+  private static STATS_CACHE_TTL_MS = 60_000; // 1 minute
 
-    return {
+  getNetworkStats(): NetworkStats {
+    // Cache stats for 1 minute — these don't change between crawl cycles
+    if (this.statsCache && Date.now() < this.statsCache.expiresAt) {
+      return this.statsCache.data;
+    }
+
+    const buckets = this.txRepo.countByBucket();
+    const nodesProbed = this.probeRepo?.countProbedAgents() ?? 0;
+    const verifiedReachable = this.probeRepo?.countReachable() ?? 0;
+
+    const data: NetworkStats = {
       totalAgents: this.agentRepo.count(),
       totalEndpoints: this.agentRepo.countBySource('lightning_graph'),
       totalAiAgents: this.agentRepo.countBySource('observer_protocol'),
-      nodesProbed: this.probeRepo?.countProbedAgents() ?? 0,
-      phantomRate: (() => {
-        if (!this.probeRepo) return 0;
-        const probed = this.probeRepo.countProbedAgents();
-        const reachable = this.probeRepo.countReachable();
-        return probed > 0 ? Math.round((1 - reachable / probed) * 100) : 0;
-      })(),
-      verifiedReachable: this.probeRepo?.countReachable() ?? 0,
+      nodesProbed,
+      phantomRate: nodesProbed > 0 ? Math.round((1 - verifiedReachable / nodesProbed) * 100) : 0,
+      verifiedReachable,
       probes24h: this.probeRepo?.countProbesLast24h() ?? 0,
       totalChannels: this.agentRepo.sumChannels(),
       nodesWithRatings: this.agentRepo.countWithRatings(),
@@ -82,5 +87,8 @@ export class StatsService {
       },
       trends: this.trendService.getNetworkTrends(),
     };
+
+    this.statsCache = { data, expiresAt: Date.now() + StatsService.STATS_CACHE_TTL_MS };
+    return data;
   }
 }

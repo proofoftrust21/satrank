@@ -95,7 +95,7 @@
   setupCopyBtn('copy-decide', 'decide-curl');
   setupCopyBtn('copy-sdk', 'sdk-code');
 
-  // -- Stats --
+  // -- Stats + Leaderboard in parallel --
   fetchWithRetry(API + '/stats', 1)
     .then(function (d) {
       var s = d.data;
@@ -109,6 +109,9 @@
       document.getElementById('stat-probes-24h').classList.remove('loading');
     })
     .catch(setStatError);
+
+  // Leaderboard loads in parallel with stats (not sequentially)
+  loadTopAgents();
 
   // -- Agent table rendering --
   var tbody = document.getElementById('top-agents');
@@ -192,34 +195,16 @@
     });
   }
 
-  // -- Load top agents with delta enrichment --
+  // -- Load top agents (delta7d comes from the API directly, no movers fetch needed) --
   function loadTopAgents() {
-    Promise.all([
-      fetchWithRetry(API + '/agents/top?limit=10', 1),
-      fetchWithRetry(API + '/agents/movers', 1).catch(function () { return { data: { up: [], down: [] } }; }),
-    ]).then(function (results) {
-      var agents = results[0].data;
-      var movers = results[1].data;
-
-      // Build delta lookup from movers
-      var deltaMap = {};
-      (movers.up || []).forEach(function (m) { deltaMap[m.publicKeyHash] = m.delta7d; });
-      (movers.down || []).forEach(function (m) { deltaMap[m.publicKeyHash] = m.delta7d; });
-
-      // Enrich agents with delta
-      agents.forEach(function (a) {
-        if (deltaMap[a.publicKeyHash] !== undefined) {
-          a._delta7d = deltaMap[a.publicKeyHash];
-        }
+    fetchWithRetry(API + '/agents/top?limit=10', 1)
+      .then(function (result) {
+        renderAgentRows(result.data, false);
+      })
+      .catch(function () {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff5252">API unavailable</td></tr>';
       });
-
-      renderAgentRows(agents, false);
-    }).catch(function () {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff5252">API unavailable</td></tr>';
-    });
   }
-
-  loadTopAgents();
 
   // -- Search --
   var searchInput = document.getElementById('search-input');

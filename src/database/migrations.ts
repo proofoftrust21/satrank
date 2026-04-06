@@ -308,7 +308,7 @@ export function runMigrations(db: Database.Database): void {
     })();
   }
 
-  // v13: last_queried_at for hot node priority probing
+  // v13: last_queried_at for hot node priority probing + performance indexes
   if (!hasVersion(db, 13)) {
     try {
       db.exec('ALTER TABLE agents ADD COLUMN last_queried_at INTEGER');
@@ -316,7 +316,9 @@ export function runMigrations(db: Database.Database): void {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('duplicate column name')) throw err;
     }
-    recordVersion(db, 13, 'last_queried_at for hot node priority probing');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_agents_score ON agents(avg_score DESC)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_probe_reachable ON probe_results(reachable, probed_at)');
+    recordVersion(db, 13, 'last_queried_at, performance indexes for stats/leaderboard');
   }
 
   logger.info('Migrations executed successfully');
