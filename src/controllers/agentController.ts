@@ -144,16 +144,15 @@ export class AgentController {
       if (!topParsed.success) throw new ValidationError(topParsed.error.errors[0].message);
       const { limit, offset, sort_by } = topParsed.data;
 
-      // Key varies per leaderboard variant so component-sorted views don't collide
+      // Key varies per leaderboard variant so component-sorted views don't collide.
+      // Stale-while-revalidate: expired entries refresh in the background so a
+      // real user never pays the full rebuild cost after the initial warm-up.
       const cacheKey = `agents:top:${limit}:${offset}:${sort_by}`;
-      const cached = memoryCache.get<TopResponse>(cacheKey);
-      if (cached) {
-        res.json(cached);
-        return;
-      }
-
-      const response = this.buildTopResponse(limit, offset, sort_by);
-      memoryCache.set(cacheKey, response, TOP_CACHE_TTL_MS);
+      const response = memoryCache.getOrCompute<TopResponse>(
+        cacheKey,
+        TOP_CACHE_TTL_MS,
+        () => this.buildTopResponse(limit, offset, sort_by),
+      );
       res.json(response);
     } catch (err) {
       next(err);

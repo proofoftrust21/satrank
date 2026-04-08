@@ -254,7 +254,8 @@ export function createApp() {
 }
 
 /** Synchronously populate the hot caches so the first visitor skips the cold-start cost.
- *  All calls are wrapped so a warm-up failure never prevents the app from starting. */
+ *  After this runs once, getOrCompute will serve everything instantly and refresh in
+ *  the background. All calls are wrapped so a warm-up failure never blocks startup. */
 function warmUpCaches(statsService: StatsService, agentController: AgentController): void {
   const start = Date.now();
   try {
@@ -264,18 +265,15 @@ function warmUpCaches(statsService: StatsService, agentController: AgentControll
     logger.warn({ error: msg }, 'Cache warm-up: getNetworkStats failed');
   }
 
-  // Prime the leaderboard variants the landing page actually hits.
-  // limit=10 score is the homepage default; the other sort_by values warm
-  // the component-sorted variants exposed via /agents/top?sort_by=...
-  const sortVariants: Array<'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity'> = ['score'];
-  for (const sortBy of sortVariants) {
-    try {
-      const response = agentController.buildTopResponse(10, 0, sortBy);
-      cacheSet(`agents:top:10:0:${sortBy}`, response, 30_000);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ error: msg, sortBy }, 'Cache warm-up: buildTopResponse failed');
-    }
+  // Prime the leaderboard key the landing page actually hits. The controller's
+  // getOrCompute wrapper re-uses this exact cache key, so a single synchronous
+  // build here is enough to cover the homepage first load.
+  try {
+    const response = agentController.buildTopResponse(10, 0, 'score');
+    cacheSet('agents:top:10:0:score', response, 30_000);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ error: msg }, 'Cache warm-up: buildTopResponse failed');
   }
 
   logger.info({ durationMs: Date.now() - start }, 'Cache warm-up complete');

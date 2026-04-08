@@ -61,36 +61,34 @@ export class StatsService {
   }
 
   getNetworkStats(): NetworkStats {
-    // Shared TTL cache — keeps the cold-start rebuild cost off the request path
-    const cached = memoryCache.get<NetworkStats>(NETWORK_STATS_CACHE_KEY);
-    if (cached) return cached;
+    // Stale-while-revalidate — first caller on a cold key waits; afterwards
+    // subscribers always get an instant response while refreshes happen in
+    // the background on expiry.
+    return memoryCache.getOrCompute<NetworkStats>(NETWORK_STATS_CACHE_KEY, NETWORK_STATS_TTL_MS, () => {
+      const buckets = this.txRepo.countByBucket();
+      const nodesProbed = this.probeRepo?.countProbedAgents() ?? 0;
+      const verifiedReachable = this.probeRepo?.countReachable() ?? 0;
 
-    const buckets = this.txRepo.countByBucket();
-    const nodesProbed = this.probeRepo?.countProbedAgents() ?? 0;
-    const verifiedReachable = this.probeRepo?.countReachable() ?? 0;
-
-    const data: NetworkStats = {
-      totalAgents: this.agentRepo.count(),
-      totalEndpoints: this.agentRepo.countBySource('lightning_graph'),
-      totalAiAgents: this.agentRepo.countBySource('observer_protocol'),
-      nodesProbed,
-      phantomRate: nodesProbed > 0 ? Math.round((1 - verifiedReachable / nodesProbed) * 100) : 0,
-      verifiedReachable,
-      probes24h: this.probeRepo?.countProbesLast24h() ?? 0,
-      totalChannels: this.agentRepo.sumChannels(),
-      nodesWithRatings: this.agentRepo.countWithRatings(),
-      networkCapacityBtc: this.agentRepo.networkCapacityBtc(),
-      avgScore: this.agentRepo.avgScore(),
-      totalVolumeBuckets: {
-        micro: buckets['micro'] ?? 0,
-        small: buckets['small'] ?? 0,
-        medium: buckets['medium'] ?? 0,
-        large: buckets['large'] ?? 0,
-      },
-      trends: this.trendService.getNetworkTrends(),
-    };
-
-    memoryCache.set(NETWORK_STATS_CACHE_KEY, data, NETWORK_STATS_TTL_MS);
-    return data;
+      return {
+        totalAgents: this.agentRepo.count(),
+        totalEndpoints: this.agentRepo.countBySource('lightning_graph'),
+        totalAiAgents: this.agentRepo.countBySource('observer_protocol'),
+        nodesProbed,
+        phantomRate: nodesProbed > 0 ? Math.round((1 - verifiedReachable / nodesProbed) * 100) : 0,
+        verifiedReachable,
+        probes24h: this.probeRepo?.countProbesLast24h() ?? 0,
+        totalChannels: this.agentRepo.sumChannels(),
+        nodesWithRatings: this.agentRepo.countWithRatings(),
+        networkCapacityBtc: this.agentRepo.networkCapacityBtc(),
+        avgScore: this.agentRepo.avgScore(),
+        totalVolumeBuckets: {
+          micro: buckets['micro'] ?? 0,
+          small: buckets['small'] ?? 0,
+          medium: buckets['medium'] ?? 0,
+          large: buckets['large'] ?? 0,
+        },
+        trends: this.trendService.getNetworkTrends(),
+      };
+    });
   }
 }
