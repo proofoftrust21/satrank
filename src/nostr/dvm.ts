@@ -8,6 +8,7 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoringService } from '../services/scoringService';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
 import { logger } from '../logger';
+import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 
 const KIND_JOB_REQUEST = 5900;
 const KIND_JOB_RESULT = 6900;
@@ -187,7 +188,7 @@ export class SatRankDvm {
       const scoreResult = this.scoringService.getScore(hash);
       const probe = this.probeRepo.findLatest(hash);
       const reachable = probe ? probe.reachable === 1 : null;
-      const verdict = scoreResult.total >= 50 ? 'SAFE' : scoreResult.total >= 30 ? 'UNKNOWN' : 'RISKY';
+      const verdict = scoreResult.total >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : scoreResult.total >= 30 ? 'UNKNOWN' : 'RISKY';
 
       return {
         pubkey: lnPubkey,

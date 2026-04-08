@@ -106,10 +106,19 @@ export class AgentRepository {
   }
 
   insert(agent: Agent): void {
+    // unique_peers is nullable and defaults to undefined on older test helpers;
+    // coerce to null so SQLite stores a clean NULL (the diversity formula treats
+    // NULL as "fall back to capacity-based scoring", same as 0).
     this.db.prepare(`
-      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats, positive_ratings, negative_ratings, lnplus_rank, hubness_rank, betweenness_rank, hopness_rank, query_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(agent.public_key_hash, agent.public_key, agent.alias, agent.first_seen, agent.last_seen, agent.source, agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats, agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.hubness_rank, agent.betweenness_rank, agent.hopness_rank, agent.query_count);
+      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats, positive_ratings, negative_ratings, lnplus_rank, hubness_rank, betweenness_rank, hopness_rank, query_count, unique_peers)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      agent.public_key_hash, agent.public_key, agent.alias, agent.first_seen, agent.last_seen, agent.source,
+      agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats,
+      agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.hubness_rank,
+      agent.betweenness_rank, agent.hopness_rank, agent.query_count,
+      agent.unique_peers ?? null,
+    );
   }
 
   maxChannels(): number {

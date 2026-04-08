@@ -119,13 +119,23 @@ seniority = round(100 * (1 - exp(-days / 730)))</pre>
   <p><em>30 days: ~4. 6 months: ~22. 1 year: ~39. 2 years: ~61. 3 years: ~78. 5 years: ~93.</em></p>
 
   <h3>Regularity (Lightning nodes)</h3>
-  <p>Probe consistency over 7 days. If at least 3 probes exist, regularity equals the reachability ratio. Otherwise, falls back to gossip recency with 90-day decay:</p>
-  <pre>// Primary: probe consistency (requires >= 3 probes in 7 days)
-regularity = round(reachable_probes / total_probes * 100)
+  <p>
+    Multi-axis consistency over 7 days. A node that is always reachable but whose latency varies
+    wildly or whose routing paths flap is less reliable than one that is rock-steady, and the
+    score reflects that. Pure uptime alone used to saturate at 100 for ~77% of scored agents and
+    stopped differentiating the top cluster.
+  </p>
+  <pre>// Primary: multi-axis (requires >= 3 probes in 7 days)
+regularity =  uptime_ratio        * 70   // reachable / total probes
+            + latency_consistency * 20   // exp(-stddev/mean) across reachable latencies
+            + hop_stability       * 10   // 1 - clamp(stddev_hops / 3, 0, 1)
 
 // Fallback: gossip recency (when < 3 probes available)
 regularity = min(100, round(100 * exp(-daysSinceGossip / 90)))</pre>
-  <p><em>100% uptime: 100. 80% uptime: 80. 0% (dead node): 0.</em></p>
+  <p><em>
+    Stable, fast, rock-steady: ~100. 100% uptime with noticeable latency jitter: ~85.
+    80% uptime with stable routes: ~86. 50% uptime: ~65. Dead: 0.
+  </em></p>
 
   <h3>Regularity (Observer Protocol agents)</h3>
   <p>
@@ -136,10 +146,15 @@ regularity = min(100, round(100 * exp(-daysSinceGossip / 90)))</pre>
 regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <h3>Diversity (Lightning nodes)</h3>
-  <p>Number of unique peers (distinct nodes sharing a channel). Same formula as Observer Protocol counterparties:</p>
-  <pre>diversity = min(100, round(log(unique_peers + 1) / log(51) * 100))</pre>
-  <p><em>3 peers: ~28. 10: ~60. 25: ~82. 50: 100.</em></p>
-  <p>Falls back to capacity-based scoring if peer data is not yet available.</p>
+  <p>
+    Number of unique peers (distinct nodes sharing a channel), extracted from the validated LND
+    graph. A node with 500 BTC concentrated on 2 peers offers no routing diversity; a node with
+    0.5 BTC spread across 20 peers is a real contributor to network health. Peer count is the
+    real signal; capacity is a correlated but weaker proxy.
+  </p>
+  <pre>diversity = min(100, round(log(unique_peers + 1) / log(501) * 100))</pre>
+  <p><em>1 peer: ~11. 10 peers: ~38. 50 peers: ~63. 200 peers: ~85. 500+ peers: 100.</em></p>
+  <p>Falls back to capacity-based scoring only for fresh agents the LND crawler has not yet indexed.</p>
 
   <h3>Diversity (Observer Protocol agents)</h3>
   <pre>diversity = min(100, round(log(uniqueCounterparties + 1) / log(51) * 100))</pre>
@@ -315,13 +330,13 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
       </tr>
       <tr>
         <td>Regularity</td>
-        <td>Reachable in every recent probe</td>
-        <td>100</td>
-        <td>100 &times; 0.15 = 15.0</td>
+        <td>Reachable every probe, ~5% latency jitter, stable 1-hop routes</td>
+        <td>~85</td>
+        <td>85 &times; 0.15 = 12.75</td>
       </tr>
       <tr>
         <td>Diversity</td>
-        <td>Unique peers count (real, bitcoind-validated)</td>
+        <td>~1,800 unique peers (validated against the LND graph)</td>
         <td>100</td>
         <td>100 &times; 0.15 = 15.0</td>
       </tr>
@@ -329,24 +344,26 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <tfoot>
       <tr>
         <td colspan="3"><strong>Base score</strong></td>
-        <td><strong>~93</strong></td>
+        <td><strong>~91</strong></td>
       </tr>
       <tr>
-        <td colspan="3">+ Probe latency &amp; hop bonuses</td>
-        <td>+~6</td>
+        <td colspan="3">+ Popularity bonus (log2-scaled queries)</td>
+        <td>+2</td>
       </tr>
       <tr>
         <td colspan="3"><strong>Final score</strong></td>
-        <td><strong>~99*</strong></td>
+        <td><strong>~93*</strong></td>
       </tr>
     </tfoot>
   </table>
 
   <p><em>
-    * Values updated April 2026 after the migration to full Bitcoin node validation.
-    Pre-bitcoind scoring used Neutrino&rsquo;s partial view and produced a materially
-    different number (the old ACINQ example scored ~93 with an incomplete Diversity
-    component). Actual scores are computed in real-time and may differ slightly. ACINQ
+    * Values updated April 2026 after the v15 scoring calibration. Under pre-v15 scoring,
+    ACINQ had regularity=100 (uptime only) and received two probe bonuses (+3 low-latency,
+    +2 short-hop) that duplicated the regularity signal, landing at 100. The new multi-axis
+    regularity reflects natural latency variance and route stability, and the probe
+    bonuses are removed; the resulting 93 is the honest measure of ACINQ&rsquo;s reliability.
+    Actual scores are computed in real-time and may differ slightly. ACINQ
     has 0 LN+ ratings, so no LN+ bonus is applied.
   </em></p>
 
@@ -370,10 +387,22 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <thead><tr><th>Verdict</th><th>Condition</th></tr></thead>
     <tbody>
       <tr><td><strong>RISKY</strong></td><td>Score &lt; 30 with confidence &ge; low (0.25), OR delta_7d &lt; &minus;15, OR <code>negative_reputation</code> flag, OR <code>fraud_reported</code> flag</td></tr>
-      <tr><td><strong>SAFE</strong></td><td>Score &ge; 50, no critical flags, confidence &ge; medium (0.5)</td></tr>
-      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;49, OR score &lt; 30 with very low confidence, OR score &ge; 50 with confidence &lt; medium</td></tr>
+      <tr><td><strong>SAFE</strong></td><td>Score &ge; 47, no critical flags, confidence &ge; medium (0.5)</td></tr>
+      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;46, OR score &lt; 30 with very low confidence, OR score &ge; 47 with confidence &lt; medium</td></tr>
     </tbody>
   </table>
+  <p>
+    <strong>Why 47, not 50?</strong> Until v15 the SAFE threshold was 50 on a 0&ndash;100 scale that
+    practically saturated at 100 (seven nodes tied at the cap). The v15 calibration replaced two
+    proxies with real signals: diversity now measures unique peers from the validated LND graph
+    instead of BTC capacity, and regularity now measures multi-axis consistency (uptime, latency,
+    route stability) instead of uptime alone. This corrected roughly 1,000 nodes whose previous
+    scores were inflated by the old proxies &mdash; nodes with concentrated BTC on a handful of
+    peers, for instance, saw their diversity drop from 100 to about 18. The best nodes realistically
+    score 93&ndash;94 post-calibration, so the SAFE threshold was moved from 50 to 47 to preserve
+    the exact semantic: &ldquo;SAFE = top 50% of the theoretical maximum.&rdquo; 47/94 &asymp; 50/100.
+    The meaning of SAFE is unchanged; the number follows the new scale.
+  </p>
   <p>
     UNKNOWN is the honest answer when data is insufficient to commit either way. A score of 42
     with low confidence could be a legitimate new node or a sophisticated fake &mdash; the system

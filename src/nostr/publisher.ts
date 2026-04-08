@@ -7,6 +7,7 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoringService } from '../services/scoringService';
 import type { SurvivalService } from '../services/survivalService';
 import { logger } from '../logger';
+import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 
 const KIND_TRUSTED_ASSERTION = 30382;
 
@@ -73,7 +74,7 @@ export class NostrPublisher {
       const survival = this.survivalService.compute(agent);
       const reachable = reachableSet.has(agent.public_key_hash);
 
-      const verdict = snap.score >= 50 ? 'SAFE' : snap.score >= 30 ? 'UNKNOWN' : 'RISKY';
+      const verdict = snap.score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : snap.score >= 30 ? 'UNKNOWN' : 'RISKY';
 
       events.push({
         lnPubkey: agent.public_key,

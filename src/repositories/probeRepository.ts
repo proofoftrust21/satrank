@@ -83,6 +83,47 @@ export class ProbeRepository {
     return row.count;
   }
 
+  /** Latency distribution over a window — mean and stddev across REACHABLE probes only.
+   *  Returns {count:0} when there is no usable sample. The caller decides what default
+   *  to apply when count < 3 (see the multi-axis regularity formula in scoringService). */
+  getLatencyStats(targetHash: string, windowSec: number): { count: number; mean: number; stddev: number } {
+    const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) AS count,
+        AVG(latency_ms) AS mean,
+        AVG(latency_ms * latency_ms) AS mean_sq
+      FROM probe_results
+      WHERE target_hash = ? AND probed_at >= ? AND reachable = 1 AND latency_ms IS NOT NULL
+    `).get(targetHash, cutoff) as { count: number; mean: number | null; mean_sq: number | null };
+
+    if (!row.count || row.mean === null || row.mean_sq === null) {
+      return { count: 0, mean: 0, stddev: 0 };
+    }
+    // Population variance = E[X^2] - (E[X])^2. Guard against tiny negatives from float drift.
+    const variance = Math.max(0, row.mean_sq - row.mean * row.mean);
+    return { count: row.count, mean: row.mean, stddev: Math.sqrt(variance) };
+  }
+
+  /** Hop distribution over a window — same shape and caveats as getLatencyStats. */
+  getHopStats(targetHash: string, windowSec: number): { count: number; mean: number; stddev: number } {
+    const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) AS count,
+        AVG(hops) AS mean,
+        AVG(hops * hops) AS mean_sq
+      FROM probe_results
+      WHERE target_hash = ? AND probed_at >= ? AND reachable = 1 AND hops IS NOT NULL
+    `).get(targetHash, cutoff) as { count: number; mean: number | null; mean_sq: number | null };
+
+    if (!row.count || row.mean === null || row.mean_sq === null) {
+      return { count: 0, mean: 0, stddev: 0 };
+    }
+    const variance = Math.max(0, row.mean_sq - row.mean * row.mean);
+    return { count: row.count, mean: row.mean, stddev: Math.sqrt(variance) };
+  }
+
   /** Purge probe results older than maxAgeSec */
   purgeOlderThan(maxAgeSec: number): number {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;

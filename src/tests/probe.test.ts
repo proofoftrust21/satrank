@@ -211,29 +211,72 @@ describe('Probe scoring integration', () => {
     expect(scoreWithProbe.total).toBeLessThan(scoreNoprobe.total);
   });
 
-  it('gives bonus to low-latency reachable nodes', () => {
-    const agent = makeAgent({ public_key_hash: sha256('fast-node'), capacity_sats: 5_000_000_000 });
+  it('multi-axis regularity rewards stable latency and stable hops', () => {
+    // Stable node: 5 probes, identical latency and hop count → full multi-axis score
+    const stableAgent = makeAgent({ public_key_hash: sha256('stable-node'), capacity_sats: 5_000_000_000, last_seen: NOW - 100 * DAY });
+    agentRepo.insert(stableAgent);
+    for (let i = 0; i < 5; i++) {
+      probeRepo.insert({
+        target_hash: stableAgent.public_key_hash,
+        probed_at: NOW - i * 3600,
+        reachable: 1,
+        latency_ms: 100,  // perfectly stable
+        hops: 2,          // perfectly stable
+        estimated_fee_msat: 10,
+        failure_reason: null,
+      });
+    }
+
+    // Jittery node: 5 probes, same uptime, but wildly varying latency and hop counts
+    const jitteryAgent = makeAgent({ public_key_hash: sha256('jittery-node'), capacity_sats: 5_000_000_000, last_seen: NOW - 100 * DAY });
+    agentRepo.insert(jitteryAgent);
+    const jitterLatencies = [100, 800, 200, 1500, 300];
+    const jitterHops = [2, 5, 3, 6, 4];
+    for (let i = 0; i < 5; i++) {
+      probeRepo.insert({
+        target_hash: jitteryAgent.public_key_hash,
+        probed_at: NOW - i * 3600,
+        reachable: 1,
+        latency_ms: jitterLatencies[i],
+        hops: jitterHops[i],
+        estimated_fee_msat: 10,
+        failure_reason: null,
+      });
+    }
+
+    const stableScore = scoringService.computeScore(stableAgent.public_key_hash);
+    const jitteryScore = scoringService.computeScore(jitteryAgent.public_key_hash);
+
+    // Multi-axis regularity: uptime*70 + latency_consistency*20 + hop_stability*10
+    // Stable: 100%*70 + 1.0*20 + 1.0*10 = 100
+    expect(stableScore.components.regularity).toBe(100);
+    // Jittery: 100% uptime (70) + very low consistency + low hop stability → well below 100
+    expect(jitteryScore.components.regularity).toBeLessThan(85);
+    expect(stableScore.components.regularity).toBeGreaterThan(jitteryScore.components.regularity);
+  });
+
+  it('100% uptime alone does not max out regularity — stability matters', () => {
+    // This is the anti-saturation guarantee: a node that is always reachable but whose
+    // route keeps shifting should NOT score 100 on regularity.
+    const agent = makeAgent({ public_key_hash: sha256('uptime-only'), capacity_sats: 5_000_000_000, last_seen: NOW - 100 * DAY });
     agentRepo.insert(agent);
-
-    // Score without probe
-    const scoreNoprobe = scoringService.computeScore(agent.public_key_hash);
-
-    // Reset snapshot cache
-    db.exec('DELETE FROM score_snapshots');
-
-    // Add fast, short-hop probe
-    probeRepo.insert({
-      target_hash: agent.public_key_hash,
-      probed_at: NOW,
-      reachable: 1,
-      latency_ms: 80,
-      hops: 2,
-      estimated_fee_msat: 10,
-      failure_reason: null,
-    });
-
-    const scoreWithProbe = scoringService.computeScore(agent.public_key_hash);
-    expect(scoreWithProbe.total).toBeGreaterThan(scoreNoprobe.total);
+    // 6 probes, all reachable, but big hop stddev
+    const hops = [2, 5, 2, 6, 2, 6];
+    for (let i = 0; i < 6; i++) {
+      probeRepo.insert({
+        target_hash: agent.public_key_hash,
+        probed_at: NOW - i * 3600,
+        reachable: 1,
+        latency_ms: 100 + i * 200, // also varying
+        hops: hops[i],
+        estimated_fee_msat: 10,
+        failure_reason: null,
+      });
+    }
+    const { components } = scoringService.computeScore(agent.public_key_hash);
+    // uptime 100% → 70, but the other axes reduce the total meaningfully
+    expect(components.regularity).toBeGreaterThan(70);
+    expect(components.regularity).toBeLessThan(95);
   });
 
   it('ignores stale probe data', () => {

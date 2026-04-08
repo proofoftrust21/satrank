@@ -47,8 +47,6 @@ import {
   SCORE_CACHE_TTL,
   MAX_ATTESTATIONS_PER_AGENT,
   PROBE_UNREACHABLE_PENALTY,
-  PROBE_LOW_LATENCY_BONUS,
-  PROBE_SHORT_HOP_BONUS,
   PROBE_FRESHNESS_TTL,
 } from '../config/scoring';
 
@@ -178,20 +176,14 @@ export class ScoringService {
       }
     }
 
-    // Probe routing bonus/penalty — proprietary reachability data
+    // Probe-based unreachability penalty — distinct signal from regularity because
+    // a node that is DOWN right now (latest probe failed) deserves an extra hit beyond
+    // whatever its uptime-over-7-days says. Low-latency / short-hop bonuses were removed
+    // because they double-counted what the new multi-axis regularity already measures.
     if (this.probeRepo) {
       const probe = this.probeRepo.findLatest(agentHash);
-      if (probe && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
-        if (probe.reachable === 0) {
-          total = Math.max(0, total - PROBE_UNREACHABLE_PENALTY);
-        } else {
-          if (probe.latency_ms !== null && probe.latency_ms < 500) {
-            total = Math.min(100, total + PROBE_LOW_LATENCY_BONUS);
-          }
-          if (probe.hops !== null && probe.hops <= 3) {
-            total = Math.min(100, total + PROBE_SHORT_HOP_BONUS);
-          }
-        }
+      if (probe && (now - probe.probed_at) < PROBE_FRESHNESS_TTL && probe.reachable === 0) {
+        total = Math.max(0, total - PROBE_UNREACHABLE_PENALTY);
       }
     }
 
@@ -233,27 +225,70 @@ export class ScoringService {
   }
 
   private computeLightningRegularity(agentHash: string, lastSeen: number, now: number): number {
-    // Probe consistency: use real reachability data if >= 3 probes exist
+    // Multi-axis consistency measure — uptime is necessary but not sufficient.
+    //
+    //   regularity = uptime * 70 + latency_consistency * 20 + hop_stability * 10
+    //
+    // uptime              = reachable probes / total probes over the last 7 days
+    // latency_consistency = exp(-stddev/mean) over reachable latencies (1.0 = rock steady)
+    // hop_stability       = 1 - clamp(stddev_hops / 3, 0, 1)  (1.0 = same route every time)
+    //
+    // Rationale: a node that is always reachable but whose latency varies wildly or whose
+    // routing paths flap is less reliable than one that is rock steady. Pure uptime alone
+    // saturates (~77% of scored agents at 100) and stops differentiating the top cluster.
+    //
+    // Nodes without enough probe history (< 3 probes) fall back to the gossip-recency
+    // formula so freshly-discovered agents still get a meaningful score.
     if (this.probeRepo) {
-      const uptime = this.probeRepo.computeUptime(agentHash, 7 * 86400);
-      const total = this.probeRepo.countByTarget(agentHash);
-      if (uptime !== null && total >= 3) {
-        return Math.round(uptime * 100);
+      const totalProbes = this.probeRepo.countByTarget(agentHash);
+      if (totalProbes >= 3) {
+        const uptime = this.probeRepo.computeUptime(agentHash, 7 * 86400) ?? 0;
+        const latencyStats = this.probeRepo.getLatencyStats(agentHash, 7 * 86400);
+        const hopStats = this.probeRepo.getHopStats(agentHash, 7 * 86400);
+
+        // latency_consistency: exp(-cv). Neutral 0.5 if sample too small.
+        let latencyConsistency = 0.5;
+        if (latencyStats.count >= 3 && latencyStats.mean > 0) {
+          const cv = latencyStats.stddev / latencyStats.mean;
+          latencyConsistency = Math.exp(-cv);
+        }
+
+        // hop_stability: tight stddev on hop counts. Neutral 0.5 if sample too small.
+        let hopStability = 0.5;
+        if (hopStats.count >= 3) {
+          hopStability = 1 - Math.min(1, hopStats.stddev / 3);
+        }
+
+        const score = uptime * 70 + latencyConsistency * 20 + hopStability * 10;
+        return Math.min(100, Math.round(score));
       }
     }
-    // Fallback: gossip recency with 90-day decay (slower than the old 30-day)
+    // Fallback: gossip recency with 90-day decay (for nodes too new to have probe history)
     const daysSinceUpdate = (now - lastSeen) / 86400;
     if (daysSinceUpdate <= 0) return 100;
     return Math.min(100, Math.round(100 * Math.exp(-daysSinceUpdate / 90)));
   }
 
   private computeLightningDiversity(capacitySats: number | null, uniquePeers: number | null): number {
-    // Unique peers: true diversity measure (distinct nodes you share channels with)
-    // 3 peers → 28, 10 → 60, 25 → 82, 50 → 100
+    // Diversity = how many distinct nodes you share channels with.
+    //
+    //   diversity = log(unique_peers + 1) / log(501) * 100   (when unique_peers > 0)
+    //
+    // Rationale: a node with 100 BTC concentrated on 2 peers offers no routing diversity.
+    // A node with 0.5 BTC spread across 20 peers is a real diversity contributor. Capacity
+    // is a correlated but weaker proxy; peer count is the real signal.
+    //
+    // Reference point: 500 peers → 100 (ACINQ / Kraken scale).
+    //   1 peer   → 11       50 peers  → 63       500 peers → 100
+    //   10 peers → 38       200 peers → 85
+    //
+    // Nodes without peer data (fresh agents the LND crawler hasn't yet seen, or the tiny
+    // subset missing from the v12→v15 migration window) fall back to the legacy capacity
+    // formula so they still receive a score instead of a hard zero.
     if (uniquePeers !== null && uniquePeers !== undefined && uniquePeers > 0) {
-      return Math.min(100, Math.round(Math.log(uniquePeers + 1) / Math.log(51) * 100));
+      return Math.min(100, Math.round(Math.log(uniquePeers + 1) / Math.log(501) * 100));
     }
-    // Fallback: capacity-based (for agents not yet crawled with edge data)
+    // Fallback: capacity-based
     if (!capacitySats || capacitySats <= 0) return 0;
     const btc = capacitySats / SATS_PER_BTC;
     const score = (Math.log10(btc * LN_DIVERSITY_BTC_MULTIPLIER + 1) / Math.log10(LN_DIVERSITY_LOG_BASE)) * 100;

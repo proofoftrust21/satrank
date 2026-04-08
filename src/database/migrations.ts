@@ -343,6 +343,23 @@ export function runMigrations(db: Database.Database): void {
     })();
   }
 
+  // v15: unique_peers column for diversity scoring.
+  // v12 recorded this column but it never actually landed on the production schema
+  // (the ALTER inside v12 was silently dropped somehow — schema_version says v12 is
+  // applied, PRAGMA table_info shows no unique_peers column). v15 re-adds it
+  // idempotently so new and existing deployments converge on the same schema.
+  // The column is nullable so existing rows stay null and fall back to the BTC-based
+  // diversity formula until the crawler fills them in with real peer counts.
+  if (!hasVersion(db, 15)) {
+    try {
+      db.exec('ALTER TABLE agents ADD COLUMN unique_peers INTEGER');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    recordVersion(db, 15, 'Add unique_peers column to agents (recovers failed v12 ALTER)');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -352,6 +369,9 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  15: (db) => {
+    try { db.exec('ALTER TABLE agents DROP COLUMN unique_peers'); } catch { /* SQLite < 3.35 or column never existed */ }
+  },
   14: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_agents_stale_score');
     db.exec('DROP INDEX IF EXISTS idx_agents_stale');

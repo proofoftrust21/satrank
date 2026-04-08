@@ -145,16 +145,23 @@ export const POPULARITY_BONUS_CAP = 10;
 /** Multiplier applied to log2(queryCount+1) */
 export const POPULARITY_LOG_MULTIPLIER = 2;
 
+// --- Verdict thresholds ---
+
+/** Minimum score for a SAFE verdict.
+ *  Rationale: SAFE means "the top ~50% of the theoretical maximum". The old
+ *  threshold was ≥50 on a 0-100 scale that saturated at 100 (seven nodes tied
+ *  at the cap). After the v15 calibration (multi-axis regularity + peer-based
+ *  diversity + no probe bonus stacking), the best nodes realistically score
+ *  93-94, so the proportional equivalent is 47/94 ≈ 50/100. Semantic is
+ *  preserved; the number drops to match the new scale. */
+export const VERDICT_SAFE_THRESHOLD = 47;
+
 // --- Probe routing ---
 
-/** Penalty applied to total score when node is unreachable (subtracted) */
+/** Penalty applied to total score when the latest probe shows the node unreachable.
+ *  Distinct from regularity: regularity measures uptime over 7d; this penalty punishes
+ *  "down right now" specifically. */
 export const PROBE_UNREACHABLE_PENALTY = 10;
-
-/** Bonus for low-latency probes (< 500ms response) */
-export const PROBE_LOW_LATENCY_BONUS = 3;
-
-/** Bonus for short hop routes (≤ 3 hops) */
-export const PROBE_SHORT_HOP_BONUS = 2;
 
 /** Max age (seconds) for probe data to be considered fresh for scoring. 24h. */
 export const PROBE_FRESHNESS_TTL = 86_400;

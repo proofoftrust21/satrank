@@ -10,7 +10,7 @@ import type { RiskService } from './riskService';
 import type { VerdictResponse, VerdictFlag, Verdict, ConfidenceLevel, PersonalTrust, PathfindingResult } from '../types';
 import { DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
-import { PROBE_FRESHNESS_TTL } from '../config/scoring';
+import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import { config } from '../config';
 import { logger } from '../logger';
 const POSITIVE_ATTESTATION_MIN_SCORE = 70;
@@ -92,13 +92,13 @@ export class VerdictService {
     if (hasRiskEvidence) {
       verdict = 'RISKY';
     } else if (
-      scoreResult.total >= 50 &&
+      scoreResult.total >= VERDICT_SAFE_THRESHOLD &&
       !hasCriticalFlags &&
       confidenceNum >= CONFIDENCE_MAP.medium
     ) {
       verdict = 'SAFE';
     } else {
-      // Score 30-49, or low score with very low confidence — insufficient signal
+      // Score below SAFE threshold but above RISKY evidence — insufficient signal
       verdict = 'UNKNOWN';
     }
 
