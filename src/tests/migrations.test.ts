@@ -49,8 +49,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(13);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(versions.length).toBe(14);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -66,7 +66,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(13);
+    expect(versions.length).toBe(14);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -85,6 +85,120 @@ describe('Schema versioning', () => {
   it('getAppliedVersions returns empty array on fresh DB without migrations', () => {
     const versions = getAppliedVersions(db);
     expect(versions).toEqual([]);
+  });
+});
+
+// --- v14: stale flag ---
+// Covers fossil cleanup after the bitcoind migration: soft-flagging only,
+// sweep + revive cycle, and stats exclusion.
+describe('v14 stale flag', () => {
+  let db: Database.Database;
+  let agentRepo: AgentRepository;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    agentRepo = new AgentRepository(db);
+  });
+
+  afterEach(() => { db.close(); });
+
+  it('adds the stale column with default 0 for new agents', () => {
+    agentRepo.insert(makeAgent('fresh', { last_seen: NOW - DAY }));
+    const row = db.prepare('SELECT stale FROM agents WHERE public_key_hash = ?').get(sha256('fresh')) as { stale: number };
+    expect(row.stale).toBe(0);
+  });
+
+  it('markStaleByAge flags agents whose last_seen is older than the threshold', () => {
+    agentRepo.insert(makeAgent('fossil', { last_seen: NOW - 100 * DAY }));
+    agentRepo.insert(makeAgent('recent', { last_seen: NOW - DAY }));
+
+    const flagged = agentRepo.markStaleByAge(90 * 86400);
+    expect(flagged).toBe(1);
+    expect(agentRepo.countStale()).toBe(1);
+
+    const fossil = db.prepare('SELECT stale FROM agents WHERE public_key_hash = ?').get(sha256('fossil')) as { stale: number };
+    const recent = db.prepare('SELECT stale FROM agents WHERE public_key_hash = ?').get(sha256('recent')) as { stale: number };
+    expect(fossil.stale).toBe(1);
+    expect(recent.stale).toBe(0);
+  });
+
+  it('markStaleByAge is idempotent — repeated calls do not re-flag', () => {
+    agentRepo.insert(makeAgent('fossil', { last_seen: NOW - 100 * DAY }));
+    expect(agentRepo.markStaleByAge(90 * 86400)).toBe(1);
+    expect(agentRepo.markStaleByAge(90 * 86400)).toBe(0);
+  });
+
+  it('updateLightningStats revives a stale agent (stale returns to 0)', () => {
+    agentRepo.insert(makeAgent('binance', { last_seen: NOW - 100 * DAY, source: 'lightning_graph' }));
+    agentRepo.markStaleByAge(90 * 86400);
+    expect(agentRepo.countStale()).toBe(1);
+
+    // Crawler sees the agent again
+    agentRepo.updateLightningStats(sha256('binance'), 164, 40_895_000_000, 'binance', NOW, 45);
+    expect(agentRepo.countStale()).toBe(0);
+    const row = db.prepare('SELECT stale FROM agents WHERE public_key_hash = ?').get(sha256('binance')) as { stale: number };
+    expect(row.stale).toBe(0);
+  });
+
+  it('updateCapacity revives a stale agent', () => {
+    agentRepo.insert(makeAgent('fossil-cap', { last_seen: NOW - 100 * DAY }));
+    agentRepo.markStaleByAge(90 * 86400);
+    agentRepo.updateCapacity(sha256('fossil-cap'), 500_000_000, NOW);
+    expect(agentRepo.countStale()).toBe(0);
+  });
+
+  it('count() excludes stale agents', () => {
+    agentRepo.insert(makeAgent('alive', { last_seen: NOW - DAY }));
+    agentRepo.insert(makeAgent('fossil', { last_seen: NOW - 100 * DAY }));
+    agentRepo.markStaleByAge(90 * 86400);
+    expect(agentRepo.count()).toBe(1);
+    expect(agentRepo.countIncludingStale()).toBe(2);
+    expect(agentRepo.countStale()).toBe(1);
+  });
+
+  it('findScoredAbove excludes stale agents — NIP-85 publisher path', () => {
+    agentRepo.insert(makeAgent('alive-hi', { last_seen: NOW - DAY, avg_score: 80 }));
+    agentRepo.insert(makeAgent('fossil-hi', { last_seen: NOW - 100 * DAY, avg_score: 90 }));
+    agentRepo.markStaleByAge(90 * 86400);
+
+    const scored = agentRepo.findScoredAbove(30);
+    expect(scored).toHaveLength(1);
+    expect(scored[0].alias).toBe('alive-hi');
+  });
+
+  it('findTopByScore excludes stale agents — leaderboard path', () => {
+    agentRepo.insert(makeAgent('alive', { last_seen: NOW - DAY, avg_score: 50 }));
+    agentRepo.insert(makeAgent('fossil', { last_seen: NOW - 100 * DAY, avg_score: 99 }));
+    agentRepo.markStaleByAge(90 * 86400);
+
+    const top = agentRepo.findTopByScore(10, 0);
+    expect(top).toHaveLength(1);
+    expect(top[0].alias).toBe('alive');
+  });
+
+  it('findByHash still returns a stale agent (direct lookup bypasses filter)', () => {
+    agentRepo.insert(makeAgent('fossil', { last_seen: NOW - 100 * DAY }));
+    agentRepo.markStaleByAge(90 * 86400);
+    const found = agentRepo.findByHash(sha256('fossil'));
+    expect(found).toBeDefined();
+    expect(found?.alias).toBe('fossil');
+  });
+
+  it('countBySource excludes stale agents', () => {
+    agentRepo.insert(makeAgent('alive-lg', { last_seen: NOW - DAY, source: 'lightning_graph' }));
+    agentRepo.insert(makeAgent('fossil-lg', { last_seen: NOW - 100 * DAY, source: 'lightning_graph' }));
+    agentRepo.markStaleByAge(90 * 86400);
+    expect(agentRepo.countBySource('lightning_graph')).toBe(1);
+  });
+
+  it('getRank returns null for a stale agent', () => {
+    agentRepo.insert(makeAgent('fossil', { last_seen: NOW - 100 * DAY, avg_score: 80 }));
+    agentRepo.insert(makeAgent('alive', { last_seen: NOW - DAY, avg_score: 50 }));
+    agentRepo.markStaleByAge(90 * 86400);
+    expect(agentRepo.getRank(sha256('fossil'))).toBe(null);
+    expect(agentRepo.getRank(sha256('alive'))).toBe(1);
   });
 });
 

@@ -35,15 +35,18 @@ export class ProbeRepository {
     ).all(targetHash, limit, offset) as ProbeResult[];
   }
 
-  /** Count of agents that have been probed at least once */
+  /** Count of active (non-stale) agents that have been probed at least once */
   countProbedAgents(): number {
-    const row = this.db.prepare(
-      'SELECT COUNT(DISTINCT target_hash) as count FROM probe_results'
-    ).get() as { count: number };
+    const row = this.db.prepare(`
+      SELECT COUNT(DISTINCT pr.target_hash) as count
+      FROM probe_results pr
+      JOIN agents a ON a.public_key_hash = pr.target_hash
+      WHERE a.stale = 0
+    `).get() as { count: number };
     return row.count;
   }
 
-  /** Count of agents reachable in their most recent probe */
+  /** Count of active (non-stale) agents reachable in their most recent probe */
   countReachable(): number {
     const row = this.db.prepare(`
       SELECT COUNT(*) as count FROM (
@@ -52,7 +55,8 @@ export class ProbeRepository {
         GROUP BY target_hash
       ) t
       JOIN probe_results p ON p.target_hash = t.target_hash AND p.probed_at = t.latest
-      WHERE p.reachable = 1
+      JOIN agents a ON a.public_key_hash = p.target_hash
+      WHERE p.reachable = 1 AND a.stale = 0
     `).get() as { count: number };
     return row.count;
   }

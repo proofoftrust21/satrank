@@ -139,6 +139,22 @@ async function crawlProbe(crawler: ProbeCrawler, probeRepo: ProbeRepository): Pr
   }
 }
 
+// Fossil sweep — agents not seen in this window are flagged stale=1.
+// A sighting (graph crawl, probe, or graph update) restores stale=0 automatically.
+const STALE_THRESHOLD_SEC = 90 * 86400; // 90 days
+const STALE_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function runStaleSweep(agentRepo: AgentRepository): void {
+  try {
+    const flagged = agentRepo.markStaleByAge(STALE_THRESHOLD_SEC);
+    const total = agentRepo.countStale();
+    logger.info({ flagged, totalStale: total }, 'Stale sweep complete');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ error: msg }, 'Stale sweep failed');
+  }
+}
+
 const SCORE_BATCH_SIZE = 500;
 
 /** Score a list of agents in batches, returning the number successfully scored. */
@@ -371,12 +387,19 @@ async function main(): Promise<void> {
       logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
     }
 
+    // Run an initial stale sweep so the DB reflects fossils before the first crawl fires
+    runStaleSweep(agentRepo);
+
     // Initial full crawl — Nostr publish happens inside, right after bulk scoring
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
       lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService, snapshotRepo,
       nostrPublishFn,
     );
+
+    // Post-crawl sweep: any agent not touched during the graph crawl whose last_seen is > 90d
+    // will now be flagged. Agents that were seen had their stale reset to 0 by the crawler updates.
+    runStaleSweep(agentRepo);
 
     // Per-source timers
     const timerObserver = setInterval(() => {
@@ -409,6 +432,10 @@ async function main(): Promise<void> {
       logger.warn('Probe cron timer NOT started — LND not configured');
     }
 
+    // Daily stale sweep — flags agents whose last_seen has fallen outside the 90-day window.
+    const timerStaleSweep = setInterval(() => runStaleSweep(agentRepo), STALE_SWEEP_INTERVAL_MS);
+    logger.info({ intervalMs: STALE_SWEEP_INTERVAL_MS, thresholdSec: STALE_THRESHOLD_SEC }, 'Stale sweep cron timer started');
+
     function shutdown() {
       logger.info('Stopping cron crawler');
       clearInterval(timerObserver);
@@ -416,16 +443,19 @@ async function main(): Promise<void> {
       clearInterval(timerLnplus);
       if (timerProbe) clearInterval(timerProbe);
       if (timerNostr) clearInterval(timerNostr);
+      clearInterval(timerStaleSweep);
       closeDatabase();
       process.exit(0);
     }
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } else {
+    runStaleSweep(agentRepo);
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
       lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService, snapshotRepo,
     );
+    runStaleSweep(agentRepo);
     closeDatabase();
   }
 }

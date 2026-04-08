@@ -11,7 +11,7 @@ import type { HealthResponse, NetworkStats } from '../types';
 const startTime = Date.now();
 
 // Must match the latest migration version in migrations.ts
-const EXPECTED_SCHEMA_VERSION = 13;
+const EXPECTED_SCHEMA_VERSION = 14;
 
 export class StatsService {
   constructor(
@@ -42,9 +42,11 @@ export class StatsService {
 
     const status: 'ok' | 'error' = dbStatus === 'ok' && schemaVersion === EXPECTED_SCHEMA_VERSION ? 'ok' : 'error';
 
+    // agentsIndexed reflects active (non-stale) agents; fossils are tracked separately.
     return {
       status,
       agentsIndexed: dbStatus === 'ok' ? this.agentRepo.count() : 0,
+      staleAgents: dbStatus === 'ok' ? this.agentRepo.countStale() : 0,
       totalTransactions: dbStatus === 'ok' ? this.txRepo.totalCount() : 0,
       lastUpdate: dbStatus === 'ok' ? this.snapshotRepo.getLastUpdateTime() : 0,
       uptime: Math.floor((Date.now() - startTime) / 1000),

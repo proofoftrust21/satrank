@@ -120,15 +120,21 @@
   setupCopyBtn('copy-sdk', 'sdk-code');
 
   // -- Stats + Leaderboard in parallel --
+  var totalAgentsHint = null; // active agent count, used for rank copy in detail panel
   fetchWithRetry(API + '/stats', 1)
     .then(function (d) {
       var s = d.data;
+      totalAgentsHint = s.totalAgents;
       fadeUpdate(document.getElementById('stat-probed'), fmt(s.nodesProbed));
       fadeUpdate(document.getElementById('stat-phantom'), s.phantomRate + '%');
       fadeUpdate(document.getElementById('stat-reachable'), fmt(s.verifiedReachable));
       fadeUpdate(document.getElementById('stat-probes-24h'), fmt(s.probes24h));
+      ['stat-probed', 'stat-phantom', 'stat-reachable', 'stat-probes-24h'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.remove('loading');
+      });
     })
-    .catch(function () { /* static values remain visible — no error state needed */ });
+    .catch(setStatError);
 
   // Leaderboard loads in parallel with stats (not sequentially)
   loadTopAgents();
@@ -294,7 +300,10 @@
     // Score + rank + delta
     html += '<div class="detail-score-big" style="color:' + scoreColor(agent.score) + '">';
     html += escapeHtml(agent.score);
-    if (agent.rank) html += '<span class="confidence">#' + escapeHtml(agent.rank) + ' of 17,000+ agents</span>';
+    if (agent.rank) {
+      var totalLabel = totalAgentsHint ? fmt(totalAgentsHint) + ' active agents' : 'active agents';
+      html += '<span class="confidence">#' + escapeHtml(agent.rank) + ' of ' + totalLabel + '</span>';
+    }
     html += '</div>';
 
     if (d7 !== undefined && d7 !== null) {

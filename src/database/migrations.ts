@@ -321,6 +321,28 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 13, 'last_queried_at, performance indexes for stats/leaderboard');
   }
 
+  // v14: stale flag for fossil agents (not seen in 90+ days)
+  // Post-bitcoind migration cleanup — the DB inherited ~4k fossils from the old Voltage node.
+  // Soft-flagged only: history preserved, stale=0 is restored automatically when the crawler
+  // or a probe sees the agent again.
+  if (!hasVersion(db, 14)) {
+    db.transaction(() => {
+      try {
+        db.exec('ALTER TABLE agents ADD COLUMN stale INTEGER NOT NULL DEFAULT 0');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('duplicate column name')) throw err;
+      }
+      // Flag existing fossils at migration time
+      const cutoff = Math.floor(Date.now() / 1000) - 90 * 86400;
+      db.prepare('UPDATE agents SET stale = 1 WHERE last_seen < ?').run(cutoff);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_agents_stale ON agents(stale)');
+      // Composite index for the leaderboard / top-by-score hot path with stale filter
+      db.exec('CREATE INDEX IF NOT EXISTS idx_agents_stale_score ON agents(stale, avg_score DESC)');
+      recordVersion(db, 14, 'Add stale flag for fossil agents (not seen in 90+ days)');
+    })();
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -330,6 +352,11 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  14: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_agents_stale_score');
+    db.exec('DROP INDEX IF EXISTS idx_agents_stale');
+    try { db.exec('ALTER TABLE agents DROP COLUMN stale'); } catch { /* SQLite < 3.35 */ }
+  },
   13: (db) => {
     try { db.exec('ALTER TABLE agents DROP COLUMN last_queried_at'); } catch { /* SQLite < 3.35 */ }
   },

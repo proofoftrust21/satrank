@@ -822,7 +822,8 @@ export const openapiSpec = {
         type: 'object',
         properties: {
           status: { type: 'string', enum: ['ok', 'error'] },
-          agentsIndexed: { type: 'integer' },
+          agentsIndexed: { type: 'integer', description: 'Active agents (not seen in the graph within 90 days are excluded)' },
+          staleAgents: { type: 'integer', description: 'Fossil agents — not seen in 90+ days, kept for history but excluded from stats' },
           totalTransactions: { type: 'integer' },
           lastUpdate: { type: 'integer' },
           uptime: { type: 'integer', description: 'Seconds since process start' },

@@ -26,6 +26,8 @@ export interface Agent {
   query_count: number;
   unique_peers: number | null;
   last_queried_at: number | null;
+  /** 1 when the agent has not been seen in 90+ days (fossil). Soft-flagged; restored to 0 on next sighting. */
+  stale?: number;
 }
 
 export interface Transaction {
@@ -167,6 +169,8 @@ export interface PaginationParams {
 export interface HealthResponse {
   status: 'ok' | 'error';
   agentsIndexed: number;
+  /** Fossils — agents not seen in 90+ days. Kept in DB but excluded from scoring/publishing. */
+  staleAgents: number;
   totalTransactions: number;
   lastUpdate: number;
   uptime: number;
