@@ -148,13 +148,16 @@ export class AgentRepository {
     return Math.round((row.total / 100_000_000) * 10) / 10;
   }
 
-  /** Mark agents as stale whose last_seen is older than (now - maxAgeSec).
-   *  Returns the number of newly-flagged agents. Idempotent. */
+  /** Recompute the stale flag for every agent based on last_seen.
+   *  Invariant after this call: stale == 1 iff last_seen < (now - maxAgeSec).
+   *  Returns the number of rows whose stale value changed. */
   markStaleByAge(maxAgeSec: number): number {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
-    const result = this.db.prepare(
-      'UPDATE agents SET stale = 1 WHERE stale = 0 AND last_seen < ?'
-    ).run(cutoff);
+    const result = this.db.prepare(`
+      UPDATE agents
+      SET stale = CASE WHEN last_seen < ? THEN 1 ELSE 0 END
+      WHERE stale != CASE WHEN last_seen < ? THEN 1 ELSE 0 END
+    `).run(cutoff, cutoff);
     return result.changes;
   }
 
@@ -162,35 +165,53 @@ export class AgentRepository {
     this.db.prepare('UPDATE agents SET alias = ? WHERE public_key_hash = ?').run(alias, hash);
   }
 
+  /** Stale cutoff threshold used by update methods — keeps the stale invariant in sync with last_seen. */
+  private staleCutoff(): number {
+    return Math.floor(Date.now() / 1000) - 90 * 86400;
+  }
+
   updateStats(hash: string, totalTx: number, totalAttestations: number, avgScore: number, firstSeen: number, lastSeen: number): void {
+    const cutoff = this.staleCutoff();
     this.db.prepare(`
-      UPDATE agents SET total_transactions = ?, total_attestations_received = ?, avg_score = ?, first_seen = ?, last_seen = ?, stale = 0
+      UPDATE agents
+      SET total_transactions = ?, total_attestations_received = ?, avg_score = ?, first_seen = ?, last_seen = ?,
+          stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
       WHERE public_key_hash = ?
-    `).run(totalTx, totalAttestations, avgScore, firstSeen, lastSeen, hash);
+    `).run(totalTx, totalAttestations, avgScore, firstSeen, lastSeen, lastSeen, cutoff, hash);
   }
 
   updateCapacity(hash: string, capacitySats: number, lastSeen: number): void {
-    // last_seen moves forward only; a fresh sighting also clears the stale flag
+    // last_seen moves forward only; stale is recomputed against the effective (MAX) last_seen
+    const cutoff = this.staleCutoff();
     this.db.prepare(`
-      UPDATE agents SET capacity_sats = ?, last_seen = MAX(last_seen, ?), stale = 0
+      UPDATE agents
+      SET capacity_sats = ?, last_seen = MAX(last_seen, ?),
+          stale = CASE WHEN MAX(last_seen, ?) >= ? THEN 0 ELSE 1 END
       WHERE public_key_hash = ?
-    `).run(capacitySats, lastSeen, hash);
+    `).run(capacitySats, lastSeen, lastSeen, cutoff, hash);
   }
 
   updateLightningStats(hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number, uniquePeers?: number): void {
+    const cutoff = this.staleCutoff();
     if (uniquePeers !== undefined && uniquePeers > 0) {
       try {
-        this.db.prepare(
-          'UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ?, stale = 0 WHERE public_key_hash = ?'
-        ).run(channels, capacitySats, alias, lastSeen, uniquePeers, hash);
+        this.db.prepare(`
+          UPDATE agents
+          SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ?,
+              stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
+          WHERE public_key_hash = ?
+        `).run(channels, capacitySats, alias, lastSeen, uniquePeers, lastSeen, cutoff, hash);
         return;
       } catch {
         // unique_peers column may not exist yet (migration pending) — fallback without it
       }
     }
-    this.db.prepare(
-      'UPDATE agents SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, stale = 0 WHERE public_key_hash = ?'
-    ).run(channels, capacitySats, alias, lastSeen, hash);
+    this.db.prepare(`
+      UPDATE agents
+      SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?,
+          stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
+      WHERE public_key_hash = ?
+    `).run(channels, capacitySats, alias, lastSeen, lastSeen, cutoff, hash);
   }
 
   updatePublicKey(hash: string, publicKey: string): void {

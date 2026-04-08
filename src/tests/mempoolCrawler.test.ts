@@ -140,7 +140,9 @@ describe('MempoolCrawler', () => {
 
     expect(result.nodesFetched).toBe(3);
     expect(result.newAgents).toBe(3);
-    expect(agentRepo.count()).toBe(3);
+    // Test nodes use 2023 timestamps which are outside the 90-day active window;
+    // use countIncludingStale() so the assertion doesn't drift with wall-clock time.
+    expect(agentRepo.countIncludingStale()).toBe(3);
   });
 
   it('skips nodes without publicKey or alias', async () => {
@@ -207,7 +209,7 @@ describe('MempoolCrawler', () => {
     // Should enrich the existing agent, not create a duplicate
     expect(result.newAgents).toBe(0);
     expect(result.updatedAgents).toBe(1);
-    expect(agentRepo.count()).toBe(1);
+    expect(agentRepo.countIncludingStale()).toBe(1);
 
     // Original agent enriched with capacity, but alias/source/tx preserved
     const agent = agentRepo.findByHash(observerHash);
@@ -256,7 +258,7 @@ describe('MempoolCrawler', () => {
     const result = await crawler.run();
 
     expect(result.newAgents).toBe(1);
-    expect(agentRepo.count()).toBe(2);
+    expect(agentRepo.countIncludingStale()).toBe(2);
   });
 
   it('only enriches non-lightning agents with capacity and lastSeen', async () => {

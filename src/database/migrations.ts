@@ -333,9 +333,9 @@ export function runMigrations(db: Database.Database): void {
         const msg = err instanceof Error ? err.message : String(err);
         if (!msg.includes('duplicate column name')) throw err;
       }
-      // Flag existing fossils at migration time
+      // Recompute the stale flag for every existing row from last_seen
       const cutoff = Math.floor(Date.now() / 1000) - 90 * 86400;
-      db.prepare('UPDATE agents SET stale = 1 WHERE last_seen < ?').run(cutoff);
+      db.prepare('UPDATE agents SET stale = CASE WHEN last_seen < ? THEN 1 ELSE 0 END').run(cutoff);
       db.exec('CREATE INDEX IF NOT EXISTS idx_agents_stale ON agents(stale)');
       // Composite index for the leaderboard / top-by-score hot path with stale filter
       db.exec('CREATE INDEX IF NOT EXISTS idx_agents_stale_score ON agents(stale, avg_score DESC)');

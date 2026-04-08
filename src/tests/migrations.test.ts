@@ -130,6 +130,40 @@ describe('v14 stale flag', () => {
     expect(agentRepo.markStaleByAge(90 * 86400)).toBe(0);
   });
 
+  it('markStaleByAge unflags a revived agent whose last_seen is now recent', () => {
+    agentRepo.insert(makeAgent('fossil', { last_seen: NOW - 100 * DAY }));
+    agentRepo.markStaleByAge(90 * 86400);
+    expect(agentRepo.countStale()).toBe(1);
+
+    // Simulate last_seen being updated directly (e.g. by an external process)
+    db.prepare('UPDATE agents SET last_seen = ? WHERE public_key_hash = ?').run(NOW - DAY, sha256('fossil'));
+    // Re-running the sweep should unflag it
+    const changed = agentRepo.markStaleByAge(90 * 86400);
+    expect(changed).toBe(1);
+    expect(agentRepo.countStale()).toBe(0);
+  });
+
+  it('updateLightningStats with an old gossip timestamp keeps agent stale (zombie gossip)', () => {
+    agentRepo.insert(makeAgent('zombie', { last_seen: NOW - 100 * DAY, source: 'lightning_graph' }));
+    agentRepo.markStaleByAge(90 * 86400);
+    expect(agentRepo.countStale()).toBe(1);
+
+    // LND graph sees the node but gossip last_update is still 120d old
+    agentRepo.updateLightningStats(sha256('zombie'), 10, 1_000_000, 'zombie', NOW - 120 * DAY, 5);
+    expect(agentRepo.countStale()).toBe(1); // remains stale — new last_seen is still old
+  });
+
+  it('updateCapacity with an old timestamp does not revive via MAX shortcut', () => {
+    // Agent was active 120 days ago, stale now
+    agentRepo.insert(makeAgent('frozen', { last_seen: NOW - 120 * DAY }));
+    agentRepo.markStaleByAge(90 * 86400);
+    expect(agentRepo.countStale()).toBe(1);
+
+    // updateCapacity receives an even older timestamp — MAX keeps last_seen at 120d ago
+    agentRepo.updateCapacity(sha256('frozen'), 500_000_000, NOW - 200 * DAY);
+    expect(agentRepo.countStale()).toBe(1);
+  });
+
   it('updateLightningStats revives a stale agent (stale returns to 0)', () => {
     agentRepo.insert(makeAgent('binance', { last_seen: NOW - 100 * DAY, source: 'lightning_graph' }));
     agentRepo.markStaleByAge(90 * 86400);
