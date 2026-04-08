@@ -165,6 +165,65 @@ describe('errorHandler', () => {
     const body = res._body as { error: { code: string; message: string } };
     expect(body.error.message).toBe('Detailed dev error info');
   });
+
+  it('propagates the real VALIDATION_ERROR message in production', async () => {
+    // VALIDATION_ERROR is on the pass-through allow-list: messages come from
+    // formatZodError and are explicitly written for the client, so the
+    // generic "Invalid request" must NOT mask them in production.
+    vi.doMock('../config', () => ({
+      config: { NODE_ENV: 'production' },
+    }));
+    vi.doMock('../logger', () => ({
+      logger: { error: vi.fn() },
+    }));
+
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const { ValidationError } = await import('../errors');
+    const res = mockRes();
+
+    errorHandler(
+      new ValidationError('caller must be a 64-char SHA256 hash or 66-char Lightning pubkey (02/03 prefix), got 11 chars'),
+      mockReq(),
+      res as unknown as Response,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res._status).toBe(400);
+    const body = res._body as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.message).toContain('caller');
+    expect(body.error.message).toContain('got 11 chars');
+    expect(body.error.message).not.toBe('Invalid request');
+  });
+
+  it('still masks NOT_FOUND messages in production', async () => {
+    // Spot-check that the generic-messages behavior still applies to codes
+    // NOT on the pass-through list, so the pass-through doesn't leak to
+    // other error types.
+    vi.doMock('../config', () => ({
+      config: { NODE_ENV: 'production' },
+    }));
+    vi.doMock('../logger', () => ({
+      logger: { error: vi.fn() },
+    }));
+
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const { NotFoundError } = await import('../errors');
+    const res = mockRes();
+
+    errorHandler(
+      new NotFoundError('SecretInternalResource', 'hidden-id'),
+      mockReq(),
+      res as unknown as Response,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res._status).toBe(404);
+    const body = res._body as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+    expect(body.error.message).toBe('Resource not found');
+    expect(body.error.message).not.toContain('SecretInternal');
+  });
 });
 
 describe('OpenAPI spec auth alignment', () => {
