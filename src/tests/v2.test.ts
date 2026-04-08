@@ -159,6 +159,46 @@ describe('POST /api/decide', () => {
     expect(res.status).toBe(400);
   });
 
+  it('validation error names the offending field, expected format, and received length', async () => {
+    // 11-char caller — Romain's canonical example
+    const res = await request(app)
+      .post('/api/decide')
+      .send({ target: sha256('bob'), caller: 'shortstring' })
+      .set('Content-Type', 'application/json');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    const msg: string = res.body.error.message;
+    expect(msg).toContain('caller');
+    expect(msg).toContain('64-char SHA256 hash');
+    expect(msg).toContain('66-char Lightning pubkey');
+    expect(msg).toContain('got 11 chars');
+  });
+
+  it('validation error reports missing caller as required', async () => {
+    const res = await request(app)
+      .post('/api/decide')
+      .send({ target: sha256('bob') })
+      .set('Content-Type', 'application/json');
+
+    expect(res.status).toBe(400);
+    const msg: string = res.body.error.message;
+    expect(msg).toContain('caller');
+    expect(msg).toContain('required');
+  });
+
+  it('validation error reports amountSats range violation', async () => {
+    const res = await request(app)
+      .post('/api/decide')
+      .send({ target: sha256('bob'), caller: sha256('alice'), amountSats: 0 })
+      .set('Content-Type', 'application/json');
+
+    expect(res.status).toBe(400);
+    const msg: string = res.body.error.message;
+    expect(msg).toContain('amountSats');
+    expect(msg).toContain('got 0');
+  });
+
   it('accepts 66-char Lightning pubkeys', async () => {
     // Register agent with a pubkey
     const pubkey = '02' + sha256('lightning-agent');

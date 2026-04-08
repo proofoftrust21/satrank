@@ -4,6 +4,7 @@ import type { AttestationService } from '../services/attestationService';
 import { publicKeyHashSchema, paginationSchema, createAttestationSchema } from '../middleware/validation';
 import { ValidationError } from '../errors';
 import { logger } from '../logger';
+import { formatZodError } from '../utils/zodError';
 
 function safeParseJsonTags(value: string): string[] {
   try {
@@ -22,10 +23,10 @@ export class AttestationController {
   getBySubject = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const hashParsed = publicKeyHashSchema.safeParse(req.params.publicKeyHash);
-      if (!hashParsed.success) throw new ValidationError(hashParsed.error.errors[0].message);
+      if (!hashParsed.success) throw new ValidationError(formatZodError(hashParsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
 
       const paginationParsed = paginationSchema.safeParse(req.query);
-      if (!paginationParsed.success) throw new ValidationError(paginationParsed.error.errors[0].message);
+      if (!paginationParsed.success) throw new ValidationError(formatZodError(paginationParsed.error, req.query));
       const { limit, offset } = paginationParsed.data;
       const { attestations, total } = this.attestationService.getBySubject(
         hashParsed.data, limit, offset,
@@ -52,9 +53,7 @@ export class AttestationController {
   create = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const parsed = createAttestationSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ValidationError(parsed.error.errors.map(e => e.message).join(', '));
-      }
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
       const attestation = this.attestationService.create(parsed.data);
       res.status(201).json({

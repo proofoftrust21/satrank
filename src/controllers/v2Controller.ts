@@ -13,6 +13,7 @@ import type { SurvivalService } from '../services/survivalService';
 import type { ChannelFlowService } from '../services/channelFlowService';
 import type { FeeVolatilityService } from '../services/feeVolatilityService';
 import { agentIdentifierSchema, decideSchema, reportSchema } from '../middleware/validation';
+import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 import { normalizeIdentifier } from '../utils/identifier';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
@@ -38,7 +39,7 @@ export class V2Controller {
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = decideSchema.safeParse(req.body);
-      if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
       const target = normalizeIdentifier(parsed.data.target);
       const caller = normalizeIdentifier(parsed.data.caller);
@@ -58,7 +59,7 @@ export class V2Controller {
   report = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const parsed = reportSchema.safeParse(req.body);
-      if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
       const target = normalizeIdentifier(parsed.data.target);
       const reporter = normalizeIdentifier(parsed.data.reporter);
@@ -82,7 +83,7 @@ export class V2Controller {
   profile = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const idParsed = agentIdentifierSchema.safeParse(req.params.id);
-      if (!idParsed.success) throw new ValidationError(idParsed.error.errors[0].message);
+      if (!idParsed.success) throw new ValidationError(formatZodError(idParsed.error, req.params.id, { fallbackField: 'id' }));
 
       const { hash } = normalizeIdentifier(idParsed.data);
 

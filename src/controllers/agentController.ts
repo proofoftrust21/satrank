@@ -11,6 +11,7 @@ import { ValidationError, NotFoundError } from '../errors';
 import { normalizeIdentifier } from '../utils/identifier';
 import { logger } from '../logger';
 import * as memoryCache from '../cache/memoryCache';
+import { formatZodError } from '../utils/zodError';
 
 /** TTL for the leaderboard response cache — matches the stats TTL of 5 minutes.
  *  Long enough that refresh blocks are rare, short enough that new scoring cycles
@@ -53,7 +54,7 @@ export class AgentController {
   getAgent = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const parsed = agentIdentifierSchema.safeParse(req.params.publicKeyHash);
-      if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
 
       const { hash, pubkey } = normalizeIdentifier(parsed.data);
 
@@ -79,11 +80,11 @@ export class AgentController {
   getHistory = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const hashParsed = agentIdentifierSchema.safeParse(req.params.publicKeyHash);
-      if (!hashParsed.success) throw new ValidationError(hashParsed.error.errors[0].message);
+      if (!hashParsed.success) throw new ValidationError(formatZodError(hashParsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
       const { hash: agentHash } = normalizeIdentifier(hashParsed.data);
 
       const paginationParsed = paginationSchema.safeParse(req.query);
-      if (!paginationParsed.success) throw new ValidationError(paginationParsed.error.errors[0].message);
+      if (!paginationParsed.success) throw new ValidationError(formatZodError(paginationParsed.error, req.query));
 
       const { limit, offset } = paginationParsed.data;
       const snapshots = this.snapshotRepo.findHistoryByAgent(agentHash, limit, offset);
@@ -143,7 +144,7 @@ export class AgentController {
   getTop = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const topParsed = topQuerySchema.safeParse(req.query);
-      if (!topParsed.success) throw new ValidationError(topParsed.error.errors[0].message);
+      if (!topParsed.success) throw new ValidationError(formatZodError(topParsed.error, req.query));
       const { limit, offset, sort_by } = topParsed.data;
 
       // Key varies per leaderboard variant so component-sorted views don't collide.
@@ -173,7 +174,7 @@ export class AgentController {
   getVerdict = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = agentIdentifierSchema.safeParse(req.params.publicKeyHash);
-      if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
 
       const { hash, pubkey } = normalizeIdentifier(parsed.data);
 
@@ -184,7 +185,7 @@ export class AgentController {
       let callerPubkey: string | undefined;
       if (callerRaw) {
         const callerParsed = agentIdentifierSchema.safeParse(callerRaw);
-        if (!callerParsed.success) throw new ValidationError('Invalid caller_pubkey: expected 64-char SHA256 hash or 66-char Lightning pubkey');
+        if (!callerParsed.success) throw new ValidationError(formatZodError(callerParsed.error, callerRaw, { fallbackField: 'caller_pubkey' }));
         // Normalize to hash for internal use (trust graph + pathfinding lookup)
         callerPubkey = normalizeIdentifier(callerParsed.data).hash;
       }
@@ -209,7 +210,7 @@ export class AgentController {
   batchVerdicts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = batchVerdictsSchema.safeParse(req.body);
-      if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
       const MAX_AUTO_INDEX_PER_BATCH = 2;
       let autoIndexCount = 0;
@@ -240,7 +241,7 @@ export class AgentController {
   search = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const searchParsed = searchQuerySchema.safeParse(req.query);
-      if (!searchParsed.success) throw new ValidationError(searchParsed.error.errors[0].message);
+      if (!searchParsed.success) throw new ValidationError(formatZodError(searchParsed.error, req.query));
       const { alias, limit, offset } = searchParsed.data;
       const agents = this.agentService.searchByAlias(alias, limit, offset);
       const total = this.agentRepo.countByAlias(alias);

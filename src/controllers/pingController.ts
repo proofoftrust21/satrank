@@ -7,6 +7,7 @@ import type { ProbeRepository } from '../repositories/probeRepository';
 import { ValidationError } from '../errors';
 import { sha256 } from '../utils/crypto';
 import { logger } from '../logger';
+import { formatZodError } from '../utils/zodError';
 
 const pubkeySchema = z.string().regex(/^(02|03)[a-f0-9]{64}$/, 'Expected 66-char Lightning pubkey (02/03 prefix)');
 const DEFAULT_AMOUNT_SATS = 1000;
@@ -22,7 +23,7 @@ export class PingController {
   ping = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = pubkeySchema.safeParse(req.params.pubkey);
-      if (!parsed.success) throw new ValidationError(parsed.error.errors[0].message);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params.pubkey, { fallbackField: 'pubkey' }));
       const pubkey = parsed.data;
 
       // Mark as hot node for priority probing
@@ -38,7 +39,7 @@ export class PingController {
       let fromPubkey: string | undefined;
       if (fromRaw) {
         const fromParsed = pubkeySchema.safeParse(fromRaw);
-        if (!fromParsed.success) throw new ValidationError('Invalid from pubkey: expected 66-char Lightning pubkey');
+        if (!fromParsed.success) throw new ValidationError(formatZodError(fromParsed.error, fromRaw, { fallbackField: 'from' }));
         fromPubkey = fromParsed.data;
       }
 
