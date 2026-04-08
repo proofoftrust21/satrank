@@ -7,8 +7,12 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { TrendService } from './trendService';
 import type { HealthResponse, NetworkStats } from '../types';
+import * as memoryCache from '../cache/memoryCache';
 
 const startTime = Date.now();
+
+const NETWORK_STATS_CACHE_KEY = 'stats:network';
+const NETWORK_STATS_TTL_MS = 30_000;
 
 // Must match the latest migration version in migrations.ts
 const EXPECTED_SCHEMA_VERSION = 14;
@@ -56,14 +60,10 @@ export class StatsService {
     };
   }
 
-  private statsCache: { data: NetworkStats; expiresAt: number } | null = null;
-  private static STATS_CACHE_TTL_MS = 60_000; // 1 minute
-
   getNetworkStats(): NetworkStats {
-    // Cache stats for 1 minute — these don't change between crawl cycles
-    if (this.statsCache && Date.now() < this.statsCache.expiresAt) {
-      return this.statsCache.data;
-    }
+    // Shared TTL cache — keeps the cold-start rebuild cost off the request path
+    const cached = memoryCache.get<NetworkStats>(NETWORK_STATS_CACHE_KEY);
+    if (cached) return cached;
 
     const buckets = this.txRepo.countByBucket();
     const nodesProbed = this.probeRepo?.countProbedAgents() ?? 0;
@@ -90,7 +90,7 @@ export class StatsService {
       trends: this.trendService.getNetworkTrends(),
     };
 
-    this.statsCache = { data, expiresAt: Date.now() + StatsService.STATS_CACHE_TTL_MS };
+    memoryCache.set(NETWORK_STATS_CACHE_KEY, data, NETWORK_STATS_TTL_MS);
     return data;
   }
 }

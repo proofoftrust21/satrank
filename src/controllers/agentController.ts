@@ -10,6 +10,24 @@ import { agentIdentifierSchema, paginationSchema, topQuerySchema, searchQuerySch
 import { ValidationError, NotFoundError } from '../errors';
 import { normalizeIdentifier } from '../utils/identifier';
 import { logger } from '../logger';
+import * as memoryCache from '../cache/memoryCache';
+
+/** TTL for the leaderboard response cache — matches the 30s stats TTL. */
+const TOP_CACHE_TTL_MS = 30_000;
+
+interface TopResponse {
+  data: Array<{
+    publicKeyHash: string;
+    alias: string | null;
+    score: number;
+    rank: number | null;
+    totalTransactions: number;
+    source: string;
+    components: { volume: number; reputation: number; seniority: number; regularity: number; diversity: number };
+    delta7d: number | null;
+  }>;
+  meta: { total: number; limit: number; offset: number; sort_by: string };
+}
 
 function safeParseJson(value: string, fallback: unknown): unknown {
   try {
@@ -96,30 +114,47 @@ export class AgentController {
     }
   };
 
+  /** Builds the leaderboard response from the current DB state. Extracted so
+   *  the startup warm-up can reuse the exact same path the controller uses. */
+  buildTopResponse(limit: number, offset: number, sort_by: 'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity'): TopResponse {
+    const agents = this.agentService.getTopAgents(limit, offset, sort_by);
+    const total = this.agentRepo.count();
+
+    return {
+      data: agents.map(a => {
+        const delta = this.trendService.computeDeltas(a.publicKeyHash, a.score);
+        return {
+          publicKeyHash: a.publicKeyHash,
+          alias: a.alias,
+          score: a.score,
+          rank: this.agentRepo.getRank(a.publicKeyHash),
+          totalTransactions: a.totalTransactions,
+          source: a.source,
+          components: a.components,
+          delta7d: delta.delta7d,
+        };
+      }),
+      meta: { total, limit, offset, sort_by },
+    };
+  }
+
   getTop = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const topParsed = topQuerySchema.safeParse(req.query);
       if (!topParsed.success) throw new ValidationError(topParsed.error.errors[0].message);
       const { limit, offset, sort_by } = topParsed.data;
-      const agents = this.agentService.getTopAgents(limit, offset, sort_by);
-      const total = this.agentRepo.count();
 
-      res.json({
-        data: agents.map(a => {
-          const delta = this.trendService.computeDeltas(a.publicKeyHash, a.score);
-          return {
-            publicKeyHash: a.publicKeyHash,
-            alias: a.alias,
-            score: a.score,
-            rank: this.agentRepo.getRank(a.publicKeyHash),
-            totalTransactions: a.totalTransactions,
-            source: a.source,
-            components: a.components,
-            delta7d: delta.delta7d,
-          };
-        }),
-        meta: { total, limit, offset, sort_by },
-      });
+      // Key varies per leaderboard variant so component-sorted views don't collide
+      const cacheKey = `agents:top:${limit}:${offset}:${sort_by}`;
+      const cached = memoryCache.get<TopResponse>(cacheKey);
+      if (cached) {
+        res.json(cached);
+        return;
+      }
+
+      const response = this.buildTopResponse(limit, offset, sort_by);
+      memoryCache.set(cacheKey, response, TOP_CACHE_TTL_MS);
+      res.json(response);
     } catch (err) {
       next(err);
     }

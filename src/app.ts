@@ -55,6 +55,10 @@ import { createPingRoutes } from './routes/ping';
 // OpenAPI spec
 import { openapiSpec } from './openapi';
 
+// Infra
+import { logger } from './logger';
+import { set as cacheSet } from './cache/memoryCache';
+
 export function createApp() {
   const app = express();
 
@@ -105,6 +109,12 @@ export function createApp() {
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
+
+  // Cache warm-up — fills the stats and leaderboard caches before the first
+  // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
+  // hits a real user. Failures are logged but non-fatal: the endpoints will
+  // rebuild on demand if the warm-up SQL fails for any reason.
+  warmUpCaches(statsService, agentController);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
   // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.
@@ -241,4 +251,32 @@ export function createApp() {
   app.use(errorHandler);
 
   return app;
+}
+
+/** Synchronously populate the hot caches so the first visitor skips the cold-start cost.
+ *  All calls are wrapped so a warm-up failure never prevents the app from starting. */
+function warmUpCaches(statsService: StatsService, agentController: AgentController): void {
+  const start = Date.now();
+  try {
+    statsService.getNetworkStats();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ error: msg }, 'Cache warm-up: getNetworkStats failed');
+  }
+
+  // Prime the leaderboard variants the landing page actually hits.
+  // limit=10 score is the homepage default; the other sort_by values warm
+  // the component-sorted variants exposed via /agents/top?sort_by=...
+  const sortVariants: Array<'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity'> = ['score'];
+  for (const sortBy of sortVariants) {
+    try {
+      const response = agentController.buildTopResponse(10, 0, sortBy);
+      cacheSet(`agents:top:10:0:${sortBy}`, response, 30_000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ error: msg, sortBy }, 'Cache warm-up: buildTopResponse failed');
+    }
+  }
+
+  logger.info({ durationMs: Date.now() - start }, 'Cache warm-up complete');
 }
