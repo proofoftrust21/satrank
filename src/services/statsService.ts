@@ -12,7 +12,10 @@ import * as memoryCache from '../cache/memoryCache';
 const startTime = Date.now();
 
 const NETWORK_STATS_CACHE_KEY = 'stats:network';
-const NETWORK_STATS_TTL_MS = 30_000;
+// 5 minutes — long enough that refresh blocks are rare given the ~15s rebuild
+// cost, short enough that values reflect recent crawler activity. Data freshness
+// is ultimately bounded by the 30-min probe cycle anyway.
+const NETWORK_STATS_TTL_MS = 5 * 60_000;
 
 // Must match the latest migration version in migrations.ts
 const EXPECTED_SCHEMA_VERSION = 14;

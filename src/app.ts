@@ -267,10 +267,11 @@ function warmUpCaches(statsService: StatsService, agentController: AgentControll
 
   // Prime the leaderboard key the landing page actually hits. The controller's
   // getOrCompute wrapper re-uses this exact cache key, so a single synchronous
-  // build here is enough to cover the homepage first load.
+  // build here is enough to cover the homepage first load. 5-min TTL matches the
+  // stats cache and the TOP_CACHE_TTL_MS constant in agentController.
   try {
     const response = agentController.buildTopResponse(10, 0, 'score');
-    cacheSet('agents:top:10:0:score', response, 30_000);
+    cacheSet('agents:top:10:0:score', response, 5 * 60_000);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn({ error: msg }, 'Cache warm-up: buildTopResponse failed');

@@ -12,8 +12,10 @@ import { normalizeIdentifier } from '../utils/identifier';
 import { logger } from '../logger';
 import * as memoryCache from '../cache/memoryCache';
 
-/** TTL for the leaderboard response cache — matches the 30s stats TTL. */
-const TOP_CACHE_TTL_MS = 30_000;
+/** TTL for the leaderboard response cache — matches the stats TTL of 5 minutes.
+ *  Long enough that refresh blocks are rare, short enough that new scoring cycles
+ *  propagate to the leaderboard within a few minutes. */
+const TOP_CACHE_TTL_MS = 5 * 60_000;
 
 interface TopResponse {
   data: Array<{
