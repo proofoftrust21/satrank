@@ -410,6 +410,26 @@ tr.clickable { cursor: pointer; }
 .table-loading { text-align: center; color: #444; }
 .section-desc { color: #8888a0; margin-bottom: 16px; font-size: 0.9rem; }
 
+/* Skeleton loader for leaderboard rows while the API response is in-flight */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.85; }
+}
+.skeleton-row td {
+  padding: 12px 8px;
+}
+.skeleton-bar {
+  display: inline-block;
+  height: 12px;
+  background: linear-gradient(90deg, #1a1a2e 0%, #2a2a44 50%, #1a1a2e 100%);
+  border-radius: 4px;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-bar.w-sm { width: 28px; }
+.skeleton-bar.w-md { width: 80px; }
+.skeleton-bar.w-lg { width: 120px; }
+.skeleton-bar.w-xl { width: 140px; }
+
 /* Footer */
 footer {
   padding: 48px 0 32px;

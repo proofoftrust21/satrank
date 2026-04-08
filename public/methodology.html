@@ -188,7 +188,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <div class="card">
     <div class="card-title">LND Graph (Primary)</div>
-    <p>Full Lightning Network graph from our own LND node via the gossip protocol. Currently indexing <strong>17,000+ Lightning nodes</strong> with public keys, channel counts, total capacity (sats), and last-update timestamps. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes.</p>
+    <p>Full Lightning Network graph from our own LND node, backed by a full Bitcoin Core (<code>bitcoind v28.1</code>) node for channel validation. Currently indexing <strong>~13,900 active Lightning nodes</strong> &mdash; cryptographically verified against the Bitcoin UTXO set &mdash; with ~4,200 stale nodes (not seen in 90+ days) preserved for history but excluded from scoring. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes.</p>
   </div>
 
   <div class="card">
@@ -203,8 +203,30 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <div class="card">
     <div class="card-title">Route Probes</div>
-    <p>Periodic reachability checks via LND&rsquo;s <code>QueryRoutes</code> API. Each indexed node is probed hourly to determine whether a route exists from SatRank&rsquo;s node. The <code>unreachable</code> flag in the verdict comes from probe data. Uptime ratios over 7 days are computed and exposed in the <a href="#decision-engine">agent profile</a>.</p>
+    <p>Periodic reachability checks via LND&rsquo;s <code>QueryRoutes</code> API. Each indexed node is probed <strong>every 30 minutes</strong> to determine whether a route exists from SatRank&rsquo;s node. Hot nodes &mdash; those recently queried via <code>/decide</code> or <code>/ping</code> within the last 2 hours &mdash; are probed first in each cycle so live traffic gets the freshest data. The <code>unreachable</code> flag in the verdict comes from probe data. Uptime ratios over 7 days are computed and exposed in the <a href="#decision-engine">agent profile</a>.</p>
   </div>
+
+  <!-- Data Validation -->
+  <h2 id="data-validation">Data Validation</h2>
+  <p>
+    All channel data is validated against the Bitcoin UTXO set via a full <code>bitcoind</code>
+    node (v28.1). This means every channel&rsquo;s capacity is cryptographically verified &mdash;
+    not estimated from gossip alone. Nodes running lightweight backends (Neutrino, SPV) cannot
+    perform this validation, which is why many Lightning explorers report inflated node counts
+    and phantom channels.
+  </p>
+  <p>
+    SatRank&rsquo;s full-node validation reduced the apparent graph by ~4,200 nodes to
+    ~13,900 verified active nodes. The excluded nodes are <strong>stale</strong> (not seen
+    in 90+ days) and are preserved in the database but excluded from scoring, publishing,
+    and statistics. If a stale node reappears in the gossip with a recent update, it is
+    automatically restored to the active set &mdash; no history is lost.
+  </p>
+  <p>
+    This is the reason SatRank&rsquo;s numbers will diverge from other Lightning dashboards
+    that rely on Neutrino or SPV. Both pictures are internally consistent; only one is
+    validated end-to-end against Bitcoin.
+  </p>
 
   <!-- Anti-Gaming -->
   <h2 id="anti-gaming">Anti-Gaming Mechanisms</h2>
@@ -266,8 +288,8 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <!-- Worked Example -->
   <h2>Worked Example: ACINQ</h2>
   <p>
-    ACINQ is a major Lightning node operator with ~2,095 channels and 382 BTC of capacity.
-    Here is how the score is computed:
+    ACINQ is a major Lightning node operator with ~2,004 channels and hundreds of BTC of
+    verified capacity. Here is how the score is computed with full-node validation:
   </p>
 
   <table>
@@ -275,15 +297,15 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <tbody>
       <tr>
         <td>Volume</td>
-        <td>2,095 channels (log scale, ref 500)</td>
+        <td>2,004 channels (log scale, ref 500)</td>
         <td>100</td>
         <td>100 &times; 0.25 = 25.0</td>
       </tr>
       <tr>
         <td>Reputation</td>
-        <td>Hubness #4, betweenness #1, 0.18 BTC/channel</td>
-        <td>~60</td>
-        <td>60 &times; 0.30 = 18.0</td>
+        <td>Hubness + betweenness top-10, peer trust from validated capacity</td>
+        <td>~77</td>
+        <td>77 &times; 0.30 = 23.1</td>
       </tr>
       <tr>
         <td>Seniority</td>
@@ -293,38 +315,40 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
       </tr>
       <tr>
         <td>Regularity</td>
-        <td>5/5 probes reachable (100% uptime)</td>
+        <td>Reachable in every recent probe</td>
         <td>100</td>
         <td>100 &times; 0.15 = 15.0</td>
       </tr>
       <tr>
         <td>Diversity</td>
-        <td>382 BTC capacity (fallback, unique_peers pending)</td>
+        <td>Unique peers count (real, bitcoind-validated)</td>
         <td>100</td>
         <td>100 &times; 0.15 = 15.0</td>
       </tr>
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="3"><strong>Base score (rounded)</strong></td>
-        <td><strong>88</strong></td>
+        <td colspan="3"><strong>Base score</strong></td>
+        <td><strong>~93</strong></td>
       </tr>
       <tr>
-        <td colspan="3">+ Probe low latency bonus</td>
-        <td>+3</td>
-      </tr>
-      <tr>
-        <td colspan="3">+ Probe short hop bonus</td>
-        <td>+2</td>
+        <td colspan="3">+ Probe latency &amp; hop bonuses</td>
+        <td>+~6</td>
       </tr>
       <tr>
         <td colspan="3"><strong>Final score</strong></td>
-        <td><strong>~93*</strong></td>
+        <td><strong>~99*</strong></td>
       </tr>
     </tfoot>
   </table>
 
-  <p><em>* Values approximate. Actual scores are computed in real-time and may differ slightly. ACINQ has 0 LN+ ratings, so no LN+ bonus is applied.</em></p>
+  <p><em>
+    * Values updated April 2026 after the migration to full Bitcoin node validation.
+    Pre-bitcoind scoring used Neutrino&rsquo;s partial view and produced a materially
+    different number (the old ACINQ example scored ~93 with an incomplete Diversity
+    component). Actual scores are computed in real-time and may differ slightly. ACINQ
+    has 0 LN+ ratings, so no LN+ bonus is applied.
+  </em></p>
 
   <!-- Verdict API -->
   <h2 id="verdict">Verdict API &mdash; SAFE / RISKY / UNKNOWN</h2>
@@ -875,13 +899,67 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
     legitimate research, expensive for spam.
   </p>
 
+  <!-- Nostr Distribution -->
+  <h2 id="nostr-distribution">Nostr Distribution (NIP-85)</h2>
+  <p>
+    SatRank publishes trust scores as Nostr Trusted Assertions (NIP-85, kind <code>30382</code>).
+    Every 6 hours, scores for all active agents above threshold (score &ge; 30) are published
+    to three public relays:
+  </p>
+  <ul>
+    <li><code>wss://relay.damus.io</code></li>
+    <li><code>wss://nos.lol</code></li>
+    <li><code>wss://relay.primal.net</code></li>
+  </ul>
+  <p>
+    Each event contains the agent&rsquo;s score, components (volume, reputation, seniority,
+    regularity, diversity), verdict (SAFE / RISKY / UNKNOWN), reachability, and a survival
+    prediction. Events are replaceable (same <code>d</code>-tag per agent pubkey), so clients
+    always see the latest score with no duplication.
+  </p>
+
+  <h3>Why Nostr?</h3>
+  <p>
+    Nostr is the natural distribution layer for trust data in the Bitcoin ecosystem:
+  </p>
+  <ul>
+    <li><strong>Sovereign identity.</strong> Agents sign their own events; no platform dependency.</li>
+    <li><strong>Relay redundancy.</strong> Data replicates across multiple relays with no single point of failure.</li>
+    <li><strong>Native discovery.</strong> Agents already transact via Lightning on Nostr (zaps, DVMs), so they find SatRank in the infrastructure they already use.</li>
+    <li><strong>Standard format.</strong> NIP-85 is an established protocol for trust assertions; consumers don&rsquo;t need SatRank-specific SDKs.</li>
+  </ul>
+
+  <h3>DVM Trust-Check (NIP-90)</h3>
+  <p>
+    SatRank also operates a Data Vending Machine (NIP-90) for real-time trust queries.
+    Send a kind <code>5900</code> event with parameter <code>target</code> set to any
+    Lightning node pubkey, and receive a kind <code>6900</code> response with the trust
+    score, verdict, and reachability. Unknown nodes trigger an on-demand <code>QueryRoutes</code>
+    probe so the answer reflects the live graph, not just the cached snapshot.
+  </p>
+
+  <h3>Unique Position</h3>
+  <p>
+    Every other NIP-85 implementation (wot-scoring, nostr-wot-sdk, nostr-wot-oracle, Vertex)
+    operates on the Nostr social graph &mdash; scoring based on follows, mutes, and zaps.
+    SatRank is the only provider that bridges the Lightning payment graph into NIP-85. That
+    means a wallet or agent can query <strong>both</strong> social trust and payment
+    reliability from the same Nostr relay infrastructure, without running two parallel
+    pipelines.
+  </p>
+
+  <p>
+    <strong>NIP-05:</strong> <code>satrank@satrank.dev</code><br>
+    <strong>Pubkey:</strong> <code>5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4</code>
+  </p>
+
 </main>
 
 <footer>
   <div class="container">
     SatRank &mdash; Route reliability for Lightning payments
     <br>
-    <a href="/">Home</a> &middot; <a href="/api/docs">API Docs</a> &middot; <a href="/api/openapi.json">OpenAPI Spec</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
+    <a href="/">Home</a> &middot; <a href="/api/docs">API Docs</a> &middot; <a href="/api/openapi.json">OpenAPI Spec</a> &middot; <a href="https://njump.me/npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4">Nostr</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
   </div>
 </footer>
 
