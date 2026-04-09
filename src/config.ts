@@ -1,6 +1,7 @@
 // Configuration validation and loading at startup
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { DEFAULT_NOSTR_RELAYS_CSV } from './nostr/relays';
 
 dotenv.config();
 
@@ -40,7 +41,7 @@ const configSchema = z.object({
   NODE_PUBKEY: z.string().regex(/^(02|03)[a-f0-9]{64}$/).optional(),
   // Nostr — publish scores as NIP-85 kind 30382 events
   NOSTR_PRIVATE_KEY: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  NOSTR_RELAYS: z.string().default('wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net'),
+  NOSTR_RELAYS: z.string().default(DEFAULT_NOSTR_RELAYS_CSV),
   NOSTR_PUBLISH_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000), // 6 hours
   NOSTR_MIN_SCORE: z.coerce.number().int().min(0).default(30), // only publish nodes with score >= this
 });

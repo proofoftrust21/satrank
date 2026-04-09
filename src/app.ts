@@ -5,6 +5,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { config } from './config';
+import { DEFAULT_NOSTR_RELAYS } from './nostr/relays';
 import { getDatabase } from './database/connection';
 import { runMigrations } from './database/migrations';
 import { requestIdMiddleware } from './middleware/requestId';
@@ -167,11 +168,7 @@ export function createApp() {
         satrank: '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4',
       },
       relays: {
-        '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4': [
-          'wss://relay.damus.io',
-          'wss://nos.lol',
-          'wss://relay.nostr.band',
-        ],
+        '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4': [...DEFAULT_NOSTR_RELAYS],
       },
     });
   });

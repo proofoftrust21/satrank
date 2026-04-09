@@ -6,6 +6,7 @@ import { finalizeEvent } from 'nostr-tools/pure';
 // @ts-expect-error — ESM subpath
 import { Relay } from 'nostr-tools/relay';
 import { hexToBytes } from '@noble/hashes/utils';
+import { DEFAULT_NOSTR_RELAYS } from '../src/nostr/relays';
 
 const skHex = process.env.NOSTR_PRIVATE_KEY;
 if (!skHex) {
@@ -33,7 +34,7 @@ const event = finalizeEvent({
   content: JSON.stringify(profile),
 }, sk);
 
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
+const RELAYS = DEFAULT_NOSTR_RELAYS;
 
 async function publish() {
   console.log('Publishing SatRank profile (kind 0)...');

@@ -3,6 +3,7 @@
 // Usage: NOSTR_PUBKEY=<hex> npx tsx scripts/nostr-verify.ts
 // @ts-expect-error — ESM subpath
 import { Relay } from 'nostr-tools/relay';
+import { DEFAULT_NOSTR_RELAYS } from '../src/nostr/relays';
 
 const pubkey = process.env.NOSTR_PUBKEY;
 if (!pubkey) {
@@ -10,7 +11,7 @@ if (!pubkey) {
   process.exit(1);
 }
 
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
+const RELAYS = DEFAULT_NOSTR_RELAYS;
 const KIND = 30382;
 
 async function check(url: string): Promise<number> {
