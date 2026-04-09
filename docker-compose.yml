@@ -56,8 +56,16 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # Liveness via heartbeat file touched by src/crawler/run.ts every 60s.
+    # Threshold 300s = 5× heartbeat interval — tolerates synchronous bursts
+    # (bulk scoring, stale sweep) without false positives while still
+    # catching a real event-loop stall within a few minutes.
     healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "test $(($(date +%s) - $(stat -c %Y /tmp/crawler.heartbeat 2>/dev/null || echo 0))) -lt 300"]
+      interval: 60s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
     read_only: true
     security_opt:
       - no-new-privileges:true

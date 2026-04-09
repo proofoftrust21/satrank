@@ -1,6 +1,7 @@
 // Crawler launch script — single run or cron mode with per-source intervals
 // Usage: npm run crawl          (single run — all sources once)
 //        npm run crawl -- --cron (per-source intervals, configurable)
+import { writeFileSync } from 'node:fs';
 import { config } from '../config';
 import { logger } from '../logger';
 import { crawlDuration } from '../middleware/metrics';
@@ -24,6 +25,24 @@ import { ChannelSnapshotRepository } from '../repositories/channelSnapshotReposi
 import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
 import { SurvivalService } from '../services/survivalService';
+
+// --- Liveness heartbeat ---
+// Docker healthcheck (docker-compose.yml, crawler service) reads the mtime
+// of /tmp/crawler.heartbeat to decide if the event loop is still responsive.
+// We touch the file on a dedicated 60s timer from the very start of the
+// cron path — independent of any crawl — so a long-running crawl doesn't
+// trip the healthcheck and a real event-loop stall does.
+const HEARTBEAT_PATH = '/tmp/crawler.heartbeat';
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+function touchHeartbeat(): void {
+  try {
+    writeFileSync(HEARTBEAT_PATH, String(Date.now()));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ error: msg, path: HEARTBEAT_PATH }, 'Failed to write liveness heartbeat');
+  }
+}
 
 // --- Per-source crawl functions ---
 
@@ -336,6 +355,14 @@ async function main(): Promise<void> {
       probeMs: intervals.probe,
     }, 'Cron mode enabled — per-source intervals');
 
+    // Start the liveness heartbeat FIRST — the initial runFullCrawl below
+    // can take many minutes and the docker healthcheck must see a fresh
+    // mtime throughout. setInterval still fires as long as the event loop
+    // is responsive, which is exactly what we want to detect.
+    touchHeartbeat();
+    const timerHeartbeat = setInterval(touchHeartbeat, HEARTBEAT_INTERVAL_MS);
+    logger.info({ path: HEARTBEAT_PATH, intervalMs: HEARTBEAT_INTERVAL_MS }, 'Liveness heartbeat started');
+
     // Nostr publisher — init before runFullCrawl so it publishes right after bulk scoring
     let nostrPublishFn: (() => Promise<void>) | undefined;
     let timerNostr: ReturnType<typeof setInterval> | null = null;
@@ -438,6 +465,7 @@ async function main(): Promise<void> {
 
     function shutdown() {
       logger.info('Stopping cron crawler');
+      clearInterval(timerHeartbeat);
       clearInterval(timerObserver);
       clearInterval(timerLnd);
       clearInterval(timerLnplus);
