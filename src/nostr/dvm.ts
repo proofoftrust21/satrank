@@ -199,15 +199,30 @@ export class SatRankDvm {
       content: JSON.stringify(result),
     }, sk);
 
-    // Fan-out: publish the response to EVERY connected relay. Some relays
-    // (notably nos.lol) enforce NIP-13 proof-of-work on kind 6900 events
-    // and will reject unmined responses — that's OK as long as at least
-    // one relay accepts. We log success/failure per relay and report the
-    // job as "published" if any single publish succeeded.
+    // Fan-out: publish the response via a FRESH connection per relay.
+    // We can't reuse `this.active` for publishing because nostr-tools'
+    // Relay class auto-closes idle connections after a while — we saw
+    // this in prod where the subscribe-time connection was already
+    // closed by the time a job request arrived minutes later, and
+    // nostr-tools threw "Tried to send message on a closed connection".
+    // Opening a fresh connection per publish costs ~50 ms extra but is
+    // bulletproof.
+    //
+    // nos.lol enforces NIP-13 proof-of-work on kind 6900 events and will
+    // reject unmined responses with "pow: 28 bits needed". That's OK as
+    // long as at least one relay accepts.
+    // @ts-expect-error — nostr-tools is ESM-only, dynamic import at runtime
+    const { Relay: RelayClass } = await import('nostr-tools/relay');
     const PUBLISH_TIMEOUT_MS = 5_000;
     const attempts = await Promise.allSettled(
-      this.active.map(async ({ url, relay }) => {
+      this.relays.map(async (url) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let relay: any = null;
         try {
+          relay = await Promise.race([
+            RelayClass.connect(url),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('connect timeout')), CONNECT_TIMEOUT_MS)),
+          ]);
           await Promise.race([
             relay.publish(response),
             new Promise((_, reject) => setTimeout(() => reject(new Error('publish timeout')), PUBLISH_TIMEOUT_MS)),
@@ -216,6 +231,10 @@ export class SatRankDvm {
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           return { url, ok: false as const, error: msg };
+        } finally {
+          if (relay) {
+            try { relay.close(); } catch { /* ignore */ }
+          }
         }
       }),
     );
