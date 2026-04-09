@@ -663,3 +663,137 @@ pre {
 @media (max-width: 600px) {
   .movers-grid { grid-template-columns: 1fr; }
 }
+
+/* Live NIP-85 circuit widget on methodology.html */
+.live-circuit {
+  margin: 18px 0 24px;
+  border: 1px solid #2a2a3a;
+  background: #10101a;
+  border-radius: 10px;
+  padding: 14px 18px 18px;
+}
+.live-circuit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+.live-circuit-status {
+  font-size: 0.85rem;
+  color: #8888a0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.live-circuit-refresh {
+  background: #1a1a28;
+  border: 1px solid #2a2a3a;
+  color: #c0c0d8;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.live-circuit-refresh:hover {
+  background: #22223a;
+  border-color: #f7931a;
+  color: #f7931a;
+}
+.live-circuit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.live-circuit-cell {
+  background: #15151f;
+  border: 1px solid #22222e;
+  border-radius: 8px;
+  padding: 12px 14px;
+  min-height: 110px;
+}
+.live-circuit-kind {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #f7931a;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.live-circuit-label {
+  font-size: 0.75rem;
+  color: #8888a0;
+  margin-bottom: 8px;
+}
+.live-circuit-count {
+  font-size: 1.1rem;
+  color: #e0e0e8;
+  margin-bottom: 8px;
+}
+.live-circuit-sample {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: #a0a0b8;
+  word-break: break-word;
+}
+.live-circuit-event-id {
+  color: #6666a0;
+}
+.live-circuit-event-data {
+  color: #c0c0d8;
+  margin-top: 4px;
+}
+.live-circuit-event-more {
+  color: #6666a0;
+  margin-top: 4px;
+  font-size: 0.7rem;
+}
+.live-circuit-empty {
+  color: #666680;
+  font-style: italic;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.live-circuit-noscript {
+  margin-top: 10px;
+  color: #ff8080;
+  font-size: 0.85rem;
+}
+@media (max-width: 760px) {
+  .live-circuit-grid { grid-template-columns: 1fr; }
+}
+
+/* WoT-a-thon submission CTA — rendered in the landing page header */
+.wotathon-cta {
+  margin: 22px auto 0;
+  max-width: 760px;
+  padding: 12px 16px 14px;
+  border: 1px solid #f7931a55;
+  background: linear-gradient(180deg, #f7931a0c 0%, #f7931a05 100%);
+  border-radius: 10px;
+  text-align: left;
+}
+.wotathon-cta-title {
+  color: #f7931a;
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin-bottom: 2px;
+}
+.wotathon-cta-sub {
+  color: #a0a0b8;
+  font-size: 0.82rem;
+  margin-bottom: 10px;
+}
+.wotathon-cta-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 0.85rem;
+}
+.wotathon-cta-links a {
+  color: #f7931a;
+  text-decoration: none;
+  padding: 4px 10px;
+  border: 1px solid #f7931a40;
+  border-radius: 6px;
+  background: #15151f;
+}
+.wotathon-cta-links a:hover {
+  background: #22223a;
+  border-color: #f7931a;
+}

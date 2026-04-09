@@ -19,7 +19,7 @@ const sk = hexToBytes(skHex);
 const profile = {
   name: 'SatRank',
   display_name: 'SatRank',
-  about: 'Route reliability for Lightning payments. Trust scores for 13,900 active Lightning nodes. Built for the agentic economy.\n\n60% of Lightning nodes are phantoms. We tell you which ones are alive.',
+  about: 'Route reliability for Lightning payments. Trust scores for ~13,900 active Lightning nodes, backed by a full bitcoind+LND node. NIP-85 kind 30382:rank provider — the only one bridging Lightning payment data into the WoT ecosystem. Built for the agentic economy.\n\n~60% of the Lightning graph is phantoms. We tell you which nodes are actually alive.',
   website: 'https://satrank.dev',
   nip05: 'satrank@satrank.dev',
   lud16: 'wavykettle725@walletofsatoshi.com',

@@ -203,7 +203,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <div class="card">
     <div class="card-title">LND Graph (Primary)</div>
-    <p>Full Lightning Network graph from our own LND node, backed by a full Bitcoin Core (<code>bitcoind v28.1</code>) node for channel validation. Currently indexing <strong>~13,900 active Lightning nodes</strong> &mdash; cryptographically verified against the Bitcoin UTXO set &mdash; with ~4,200 stale nodes (not seen in 90+ days) preserved for history but excluded from scoring. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes.</p>
+    <p>Full Lightning Network graph from our own LND node, backed by a full Bitcoin Core (<code>bitcoind v28.1</code>) node for channel validation. Currently indexing <strong>13,913 active Lightning nodes</strong> &mdash; cryptographically verified against the Bitcoin UTXO set &mdash; with <strong>4,225 stale nodes</strong> (not seen in 90+ days) preserved for history but excluded from scoring. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes. All numbers here are mirrored from the live <code>/api/stats</code> endpoint &mdash; if this paragraph ever disagrees with the landing page, the landing page wins.</p>
   </div>
 
   <div class="card">
@@ -231,8 +231,8 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     and phantom channels.
   </p>
   <p>
-    SatRank&rsquo;s full-node validation reduced the apparent graph by ~4,200 nodes to
-    ~13,900 verified active nodes. The excluded nodes are <strong>stale</strong> (not seen
+    SatRank&rsquo;s full-node validation reduced the apparent graph by 4,225 nodes to
+    13,913 verified active nodes. The excluded nodes are <strong>stale</strong> (not seen
     in 90+ days) and are preserved in the database but excluded from scoring, publishing,
     and statistics. If a stale node reappears in the gossip with a recent update, it is
     automatically restored to the active set &mdash; no history is lost.
@@ -941,10 +941,19 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
     <li><code>wss://relay.primal.net</code></li>
   </ul>
   <p>
-    Each event contains the agent&rsquo;s score, components (volume, reputation, seniority,
-    regularity, diversity), verdict (SAFE / RISKY / UNKNOWN), reachability, and a survival
-    prediction. Events are replaceable (same <code>d</code>-tag per agent pubkey), so clients
-    always see the latest score with no duplication.
+    Each event carries the NIP-85 canonical <code>rank</code> tag (normalized 0-100 score) alongside
+    SatRank-specific tags: the 5 scoring components (volume, reputation, seniority, regularity,
+    diversity), verdict (SAFE / RISKY / UNKNOWN), reachability, and a survival prediction. Strict
+    NIP-85 consumers read <code>rank</code> without needing SatRank-specific knowledge; clients
+    that want the richer signal read the component tags too. Events are replaceable (same
+    <code>d</code>-tag per agent pubkey), so clients always see the latest score with no duplication.
+  </p>
+
+  <p>
+    <strong>Scope note.</strong> NIP-85&rsquo;s &ldquo;User as Subject&rdquo; is defined for a 32-byte
+    pubkey. SatRank extends the semantics to Lightning node pubkeys &mdash; same secp256k1 format,
+    different key space. We&rsquo;re the first provider to bridge the Lightning payment graph into
+    the NIP-85 ecosystem; every other implementation operates on the Nostr social graph.
   </p>
 
   <h3>Why Nostr?</h3>
@@ -977,11 +986,89 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
     pipelines.
   </p>
 
+  <h3 id="declare-provider">Declaring SatRank as a Trusted Provider (kind 10040)</h3>
+  <p>
+    NIP-85 kind <code>10040</code> is the user-side declaration that lists your trusted providers
+    for each &lt;kind:tag&gt; pair. To add SatRank to your own trusted provider list, publish a
+    kind <code>10040</code> event with one tag per (provider, relay) combo:
+  </p>
+<pre><code>{
+  "kind": 10040,
+  "tags": [
+    ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.damus.io"],
+    ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://nos.lol"],
+    ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.primal.net"]
+  ],
+  "content": ""
+}
+</code></pre>
+  <p>
+    Multiple relay entries are independent &mdash; a client picks whichever relay is reachable
+    for the user. You can combine SatRank with other NIP-85 providers in the same
+    kind <code>10040</code> event: each provider gets its own row, and clients query all of them
+    in parallel.
+  </p>
+  <p>
+    SatRank itself publishes a self-declaration kind <code>10040</code> from its service key so
+    clients have an on-chain reference example to copy. Query it with:
+  </p>
+<pre><code>["REQ", "satrank-10040", {
+  "kinds": [10040],
+  "authors": ["5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4"]
+}]
+</code></pre>
+
+  <h3 id="live-circuit">Live circuit — kind 0 / 30382 / 10040</h3>
+  <p>
+    This page is not just documentation &mdash; it is an end-to-end probe of the SatRank Nostr
+    circuit. On every visit, your browser opens a WebSocket to each of the three canonical relays
+    (<code>relay.damus.io</code>, <code>nos.lol</code>, <code>relay.primal.net</code>) and issues a
+    <code>REQ</code> for kind 0 (profile), kind 30382 (trusted assertions) and kind 10040 (trusted
+    provider declaration) authored by SatRank&rsquo;s service pubkey. The results below are the
+    real events currently on the network &mdash; if the circuit is broken, this block tells you
+    directly. If the self-declaration has not yet been published, the kind 10040 count will
+    honestly read <strong>0</strong> until the script in <code>scripts/nostr-publish-10040.ts</code>
+    is run.
+  </p>
+  <div class="live-circuit" id="live-circuit">
+    <div class="live-circuit-header">
+      <span class="live-circuit-status" id="live-circuit-status">connecting...</span>
+      <button type="button" class="live-circuit-refresh" id="live-circuit-refresh">Re-check</button>
+    </div>
+    <div class="live-circuit-grid">
+      <div class="live-circuit-cell" id="live-kind-0">
+        <div class="live-circuit-kind">kind 0</div>
+        <div class="live-circuit-label">profile metadata</div>
+        <div class="live-circuit-count"><span id="live-kind-0-count">?</span> events</div>
+        <div class="live-circuit-sample" id="live-kind-0-sample"></div>
+      </div>
+      <div class="live-circuit-cell" id="live-kind-30382">
+        <div class="live-circuit-kind">kind 30382</div>
+        <div class="live-circuit-label">trusted assertions</div>
+        <div class="live-circuit-count"><span id="live-kind-30382-count">?</span> events</div>
+        <div class="live-circuit-sample" id="live-kind-30382-sample"></div>
+      </div>
+      <div class="live-circuit-cell" id="live-kind-10040">
+        <div class="live-circuit-kind">kind 10040</div>
+        <div class="live-circuit-label">trusted provider declaration</div>
+        <div class="live-circuit-count"><span id="live-kind-10040-count">?</span> events</div>
+        <div class="live-circuit-sample" id="live-kind-10040-sample"></div>
+      </div>
+    </div>
+    <noscript>
+      <p class="live-circuit-noscript">
+        JavaScript is disabled &mdash; the live circuit check cannot run. Use
+        <code>npx tsx scripts/nostr-verify.ts</code> from the repo for a CLI version.
+      </p>
+    </noscript>
+  </div>
+
   <p>
     <strong>NIP-05:</strong> <code>satrank@satrank.dev</code><br>
     <strong>Pubkey:</strong> <code>5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4</code>
   </p>
 
+  <script src="/methodology-live.js" defer></script>
 </main>
 
 <footer>

@@ -18,15 +18,22 @@ if (!skHex) {
 const sk = hexToBytes(skHex);
 const pk = getPublicKey(sk);
 
-const content = `SatRank now publishes trust scores for 13,900 Lightning Network nodes as NIP-85 Trusted Assertions (kind 30382).
+const content = `SatRank is the first NIP-85 provider bridging the Lightning payment graph into the Web of Trust.
 
-Each node gets a composite score (0-100), verdict (SAFE/RISKY/UNKNOWN), reachability status, and five scoring components — based on real probe data from our Lightning node, not social signals.
+Every other NIP-85 implementation scores the Nostr social graph (follows, mutes, zaps). SatRank scores payment reliability — the thing you actually need before sending a zap.
 
-60% of Lightning nodes are phantoms. SatRank tells you which ones are alive.
+Publishing kind 30382:rank every 6h for ~13,900 active Lightning nodes (~2,400 per cycle, score ≥ 30), based on real probe data from our own bitcoind+LND full node — not gossip. ~60% of the Lightning graph is phantoms; SatRank tells you which nodes are actually alive.
 
-Query our assertions: kind 30382, author: ${pk}
+— Query our trusted assertions:
+["REQ", "satrank", {"kinds":[30382], "authors":["${pk}"]}]
 
-https://satrank.dev
+— Declare SatRank as your trusted provider (kind 10040):
+["30382:rank", "${pk}", "wss://relay.damus.io"]
+
+Code:  https://github.com/proofoftrust21/satrank
+Docs:  https://satrank.dev/methodology#declare-provider
+
+Built for the agentic economy. Submitted to the WoT-a-thon for the NIP-85 Excellence prize.
 
 #wotathon #nostr #lightning #weboftrust #nip85`;
 

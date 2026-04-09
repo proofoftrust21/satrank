@@ -127,6 +127,11 @@ export class NostrPublisher {
           tags: [
             ['d', ev.lnPubkey],
             ['n', 'lightning'],
+            // 'rank' is the NIP-85 canonical tag for a normalized 0-100 trust
+            // score — published alongside the SatRank-specific 'score' tag so
+            // strict NIP-85 consumers can consume assertions without needing
+            // SatRank-specific knowledge.
+            ['rank', String(ev.score)],
             ['alias', ev.alias],
             ['score', String(ev.score)],
             ['verdict', ev.verdict],
