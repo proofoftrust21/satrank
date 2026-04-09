@@ -33,7 +33,7 @@ const event = finalizeEvent({
   content: JSON.stringify(profile),
 }, sk);
 
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
 
 async function publish() {
   console.log('Publishing SatRank profile (kind 0)...');

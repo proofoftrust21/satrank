@@ -42,7 +42,7 @@ const event = finalizeEvent({
   content,
 }, sk);
 
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
 
 async function publish() {
   console.log(`Publishing #wotathon post from ${pk.slice(0, 16)}...`);

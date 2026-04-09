@@ -10,7 +10,7 @@ if (!pubkey) {
   process.exit(1);
 }
 
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
 const KIND = 30382;
 
 async function check(url: string): Promise<number> {
