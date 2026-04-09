@@ -7,19 +7,19 @@ Production deployment guide for SatRank on a VPS with L402 via Aperture.
 ```
 Internet → nginx (443) → Aperture (8443) → Express (3000)
                                 ↕
-                         LND (Voltage mainnet)
+                         LND + bitcoind (mainnet)
 ```
 
 - **nginx**: TLS termination, static assets, proxy to Aperture
 - **Aperture**: L402 reverse proxy — generates invoices, verifies payments
 - **Express**: SatRank API (Docker container)
-- **LND**: Lightning node on Voltage (hosted, mainnet)
+- **LND**: Lightning node, backed by a local **bitcoind v28.1** full node for UTXO-validated channel data. Any LND deployment (self-hosted, Voltage, Nodana, …) works — it just needs to expose gRPC or REST with a macaroon.
 
 ## Prerequisites
 
-- Ubuntu 22.04+ VPS (tested on Hetzner)
-- Domain pointed to VPS IP (satrank.dev)
-- Voltage LND node (mainnet) with admin macaroon
+- Ubuntu 22.04+ VPS
+- Domain pointed to your VPS IP
+- An LND node (mainnet) with an admin macaroon available to Aperture and a readonly macaroon available to the SatRank crawler container
 - Go 1.21+ (to build Aperture)
 
 ## 1. Aperture
@@ -60,8 +60,8 @@ dbdir: "/var/lib/aperture"
 - `price: 1` — 1 satoshi per query
 - `duration: 31536000` — L402 token valid for 1 year (365 days in seconds)
 - `pathregexp` — only agent/agents endpoints require payment; health/stats/version are free
-- Copy your Voltage admin macaroon to `/etc/aperture/admin.macaroon`
-- Copy your Voltage TLS cert to `/etc/aperture/tls.cert`
+- Copy your LND admin macaroon to `/etc/aperture/admin.macaroon`
+- Copy your LND TLS cert to `/etc/aperture/tls.cert`
 
 ### Systemd: /etc/systemd/system/aperture.service
 
@@ -171,15 +171,19 @@ sudo nginx -t && sudo systemctl reload nginx
 ### Deploy
 
 ```bash
-make deploy
-# rsync -avz --exclude node_modules --exclude dist --exclude .git --exclude .env.production . root@REDACTED-SERVER-IP:/root/satrank/
+SATRANK_HOST=<user>@<your.server> REMOTE_DIR=/path/to/satrank make deploy
+# expands to:
+# rsync -avz --exclude node_modules --exclude dist --exclude .git \
+#   --exclude .env.production --exclude data --exclude '*.macaroon' \
+#   --exclude aperture.yaml --exclude '.claude' \
+#   . <user>@<your.server>:/path/to/satrank/
 ```
 
 ### Start on server
 
 ```bash
-ssh root@REDACTED-SERVER-IP
-cd /root/satrank
+ssh <user>@<your.server>
+cd /path/to/satrank
 docker compose up -d
 ```
 
@@ -201,20 +205,22 @@ curl -H "Authorization: L402 <macaroon>:<preimage>" https://satrank.dev/api/agen
 
 ## 4. Secrets management
 
+Replace `$SATRANK_DIR` below with your install directory (e.g. `/opt/satrank`).
+
 | Secret | Location on server | NOT in repo |
 |--------|--------------------|-------------|
-| API_KEY | `/root/satrank/.env.production` | .gitignore |
-| APERTURE_SHARED_SECRET | `/root/satrank/.env.production` | .gitignore |
+| API_KEY | `$SATRANK_DIR/.env.production` | .gitignore |
+| APERTURE_SHARED_SECRET | `$SATRANK_DIR/.env.production` | .gitignore |
 | LND admin macaroon | `/etc/aperture/admin.macaroon` | manual copy |
-| LND readonly macaroon | `/root/satrank/data/readonly.macaroon` | manual copy |
+| LND readonly macaroon | `$SATRANK_DIR/readonly.macaroon` | manual copy (bind-mounted into crawler container) |
 | LND TLS cert | `/etc/aperture/tls.cert` | manual copy |
 | Let's Encrypt certs | `/etc/letsencrypt/` | certbot |
 
 **Rotate API_KEY:**
 ```bash
 NEW_KEY=$(openssl rand -hex 32)
-sed -i "s/^API_KEY=.*/API_KEY=$NEW_KEY/" /root/satrank/.env.production
-docker compose restart api
+sed -i "s/^API_KEY=.*/API_KEY=$NEW_KEY/" "$SATRANK_DIR/.env.production"
+cd "$SATRANK_DIR" && docker compose restart api
 ```
 
 ## 5. Monitoring
@@ -316,8 +322,8 @@ groups:
 # Manual backup
 docker compose exec api node dist/scripts/backup.js
 
-# Automated hourly backup via cron
-0 * * * * cd /root/satrank && docker compose exec -T api node dist/scripts/backup.js >> /var/log/satrank-backup.log 2>&1
+# Automated hourly backup via cron (replace $SATRANK_DIR with your install path)
+0 * * * * cd $SATRANK_DIR && docker compose exec -T api node dist/scripts/backup.js >> /var/log/satrank-backup.log 2>&1
 ```
 
 Backups are stored in `data/backups/`, with the 24 most recent retained automatically.
@@ -330,7 +336,7 @@ Each data source runs on its own timer in `--cron` mode. At startup, a full craw
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CRAWL_INTERVAL_OBSERVER_MS` | `300000` (5 min) | Observer Protocol transactions |
-| `CRAWL_INTERVAL_LND_GRAPH_MS` | `3600000` (1 hour) | LND full graph (~17k nodes) |
+| `CRAWL_INTERVAL_LND_GRAPH_MS` | `3600000` (1 hour) | LND full graph (~14k active nodes on mainnet) |
 | `CRAWL_INTERVAL_LNPLUS_MS` | `86400000` (24 hours) | LN+ community ratings |
 | `CRAWL_INTERVAL_PROBE_MS` | `3600000` (1 hour) | Route probe (reachability check) |
 | `PROBE_MAX_PER_SECOND` | `10` | Max probes per second (rate limiter) |

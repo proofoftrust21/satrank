@@ -1,7 +1,7 @@
 {
   "name": "satrank",
   "display_name": "SatRank — Lightning Trust Scoring",
-  "description": "Route reliability oracle for Lightning Network payments. GO/NO-GO decisions with personalized pathfinding, trust scores for 17,000+ nodes, probe-verified reachability. Built for autonomous AI agents.",
+  "description": "Route reliability oracle for Lightning Network payments. GO/NO-GO decisions with personalized pathfinding, trust scores for ~13,900 active Lightning nodes (UTXO-validated against a full bitcoind), probe-verified reachability every 30 minutes, and NIP-85 kind 30382:rank distribution on Nostr. Built for autonomous AI agents.",
   "version": "0.1.0",
   "homepage": "https://satrank.dev",
   "repository": "https://github.com/proofoftrust21/satrank",

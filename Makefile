@@ -1,4 +1,4 @@
-.PHONY: dev build test lint seed seed-prod crawl docker-build docker-up docker-down deploy rollback backup clean
+.PHONY: dev build test lint seed seed-prod crawl docker-build docker-up docker-down deploy backup clean
 
 # Development
 dev:
@@ -46,17 +46,26 @@ docker-down:
 	docker compose down
 
 # Deploy to VPS
+# Usage: SATRANK_HOST=user@host REMOTE_DIR=/path/to/satrank make deploy
+# Example: SATRANK_HOST=root@your.server REMOTE_DIR=/opt/satrank make deploy
+#
+# Secrets and data are never shipped: .env.production, data/, *.macaroon,
+# and aperture.yaml are all excluded. Host and path are parameterized so the
+# public repo never ships infra details.
 deploy:
-	rsync -avz --exclude node_modules --exclude dist --exclude .git --exclude .env.production . root@REDACTED-SERVER-IP:/root/satrank/
-
-rollback:
-	@echo "Rolling back to previous image on remote..."
-	ssh deploy@satrank.io bash -c '\
-		cd /opt/satrank && \
-		docker tag satrank:previous satrank:latest && \
-		docker compose up -d --wait --timeout 60 && \
-		cp /opt/satrank/data/satrank.db.pre-deploy /opt/satrank/data/satrank.db 2>/dev/null; \
-		echo "Rolled back"'
+	@test -n "$(SATRANK_HOST)" || (echo "ERROR: set SATRANK_HOST=user@host (ex: root@your.server)" && exit 1)
+	@test -n "$(REMOTE_DIR)"   || (echo "ERROR: set REMOTE_DIR=/path/to/satrank (ex: /opt/satrank)" && exit 1)
+	rsync -avz \
+	  --exclude node_modules \
+	  --exclude dist \
+	  --exclude .git \
+	  --exclude .env \
+	  --exclude .env.production \
+	  --exclude data \
+	  --exclude '*.macaroon' \
+	  --exclude aperture.yaml \
+	  --exclude '.claude' \
+	  . $(SATRANK_HOST):$(REMOTE_DIR)/
 
 # Cleanup
 clean:

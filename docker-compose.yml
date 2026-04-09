@@ -52,7 +52,10 @@ services:
       - BUILD_DATE=${BUILD_DATE:-unknown}
     volumes:
       - satrank-data:/app/data
-      - /root/satrank/readonly.macaroon:/app/data/readonly.macaroon:ro
+      # Bind mount of the LND readonly macaroon. Resolved relative to the
+      # docker-compose.yml directory, so the path on the host is wherever
+      # you deploy (no hardcoded server path in the public repo).
+      - ./readonly.macaroon:/app/data/readonly.macaroon:ro
     depends_on:
       api:
         condition: service_healthy
