@@ -149,8 +149,20 @@
     return '<div class="mini-bar-track"><div class="mini-bar-fill" style="width:' + pct + '%;background:' + safeColor(color) + '"></div></div><span class="mini-bar-val">' + Math.round(pct) + '</span>';
   }
 
+  // Track first render so the initial skeleton → data transition snaps directly
+  // instead of doing a 400ms fade-out-then-fade-in on top of the API fetch.
+  var firstAgentRender = true;
+
   function renderAgentRows(agents, isSearch) {
-    // Fade out old content, replace, fade in
+    if (firstAgentRender) {
+      // Skeleton → data: instant replacement so the leaderboard appears as soon
+      // as the API responds. Subsequent renders (e.g. search) still use the fade.
+      firstAgentRender = false;
+      tbody.innerHTML = '';
+      renderAgentRowsInner(agents, isSearch);
+      return;
+    }
+    // Fade out old content, replace, fade in — used for search / re-renders
     tbody.classList.add('fade-out');
     setTimeout(function () {
       tbody.innerHTML = '';
