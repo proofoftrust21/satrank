@@ -28,7 +28,7 @@ Under the hood, SatRank runs a full-stack observability pipeline:
 
 - **bitcoind v28.1 full node** — UTXO validation for the Lightning graph. Migrated from Neutrino on 2026-04-07 for authoritative channel capacity and peer discovery.
 - **LND** — gossip ingestion, peer discovery, probe routing.
-- **Probe routing** — every 30 minutes, SatRank probes the reachable graph from its own node, recording reachability, latency, and hop counts. That's ~261,000 probes every 24 h.
+- **Probe routing** — every 30 minutes, SatRank probes the reachable graph from its own node, recording reachability, latency, and hop counts. That's roughly ~260,000 probes per 24 h (see live `/api/stats.probes24h`).
 - **Channel and fee snapshots** — every hour, captures topology and fee structure to detect churn and volatility.
 - **5-factor scoring** — volume, reputation, seniority, regularity, diversity. Composite score 0-100 with anti-gaming (mutual-loop detection, 3-hop and 4-hop cycle BFS, mandatory minimum age for attestations).
 - **Distribution via Nostr (NIP-85)** — every 6 hours, scores are signed and published to three canonical relays as kind `30382:rank` assertions. ~2,400 nodes per cycle (score ≥ 30). Zero platform lock-in.
@@ -98,20 +98,22 @@ A Nostr user looking to zap a content creator already has social trust signals. 
 
 By publishing on the same NIP-85 relay infrastructure already used for social WoT, **SatRank composes with existing providers**. A wallet can query both social trust *and* payment reliability from the same relay connection, with no second pipeline, no second SDK, no second identity. Users declare SatRank as their trusted provider for `30382:rank` in a kind 10040 event and it plugs into the same trust-resolution flow any other NIP-85 provider uses.
 
-**Combining SatRank and Brainstorm in a single kind 10040:**
+**Combining SatRank and Brainstorm in a single kind 10040.** Brainstorm (NosFabrica's reference social-WoT service) also uses the canonical `rank` tag on its kind 30382 events, so a user can list both providers in the same declaration and the client resolves them in parallel:
 
 ```json
 {
   "kind": 10040,
   "tags": [
-    ["30382:followRank", "<BRAINSTORM_PUBKEY>", "wss://relay.damus.io"],
-    ["30382:rank",       "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.damus.io"]
+    ["30382:rank", "e5272de914bd301755c439b88e6959a43c9d2664831f093c51e9c799a16a102f", "wss://relay.damus.io"],
+    ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.damus.io"]
   ],
   "content": ""
 }
 ```
 
-A client performing `REQ {"kinds":[30382]}` on the user's preferred relay will receive **both** providers' assertions: social trust from Brainstorm (the NosFabrica reference WoT service) and Lightning payment reliability from SatRank, merged by the client with no SatRank-specific code. This is NIP-85's interoperability by design — SatRank exercises it end-to-end.
+The client fulfilling `30382:rank` for this user issues one `REQ { kinds:[30382], authors:[<brainstorm>, <satrank>] }` per relay and receives **both** providers' assertions in a single subscription — social trust for Nostr npubs from Brainstorm, Lightning payment reliability for Lightning pubkeys from SatRank — merged by the client with no SatRank-specific code. Each provider's events are distinguishable by the `d` tag: Brainstorm uses 64-hex Nostr pubkeys, SatRank uses 66-hex Lightning pubkeys (prefixed `02`/`03`).
+
+**Verified live on 2026-04-09:** Brainstorm's kind 30382 events (author `e5272de9…a102f`) are present on **2 of 3** SatRank canonical relays — `wss://relay.damus.io` and `wss://nos.lol`. A client subscribed to either of those relays receives both providers' `rank` assertions in one round trip today, with no configuration beyond the shared relay URL. Brainstorm also publishes on its own dedicated relay `wss://nip85.brainstorm.world`, which a client can add to its relay list to cover `wss://relay.primal.net`-only users. This is NIP-85's interoperability by design — SatRank exercises it end-to-end.
 
 ### For autonomous agents
 
@@ -219,17 +221,17 @@ Sats flow in via `/api/decide` (Aperture L402 gate), out to the Hetzner infrastr
 
 ## Metrics (as of 2026-04-09)
 
-All numbers pulled live from `/api/stats` and the production SQLite DB unless noted.
+Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dynamic — they are pulled from [/api/stats](https://satrank.dev/api/stats) on every page load of the landing page and drift probe-to-probe. The authoritative, always-current value is whatever `/api/stats` returns when the jury opens it; the ranges below are the envelope observed at submission time.
 
 | Metric | Value |
 |---|---|
 | Active Lightning nodes tracked | **13,913** |
 | Stale (90+ days, excluded from scoring) | **4,225** |
-| Phantom node share (unreachable in routing) | **~60 %** (live, varies probe-to-probe) |
-| Verified reachable nodes | **5,480** |
-| Total channels (UTXO-validated) | **88,938** |
-| Network capacity (validated) | **9,630 BTC** |
-| Probes executed / 24 h | **~261,000** |
+| Phantom node share (unreachable in routing) | **~60 %** (live · typical range 60-62 %) |
+| Verified reachable nodes | **~5,300-5,500** (live · `/api/stats.verifiedReachable`) |
+| Total channels (UTXO-validated) | **~88,950** (live · `/api/stats.totalChannels`) |
+| Network capacity (validated) | **~9,630 BTC** (live · `/api/stats.networkCapacityBtc`) |
+| Probes executed / 24 h | **~255,000-265,000** (live · `/api/stats.probes24h`, 24 h rolling) |
 | Scored nodes published via NIP-85 per cycle | **~2,400** (score ≥ 30, last cycle: 2,424) |
 | Publishing frequency | every 6 hours |
 | DVM response time (warm cache) | sub-100 ms |
@@ -278,11 +280,11 @@ SatRank isn't a hackathon project, it's infrastructure. The post-submission road
 
 Three reasons:
 
-1. **It's the only NIP-85 provider bridging the Lightning payment graph into the WoT ecosystem.** Every other implementation is a social-graph calculator. SatRank adds an entire orthogonal dimension of trust, and it does so through the existing NIP-85 relay infrastructure with zero new kinds or breaking changes. A client already consuming Brainstorm for social trust receives SatRank's Lightning trust for free in the same `REQ {"kinds":[30382]}` call.
+1. **It's the only NIP-85 provider bridging the Lightning payment graph into the WoT ecosystem.** Every other implementation is a social-graph calculator. SatRank adds an entire orthogonal dimension of trust, and it does so through the existing NIP-85 relay infrastructure with zero new kinds or breaking changes. A client whose user lists both Brainstorm and SatRank in their kind 10040 and subscribes to `wss://relay.damus.io` or `wss://nos.lol` receives both providers' `rank` assertions in a single `REQ { kinds:[30382], authors:[<brainstorm>, <satrank>] }` call — verified live on 2026-04-09.
 
 2. **It's the only Lightning trust oracle that's Nostr-native from day one.** Not "we have a REST API and also we tweet the scores." The Nostr relays are the canonical distribution layer; NIP-05 verification, NIP-85 publishing (30382 + 10040), and NIP-90 DVM all share the same keypair and the same relay list.
 
-3. **It's production infrastructure, not a demo.** 13,913 active nodes, 88,938 validated channels, 9,630 BTC validated capacity, ~261,000 probes per 24 h, 921,968 score snapshots, ~2,400 NIP-85 events published per cycle, backup + recovery path, heartbeat healthchecks, 464-test typed suite, and a Hetzner deployment behind nginx with L402 paid gates on the personalized endpoint. All open source, all reproducible.
+3. **It's production infrastructure, not a demo.** 13,913 active nodes, ~89,000 validated channels, ~9,630 BTC validated capacity, ~260,000 probes per 24 h, 921,968 score snapshots, ~2,400 NIP-85 events published per cycle, backup + recovery path, heartbeat healthchecks, 464-test typed suite, and a Hetzner deployment behind nginx with L402 paid gates on the personalized endpoint. All open source, all reproducible — live values at [`/api/stats`](https://satrank.dev/api/stats).
 
 The Lightning Network has been waiting for its reliability oracle. NIP-85 has been waiting for its first real-world protocol bridge. SatRank is both.
 
