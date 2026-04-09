@@ -17,11 +17,11 @@ if (!skHex) {
 const sk = hexToBytes(skHex);
 const pk = getPublicKey(sk);
 
-const content = `SatRank now publishes trust scores for 3,900+ Lightning Network nodes as NIP-85 Trusted Assertions (kind 30382).
+const content = `SatRank now publishes trust scores for 13,900 Lightning Network nodes as NIP-85 Trusted Assertions (kind 30382).
 
 Each node gets a composite score (0-100), verdict (SAFE/RISKY/UNKNOWN), reachability status, and five scoring components — based on real probe data from our Lightning node, not social signals.
 
-66% of Lightning nodes are phantoms. SatRank tells you which ones are alive.
+60% of Lightning nodes are phantoms. SatRank tells you which ones are alive.
 
 Query our assertions: kind 30382, author: ${pk}
 
