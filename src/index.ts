@@ -4,6 +4,20 @@ import { logger } from './logger';
 import { createApp } from './app';
 import { closeDatabase } from './database/connection';
 
+// Global safety net for unhandled promise rejections and uncaught
+// exceptions. Node 22+ crashes the process by default on unhandled
+// rejections; a single orphan promise in a third-party library (e.g.
+// nostr-tools when a relay WebSocket drops mid-publish) would take down
+// the API container and interrupt every in-flight request. These
+// handlers log the failure and keep the process alive.
+process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  logger.warn({ err: msg, promise: String(promise).slice(0, 80) }, 'Unhandled promise rejection — swallowed to keep api alive');
+});
+process.on('uncaughtException', (err: Error) => {
+  logger.error({ err: err.message, stack: err.stack?.split('\n').slice(0, 5) }, 'Uncaught exception — swallowed to keep api alive');
+});
+
 const app = createApp();
 
 const server = app.listen(config.PORT, config.HOST, () => {

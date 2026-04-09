@@ -28,6 +28,25 @@ import { SurvivalService } from '../services/survivalService';
 import { runRetentionCleanup } from '../database/retention';
 import { RETENTION_INTERVAL_MS } from '../config/retention';
 
+// --- Uncaught exception / unhandled rejection safety net ---
+// nostr-tools internals (Relay.publish) are known to create orphan promises
+// when the underlying WebSocket closes mid-publish: the `ret` promise is
+// registered in `openEventPublishes` with a setTimeout that rejects it
+// ~10s later, after `send()` has already thrown synchronously and the
+// async wrapper has returned a rejected promise without the caller ever
+// receiving `ret`. Node 22+ crashes the process on unhandled rejections
+// by default. We catch these at the top of the crawler so the DVM fan-out
+// and NIP-85 publisher keep running even when one of the three relays has
+// a stale connection. The handler logs the error so nothing goes
+// silently missing.
+process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  logger.warn({ err: msg, promise: String(promise).slice(0, 80) }, 'Unhandled promise rejection — swallowed to keep crawler alive');
+});
+process.on('uncaughtException', (err: Error) => {
+  logger.error({ err: err.message, stack: err.stack?.split('\n').slice(0, 5) }, 'Uncaught exception — swallowed to keep crawler alive');
+});
+
 // --- Liveness heartbeat ---
 // Docker healthcheck (docker-compose.yml, crawler service) reads the mtime
 // of /tmp/crawler.heartbeat to decide if the event loop is still responsive.
