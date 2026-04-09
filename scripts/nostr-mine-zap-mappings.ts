@@ -52,18 +52,40 @@ const WS = require('ws');
 const bolt11 = require('bolt11');
 useWebSocketImplementation(WS);
 
-// The 3 canonical SatRank relays plus Primal's cache which carries the
-// full Nostr event stream (higher zap volume than the canonical relays).
-const RELAYS: string[] = [
+// Relay pool for mining:
+//  - The 3 canonical SatRank publishing relays (strong overlap with our own
+//    stream of kind 30382 events)
+//  - wss://relay.nostr.band — nostr.band operates a high-volume indexing
+//    relay with deep historical retention
+//  - wss://nostr.wine — paid relay with broad caching
+//  - wss://relay.snort.social — snort.social's relay
+// Primal's cache2.primal.net does NOT implement standard REQ for kind 9735
+// — they expose zap data via custom functions like `user_zaps`. We skip it
+// here and pick up the same data indirectly via relay.primal.net.
+const RELAYS: string[] = (process.env.RELAYS?.split(',').map((s) => s.trim()) ?? [
   'wss://relay.damus.io',
   'wss://nos.lol',
   'wss://relay.primal.net',
-  'wss://cache2.primal.net/v1',
-];
-const MINING_LIMIT = Number(process.env.MINING_LIMIT ?? '2000');
+  'wss://relay.nostr.band',
+  'wss://nostr.wine',
+  'wss://relay.snort.social',
+]).filter(Boolean);
+
+// Pagination: walk backwards in time using the `until` filter. Each page
+// fetches PAGE_SIZE events, then the next page uses the oldest event's
+// created_at - 1 as the new `until`. Stop when a page returns < MIN_PAGE_YIELD
+// events (relay exhausted) or after MAX_PAGES or MAX_AGE_DAYS.
+const PAGE_SIZE = Number(process.env.PAGE_SIZE ?? '500');
+const MAX_PAGES = Number(process.env.MAX_PAGES ?? '40');
+const MAX_AGE_DAYS = Number(process.env.MAX_AGE_DAYS ?? '60');
+const MIN_PAGE_YIELD = Number(process.env.MIN_PAGE_YIELD ?? '20');
+const PAGE_TIMEOUT_MS = Number(process.env.PAGE_TIMEOUT_MS ?? '15000');
+
+// Legacy env var still respected for backward compatibility (overrides
+// PAGE_SIZE × MAX_PAGES if used in single-page mode).
+const MINING_LIMIT = Number(process.env.MINING_LIMIT ?? '0');
 const CUSTODIAL_THRESHOLD = Number(process.env.CUSTODIAL_THRESHOLD ?? '5');
 const OUTPUT_FILE = process.env.OUTPUT_FILE ?? join(__dirname, 'nostr-mappings.json');
-const SUBSCRIBE_TIMEOUT_MS = 30_000;
 
 interface ZapEvent {
   id: string;
@@ -102,7 +124,42 @@ function extractFromReceipt(ev: ZapEvent): RawMapping | null {
   }
 }
 
-async function fetchFromRelay(url: string, limit: number): Promise<ZapEvent[]> {
+async function fetchPage(
+  relay: { subscribe: Function },
+  until: number | undefined,
+  limit: number,
+  seen: Set<string>,
+): Promise<ZapEvent[]> {
+  const filter: Record<string, unknown> = { kinds: [9735], limit };
+  if (until !== undefined) filter.until = until;
+  return new Promise<ZapEvent[]>((resolve) => {
+    const pageEvents: ZapEvent[] = [];
+    let resolved = false;
+    const sub = relay.subscribe([filter], {
+      onevent(ev: ZapEvent) {
+        if (seen.has(ev.id)) return;
+        seen.add(ev.id);
+        pageEvents.push(ev);
+      },
+      oneose() {
+        if (!resolved) {
+          resolved = true;
+          try { sub.close(); } catch { /* ignore */ }
+          resolve(pageEvents);
+        }
+      },
+    });
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        try { sub.close(); } catch { /* ignore */ }
+        resolve(pageEvents);
+      }
+    }, PAGE_TIMEOUT_MS);
+  });
+}
+
+async function fetchFromRelayPaged(url: string, globalSeen: Set<string>): Promise<ZapEvent[]> {
   console.log(`  connecting to ${url}...`);
   let relay: { subscribe: Function; close: () => void } | null = null;
   try {
@@ -116,57 +173,77 @@ async function fetchFromRelay(url: string, limit: number): Promise<ZapEvent[]> {
     return [];
   }
 
-  const events: ZapEvent[] = [];
-  const seen = new Set<string>();
+  const allEvents: ZapEvent[] = [];
+  const minAge = Math.floor(Date.now() / 1000) - MAX_AGE_DAYS * 86400;
+  let until: number | undefined = undefined; // start from now
+  let pages = 0;
 
-  await new Promise<void>((resolve) => {
-    let resolved = false;
-    const sub = relay!.subscribe(
-      [{ kinds: [9735], limit }],
-      {
-        onevent(ev: ZapEvent) {
-          if (seen.has(ev.id)) return;
-          seen.add(ev.id);
-          events.push(ev);
-        },
-        oneose() {
-          if (!resolved) {
-            resolved = true;
-            try { sub.close(); } catch { /* ignore */ }
-            resolve();
-          }
-        },
-      },
+  // Single-page mode (legacy): if MINING_LIMIT is set and > 0, just do
+  // one call with that limit and skip pagination.
+  if (MINING_LIMIT > 0) {
+    const events = await fetchPage(relay!, undefined, MINING_LIMIT, globalSeen);
+    allEvents.push(...events);
+    console.log(`  [ok]   ${url}: ${events.length} events (single page)`);
+    try { relay!.close(); } catch { /* ignore */ }
+    return allEvents;
+  }
+
+  while (pages < MAX_PAGES) {
+    const pageEvents = await fetchPage(relay!, until, PAGE_SIZE, globalSeen);
+    pages++;
+    allEvents.push(...pageEvents);
+    if (pageEvents.length === 0) {
+      console.log(`    ${url} page ${pages}: 0 (exhausted)`);
+      break;
+    }
+    // Advance `until` to the oldest event's created_at - 1 so the next page
+    // returns strictly older events.
+    const oldest = pageEvents.reduce(
+      (min, ev) => (ev.created_at < min ? ev.created_at : min),
+      Number.MAX_SAFE_INTEGER,
     );
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        try { sub.close(); } catch { /* ignore */ }
-        resolve();
-      }
-    }, SUBSCRIBE_TIMEOUT_MS);
-  });
+    if (oldest < minAge) {
+      console.log(`    ${url} page ${pages}: ${pageEvents.length} (hit ${MAX_AGE_DAYS}-day age wall)`);
+      break;
+    }
+    if (pageEvents.length < MIN_PAGE_YIELD) {
+      console.log(`    ${url} page ${pages}: ${pageEvents.length} < ${MIN_PAGE_YIELD} (stopping)`);
+      break;
+    }
+    console.log(`    ${url} page ${pages}: +${pageEvents.length} (oldest=${new Date(oldest * 1000).toISOString().slice(0, 10)})`);
+    until = oldest - 1;
+  }
 
-  try { relay.close(); } catch { /* ignore */ }
-  console.log(`  [ok]   ${url}: ${events.length} receipts`);
-  return events;
+  try { relay!.close(); } catch { /* ignore */ }
+  console.log(`  [ok]   ${url}: ${allEvents.length} events across ${pages} pages`);
+  return allEvents;
 }
 
 async function main(): Promise<void> {
-  console.log('Nostr zap-receipt mining');
-  console.log(`  relays:               ${RELAYS.join(', ')}`);
-  console.log(`  limit per relay:      ${MINING_LIMIT}`);
-  console.log(`  custodial threshold:  > ${CUSTODIAL_THRESHOLD} distinct nostr pks per ln_pk`);
-  console.log(`  output:               ${OUTPUT_FILE}`);
+  console.log('Nostr zap-receipt mining (paginated)');
+  console.log(`  relays:              ${RELAYS.join(', ')}`);
+  if (MINING_LIMIT > 0) {
+    console.log(`  single-page mode:    limit=${MINING_LIMIT} per relay (pagination disabled)`);
+  } else {
+    console.log(`  page size:           ${PAGE_SIZE} events`);
+    console.log(`  max pages/relay:     ${MAX_PAGES}`);
+    console.log(`  max age:             ${MAX_AGE_DAYS} days`);
+    console.log(`  min page yield:      ${MIN_PAGE_YIELD} (stop when a page returns less)`);
+  }
+  console.log(`  custodial threshold: > ${CUSTODIAL_THRESHOLD} distinct nostr pks per ln_pk`);
+  console.log(`  output:              ${OUTPUT_FILE}`);
   console.log('');
 
-  // Fetch from all relays in parallel
+  // Shared seen-set across all relays so the same event id from multiple
+  // sources is deduped on-the-fly and per-relay loops stop fetching duplicates.
+  const globalSeen = new Set<string>();
+
   const startMs = Date.now();
-  const perRelayEvents = await Promise.all(RELAYS.map((url) => fetchFromRelay(url, MINING_LIMIT)));
+  const perRelayEvents = await Promise.all(RELAYS.map((url) => fetchFromRelayPaged(url, globalSeen)));
   const elapsedMs = Date.now() - startMs;
   const totalFetched = perRelayEvents.reduce((acc, arr) => acc + arr.length, 0);
   console.log('');
-  console.log(`  fetched ${totalFetched} receipts across ${RELAYS.length} relays in ${elapsedMs}ms`);
+  console.log(`  fetched ${totalFetched} receipts (pre-dedupe) across ${RELAYS.length} relays in ${(elapsedMs / 1000).toFixed(1)}s`);
 
   // Global dedup: same event id might appear on multiple relays
   const uniqueById = new Map<string, ZapEvent>();
@@ -239,6 +316,9 @@ async function main(): Promise<void> {
   const output = {
     generated_at: new Date().toISOString(),
     relays_used: RELAYS,
+    pagination: MINING_LIMIT > 0
+      ? { mode: 'single_page', limit: MINING_LIMIT }
+      : { mode: 'paginated', page_size: PAGE_SIZE, max_pages: MAX_PAGES, max_age_days: MAX_AGE_DAYS },
     receipts_scanned: distinctReceipts,
     receipts_decodable: decodable,
     receipts_undecodable: undecodable,

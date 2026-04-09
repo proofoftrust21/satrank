@@ -983,14 +983,28 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
     contain the recipient&rsquo;s Nostr pubkey in the <code>p</code> tag and the paid invoice in
     the <code>bolt11</code> tag. The BOLT11 invoice&rsquo;s destination (<code>payee_node_key</code>)
     is cryptographically embedded in the invoice signature &mdash; we decode it and cross-reference
-    with the <code>p</code> tag to get a verified <code>(nostr_pubkey, ln_pubkey)</code> tuple. Any
-    ln_pubkey paired with more than 1 distinct Nostr pubkey in the mining sample is rejected as
-    likely custodial (multiple users sharing a wallet), and any node whose alias matches known
-    custodial / LSP patterns (<code>zlnd*</code>, <code>lndus*</code>, <code>*coordinator*</code>,
-    <code>*.cash</code>, <code>zeus</code>, <code>alby</code>, <code>wos</code>,
-    <code>cashu</code>, <code>minibits</code>, &hellip;) is also rejected. What remains is a
-    conservative set of self-hosted operators, each paired with exactly the Nostr identity that
-    zaps them.
+    with the <code>p</code> tag to get a verified <code>(nostr_pubkey, ln_pubkey)</code> tuple. The
+    miner paginates backwards across 6 relays
+    (<code>damus.io</code>, <code>nos.lol</code>, <code>relay.primal.net</code>,
+    <code>relay.nostr.band</code>, <code>nostr.wine</code>, <code>relay.snort.social</code>)
+    using NIP-01 <code>until</code>-based pagination, walking up to 40 pages of 500 events per
+    relay with a 60-day age wall. The first paginated run processed ~20,000 distinct receipts
+    (100&nbsp;% BOLT11-decodable), resolved 302 distinct Lightning pubkeys, and produced 281
+    self-hosted candidates &mdash; from which 65 survive the production filter below.
+  </p>
+  <p>
+    <strong>Custodian filter.</strong> Any ln_pubkey paired with more than 1 distinct Nostr
+    pubkey in the mining sample is rejected as likely custodial or shared (multiple users on
+    the same wallet provider), and any node whose alias matches known custodial / LSP patterns
+    (<code>zlnd*</code>, <code>lndus*</code>, <code>*coordinator*</code>, <code>*.cash</code>,
+    <code>zeus</code>, <code>alby</code>, <code>wos</code>, <code>cashu</code>,
+    <code>minibits</code>, <code>phoenix</code>, <code>breez</code>, <code>muun</code>,
+    <code>primal</code>, <code>nwc</code>, <code>fountain</code>, <code>wavlake</code>,
+    <code>fedi</code>, <code>fewsats</code>, <code>lightspark</code>, <code>voltage</code>,
+    <code>strike</code>, &hellip;) is also rejected. What remains is a conservative set of
+    self-hosted operators, each paired with exactly the Nostr identity that zaps them. An
+    optional relaxed mode (<code>ALLOW_SHARED_LNPK=1</code>) publishes up to 5 nostr pubkeys
+    per ln_pubkey for shared family/team nodes; the default is strict&nbsp;=&nbsp;1.
   </p>
   <p>
     Stream B events carry the <strong>same</strong> <code>rank</code> / <code>verdict</code> /
