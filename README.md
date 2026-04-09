@@ -215,6 +215,39 @@ SatRank is a [NIP-85](https://github.com/nostr-protocol/nips/blob/master/85.md) 
 ["REQ", "satrank", {"kinds": [30382], "authors": ["5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4"]}]
 ```
 
+### Dual publishing — strict NIP-85 + Lightning-indexed extension
+
+SatRank publishes kind 30382 events in **two indexed namespaces** to serve both the letter and the spirit of NIP-85:
+
+- **Lightning-indexed (extension).** `d = <66-char Lightning node pubkey>` — the default stream. Emitted every 6 hours for every active node with score ≥ 30 (~2,400 events per cycle). This extends NIP-85's "User as Subject" semantics from 32-byte Nostr pubkeys to 66-byte Lightning pubkeys (same secp256k1, different key space). It's the stream that makes the Lightning payment graph queryable via NIP-85 for the first time.
+- **Nostr-indexed (strict).** `d = <64-char Nostr pubkey>` — strictly conformant to NIP-85's subject-key requirement. Emitted for every (Nostr operator, Lightning node) pair SatRank can verify cryptographically.
+
+**How we build the mapping.** NIP-57 zap receipts (kind 9735) contain the recipient's Nostr pubkey in the `p` tag and the paid invoice in the `bolt11` tag. The BOLT11 invoice's destination (`payee_node_key`) is the Lightning node that settled the payment — cryptographically guaranteed by the invoice signature. Cross-referencing `p` and `payee_node_key` gives a verifiable `(nostr_pubkey, ln_pubkey)` tuple.
+
+**Custodian filtering.** The same BOLT11 destination across many distinct Nostr pubkeys means a custodial wallet (Wallet of Satoshi, Alby, Minibits, …). SatRank drops any ln_pubkey paired with more than 1 distinct Nostr pubkey in the mining sample AND any node whose alias matches a known custodial/LSP pattern (`zlnd*`, `lndus*`, `*coordinator*`, `*.cash`, `zeus`, `alby`, `wos`, etc.). What remains is a conservative set of self-hosted operators.
+
+**Commands:**
+
+```bash
+# 1) Mine zap receipts across the canonical relays (+ Primal cache), build the mapping
+npx tsx scripts/nostr-mine-zap-mappings.ts
+# → scripts/nostr-mappings.json
+
+# 2) Preview the strict events that would be published from the mined mappings
+DRY_RUN=1 DB_PATH=./data/satrank.db \
+  npx tsx scripts/nostr-publish-nostr-indexed.ts
+
+# 3) Publish for real (once you're happy with the preview)
+NOSTR_PRIVATE_KEY=<hex> DB_PATH=./data/satrank.db \
+  npx tsx scripts/nostr-publish-nostr-indexed.ts
+
+# 4) One-shot self-declaration event: SatRank's own Nostr pk → SatRank's Lightning node
+NOSTR_PRIVATE_KEY=<hex> DB_PATH=./data/satrank.db \
+  npx tsx scripts/nostr-publish-self-declaration.ts
+```
+
+Both streams carry the same score payload (`rank`, `verdict`, `reachable`, `survival`, 5 components). A strictly-conformant NIP-85 client can filter on `"#d": ["<nostr_pubkey>"]` and get a score assertion without needing any SatRank-specific knowledge of the Lightning key space.
+
 ### Kind 10040 — Trusted Provider Declaration
 
 Any Nostr user can declare SatRank as their trusted provider for Lightning node trust assertions by publishing a kind 10040 event with one tag per (provider, relay) combo:

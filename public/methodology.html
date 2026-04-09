@@ -956,6 +956,58 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
     the NIP-85 ecosystem; every other implementation operates on the Nostr social graph.
   </p>
 
+  <h3>Dual publishing &mdash; extension + strict conformance</h3>
+  <p>
+    Because NIP-85 as written targets 32-byte Nostr pubkeys and SatRank&rsquo;s primary signal
+    targets 66-byte Lightning pubkeys, we publish kind <code>30382</code> events in <strong>two
+    indexed namespaces</strong> so clients can read either one:
+  </p>
+  <ul>
+    <li>
+      <strong>Stream A &mdash; Lightning-indexed (extension, ~2,400 events / cycle).</strong>
+      <code>d = &lt;lightning_pubkey&gt;</code>. The default broad stream covering every active
+      Lightning node with score &ge; 30. Clients that understand Lightning pubkeys can query the
+      entire payment graph this way.
+    </li>
+    <li>
+      <strong>Stream B &mdash; Nostr-indexed (strict NIP-85).</strong>
+      <code>d = &lt;nostr_pubkey&gt;</code>. Published for every
+      <code>(nostr_pubkey, ln_pubkey)</code> pair SatRank can verify cryptographically. A strict
+      NIP-85 client filtering on <code>{kinds:[30382], authors:[&lt;satrank&gt;],
+      "#d":[&lt;user_npub_hex&gt;]}</code> gets a trust assertion about that Nostr user&rsquo;s
+      Lightning operations, with <em>zero SatRank-specific knowledge</em> of the Lightning key space.
+    </li>
+  </ul>
+  <p>
+    <strong>How we build the mapping.</strong> NIP-57 zap receipts (kind <code>9735</code>)
+    contain the recipient&rsquo;s Nostr pubkey in the <code>p</code> tag and the paid invoice in
+    the <code>bolt11</code> tag. The BOLT11 invoice&rsquo;s destination (<code>payee_node_key</code>)
+    is cryptographically embedded in the invoice signature &mdash; we decode it and cross-reference
+    with the <code>p</code> tag to get a verified <code>(nostr_pubkey, ln_pubkey)</code> tuple. Any
+    ln_pubkey paired with more than 1 distinct Nostr pubkey in the mining sample is rejected as
+    likely custodial (multiple users sharing a wallet), and any node whose alias matches known
+    custodial / LSP patterns (<code>zlnd*</code>, <code>lndus*</code>, <code>*coordinator*</code>,
+    <code>*.cash</code>, <code>zeus</code>, <code>alby</code>, <code>wos</code>,
+    <code>cashu</code>, <code>minibits</code>, &hellip;) is also rejected. What remains is a
+    conservative set of self-hosted operators, each paired with exactly the Nostr identity that
+    zaps them.
+  </p>
+  <p>
+    Stream B events carry the <strong>same</strong> <code>rank</code> / <code>verdict</code> /
+    component tags as Stream A, plus <code>ln_pubkey</code> (for traceability back to the
+    Lightning node), <code>subject_type</code> (<code>mined_mapping</code> or
+    <code>self_declaration</code>), <code>source</code> (<code>nip57_zap_receipt</code>), and
+    <code>zap_count</code> (evidence strength). Clients already consuming Stream A need zero
+    extra code to parse Stream B &mdash; they&rsquo;re identical except for the <code>d</code> tag.
+  </p>
+  <p>
+    The mining and publishing logic live in
+    <code>scripts/nostr-mine-zap-mappings.ts</code> and
+    <code>scripts/nostr-publish-nostr-indexed.ts</code>; the one-shot self-declaration
+    (SatRank&rsquo;s own Nostr pubkey &rarr; SatRank&rsquo;s own Lightning node) is in
+    <code>scripts/nostr-publish-self-declaration.ts</code>.
+  </p>
+
   <h3>Why Nostr?</h3>
   <p>
     Nostr is the natural distribution layer for trust data in the Bitcoin ecosystem:

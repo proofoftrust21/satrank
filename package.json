@@ -57,6 +57,7 @@
     "@types/supertest": "^7.2.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",
+    "bolt11": "^1.4.1",
     "supertest": "^7.2.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

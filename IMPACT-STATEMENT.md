@@ -160,16 +160,34 @@ SatRank is designed to be consumed piecewise by anyone, with zero lock-in:
 
 SatRank is compliant with NIP-85 at both layers of the protocol.
 
-### Kind 30382 — Trusted Assertions (published)
+### Kind 30382 — Trusted Assertions (published, dual-indexed)
 
-- **Canonical `rank` tag** with normalized 0-100 score, consumable by strict NIP-85 clients with no SatRank-specific knowledge
-- **SatRank-specific tags** published alongside for clients that want the richer signal: `verdict`, `reachable`, `survival`, `volume`, `reputation`, `seniority`, `regularity`, `diversity`, `alias`
-- **Replaceable events** (same `d`-tag per Lightning node pubkey) so clients always see the latest
-- **Three canonical relays**: `relay.damus.io`, `nos.lol`, `relay.primal.net`
-- **Every 6 hours**, every active node with score ≥ 30, signed with a single service key. Most recent cycle: **2,424 events published** (logged `Nostr score publish complete published=2424 errors=0 relays=3`).
-- Published via `src/nostr/publisher.ts`; see `src/tests/nostr.test.ts` for unit coverage.
+SatRank publishes kind 30382 events in **two indexed streams** to serve both the extended use case AND strict-spec conformance:
 
-**Scope extension note.** NIP-85's "User as Subject" is defined generically for a 32-byte pubkey. SatRank extends the semantics to Lightning node pubkeys (same secp256k1 format, different key space). The extension is honest and documented publicly on `satrank.dev/methodology` and in the project README; it bridges an entire domain (Lightning payment reliability) into the NIP-85 ecosystem without requiring a new kind allocation.
+**Stream A — Lightning-indexed (extension, ~2,400 events per 6 h cycle)**
+- `d = <66-char Lightning pubkey>` — the `d` tag identifies a Lightning node
+- Canonical `rank` tag (normalized 0-100) consumable by strict NIP-85 clients
+- SatRank-specific tags: `verdict`, `reachable`, `survival`, `volume`, `reputation`, `seniority`, `regularity`, `diversity`, `alias`
+- Replaceable (same `d`-tag per LN pubkey) — clients always see the latest
+- Three canonical relays: `relay.damus.io`, `nos.lol`, `relay.primal.net`
+- Most recent cycle: **2,424 events published** (logged `Nostr score publish complete published=2424 errors=0 relays=3`)
+- Published via `src/nostr/publisher.ts`; see `src/tests/nostr.test.ts` for unit coverage
+
+**Stream B — Nostr-indexed (strict NIP-85, published for every verifiable operator)**
+- `d = <64-char Nostr pubkey>` — matches NIP-85's subject-key requirement exactly
+- **Same rank/verdict/components tags** as Stream A, so clients already consuming Stream A need zero extra code
+- Extra tags for traceability: `ln_pubkey` (the Lightning node being asserted about), `subject_type` (`mined_mapping` or `self_declaration`), `source` (`nip57_zap_receipt`), `zap_count` (evidence strength)
+- Built from **cryptographically-verifiable** `(nostr_pubkey, ln_pubkey)` mappings mined from NIP-57 zap receipts (kind 9735). The BOLT11 invoice in each receipt embeds the destination `payee_node_key` in its signature; cross-referencing with the `p` tag recipient gives a verified tuple.
+- Custodian filter: drops any ln_pubkey paired with more than 1 distinct Nostr pubkey in the mining sample AND any node whose alias matches known custodial/LSP patterns (`zlnd*`, `lndus*`, `*coordinator*`, `*.cash`, `zeus`, `alby`, `wos`, `cashu`, `minibits`, …).
+- Published via `scripts/nostr-publish-nostr-indexed.ts` (mined mappings) and `scripts/nostr-publish-self-declaration.ts` (SatRank's own Lightning node indexed by SatRank's own Nostr pubkey — the baseline self-proof).
+
+**Why dual publishing matters.** NIP-85 as written targets 32-byte Nostr pubkeys. SatRank's primary use case (Lightning node trust) targets 66-byte Lightning pubkeys — a different key space. Publishing both streams means:
+
+1. A **strict** NIP-85 client filtering on `kinds:[30382], authors:[<satrank>], "#d":[<user_npub_hex>]` gets a trust assertion about that Nostr user's Lightning operations — zero SatRank-specific knowledge required.
+2. A **Lightning-aware** client can query on `"#d":[<ln_pubkey>]` to get the full 13,913-node coverage, which is what makes the payment graph queryable for the first time.
+3. The **traceability** from Nostr-indexed back to Lightning-indexed is preserved via the `ln_pubkey` tag on every Stream B event.
+
+**Scope extension note.** NIP-85's "User as Subject" is defined generically for a 32-byte pubkey. SatRank extends the semantics to Lightning node pubkeys in Stream A; Stream B brings SatRank into strict conformance for the subset of operators we can verify cryptographically. The extension is honest and documented publicly on `satrank.dev/methodology` and in the project README; it bridges an entire domain (Lightning payment reliability) into the NIP-85 ecosystem without requiring a new kind allocation.
 
 ### Kind 10040 — Trusted Provider Declaration (discoverable)
 
