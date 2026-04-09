@@ -25,6 +25,8 @@ import { ChannelSnapshotRepository } from '../repositories/channelSnapshotReposi
 import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
 import { SurvivalService } from '../services/survivalService';
+import { runRetentionCleanup } from '../database/retention';
+import { RETENTION_INTERVAL_MS } from '../config/retention';
 
 // --- Liveness heartbeat ---
 // Docker healthcheck (docker-compose.yml, crawler service) reads the mtime
@@ -417,6 +419,16 @@ async function main(): Promise<void> {
     // Run an initial stale sweep so the DB reflects fossils before the first crawl fires
     runStaleSweep(agentRepo);
 
+    // Retention cleanup — sweep old rows from time-series tables
+    // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
+    // before the first crawl so we start with a trimmed dataset.
+    try {
+      await runRetentionCleanup(db);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ error: msg }, 'Initial retention cleanup failed');
+    }
+
     // Initial full crawl — Nostr publish happens inside, right after bulk scoring
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
@@ -463,6 +475,17 @@ async function main(): Promise<void> {
     const timerStaleSweep = setInterval(() => runStaleSweep(agentRepo), STALE_SWEEP_INTERVAL_MS);
     logger.info({ intervalMs: STALE_SWEEP_INTERVAL_MS, thresholdSec: STALE_THRESHOLD_SEC }, 'Stale sweep cron timer started');
 
+    // Daily retention cleanup — sweeps old rows from time-series tables.
+    // Fire-and-forget inside setInterval; .catch() logs without crashing
+    // the cron loop if one sweep fails (next tick will retry).
+    const timerRetention = setInterval(() => {
+      runRetentionCleanup(db).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ error: msg }, 'Scheduled retention cleanup failed');
+      });
+    }, RETENTION_INTERVAL_MS);
+    logger.info({ intervalMs: RETENTION_INTERVAL_MS }, 'Retention cleanup cron timer started');
+
     function shutdown() {
       logger.info('Stopping cron crawler');
       clearInterval(timerHeartbeat);
@@ -472,6 +495,7 @@ async function main(): Promise<void> {
       if (timerProbe) clearInterval(timerProbe);
       if (timerNostr) clearInterval(timerNostr);
       clearInterval(timerStaleSweep);
+      clearInterval(timerRetention);
       closeDatabase();
       process.exit(0);
     }
