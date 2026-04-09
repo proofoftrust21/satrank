@@ -224,6 +224,78 @@ describe('errorHandler', () => {
     expect(body.error.message).toBe('Resource not found');
     expect(body.error.message).not.toContain('SecretInternal');
   });
+
+  it('returns 400 MALFORMED_REQUEST for body-parser JSON SyntaxError', async () => {
+    // express.json() throws a SyntaxError with `status: 400` and
+    // `type: 'entity.parse.failed'` when the body is malformed JSON.
+    // The error handler must surface this as 400, not swallow it as 500.
+    vi.doMock('../config', () => ({
+      config: { NODE_ENV: 'production' },
+    }));
+    vi.doMock('../logger', () => ({
+      logger: { error: vi.fn() },
+    }));
+
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const res = mockRes();
+
+    // Simulate exactly what body-parser throws on malformed JSON.
+    const parseErr = new SyntaxError('Unexpected token n in JSON at position 0') as Error & {
+      type: string;
+      status: number;
+      statusCode: number;
+    };
+    parseErr.type = 'entity.parse.failed';
+    parseErr.status = 400;
+    parseErr.statusCode = 400;
+
+    errorHandler(
+      parseErr,
+      mockReq(),
+      res as unknown as Response,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res._status).toBe(400);
+    const body = res._body as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('MALFORMED_REQUEST');
+    expect(body.error.message).toBe('Malformed request body');
+    // Must not expose the raw SyntaxError message in prod
+    expect(body.error.message).not.toContain('Unexpected token');
+  });
+
+  it('returns 413 PAYLOAD_TOO_LARGE for body-parser payload-too-large error', async () => {
+    vi.doMock('../config', () => ({
+      config: { NODE_ENV: 'production' },
+    }));
+    vi.doMock('../logger', () => ({
+      logger: { error: vi.fn() },
+    }));
+
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const res = mockRes();
+
+    const sizeErr = new Error('request entity too large') as Error & {
+      type: string;
+      status: number;
+      statusCode: number;
+    };
+    sizeErr.type = 'entity.too.large';
+    sizeErr.status = 413;
+    sizeErr.statusCode = 413;
+
+    errorHandler(
+      sizeErr,
+      mockReq(),
+      res as unknown as Response,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res._status).toBe(413);
+    const body = res._body as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('PAYLOAD_TOO_LARGE');
+    expect(body.error.message).toBe('Payload too large');
+  });
 });
 
 describe('OpenAPI spec auth alignment', () => {

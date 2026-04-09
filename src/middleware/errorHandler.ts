@@ -15,6 +15,8 @@ const GENERIC_MESSAGES: Record<string, string> = {
   CONFLICT: 'Conflict',
   UNAUTHORIZED: 'Unauthorized',
   PAYMENT_REQUIRED: 'Payment required',
+  MALFORMED_REQUEST: 'Malformed request body',
+  PAYLOAD_TOO_LARGE: 'Payload too large',
 };
 
 // Codes whose real message is SAFE to expose to the client in production.
@@ -23,7 +25,41 @@ const GENERIC_MESSAGES: Record<string, string> = {
 // the client just submitted — nothing the client doesn't already know.
 const PASS_THROUGH_CODES = new Set(['VALIDATION_ERROR']);
 
+// Errors thrown by express.json() / body-parser before the router dispatches.
+// Body parser attaches `type` (string) and `status`/`statusCode` (number) to
+// its errors, and throws a `SyntaxError` subclass for JSON parse failures.
+interface BodyParserError extends Error {
+  type?: string;
+  status?: number;
+  statusCode?: number;
+}
+
+function isBodyParserError(err: Error): err is BodyParserError {
+  const candidate = err as BodyParserError;
+  if (typeof candidate.type === 'string' && candidate.type.startsWith('entity.')) return true;
+  // JSON parse failures surface as SyntaxError with a `status` of 400 set by body-parser
+  if (err instanceof SyntaxError && typeof candidate.status === 'number') return true;
+  return false;
+}
+
 export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
+  // express.json() / body-parser errors — surface as 400/413 instead of 500.
+  // These happen BEFORE any route handler runs (the parser middleware fails),
+  // so they hit the error handler directly without going through AppError.
+  if (isBodyParserError(err)) {
+    const bpErr = err as BodyParserError;
+    const status = bpErr.statusCode ?? bpErr.status ?? 400;
+    const code = status === 413 ? 'PAYLOAD_TOO_LARGE' : 'MALFORMED_REQUEST';
+    const message = config.NODE_ENV === 'production'
+      ? (GENERIC_MESSAGES[code] ?? 'Invalid request')
+      : err.message;
+    res.status(status).json({
+      error: { code, message },
+      requestId: req.requestId,
+    });
+    return;
+  }
+
   if (err instanceof AppError) {
     const shouldSanitize = config.NODE_ENV === 'production' && !PASS_THROUGH_CODES.has(err.code);
     const message = shouldSanitize
