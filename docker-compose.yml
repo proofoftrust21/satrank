@@ -8,7 +8,12 @@ services:
     container_name: satrank-api
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      # Bind to loopback only — the public path is Internet → nginx → Express
+      # on 127.0.0.1:3000. Binding to 0.0.0.0 is a defense-in-depth failure:
+      # if the host firewall or cloud firewall ever drops its rules, port
+      # 3000 would be reachable directly and bypass nginx rate limits and
+      # the Aperture L402 gate.
+      - "127.0.0.1:${PORT:-3000}:3000"
     env_file:
       - .env.production
     environment:
