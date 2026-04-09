@@ -22,10 +22,27 @@ export interface DvmOptions {
   relays: string[];
 }
 
+// Active connected relay — the DVM tracks every open relay so a response
+// can be fanned out to all of them, not just the one that delivered the
+// job request. This is the fix for the nos.lol 28-bit PoW issue: that
+// relay rejects unmined responses, but damus.io and relay.primal.net
+// accept them, so publishing to all three guarantees the requester gets
+// at least one response regardless of which relay delivered the job.
+interface ActiveRelay {
+  url: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  relay: any;
+}
+
 export class SatRankDvm {
   private skHex: string;
   private relays: string[];
   private running = false;
+  private active: ActiveRelay[] = [];
+  // Deduplicate requests that arrive via multiple relays — each relay
+  // forwards the same event id to its own subscription, and without this
+  // the DVM would process and respond to the same job N times.
+  private seenRequests = new Set<string>();
 
   constructor(
     private agentRepo: AgentRepository,
@@ -94,6 +111,10 @@ export class SatRankDvm {
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), CONNECT_TIMEOUT_MS)),
       ]);
 
+      // Register as an active relay so responses can be fanned out to
+      // every connected relay regardless of which one delivered the job.
+      this.active.push({ url, relay });
+
       // Publish handler info
       try {
         await relay.publish(handlerInfo);
@@ -110,7 +131,7 @@ export class SatRankDvm {
             // Ignore own events
             if (event.pubkey === myPubkey) return;
 
-            this.handleJobRequest(event, sk, relay, finalizeEvent, url);
+            this.handleJobRequest(event, sk, finalizeEvent, url);
           },
         },
       );
@@ -125,11 +146,22 @@ export class SatRankDvm {
   private async handleJobRequest(
     event: { id: string; pubkey: string; tags: string[][]; content: string },
     sk: Uint8Array,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    relay: any,
     finalizeEvent: (...args: unknown[]) => unknown,
-    relayUrl: string,
+    arrivedVia: string,
   ): Promise<void> {
+    // Dedupe: a job can be forwarded by multiple relays; process and
+    // respond exactly once.
+    if (this.seenRequests.has(event.id)) {
+      logger.debug({ eventId: event.id.slice(0, 12), relay: arrivedVia }, 'DVM job request duplicate — ignored');
+      return;
+    }
+    this.seenRequests.add(event.id);
+    // Cap the dedupe set so it doesn't grow unbounded over days of uptime
+    if (this.seenRequests.size > 10_000) {
+      const first = this.seenRequests.values().next().value as string | undefined;
+      if (first) this.seenRequests.delete(first);
+    }
+
     const iTag = event.tags.find(t => t[0] === 'i');
     if (!iTag || !iTag[1]) {
       logger.warn({ eventId: event.id.slice(0, 12) }, 'DVM job request missing input tag');
@@ -142,30 +174,81 @@ export class SatRankDvm {
       return;
     }
 
-    logger.info({ eventId: event.id.slice(0, 12), pubkey: lnPubkey.slice(0, 12), requester: event.pubkey.slice(0, 12), relay: relayUrl }, 'DVM job request received');
+    logger.info({ eventId: event.id.slice(0, 12), pubkey: lnPubkey.slice(0, 12), requester: event.pubkey.slice(0, 12), relay: arrivedVia }, 'DVM job request received');
 
+    let result: Awaited<ReturnType<typeof this.processRequest>>;
     try {
-      const result = await Promise.race([
+      result = await Promise.race([
         this.processRequest(lnPubkey),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Processing timeout')), QUERY_TIMEOUT_MS)),
       ]);
-
-      const response = finalizeEvent({
-        kind: KIND_JOB_RESULT,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: [
-          ['e', event.id],
-          ['p', event.pubkey],
-          ['request', JSON.stringify(event)],
-        ],
-        content: JSON.stringify(result),
-      }, sk);
-
-      await relay.publish(response);
-      logger.info({ eventId: event.id.slice(0, 12), pubkey: lnPubkey.slice(0, 12), score: result.score, verdict: result.verdict }, 'DVM job result published');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ eventId: event.id.slice(0, 12), error: msg }, 'DVM job processing failed');
+      return;
+    }
+
+    const response = finalizeEvent({
+      kind: KIND_JOB_RESULT,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ['e', event.id],
+        ['p', event.pubkey],
+        ['request', JSON.stringify(event)],
+      ],
+      content: JSON.stringify(result),
+    }, sk);
+
+    // Fan-out: publish the response to EVERY connected relay. Some relays
+    // (notably nos.lol) enforce NIP-13 proof-of-work on kind 6900 events
+    // and will reject unmined responses — that's OK as long as at least
+    // one relay accepts. We log success/failure per relay and report the
+    // job as "published" if any single publish succeeded.
+    const PUBLISH_TIMEOUT_MS = 5_000;
+    const attempts = await Promise.allSettled(
+      this.active.map(async ({ url, relay }) => {
+        try {
+          await Promise.race([
+            relay.publish(response),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('publish timeout')), PUBLISH_TIMEOUT_MS)),
+          ]);
+          return { url, ok: true as const };
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { url, ok: false as const, error: msg };
+        }
+      }),
+    );
+
+    const published: string[] = [];
+    const rejected: { url: string; error: string }[] = [];
+    for (const a of attempts) {
+      if (a.status === 'fulfilled') {
+        if (a.value.ok) published.push(a.value.url);
+        else rejected.push({ url: a.value.url, error: a.value.error });
+      }
+    }
+
+    if (published.length > 0) {
+      logger.info(
+        {
+          eventId: event.id.slice(0, 12),
+          pubkey: lnPubkey.slice(0, 12),
+          score: result.score,
+          verdict: result.verdict,
+          publishedTo: published,
+          rejectedBy: rejected.length ? rejected : undefined,
+        },
+        'DVM job result published',
+      );
+    } else {
+      logger.error(
+        {
+          eventId: event.id.slice(0, 12),
+          rejectedBy: rejected,
+        },
+        'DVM job result rejected by every relay — response not delivered',
+      );
     }
   }
 
