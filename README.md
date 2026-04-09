@@ -156,7 +156,7 @@ curl https://satrank.dev/api/agent/<hash>/verdict
 | GET | `/api/agent/:hash` | Detailed score + evidence | 1 sat |
 | GET | `/api/agent/:hash/verdict` | SAFE/RISKY/UNKNOWN + flags + risk profile | 1 sat |
 | GET | `/api/agent/:hash/history` | Score snapshots with deltas | 1 sat |
-| GET | `/api/agent/:hash/attestations` | Received attestations | free |
+| GET | `/api/agent/:hash/attestations` | Received attestations (list) | 1 sat |
 | GET | `/api/agents/top` | Leaderboard by score | free |
 | GET | `/api/agents/movers` | Top 7-day movers | free |
 | GET | `/api/agents/search?alias=…` | Search by alias | free |

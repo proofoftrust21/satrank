@@ -207,7 +207,7 @@ The freemium architecture is limpid and already profitable at the margin:
 | **NIP-85 scores (kind 30382 on 3 relays)** | **free** | Distribution, adoption, composability with other NIP-85 providers |
 | **NIP-05, NIP-90 DVM, `/api/ping`, `/api/agents/top`, `/api/stats`, `/api/health`** | **free** | Discovery, live reachability, public statistics |
 | **`/api/decide` (personalized GO/NO-GO + pathfinding)** | **1 sat via L402** | Primary revenue — the personalized oracle call |
-| **`/api/profile`, `/api/agent/:hash`, `/api/agent/:hash/verdict`, `/api/agent/:hash/history`, `/api/verdicts`** | **1 sat via L402** | Detailed queries — secondary revenue |
+| **`/api/profile`, `/api/agent/:hash`, `/api/agent/:hash/verdict`, `/api/agent/:hash/history`, `/api/agent/:hash/attestations`, `/api/verdicts`** | **1 sat via L402** | Detailed queries — secondary revenue |
 | **`/api/report`, `/api/attestations`** | **free** (API key for identity) | Closes the feedback loop — reports improve `P_empirical` in future decide responses |
 
 Why it works:

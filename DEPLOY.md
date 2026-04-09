@@ -40,9 +40,13 @@ autocert: false
 
 authenticator:
   lnd:
-    host: "YOUR_VOLTAGE_NODE.voltageapp.io:10009"
-    macaroonpath: "/etc/aperture/admin.macaroon"
-    tlscertpath: "/etc/aperture/tls.cert"
+    # gRPC host of the LND node Aperture uses to mint L402 invoices.
+    # Prefer "localhost:10009" when LND runs on the same host — this avoids
+    # copying macaroons/certs around and picks up LND cert regenerations
+    # automatically (Aperture re-reads `tlspath` on restart).
+    host: "localhost:10009"
+    macaroonpath: "<LND_DATA_DIR>/data/chain/bitcoin/mainnet/admin.macaroon"
+    tlscertpath: "<LND_DATA_DIR>/tls.cert"
 
 servicesettings:
   - name: "satrank"
@@ -60,8 +64,8 @@ dbdir: "/var/lib/aperture"
 - `price: 1` — 1 satoshi per query
 - `duration: 31536000` — L402 token valid for 1 year (365 days in seconds)
 - `pathregexp` — only agent/agents endpoints require payment; health/stats/version are free
-- Copy your LND admin macaroon to `/etc/aperture/admin.macaroon`
-- Copy your LND TLS cert to `/etc/aperture/tls.cert`
+- Replace `<LND_DATA_DIR>` with the absolute path to your LND data directory (where `tls.cert` and `data/chain/bitcoin/mainnet/admin.macaroon` live). Pointing Aperture at LND's live files instead of a copy means a cert regeneration on the LND side is picked up by `systemctl restart aperture` without any file juggling.
+- `host: "localhost:10009"` assumes LND is on the same host and listens on the loopback interface (recommended — see the `restlisten=127.0.0.1:10009` convention in `lnd.conf`). If LND is remote, replace with `hostname:port` and add that IP to LND's `tlsextraip`.
 
 ### Systemd: /etc/systemd/system/aperture.service
 
@@ -105,23 +109,52 @@ sudo systemctl enable --now aperture
 
 ```nginx
 server {
+    listen 80;
+    server_name satrank.dev;
+    return 301 https://$host$request_uri;
+}
+
+server {
     listen 443 ssl http2;
     server_name satrank.dev;
 
     ssl_certificate /etc/letsencrypt/live/satrank.dev/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/satrank.dev/privkey.pem;
 
-    # L402-gated endpoints — proxy through Aperture
-    # Matches: /api/agent/*, /api/agents/*, /api/decide, /api/profile/*
-    location ~ ^/api/(agent|agents|decide|profile) {
-        proxy_pass http://127.0.0.1:8443;
+    # L402-gated endpoints — proxy through Aperture.
+    # `/api/agent/{hash}` and `/api/agent/{hash}/{verdict,history,attestations}`
+    # all match because the regex requires a 64-hex-char id after `/agent/`.
+    # `/api/agents/top`, `/api/agents/movers`, `/api/agents/search` do NOT match
+    # (no hex id after `/agents/`) — they fall through to Express and are free.
+    location ~ ^/api/agent/[a-f0-9]+ {
+        proxy_pass https://127.0.0.1:8443;
+        proxy_ssl_verify off;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Free endpoint — report goes direct to Express (API key auth, no L402)
+    # Explicit paid routes (exact match on /api/decide, prefix on /api/profile/).
+    location = /api/decide {
+        proxy_pass https://127.0.0.1:8443;
+        proxy_ssl_verify off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ ^/api/profile/ {
+        proxy_pass https://127.0.0.1:8443;
+        proxy_ssl_verify off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Free endpoint — report goes direct to Express (API key auth, no L402).
     location = /api/report {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
@@ -130,27 +163,25 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Free endpoints — direct to Express (health, stats, attestations, etc.)
-    location /api/ {
+    # NIP-05 (.well-known/nostr.json) — public JSON, needs CORS.
+    location /.well-known/nostr.json {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        add_header Access-Control-Allow-Origin * always;
+    }
+
+    # Catch-all — every non-paid `/api/*` (health, stats, agents/top,
+    # agents/movers, agents/search, ping, verdicts, attestations, docs,
+    # openapi.json), plus static assets (landing page, methodology, icons).
+    # `/api/verdicts` is L402-gated at the Express level via `apertureGateAuth`,
+    # so reaching Express direct returns 402 for external callers.
+    location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-
-    # Static assets (landing page, favicon)
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-
-server {
-    listen 80;
-    server_name satrank.dev;
-    return 301 https://$host$request_uri;
 }
 ```
 
@@ -160,11 +191,15 @@ sudo certbot --nginx -d satrank.dev
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-**Routing logic:**
-- `/api/agent/*`, `/api/agents/*`, `/api/decide`, `/api/profile/*` → Aperture (L402, 1 sat)
-- `/api/report` → Express direct (API key auth, free)
-- `/api/health`, `/api/stats`, `/api/attestations`, `/api/docs` → Express direct (free)
-- `/`, `/app.js`, `/favicon.png` → Express static (free)
+**Routing logic (matches README + landing page cost tables):**
+- `/api/agent/{hash}`, `/api/agent/{hash}/verdict`, `/api/agent/{hash}/history`, `/api/agent/{hash}/attestations` → nginx → Aperture → Express (L402, 1 sat)
+- `/api/decide` → nginx → Aperture → Express (L402, 1 sat)
+- `/api/profile/{id}` → nginx → Aperture → Express (L402, 1 sat)
+- `/api/verdicts` → nginx → Express direct, gated at Express by `apertureGateAuth` middleware (L402, 1 sat/batch — the middleware returns 402 for non-loopback callers)
+- `/api/report`, `/api/attestations` → nginx → Express direct (free, X-API-Key required)
+- `/api/health`, `/api/stats`, `/api/ping/{pubkey}`, `/api/agents/top`, `/api/agents/movers`, `/api/agents/search`, `/api/docs`, `/api/openapi.json` → nginx → Express direct (free, no auth)
+- `/`, static assets, `/methodology.html` → nginx → Express static (free)
+- `/.well-known/nostr.json` → nginx → Express direct (free, CORS enabled for NIP-05)
 
 ## 3. SatRank (Docker)
 
@@ -338,8 +373,8 @@ Each data source runs on its own timer in `--cron` mode. At startup, a full craw
 | `CRAWL_INTERVAL_OBSERVER_MS` | `300000` (5 min) | Observer Protocol transactions |
 | `CRAWL_INTERVAL_LND_GRAPH_MS` | `3600000` (1 hour) | LND full graph (~14k active nodes on mainnet) |
 | `CRAWL_INTERVAL_LNPLUS_MS` | `86400000` (24 hours) | LN+ community ratings |
-| `CRAWL_INTERVAL_PROBE_MS` | `3600000` (1 hour) | Route probe (reachability check) |
-| `PROBE_MAX_PER_SECOND` | `10` | Max probes per second (rate limiter) |
+| `CRAWL_INTERVAL_PROBE_MS` | `1800000` (30 min) | Route probe (reachability check) |
+| `PROBE_MAX_PER_SECOND` | `15` | Max probes per second (rate limiter) |
 | `PROBE_AMOUNT_SATS` | `1000` | Amount in sats to test routes with |
 
 Override in `.env.production`:
@@ -356,16 +391,32 @@ CRAWL_INTERVAL_LND_GRAPH_MS=21600000    # 6 hours
 CRAWL_INTERVAL_LNPLUS_MS=86400000       # 24 hours
 ```
 
-After each Observer and LND crawl, scores are pre-computed for the top 50 agents and old snapshots are purged.
+After each LND crawl, the scoring pipeline runs in two passes: first any unscored
+agents that accumulated since the last cycle (bulk scoring, unscored), then all
+previously scored agents are rescored with fresh data (bulk rescore). On a normal
+cycle this touches every eligible agent in the index, not a top-N subset. Logs
+show exact counts (`scored X/Y errors=0`) for each pass.
 
 ## 8. Snapshot retention
 
-The `score_snapshots` table grows with each score computation (~50 agents every 5 minutes = ~14,400 rows/day).
-The crawler automatically purges old snapshots after each crawl run:
+The `score_snapshots` table grows with every score computation — on the production
+mainnet instance each cycle writes ~7,000+ rows, and the retention cron keeps the
+last 45 days.
 
-- **< 7 days**: all snapshots retained
-- **7–30 days**: 1 snapshot per agent per day (deduplication via `ROW_NUMBER()`)
-- **> 30 days**: deleted
+The retention policy is defined in `src/config/retention.ts` and applied by a
+dedicated cron inside the crawler process (not embedded in each crawl):
 
-This runs inside `runCrawl()` at the end of each cycle (cron or single run).
-No additional cron job is needed — the purge is embedded in the crawler process.
+- **`RETENTION_POLICIES`** (flat cutoff per table):
+  - `probe_results`       — 14 days (regularity uses the last 7, kept 2× for margin)
+  - `score_snapshots`     — **45 days** (delta windows up to 30d, kept 1.5× for margin)
+  - `channel_snapshots`   — 14 days
+  - `fee_snapshots`       — 14 days
+- **`RETENTION_CHUNK_SIZE`** — deletes run in chunks of 50,000 rows per
+  transaction so the SQLite WAL never balloons (previous multi-million-row
+  monolithic `DELETE` grew the WAL past 1 GB and stalled — that's why chunking).
+- **`RETENTION_INTERVAL_MS`** — the retention cron runs every **24 hours**,
+  independent from the crawler's data ingestion cycle. At startup it also runs
+  once immediately.
+
+The retention cron is started from `src/crawler/run.ts` and logs each table's
+`{deleted, durationMs}` after every sweep.

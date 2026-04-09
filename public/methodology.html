@@ -970,20 +970,25 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   <h3>DVM Trust-Check (NIP-90)</h3>
   <p>
     SatRank also operates a Data Vending Machine (NIP-90) for real-time trust queries.
-    Send a kind <code>5900</code> event with parameter <code>target</code> set to any
-    Lightning node pubkey, and receive a kind <code>6900</code> response with the trust
-    score, verdict, and reachability. Unknown nodes trigger an on-demand <code>QueryRoutes</code>
-    probe so the answer reflects the live graph, not just the cached snapshot.
+    Publish a kind <code>5900</code> job request with <code>["j", "trust-check"]</code>
+    and <code>["i", "&lt;ln_pubkey&gt;", "text"]</code> tags, and SatRank responds with
+    a signed kind <code>6900</code> event containing the trust score, verdict, and
+    reachability. Unknown nodes trigger an on-demand <code>QueryRoutes</code> probe so
+    the answer reflects the live graph, not just the cached snapshot. The DVM is
+    discoverable via a kind <code>31990</code> handler-info event published to the
+    three canonical relays on every startup. Free, no payment required.
   </p>
 
   <h3>Unique Position</h3>
   <p>
-    Every other NIP-85 implementation (wot-scoring, nostr-wot-sdk, nostr-wot-oracle, Vertex)
-    operates on the Nostr social graph &mdash; scoring based on follows, mutes, and zaps.
-    SatRank is the only provider that bridges the Lightning payment graph into NIP-85. That
-    means a wallet or agent can query <strong>both</strong> social trust and payment
-    reliability from the same Nostr relay infrastructure, without running two parallel
-    pipelines.
+    Every other NIP-85 implementation (Brainstorm, wot-scoring, nostr-wot-sdk,
+    nostr-wot-oracle, Vertex) operates on the Nostr social graph &mdash; scoring based on
+    follows, mutes, and zaps. SatRank is the only provider that bridges the Lightning
+    payment graph into NIP-85. Because Brainstorm and SatRank both use the canonical
+    <code>rank</code> tag on kind <code>30382</code> events, a wallet or agent can list
+    both in its kind <code>10040</code> and receive social trust <em>and</em> payment
+    reliability from the same Nostr relay connection &mdash; verified live on
+    <code>relay.damus.io</code> and <code>nos.lol</code>, where both providers publish.
   </p>
 
   <h3 id="declare-provider">Declaring SatRank as a Trusted Provider (kind 10040)</h3>

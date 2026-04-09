@@ -1,5 +1,6 @@
-// Indexes Lightning Network nodes from our LND node's graph view
-// Primary source — replaces mempool.space for full graph coverage (~17,000 nodes)
+// Indexes Lightning Network nodes from our LND node's graph view.
+// Primary source — replaces mempool.space for full graph coverage.
+// Mainnet today: ~14,000 active Lightning nodes after UTXO validation.
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ChannelSnapshotRepository } from '../repositories/channelSnapshotRepository';
 import type { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
