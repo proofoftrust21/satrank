@@ -18,7 +18,7 @@ const sk = hexToBytes(skHex);
 const profile = {
   name: 'SatRank',
   display_name: 'SatRank',
-  about: 'Route reliability for Lightning payments. Trust scores for 17,000+ Lightning nodes. Built for the agentic economy.\n\n66% of Lightning nodes are phantoms. We tell you which ones are alive.',
+  about: 'Route reliability for Lightning payments. Trust scores for 13,900 active Lightning nodes. Built for the agentic economy.\n\n60% of Lightning nodes are phantoms. We tell you which ones are alive.',
   website: 'https://satrank.dev',
   nip05: 'satrank@satrank.dev',
   lud16: 'wavykettle725@walletofsatoshi.com',
