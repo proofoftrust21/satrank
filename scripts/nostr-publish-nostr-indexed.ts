@@ -39,7 +39,10 @@ import { hexToBytes } from '@noble/hashes/utils';
 // @ts-expect-error — ESM subpath
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 // @ts-expect-error — ESM subpath
-import { Relay } from 'nostr-tools/relay';
+import { Relay, useWebSocketImplementation } from 'nostr-tools/relay';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const WS = require('ws');
+useWebSocketImplementation(WS);
 import { DEFAULT_NOSTR_RELAYS } from '../src/nostr/relays';
 import { VERDICT_SAFE_THRESHOLD } from '../src/config/scoring';
 

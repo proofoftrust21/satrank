@@ -12,10 +12,17 @@
 // keypair NIP-85 services behave.
 //
 // Usage: NOSTR_PRIVATE_KEY=<hex> npx tsx scripts/nostr-publish-10040.ts
+import { webcrypto } from 'node:crypto';
+if (!(globalThis as { crypto?: unknown }).crypto) {
+  (globalThis as { crypto: unknown }).crypto = webcrypto;
+}
 // @ts-expect-error — ESM subpath
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 // @ts-expect-error — ESM subpath
-import { Relay } from 'nostr-tools/relay';
+import { Relay, useWebSocketImplementation } from 'nostr-tools/relay';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const WS = require('ws');
+useWebSocketImplementation(WS);
 import { hexToBytes } from '@noble/hashes/utils';
 import { DEFAULT_NOSTR_RELAYS } from '../src/nostr/relays';
 

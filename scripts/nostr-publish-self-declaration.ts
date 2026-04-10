@@ -29,7 +29,10 @@ if (!(globalThis as { crypto?: unknown }).crypto) {
 // @ts-expect-error — ESM subpath
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 // @ts-expect-error — ESM subpath
-import { Relay } from 'nostr-tools/relay';
+import { Relay, useWebSocketImplementation } from 'nostr-tools/relay';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const WS = require('ws');
+useWebSocketImplementation(WS);
 import { hexToBytes } from '@noble/hashes/utils';
 import { existsSync } from 'node:fs';
 import { DEFAULT_NOSTR_RELAYS } from '../src/nostr/relays';

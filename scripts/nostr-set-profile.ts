@@ -1,10 +1,17 @@
 #!/usr/bin/env npx tsx
 // Set the SatRank Nostr profile (kind 0)
 // Usage: NOSTR_PRIVATE_KEY=<hex> npx tsx scripts/nostr-set-profile.ts
+import { webcrypto } from 'node:crypto';
+if (!(globalThis as { crypto?: unknown }).crypto) {
+  (globalThis as { crypto: unknown }).crypto = webcrypto;
+}
 // @ts-expect-error — ESM subpath
 import { finalizeEvent } from 'nostr-tools/pure';
 // @ts-expect-error — ESM subpath
-import { Relay } from 'nostr-tools/relay';
+import { Relay, useWebSocketImplementation } from 'nostr-tools/relay';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const WS = require('ws');
+useWebSocketImplementation(WS);
 import { hexToBytes } from '@noble/hashes/utils';
 import { DEFAULT_NOSTR_RELAYS } from '../src/nostr/relays';
 
@@ -19,7 +26,7 @@ const sk = hexToBytes(skHex);
 const profile = {
   name: 'SatRank',
   display_name: 'SatRank',
-  about: 'Route reliability for Lightning payments. Trust scores for ~13,900 active Lightning nodes, backed by a full bitcoind+LND node. NIP-85 kind 30382:rank provider — the only one bridging Lightning payment data into the WoT ecosystem. Built for the agentic economy.\n\n~60% of the Lightning graph is phantoms. We tell you which nodes are actually alive.',
+  about: 'Route reliability for Lightning payments. NIP-85 kind 30382:rank provider — the only one bridging Lightning payment data into the Web of Trust.\n\nDual publishing: ~2,400 Lightning-indexed events per 6h cycle (d=ln_pubkey, ~13,900 nodes scored) + strict Nostr-indexed events (d=nostr_pubkey) built by mining NIP-57 zap receipts across 6 relays.\n\nBacked by a full bitcoind+LND node — not gossip. ~60% of the Lightning graph is phantoms; SatRank tells you which nodes are actually alive. Built for the agentic economy.',
   website: 'https://satrank.dev',
   nip05: 'satrank@satrank.dev',
   lud16: 'wavykettle725@walletofsatoshi.com',
