@@ -11,6 +11,17 @@ import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 
 const KIND_TRUSTED_ASSERTION = 30382;
 
+// Inter-event delay (ms) when publishing the score batch. damus.io's
+// strfry config rate-limits SatRank when bursts exceed ~5 events/sec
+// from a single key ("rate-limited: you are noting too much"). The DVM
+// response (kind 6900) was being silently dropped on damus.io as a side
+// effect of this same anti-spam bucket.
+//
+// 300 ms = 3.33 events/sec sustained. For ~2,400 events/cycle that's
+// ~12 minutes total — comfortably inside the 6 h cycle and inside every
+// canonical relay's anti-spam tolerance. Override with NOSTR_PUBLISH_INTER_EVENT_MS.
+const PUBLISH_INTER_EVENT_MS = Number(process.env.NOSTR_PUBLISH_INTER_EVENT_MS ?? '300');
+
 export interface NostrPublisherOptions {
   privateKeyHex: string;
   relays: string[];
@@ -118,7 +129,10 @@ export class NostrPublisher {
 
     logger.info({ connected: connections.length, total: this.relays.length }, 'Nostr relay connections established');
 
-    // Publish events with throttle (20/sec to avoid relay rate limits)
+    // Publish events with a sustained inter-event delay to stay under
+    // the canonical relays' anti-spam buckets (see PUBLISH_INTER_EVENT_MS
+    // for the rationale).
+    const cycleStartMs = Date.now();
     for (const ev of events) {
       try {
         const template = {
@@ -160,14 +174,21 @@ export class NostrPublisher {
 
         published++;
 
-        // Throttle: 20 events/sec
-        if (published % 20 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+        // Sustained inter-event delay. Skipped on the very last event so we
+        // don't add a useless tail latency to the cycle.
+        if (published < events.length && PUBLISH_INTER_EVENT_MS > 0) {
+          await new Promise((resolve) => setTimeout(resolve, PUBLISH_INTER_EVENT_MS));
         }
 
-        // Progress log every 500 events
+        // Progress log every 500 events with the running rate so the
+        // operator can confirm the throttle is doing what they expect.
         if (published % 500 === 0) {
-          logger.info({ published, total: events.length }, 'Nostr publish progress');
+          const elapsedSec = (Date.now() - cycleStartMs) / 1000;
+          const rate = published / Math.max(elapsedSec, 0.001);
+          logger.info(
+            { published, total: events.length, elapsedSec: Math.round(elapsedSec), eventsPerSec: rate.toFixed(2) },
+            'Nostr publish progress',
+          );
         }
       } catch (err: unknown) {
         errors++;

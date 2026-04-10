@@ -17,6 +17,20 @@ const JOB_TYPE = 'trust-check';
 const QUERY_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 
+// Relays whose strfry config requires NIP-13 proof-of-work on kind 6900
+// (the DVM job result kind). Inline mining for the documented 28-bit
+// target is impractical inside a sub-3 s response budget — empirically
+// ~140 k attempts/sec single-thread on the prod box, so 28 bits ≈ several
+// minutes of mining per response. We continue to *subscribe* to these
+// relays for incoming kind 5900 jobs (read path is fine), and just
+// exclude them from the publish fan-out for kind 6900 so the logs stop
+// flooding with "pow: N bits needed" rejections that an operator can't
+// fix in real time. Requesters still receive responses via every other
+// canonical relay we publish to.
+const RELAYS_REQUIRING_KIND_6900_POW = new Set<string>([
+  'wss://nos.lol',
+]);
+
 export interface DvmOptions {
   privateKeyHex: string;
   relays: string[];
@@ -312,14 +326,19 @@ export class SatRankDvm {
     // Opening a fresh connection per publish costs ~50 ms extra but is
     // bulletproof.
     //
-    // nos.lol enforces NIP-13 proof-of-work on kind 6900 events and will
-    // reject unmined responses with "pow: 28 bits needed". That's OK as
-    // long as at least one relay accepts.
+    // We exclude any relay listed in RELAYS_REQUIRING_KIND_6900_POW from
+    // the publish set — those relays would always reject the response
+    // with "pow: N bits needed" and the inline mining cost is well over
+    // the DVM SLA. The subscribe path keeps them in the listening loop
+    // so we still receive jobs via those relays, we just respond via
+    // the others.
+    const publishTargets = this.relays.filter((url) => !RELAYS_REQUIRING_KIND_6900_POW.has(url));
+    const skipped = this.relays.filter((url) => RELAYS_REQUIRING_KIND_6900_POW.has(url));
     // @ts-expect-error — nostr-tools is ESM-only, dynamic import at runtime
     const { Relay: RelayClass } = await import('nostr-tools/relay');
     const PUBLISH_TIMEOUT_MS = 5_000;
     const attempts = await Promise.allSettled(
-      this.relays.map(async (url) => {
+      publishTargets.map(async (url) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let relay: any = null;
         try {
@@ -361,6 +380,7 @@ export class SatRankDvm {
           verdict: result.verdict,
           publishedTo: published,
           rejectedBy: rejected.length ? rejected : undefined,
+          skippedRelays: skipped.length ? skipped : undefined,
         },
         'DVM job result published',
       );
