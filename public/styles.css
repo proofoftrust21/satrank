@@ -744,6 +744,19 @@ pre {
   margin-top: 4px;
   font-size: 0.7rem;
 }
+.live-circuit-stream-label {
+  color: #f5b500;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 10px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid #2a2a40;
+}
+.live-circuit-stream-label:first-child {
+  margin-top: 0;
+}
 .live-circuit-empty {
   color: #666680;
   font-style: italic;

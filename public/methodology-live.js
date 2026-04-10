@@ -6,9 +6,15 @@
  *   1. Opens a WebSocket to each of the 3 canonical Nostr relays
  *      (damus.io, nos.lol, primal.net).
  *   2. Sends REQ frames for kind 0, kind 30382 and kind 10040 authored by
- *      SatRank's service pubkey.
+ *      SatRank's service pubkey. The kind 30382 REQ carries TWO filters in
+ *      the same frame so the relay returns both streams in one round-trip:
+ *        - Stream A (Lightning-indexed) samples — most recent 3 by created_at
+ *        - Stream B (Nostr-indexed strict)    — SatRank's own self-declaration
+ *          targeted by the d-tag = SatRank's own Nostr pubkey
  *   3. Aggregates the events per kind across relays (deduped by event id),
- *      renders counts and the first sample event into the live-circuit grid.
+ *      classifies kind 30382 events into Stream A vs Stream B based on
+ *      d-tag shape and subject_type tag, renders counts and a sample of
+ *      each stream into the live-circuit grid.
  *   4. Exits when all 3 relays have sent EOSE or when the 8s watchdog fires.
  *
  * No framework, no transpile — pure ES5 + WebSocket + JSON for maximum
@@ -103,7 +109,100 @@
     return '';
   }
 
+  // Classify a kind 30382 event into 'A' (Lightning-indexed) or 'B'
+  // (Nostr-indexed strict). Stream B events carry an explicit subject_type
+  // tag (`mined_mapping` or `self_declaration`); everything else with a
+  // 66-char `02|03`-prefixed d-tag is Stream A.
+  function classify30382(ev) {
+    var dTag = '';
+    var subjectType = '';
+    if (ev && Array.isArray(ev.tags)) {
+      for (var i = 0; i < ev.tags.length; i++) {
+        var t = ev.tags[i];
+        if (!Array.isArray(t) || t.length < 2) continue;
+        if (t[0] === 'd') dTag = t[1];
+        if (t[0] === 'subject_type') subjectType = t[1];
+      }
+    }
+    if (subjectType === 'self_declaration' || subjectType === 'mined_mapping') return 'B';
+    if (/^(02|03)[0-9a-f]{64}$/.test(dTag)) return 'A';
+    // Fallback: 64-char Nostr-style d-tag with no subject_type → still B
+    if (/^[0-9a-f]{64}$/.test(dTag)) return 'B';
+    return 'A';
+  }
+
+  function appendEventLines(parent, ev) {
+    var idLine = document.createElement('div');
+    idLine.className = 'live-circuit-event-id';
+    idLine.textContent = 'id ' + shortId(ev.id) + ' · ' + fmtDate(ev.created_at);
+    parent.appendChild(idLine);
+    var dataLine = document.createElement('div');
+    dataLine.className = 'live-circuit-event-data';
+    dataLine.textContent = summarizeKind30382(ev);
+    parent.appendChild(dataLine);
+  }
+
+  function appendStreamSection(parent, label, events, emptyMsg) {
+    var header = document.createElement('div');
+    header.className = 'live-circuit-stream-label';
+    header.textContent = label;
+    parent.appendChild(header);
+    if (events.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'live-circuit-empty';
+      empty.textContent = emptyMsg;
+      parent.appendChild(empty);
+      return;
+    }
+    events.sort(function (a, b) { return (b.created_at || 0) - (a.created_at || 0); });
+    appendEventLines(parent, events[0]);
+    if (events.length > 1) {
+      var more = document.createElement('div');
+      more.className = 'live-circuit-event-more';
+      more.textContent = '+' + (events.length - 1) + ' more in this stream';
+      parent.appendChild(more);
+    }
+  }
+
+  function renderKind30382(events) {
+    var countEl = document.getElementById('live-kind-30382-count');
+    var sampleEl = document.getElementById('live-kind-30382-sample');
+    if (countEl) countEl.textContent = String(events.length);
+    if (!sampleEl) return;
+    sampleEl.innerHTML = '';
+    if (events.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'live-circuit-empty';
+      empty.textContent =
+        'no trusted assertions found — the publisher may be mid-cycle; reload in a few seconds';
+      sampleEl.appendChild(empty);
+      return;
+    }
+    var streamA = [];
+    var streamB = [];
+    for (var i = 0; i < events.length; i++) {
+      if (classify30382(events[i]) === 'B') streamB.push(events[i]);
+      else streamA.push(events[i]);
+    }
+    appendStreamSection(
+      sampleEl,
+      'Stream A · Lightning-indexed (d=ln_pubkey)',
+      streamA,
+      '(no Stream A sample in this query window)',
+    );
+    appendStreamSection(
+      sampleEl,
+      'Stream B · Nostr-indexed strict (d=nostr_pubkey)',
+      streamB,
+      'no strict NIP-85 self-declaration found — run scripts/nostr-publish-self-declaration.ts',
+    );
+  }
+
   function renderKindResult(kind, events) {
+    if (kind === 30382) {
+      renderKind30382(events);
+      return;
+    }
     var countEl = document.getElementById('live-kind-' + kind + '-count');
     var sampleEl = document.getElementById('live-kind-' + kind + '-sample');
     if (countEl) countEl.textContent = String(events.length);
@@ -115,9 +214,6 @@
       if (kind === 10040) {
         empty.textContent =
           'no self-declaration on any relay yet — run scripts/nostr-publish-10040.ts from the repo to populate';
-      } else if (kind === 30382) {
-        empty.textContent =
-          'no trusted assertions found — the publisher may be mid-cycle; reload in a few seconds';
       } else {
         empty.textContent = 'no profile event — the kind 0 script may not have been run';
       }
@@ -177,13 +273,31 @@
       ws.onopen = function () {
         for (var i = 0; i < KINDS.length; i++) {
           try {
-            ws.send(
-              JSON.stringify([
+            var k = KINDS[i];
+            var frame;
+            if (k === 30382) {
+              // Two filters in one REQ — NIP-01 multi-filter — so the
+              // relay returns BOTH streams in a single round-trip:
+              //  - filter 1: 3 most recent kind 30382 events authored by
+              //              SatRank (drowning Stream A wins, that's OK
+              //              for the "is publishing alive" cell).
+              //  - filter 2: the strict NIP-85 self-declaration whose
+              //              d-tag equals SatRank's own Nostr pubkey
+              //              (Stream B). NIP-33 returns at most 1 event.
+              frame = [
                 'REQ',
                 subIds[i],
-                { kinds: [KINDS[i]], authors: [SATRANK_PUBKEY], limit: 3 },
-              ]),
-            );
+                { kinds: [30382], authors: [SATRANK_PUBKEY], limit: 3 },
+                { kinds: [30382], authors: [SATRANK_PUBKEY], '#d': [SATRANK_PUBKEY] },
+              ];
+            } else {
+              frame = [
+                'REQ',
+                subIds[i],
+                { kinds: [k], authors: [SATRANK_PUBKEY], limit: 3 },
+              ];
+            }
+            ws.send(JSON.stringify(frame));
           } catch (e) { /* ignore */ }
         }
         watchdog = setTimeout(function () { finish('watchdog'); }, WATCHDOG_MS);
