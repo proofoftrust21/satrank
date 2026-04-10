@@ -34,6 +34,16 @@ interface ActiveRelay {
   relay: any;
 }
 
+// Backoff schedule (ms) for our own manual reconnect — used when nostr-tools'
+// built-in reconnect is exhausted or skipped (e.g. initial connect failure
+// sets `skipReconnection=true` inside the lib so it never retries).
+// Capped at 60s for the long tail.
+const MANUAL_RECONNECT_BACKOFF_MS: number[] = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
+
+// Reconnect attempts above this count log at WARN instead of INFO so a
+// long-running outage surfaces in monitoring.
+const MANUAL_RECONNECT_WARN_THRESHOLD = 5;
+
 export class SatRankDvm {
   private skHex: string;
   private relays: string[];
@@ -43,6 +53,22 @@ export class SatRankDvm {
   // forwards the same event id to its own subscription, and without this
   // the DVM would process and respond to the same job N times.
   private seenRequests = new Set<string>();
+
+  // Per-relay reconnect bookkeeping. Each relay has its own attempt counter
+  // and its own pending timer; both are cleared on successful subscribe.
+  private reconnectAttempts = new Map<string, number>();
+  private reconnectTimers = new Map<string, NodeJS.Timeout>();
+
+  // Imported once at start() time and reused for every reconnect cycle so
+  // we don't pay the dynamic-import cost on each retry. Set in start().
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private finalizeEvent: any = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private RelayClass: any = null;
+  private mySk: Uint8Array | null = null;
+  private myPubkey: string | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handlerInfo: any = null;
 
   constructor(
     private agentRepo: AgentRepository,
@@ -87,59 +113,137 @@ export class SatRankDvm {
       }),
     }, sk);
 
+    // Cache imports + identity for the lifetime of the DVM so reconnect
+    // cycles don't pay the dynamic-import cost or re-derive the pubkey.
+    this.finalizeEvent = finalizeEvent;
+    this.RelayClass = Relay;
+    this.mySk = sk;
+    this.myPubkey = myPubkey;
+    this.handlerInfo = handlerInfo;
+
     // Connect to relays and subscribe
     for (const url of this.relays) {
-      this.connectRelay(url, sk, myPubkey, finalizeEvent, Relay, handlerInfo);
+      this.connectRelay(url);
     }
 
     logger.info({ relays: this.relays }, 'DVM started — listening for trust-check job requests');
   }
 
-  private async connectRelay(
-    url: string,
-    sk: Uint8Array,
-    myPubkey: string,
-    finalizeEvent: (...args: unknown[]) => unknown,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    RelayClass: any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    handlerInfo: any,
-  ): Promise<void> {
+  // Schedule a manual reconnect for a relay using exponential backoff. Used
+  // when nostr-tools' built-in reconnect is exhausted (relay.onclose fires
+  // after the lib gives up) or when the very first connect attempt fails
+  // (the lib forces skipReconnection=true on initial-connect errors).
+  private scheduleReconnect(url: string): void {
+    if (!this.running) return;
+    // Drop any previous pending timer for this URL — only one reconnect in
+    // flight at a time per relay.
+    const existing = this.reconnectTimers.get(url);
+    if (existing) clearTimeout(existing);
+
+    const attempts = (this.reconnectAttempts.get(url) ?? 0) + 1;
+    this.reconnectAttempts.set(url, attempts);
+
+    const backoffMs = MANUAL_RECONNECT_BACKOFF_MS[
+      Math.min(attempts - 1, MANUAL_RECONNECT_BACKOFF_MS.length - 1)
+    ];
+
+    const logFn = attempts >= MANUAL_RECONNECT_WARN_THRESHOLD ? logger.warn : logger.info;
+    logFn.call(logger, { relay: url, attempt: attempts, backoffMs }, 'DVM manual reconnect scheduled');
+
+    const timer = setTimeout(() => {
+      this.reconnectTimers.delete(url);
+      this.connectRelay(url);
+    }, backoffMs);
+    // Don't keep the event loop alive solely for a pending reconnect.
+    timer.unref?.();
+    this.reconnectTimers.set(url, timer);
+  }
+
+  // Remove a relay from the active fan-out list and close it cleanly.
+  private removeActive(url: string): void {
+    const idx = this.active.findIndex((a) => a.url === url);
+    if (idx >= 0) {
+      const [removed] = this.active.splice(idx, 1);
+      try { removed.relay.close(); } catch { /* ignore */ }
+    }
+  }
+
+  private async connectRelay(url: string): Promise<void> {
+    if (!this.running || !this.RelayClass || !this.mySk || !this.myPubkey || !this.handlerInfo || !this.finalizeEvent) {
+      return;
+    }
+    // Drop any stale active entry for this URL before reconnecting (this
+    // can happen if onclose fires while a parallel reconnect is already
+    // mid-flight).
+    this.removeActive(url);
+
+    let relay: { publish: (e: unknown) => Promise<unknown>; subscribe: (filters: unknown[], params: unknown) => unknown; close: () => void; onclose: (() => void) | null } | null = null;
     try {
-      const relay = await Promise.race([
-        RelayClass.connect(url),
+      relay = await Promise.race([
+        // enablePing keeps the WS alive with periodic pings; enableReconnect
+        // makes nostr-tools auto-reconnect on transient drops with its own
+        // backoff. We still hook relay.onclose below to handle the case
+        // where the lib gives up (skipReconnection on initial failure or
+        // exhausted retries).
+        this.RelayClass.connect(url, { enablePing: true, enableReconnect: true }),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), CONNECT_TIMEOUT_MS)),
-      ]);
+      ]) as typeof relay;
 
       // Register as an active relay so responses can be fanned out to
       // every connected relay regardless of which one delivered the job.
       this.active.push({ url, relay });
 
-      // Publish handler info
+      // Hook relay-level onclose: nostr-tools fires this only when its
+      // built-in reconnect is exhausted OR has been skipped. Either way,
+      // we need to take over and retry on our own backoff schedule.
+      relay!.onclose = () => {
+        if (!this.running) return;
+        logger.warn({ relay: url }, 'DVM relay closed (lib reconnect exhausted) — scheduling manual reconnect');
+        this.removeActive(url);
+        this.scheduleReconnect(url);
+      };
+
+      // Publish handler info on every (re)connect so newer relay snapshots
+      // also see the NIP-89 advertisement.
       try {
-        await relay.publish(handlerInfo);
+        await relay!.publish(this.handlerInfo);
         logger.info({ relay: url }, 'DVM handler info published');
       } catch {
         logger.warn({ relay: url }, 'Failed to publish DVM handler info');
       }
 
-      // Subscribe to job requests
-      relay.subscribe(
+      // Subscribe to job requests. The subscription's onclose fires if the
+      // sub is closed for any reason (relay sent CLOSED, filter rejected,
+      // etc.) — log it for diagnostics. The relay-level onclose handler
+      // above is what triggers the actual reconnect.
+      const myPubkey = this.myPubkey!;
+      relay!.subscribe(
         [{ kinds: [KIND_JOB_REQUEST], '#j': [JOB_TYPE], since: Math.floor(Date.now() / 1000) }],
         {
           onevent: (event: { id: string; pubkey: string; tags: string[][]; content: string }) => {
             // Ignore own events
             if (event.pubkey === myPubkey) return;
-
-            this.handleJobRequest(event, sk, finalizeEvent, url);
+            this.handleJobRequest(event, this.mySk!, this.finalizeEvent, url);
+          },
+          onclose: (reason: string) => {
+            logger.warn({ relay: url, reason }, 'DVM subscription closed');
           },
         },
       );
 
+      // Successful subscribe — reset the manual-reconnect attempt counter
+      // so the next failure restarts at the shortest backoff.
+      this.reconnectAttempts.delete(url);
       logger.info({ relay: url }, 'DVM subscribed to trust-check jobs');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ relay: url, error: msg }, 'DVM failed to connect to relay — will retry on next start');
+      logger.warn({ relay: url, error: msg }, 'DVM failed to connect to relay — scheduling manual reconnect');
+      // Make sure no half-open Relay reference lingers
+      if (relay) {
+        try { (relay as { close: () => void }).close(); } catch { /* ignore */ }
+      }
+      this.removeActive(url);
+      this.scheduleReconnect(url);
     }
   }
 
@@ -346,6 +450,18 @@ export class SatRankDvm {
 
   stop(): void {
     this.running = false;
+    // Cancel any pending manual reconnect timers so we don't fire them
+    // after stop().
+    for (const timer of this.reconnectTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.reconnectTimers.clear();
+    this.reconnectAttempts.clear();
+    // Close every active relay so the underlying WebSockets release.
+    for (const a of this.active) {
+      try { a.relay.close(); } catch { /* ignore */ }
+    }
+    this.active = [];
     logger.info('DVM stopped');
   }
 }
