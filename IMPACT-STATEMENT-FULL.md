@@ -26,7 +26,7 @@ SatRank is a trust oracle for Lightning Network payments. Before each payment, a
 
 Under the hood, SatRank runs a full-stack observability pipeline:
 
-- **bitcoind v28.1 full node** — UTXO validation for the Lightning graph. Migrated from Neutrino on 2026-04-07 for authoritative channel capacity and peer discovery.
+- **bitcoind v28.1 full node** — UTXO validation for every channel in the Lightning graph.
 - **LND** — gossip ingestion, peer discovery, probe routing.
 - **Probe routing** — every 30 minutes, SatRank probes the reachable graph from its own node, recording reachability, latency, and hop counts. That's roughly ~260,000 probes per 24 h (see live `/api/stats.probes24h`).
 - **Channel and fee snapshots** — every hour, captures topology and fee structure to detect churn and volatility.
@@ -136,7 +136,7 @@ When a wallet can pre-filter routes through SatRank before constructing a path, 
 Five capabilities unique to SatRank in the 2026 NIP-85 / WoT / Lightning landscape:
 
 1. **Only NIP-85 provider on the Lightning payment graph.** Every other implementation scores the Nostr social graph. SatRank bridges an entire orthogonal trust domain into NIP-85 without a new kind allocation.
-2. **Proprietary phantom signal.** ~60 % of the Lightning graph is unreachable in routing on any given probe cycle, and SatRank's phantom detection is validated against a full bitcoind UTXO set — not a Neutrino / SPV approximation. No free explorer exposes this, and the live value is exposed in real time at `/api/stats`.
+2. **Proprietary phantom signal.** ~60 % of the Lightning graph is unreachable in routing on any given probe cycle, and SatRank's phantom detection is validated against a full bitcoind UTXO set — not an SPV approximation. No free explorer exposes this, and the live value is exposed in real time at `/api/stats`.
 3. **Native L402 paywall on the `/api/decide` oracle endpoint.** 1 sat per personalized decision — a functioning crypto-native business model, not a theoretical monetization. Aperture reverse-proxies the gate.
 4. **Closed feedback loop.** `decide → pay → report` — reports are free, weighted by the reporter's own score, and preimage-verified reports get a 2× weight bonus. Usage improves decisions, better decisions attract more usage.
 5. **Survival score.** 7-day forward-looking prediction (stable / at_risk / likely_dead) derived from score trajectory, probe stability, and gossip freshness. No machine learning — deterministic, reproducible from the data in this repo.
@@ -261,7 +261,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Scoring components | **5** (volume, reputation, seniority, regularity, diversity) |
 | Verdict SAFE threshold (post-v15 calibration) | **score ≥ 47** |
 | Anti-gaming checks | mutual-loop, 3-hop BFS, 4-hop BFS, attester min-age, source concentration |
-| Bitcoin trust root | **bitcoind v28.1** full node (migrated from Neutrino on 2026-04-07) |
+| Bitcoin trust root | **bitcoind v28.1** full node |
 | Nostr relays published to | **3** canonical (damus.io, nos.lol, primal.net) |
 | Canonical NIP-85 result tag | **`rank`** (alongside `score` and 5 component tags) |
 | Test suite | **464 tests / 34 files**, all green on submission commit |

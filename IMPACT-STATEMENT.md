@@ -15,7 +15,7 @@ For autonomous agents, every wasted payment is a wasted compute cycle.
 
 SatRank is a Lightning trust oracle distributed over Nostr. One question — *"can this node actually route my payment?"* — answered by a neutral party in milliseconds.
 
-- **Trust root:** full **bitcoind v28.1** node (migrated from Neutrino on 2026-04-07) + LND for gossip and probing.
+- **Trust root:** full **bitcoind v28.1** node + LND for gossip and probing.
 - **Probe pipeline:** ~260 k probes / 24 h, every 30 min, recording reachability and latency.
 - **Scoring:** composite 0–100 over 5 components (volume, reputation, seniority, regularity, diversity) with anti-gaming (mutual loops, 3-hop / 4-hop cycle BFS, attester min-age).
 - **Distribution:** kind `30382:rank` events on 3 canonical relays every 6 h, plus a NIP-90 DVM (kind 5900 → 6900) for sub-100 ms real-time queries.
