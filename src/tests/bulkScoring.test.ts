@@ -229,9 +229,9 @@ describe('Bulk scoring — LND nodes get scored', () => {
 
     const result = scoringService.computeScore(lnplusNode.public_key_hash);
 
-    // No centrality, no capacity → peerTrust=0, routingQuality=50, capTrend=50
-    // reputation = 0*0.45 + 50*0.30 + 50*0.25 = 28
-    expect(result.components.reputation).toBe(28);
+    // No centrality, no capacity → peerTrust=0, routingQuality=50, capTrend=50, feeStability=50
+    // reputation = 0*0.35 + 50*0.25 + 50*0.20 + 50*0.20 = 33
+    expect(result.components.reputation).toBe(33);
     expect(result.components.diversity).toBe(0); // no capacity
     // Total > 0 from reputation(18) + seniority + regularity + LN+ bonus
     expect(result.total).toBeGreaterThan(0);

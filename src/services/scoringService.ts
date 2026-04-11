@@ -68,6 +68,7 @@ export class ScoringService {
     private db?: Database.Database,
     private probeRepo?: ProbeRepository,
     private channelSnapshotRepo?: { findLatest: (h: string) => { capacity_sats: number } | undefined; findAt: (h: string, ts: number) => { capacity_sats: number } | undefined },
+    private feeSnapshotRepo?: { countFeeChanges: (nodePub: string, afterTimestamp: number) => { changes: number; channels: number } },
   ) {}
 
   // Returns an agent's score, using cache if the score is recent
@@ -346,14 +347,19 @@ export class ScoringService {
     // a competitor forking the code doesn't have these probe measurements.
     const routingQuality = this.computeRoutingQuality(agentHash);
 
+    // --- Sub-signal 5: Fee stability (0-100) ---
+    // How stable are this node's routing fees? Frequent changes signal
+    // fee sniping or unreliable routing configuration.
+    const feeStability = this.computeFeeStability(agentHash);
+
     // Weighted blend. When centrality data is absent (~85% of nodes), its
     // weight redistributes across the other signals.
     const hasCentrality = hubnessRank > 0 || betweennessRank > 0;
     let score: number;
     if (hasCentrality) {
-      score = centrality * 0.25 + peerTrust * 0.35 + routingQuality * 0.20 + capTrend * 0.20;
+      score = centrality * 0.20 + peerTrust * 0.30 + routingQuality * 0.20 + capTrend * 0.15 + feeStability * 0.15;
     } else {
-      score = peerTrust * 0.45 + routingQuality * 0.30 + capTrend * 0.25;
+      score = peerTrust * 0.35 + routingQuality * 0.25 + capTrend * 0.20 + feeStability * 0.20;
     }
 
     return Math.min(100, Math.round(score));
@@ -419,6 +425,30 @@ export class ScoringService {
     // can't reduce them without changing the graph; latency fluctuates
     // with network conditions).
     return Math.round(hopScore * 0.6 + latencyScore * 0.4);
+  }
+
+  // Fee stability: how stable are this node's routing fees over the past week?
+  // Frequent fee changes signal fee sniping or unreliable routing. Stable fees
+  // indicate a well-configured, reliable routing node.
+  //
+  // Sigmoid: 0 changes → 100, 1 change/channel → ~73, 3 → ~27, 5+ → ~5
+  // Returns neutral 50 when no fee data is available.
+  private computeFeeStability(agentHash: string): number {
+    if (!this.feeSnapshotRepo) return 50; // neutral
+
+    // Get the agent's LN pubkey
+    const agent = this.agentRepo.findByHash(agentHash);
+    if (!agent?.public_key) return 50;
+
+    const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
+    const { changes, channels } = this.feeSnapshotRepo.countFeeChanges(agent.public_key, sevenDaysAgo);
+
+    if (channels === 0) return 50; // no fee data yet
+
+    // changes_per_channel_per_week: 0 = perfectly stable, higher = more volatile
+    const rate = changes / channels;
+    // Sigmoid: 0 changes → 100, 1 change/channel → ~73, 3 → ~27, 5+ → ~5
+    return Math.round(100 / (1 + Math.exp(1.5 * (rate - 2))));
   }
 
   private computeVolume(count: number): number {

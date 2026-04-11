@@ -455,9 +455,9 @@ describe('ScoringService', () => {
       agentRepo.insert(node);
 
       const result = scoring.computeScore(node.public_key_hash);
-      // No centrality → peerTrust*0.45 + routingQuality*0.30 + capTrend*0.25
-      // peerTrust: 45, routingQuality: 50 (neutral), capTrend: 50 (neutral)
-      // 45*0.45 + 50*0.30 + 50*0.25 ≈ 48
+      // No centrality → peerTrust*0.35 + routingQuality*0.25 + capTrend*0.20 + feeStability*0.20
+      // peerTrust: 45, routingQuality: 50 (neutral), capTrend: 50 (neutral), feeStability: 50 (neutral)
+      // 45*0.35 + 50*0.25 + 50*0.20 + 50*0.20 ≈ 48
       expect(result.components.reputation).toBe(48);
     });
 
@@ -488,12 +488,12 @@ describe('ScoringService', () => {
       const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
       const scorePeripheral = scoring.computeScore(peripheralNode.public_key_hash);
 
-      // Central: centrality=78, peerTrust=45, routingQuality=50, capTrend=50
-      // 78*0.25 + 45*0.35 + 50*0.20 + 50*0.20 ≈ 55
-      expect(scoreCentral.components.reputation).toBe(55);
-      // Peripheral: centrality=9, peerTrust=45, routingQuality=50, capTrend=50
-      // 9*0.25 + 45*0.35 + 50*0.20 + 50*0.20 ≈ 38
-      expect(scorePeripheral.components.reputation).toBe(38);
+      // Central: centrality=78, peerTrust=45, routingQuality=50, capTrend=50, feeStability=50
+      // 78*0.20 + 45*0.30 + 50*0.20 + 50*0.15 + 50*0.15 ≈ 54
+      expect(scoreCentral.components.reputation).toBe(54);
+      // Peripheral: centrality=9, peerTrust=45, routingQuality=50, capTrend=50, feeStability=50
+      // 9*0.20 + 45*0.30 + 50*0.20 + 50*0.15 + 50*0.15 ≈ 40
+      expect(scorePeripheral.components.reputation).toBe(40);
       // Continuous curve: central bonus > peripheral
       expect(scoreCentral.components.reputation).toBeGreaterThan(scorePeripheral.components.reputation);
     });

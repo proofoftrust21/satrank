@@ -50,6 +50,27 @@ export class FeeSnapshotRepository {
     return { changes: row.changes, channels: chRow.channels };
   }
 
+  insertBatchDeduped(snapshots: FeeSnapshot[]): number {
+    const check = this.db.prepare(
+      'SELECT fee_base_msat, fee_rate_ppm FROM fee_snapshots WHERE channel_id = ? AND node1_pub = ? ORDER BY snapshot_at DESC LIMIT 1'
+    );
+    const insert = this.db.prepare(
+      'INSERT INTO fee_snapshots (channel_id, node1_pub, node2_pub, fee_base_msat, fee_rate_ppm, snapshot_at) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    let inserted = 0;
+    const tx = this.db.transaction((items: FeeSnapshot[]) => {
+      for (const s of items) {
+        const latest = check.get(s.channel_id, s.node1_pub) as { fee_base_msat: number; fee_rate_ppm: number } | undefined;
+        if (!latest || latest.fee_base_msat !== s.fee_base_msat || latest.fee_rate_ppm !== s.fee_rate_ppm) {
+          insert.run(s.channel_id, s.node1_pub, s.node2_pub, s.fee_base_msat, s.fee_rate_ppm, s.snapshot_at);
+          inserted++;
+        }
+      }
+    });
+    tx(snapshots);
+    return inserted;
+  }
+
   purgeOlderThan(maxAgeSec: number): number {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
     return this.db.prepare('DELETE FROM fee_snapshots WHERE snapshot_at < ?').run(cutoff).changes;

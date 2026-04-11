@@ -120,6 +120,8 @@ describe('LndGraphCrawler', () => {
       capacity: '1000000',
       node1_pub: pubkey,
       node2_pub: '03' + 'c'.repeat(64),
+      node1_policy: null,
+      node2_policy: null,
     }];
 
     const result = await crawler.run();
@@ -168,8 +170,8 @@ describe('LndGraphCrawler', () => {
       last_update: NOW,
     }];
     mockClient.edges = [
-      { channel_id: '1', chan_point: 'a:0', capacity: '2000000', node1_pub: pubkey, node2_pub: '03' + 'e'.repeat(64) },
-      { channel_id: '2', chan_point: 'b:0', capacity: '3000000', node1_pub: pubkey, node2_pub: '03' + 'f'.repeat(64) },
+      { channel_id: '1', chan_point: 'a:0', capacity: '2000000', node1_pub: pubkey, node2_pub: '03' + 'e'.repeat(64), node1_policy: null, node2_policy: null },
+      { channel_id: '2', chan_point: 'b:0', capacity: '3000000', node1_pub: pubkey, node2_pub: '03' + 'f'.repeat(64), node1_policy: null, node2_policy: null },
     ];
 
     const result = await crawler.run();

@@ -12,12 +12,24 @@ export interface LndNode {
   last_update: number;
 }
 
+export interface LndRoutingPolicy {
+  fee_base_msat: string;
+  fee_rate_milli_msat: string;
+  disabled: boolean;
+  min_htlc: string;
+  max_htlc_msat: string;
+  time_lock_delta: number;
+  last_update: number;
+}
+
 export interface LndEdge {
   channel_id: string;
   chan_point: string;
   capacity: string; // LND returns capacity as string
   node1_pub: string;
   node2_pub: string;
+  node1_policy: LndRoutingPolicy | null;
+  node2_policy: LndRoutingPolicy | null;
 }
 
 export interface LndGraph {

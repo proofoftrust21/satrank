@@ -168,10 +168,10 @@ describe('Scoring properties', () => {
     const none = scoring.computeScore(sha256('no-ratings'));
 
     // Negative-only should be penalized at or below zero-data baseline.
-    // Both have no capacity and no centrality → peerTrust=0, routingQuality=50, capTrend=50
-    // reputation = 0*0.45 + 50*0.30 + 50*0.25 = 28
+    // Both have no capacity and no centrality → peerTrust=0, routingQuality=50, capTrend=50, feeStability=50
+    // reputation = 0*0.35 + 50*0.25 + 50*0.20 + 50*0.20 = 33
     expect(neg.components.reputation).toBeLessThanOrEqual(none.components.reputation);
-    expect(neg.components.reputation).toBe(28);
+    expect(neg.components.reputation).toBe(33);
   });
 
   // --- Seniority ---

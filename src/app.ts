@@ -77,7 +77,7 @@ export function createApp() {
   const channelSnapshotRepo = new ChannelSnapshotRepository(db);
   const feeSnapshotRepo = new FeeSnapshotRepository(db);
 
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);

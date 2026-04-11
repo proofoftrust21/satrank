@@ -323,7 +323,7 @@ async function main(): Promise<void> {
   const channelSnapshotRepo = new ChannelSnapshotRepository(db);
   const feeSnapshotRepo = new FeeSnapshotRepository(db);
 
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
 
   const observerClient = new HttpObserverClient({
     baseUrl: config.OBSERVER_BASE_URL,

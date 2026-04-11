@@ -114,21 +114,35 @@ export class LndGraphCrawler {
       logger.info({ count: snapshots.length }, 'Channel snapshots stored');
     }
 
-    // Store fee snapshots for volatility index
+    // Store fee snapshots for volatility index — one per direction per edge
     if (this.feeSnapshotRepo && graph.edges.length > 0) {
       const now = Math.floor(Date.now() / 1000);
-      const feeSnapshots = graph.edges.map(e => ({
-        channel_id: e.channel_id,
-        node1_pub: e.node1_pub,
-        node2_pub: e.node2_pub,
-        fee_base_msat: 0, // LND graph edges don't include routing policies in describe_graph
-        fee_rate_ppm: 0,  // Fee data requires per-channel queries — deferred to future iteration
-        snapshot_at: now,
-      }));
-      // Only store if we have actual fee data (skip if all zeros)
-      if (feeSnapshots.some(f => f.fee_base_msat > 0 || f.fee_rate_ppm > 0)) {
-        this.feeSnapshotRepo.insertBatch(feeSnapshots);
-        logger.info({ count: feeSnapshots.length }, 'Fee snapshots stored');
+      const feeSnapshots: Array<{ channel_id: string; node1_pub: string; node2_pub: string; fee_base_msat: number; fee_rate_ppm: number; snapshot_at: number }> = [];
+      for (const e of graph.edges) {
+        if (e.node1_policy) {
+          feeSnapshots.push({
+            channel_id: e.channel_id,
+            node1_pub: e.node1_pub,
+            node2_pub: e.node2_pub,
+            fee_base_msat: parseInt(e.node1_policy.fee_base_msat, 10) || 0,
+            fee_rate_ppm: parseInt(e.node1_policy.fee_rate_milli_msat, 10) || 0,
+            snapshot_at: now,
+          });
+        }
+        if (e.node2_policy) {
+          feeSnapshots.push({
+            channel_id: e.channel_id,
+            node1_pub: e.node2_pub,
+            node2_pub: e.node1_pub,
+            fee_base_msat: parseInt(e.node2_policy.fee_base_msat, 10) || 0,
+            fee_rate_ppm: parseInt(e.node2_policy.fee_rate_milli_msat, 10) || 0,
+            snapshot_at: now,
+          });
+        }
+      }
+      if (feeSnapshots.length > 0) {
+        const inserted = this.feeSnapshotRepo.insertBatchDeduped(feeSnapshots);
+        logger.info({ candidates: feeSnapshots.length, inserted }, 'Fee snapshots stored (deduped)');
       }
     }
 

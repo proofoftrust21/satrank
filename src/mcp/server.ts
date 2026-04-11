@@ -104,7 +104,9 @@ const probeRepo = new ProbeRepository(db);
 
 const { ChannelSnapshotRepository } = require('../repositories/channelSnapshotRepository');
 const channelSnapshotRepo = new ChannelSnapshotRepository(db);
-const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo);
+const { FeeSnapshotRepository } = require('../repositories/feeSnapshotRepository');
+const feeSnapshotRepo = new FeeSnapshotRepository(db);
+const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
 const trendService = new TrendService(agentRepo, snapshotRepo);
 const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
 const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);

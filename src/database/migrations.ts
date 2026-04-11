@@ -360,6 +360,12 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 15, 'Add unique_peers column to agents (recovers failed v12 ALTER)');
   }
 
+  // v16: Composite index on fee_snapshots for dedup lookup
+  if (!hasVersion(db, 16)) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_fee_snapshots_channel ON fee_snapshots(channel_id, node1_pub, snapshot_at)');
+    recordVersion(db, 16, 'Composite index on fee_snapshots(channel_id, node1_pub, snapshot_at) for dedup lookup');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -369,6 +375,9 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  16: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_fee_snapshots_channel');
+  },
   15: (db) => {
     try { db.exec('ALTER TABLE agents DROP COLUMN unique_peers'); } catch { /* SQLite < 3.35 or column never existed */ }
   },
