@@ -110,7 +110,7 @@ export class ScoringService {
 
     const components: ScoreComponents = {
       volume: isLightningGraph
-        ? this.computeLightningVolume(agent.total_transactions, maxNetworkChannels)
+        ? this.computeLightningVolume(agent.total_transactions, agent.capacity_sats)
         : this.computeVolume(verifiedTxCount),
       reputation: isLightningGraph
         ? this.computeLightningReputation(agentHash, agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
@@ -216,13 +216,29 @@ export class ScoringService {
 
   // --- Lightning graph scoring ---
 
-  private computeLightningVolume(channels: number, _maxNetworkChannels: number): number {
+  private computeLightningVolume(channels: number, capacitySats: number | null): number {
     if (channels === 0) return 0;
-    // Log scale with fixed reference (500 channels = 100).
-    // Spreads the full 0-100 range across the real network distribution.
-    // 5ch → 26, 20ch → 48, 50ch → 63, 100ch → 74, 500ch → 100
-    const LN_VOLUME_REFERENCE = 500;
-    return Math.min(100, Math.round(Math.log(channels + 1) / Math.log(LN_VOLUME_REFERENCE + 1) * 100));
+
+    // 50/50 blend of channel count + total capacity (in BTC).
+    // Channel count alone is gameable: 500 tiny channels of 1000 sats
+    // each (0.005 BTC total) scored 100 under the old formula. Adding a
+    // capacity dimension halves the attacker's score (50 from channels,
+    // ~0 from capacity) while keeping real hubs at 85-95.
+    //
+    // Channel score: log scale, 500 channels = 100 (unchanged)
+    // Capacity score: log scale, 100 BTC = 100
+    //   0.005 BTC → 0.4,  0.5 BTC → 18,  10 BTC → 51,  38 BTC → 79,  100 BTC → 100
+    const LN_VOLUME_CH_REF = 500;
+    const LN_VOLUME_BTC_REF = 50; // 50 BTC = 100. ACINQ ~38 BTC → 93.
+    const SATS = 100_000_000;
+
+    const channelScore = Math.min(100, Math.log(channels + 1) / Math.log(LN_VOLUME_CH_REF + 1) * 100);
+    const btc = (capacitySats ?? 0) / SATS;
+    const capacityScore = btc > 0
+      ? Math.min(100, Math.log(btc + 1) / Math.log(LN_VOLUME_BTC_REF + 1) * 100)
+      : 0;
+
+    return Math.round(channelScore * 0.5 + capacityScore * 0.5);
   }
 
   private computeLightningRegularity(agentHash: string, lastSeen: number, now: number): number {

@@ -330,10 +330,12 @@ describe('ScoringService', () => {
       const scoreTop = scoring.computeScore(topNode.public_key_hash);
       const scoreMid = scoring.computeScore(midNode.public_key_hash);
 
-      // Log scale: 2000ch → 100, 120ch → ~77
+      // Blend: channels (ref 500) × 0.5 + capacity BTC (ref 50) × 0.5
+      // top: 2000ch=100, 100BTC=100 → 100
+      // mid: 120ch=77, 5BTC=46 → 62
       expect(scoreTop.components.volume).toBe(100);
-      expect(scoreMid.components.volume).toBeGreaterThan(70);
-      expect(scoreMid.components.volume).toBeLessThan(85);
+      expect(scoreMid.components.volume).toBeGreaterThan(55);
+      expect(scoreMid.components.volume).toBeLessThan(70);
       expect(scoreTop.components.volume).toBeGreaterThan(scoreMid.components.volume);
     });
 
