@@ -337,23 +337,23 @@ export class ScoringService {
     }
 
     // --- Sub-signal 3: Capacity trend (0-100) ---
-    // Is the node gaining or losing capacity over 7 days?
-    // Growing = trusted by new peers. Draining = losing trust.
-    // Neutral (50) when no historical data is available.
     const capTrend = this.computeCapacityTrend(agentHash);
 
-    // Weighted blend: peer trust is the strongest (capital commitment is the
-    // hardest to fake), centrality is next (graph topology), capacity trend
-    // adds trajectory signal (can't be faked without real BTC).
-    // When centrality data is absent (hubness=0, betweenness=0 for ~85% of
-    // nodes), its weight redistributes to the other two.
+    // --- Sub-signal 4: Routing quality (0-100) ---
+    // Proprietary signal from our 1.7M+ probe results. Uses the ABSOLUTE
+    // hop count and latency (not their variability — that's regularity).
+    // Closer nodes = more reliable from our vantage point. Non-replicable:
+    // a competitor forking the code doesn't have these probe measurements.
+    const routingQuality = this.computeRoutingQuality(agentHash);
+
+    // Weighted blend. When centrality data is absent (~85% of nodes), its
+    // weight redistributes across the other signals.
     const hasCentrality = hubnessRank > 0 || betweennessRank > 0;
     let score: number;
     if (hasCentrality) {
-      score = centrality * 0.35 + peerTrust * 0.45 + capTrend * 0.20;
+      score = centrality * 0.25 + peerTrust * 0.35 + routingQuality * 0.20 + capTrend * 0.20;
     } else {
-      // No LN+ data — redistribute centrality weight to peer trust + trend
-      score = peerTrust * 0.65 + capTrend * 0.35;
+      score = peerTrust * 0.45 + routingQuality * 0.30 + capTrend * 0.25;
     }
 
     return Math.min(100, Math.round(score));
@@ -381,6 +381,44 @@ export class ScoringService {
     // At delta=0 → 50, delta=+0.20 → ~77, delta=-0.20 → ~23, delta=+0.50 → ~95
     const trend = 100 / (1 + Math.exp(-6 * delta));
     return Math.round(trend);
+  }
+
+  // Routing quality: ABSOLUTE hop distance + ABSOLUTE latency from our
+  // 1.7M+ probes. This is the proprietary signal — it measures how well
+  // a node performs FROM OUR POSITION in the Lightning graph. Nobody else
+  // has these measurements.
+  //
+  // Distinct from regularity: regularity measures CONSISTENCY (stddev of
+  // latency, uptime %, hop stability). Routing quality measures the LEVEL
+  // (are we 2 hops or 8 hops away? is the latency 10ms or 200ms?).
+  //
+  // Not manipulable: a node can't fake being 2 hops from us — that
+  // requires actual channel relationships in the graph.
+  //
+  // Coverage: 13,242 nodes with 100+ probes. Nodes without probe data
+  // get neutral (50).
+  private computeRoutingQuality(agentHash: string): number {
+    if (!this.probeRepo) return 50;
+
+    const WINDOW_SEC = 7 * 86400;
+    const hopStats = this.probeRepo.getHopStats(agentHash, WINDOW_SEC);
+    const latStats = this.probeRepo.getLatencyStats(agentHash, WINDOW_SEC);
+
+    // Need at least 3 reachable probes to have meaningful data
+    if (hopStats.count < 3 || latStats.count < 3) return 50;
+
+    // Hop score: 1 hop = 100, each additional hop costs 12 points, floor 4
+    //   2 hops → 88, 3 → 76, 5 → 52, 8 → 16, 9+ → 4
+    const hopScore = Math.max(4, Math.round(100 - (hopStats.mean - 1) * 12));
+
+    // Latency score: 0ms = 100, degrades linearly, 300ms+ = 0
+    //   10ms → 97, 30ms → 90, 73ms → 76, 150ms → 50, 300ms → 0
+    const latencyScore = Math.max(0, Math.round(100 - latStats.mean / 3));
+
+    // Blend: hops matter more than latency (hops are structural — you
+    // can't reduce them without changing the graph; latency fluctuates
+    // with network conditions).
+    return Math.round(hopScore * 0.6 + latencyScore * 0.4);
   }
 
   private computeVolume(count: number): number {

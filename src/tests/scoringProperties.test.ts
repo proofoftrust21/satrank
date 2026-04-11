@@ -168,10 +168,10 @@ describe('Scoring properties', () => {
     const none = scoring.computeScore(sha256('no-ratings'));
 
     // Negative-only should be penalized at or below zero-data baseline.
-    // Both have no capacity and no centrality → reputation = capTrend(50)*0.35 = 18
-    // (LN+ negative_ratings affect the post-composite bonus, not the reputation component)
+    // Both have no capacity and no centrality → peerTrust=0, routingQuality=50, capTrend=50
+    // reputation = 0*0.45 + 50*0.30 + 50*0.25 = 28
     expect(neg.components.reputation).toBeLessThanOrEqual(none.components.reputation);
-    expect(neg.components.reputation).toBe(18);
+    expect(neg.components.reputation).toBe(28);
   });
 
   // --- Seniority ---
