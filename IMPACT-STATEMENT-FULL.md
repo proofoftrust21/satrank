@@ -28,7 +28,7 @@ Under the hood, SatRank runs a full-stack observability pipeline:
 
 - **bitcoind v28.1 full node** — UTXO validation for every channel in the Lightning graph.
 - **LND** — gossip ingestion, peer discovery, probe routing.
-- **Probe routing** — every 30 minutes, SatRank probes the reachable graph from its own node, recording reachability, latency, and hop counts. That's roughly ~260,000 probes per 24 h (see live `/api/stats.probes24h`).
+- **Probe routing** — every 30 minutes, SatRank probes the reachable graph from its own node, recording reachability, latency, and hop counts. That's roughly ~650,000 probes per 24 h in steady state (see live `/api/stats.probes24h`).
 - **Channel and fee snapshots** — every hour, captures topology and fee structure to detect churn and volatility.
 - **5-factor scoring** — volume, reputation, seniority, regularity, diversity. Composite score 0-100 with anti-gaming (mutual-loop detection, 3-hop and 4-hop cycle BFS, mandatory minimum age for attestations).
 - **Distribution via Nostr (NIP-85)** — every 6 hours, scores are signed and published to three canonical relays as kind `30382:rank` assertions. ~2,400 nodes per cycle (score ≥ 30). Zero platform lock-in.
@@ -251,7 +251,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Verified reachable nodes | **~5,300-5,500** (live · `/api/stats.verifiedReachable`) |
 | Total channels (UTXO-validated) | **~88,950** (live · `/api/stats.totalChannels`) |
 | Network capacity (validated) | **~9,630 BTC** (live · `/api/stats.networkCapacityBtc`) |
-| Probes executed / 24 h | **~255,000-265,000** (live · `/api/stats.probes24h`, 24 h rolling) |
+| Probes executed / 24 h | **~650,000** (live · `/api/stats.probes24h`, 24 h rolling) |
 | Scored nodes published via NIP-85 per cycle | **~2,400** (score ≥ 30, last cycle: 2,424) |
 | Publishing frequency | every 6 hours |
 | DVM response time (warm cache) | sub-100 ms |
@@ -304,7 +304,7 @@ Three reasons:
 
 2. **It's the only Lightning trust oracle that's Nostr-native from day one.** Not "we have a REST API and also we tweet the scores." The Nostr relays are the canonical distribution layer; NIP-05 verification, NIP-85 publishing (30382 + 10040), and NIP-90 DVM all share the same keypair and the same relay list.
 
-3. **It's production infrastructure, not a demo.** 13,913 active nodes, ~89,000 validated channels, ~9,630 BTC validated capacity, ~260,000 probes per 24 h, 921,968 score snapshots, ~2,400 NIP-85 events published per cycle, backup + recovery path, heartbeat healthchecks, 464-test typed suite, and a Hetzner deployment behind nginx with L402 paid gates on the personalized endpoint. All open source, all reproducible — live values at [`/api/stats`](https://satrank.dev/api/stats).
+3. **It's production infrastructure, not a demo.** 13,913 active nodes, ~89,000 validated channels, ~9,630 BTC validated capacity, ~650,000 probes per 24 h, 921,968 score snapshots, ~2,400 NIP-85 events published per cycle, backup + recovery path, heartbeat healthchecks, 464-test typed suite, and a Hetzner deployment behind nginx with L402 paid gates on the personalized endpoint. All open source, all reproducible — live values at [`/api/stats`](https://satrank.dev/api/stats).
 
 The Lightning Network has been waiting for its reliability oracle. NIP-85 has been waiting for its first real-world protocol bridge. SatRank is both.
 

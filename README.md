@@ -82,7 +82,7 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | Verified reachable | **~5,300-5,500** (live) | `/api/stats` `verifiedReachable` |
 | Total channels | **~88,950** (live) | `/api/stats` `totalChannels` |
 | Network capacity (validated) | **~9,630 BTC** (live) | `/api/stats` `networkCapacityBtc` |
-| Probes executed / 24 h | **~255,000-265,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
+| Probes executed / 24 h | **~650,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
 | NIP-85 events published per cycle | **~2,400** (score ≥ 30) | crawler log, `count=2424` on 2026-04-09 |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
 | Tests (vitest) | **464 / 34 files** green | `npm test` |
