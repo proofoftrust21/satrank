@@ -127,17 +127,20 @@ export function computePageRank(
     }
   }
 
-  // Normalize to 0-100. Top node = 100.
-  let maxScore = 0;
-  for (let i = 0; i < N; i++) {
-    if (scores[i] > maxScore) maxScore = scores[i];
-  }
+  // Normalize to 0-100 via PERCENTILE RANK.
+  // Linear normalization (score/max*100) crushes the power-law tail to 0 —
+  // 95%+ of nodes round to 0 because the top hub is orders of magnitude
+  // higher. Percentile rank distributes meaningfully: a small 1-channel
+  // node connected to ACINQ lands at ~30 instead of 0, which is exactly
+  // what we need for the centrality sub-signal.
+  const indexed: Array<{ idx: number; score: number }> = [];
+  for (let i = 0; i < N; i++) indexed.push({ idx: i, score: scores[i] });
+  indexed.sort((a, b) => a.score - b.score);
 
   const result = new Map<string, number>();
-  if (maxScore > 0) {
-    for (let i = 0; i < N; i++) {
-      result.set(nodes[i], Math.round(scores[i] / maxScore * 100));
-    }
+  for (let rank = 0; rank < indexed.length; rank++) {
+    const percentile = Math.round((rank / (N - 1)) * 100);
+    result.set(nodes[indexed[rank].idx], percentile);
   }
 
   const durationMs = Date.now() - startMs;
