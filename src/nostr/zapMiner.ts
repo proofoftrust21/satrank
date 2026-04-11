@@ -34,6 +34,7 @@ export interface ZapMinerOptions {
   maxAgeDays?: number;         // default 60
   minPageYield?: number;       // default 20
   pageTimeoutMs?: number;      // default 15000
+  pageDelayMs?: number;        // default 500 — inter-page throttle to avoid relay rate-limits
   custodialThreshold?: number; // default 5
   outputPath: string;          // where to write the JSON
 }
@@ -169,6 +170,7 @@ export class ZapMiner {
   private readonly maxAgeDays: number;
   private readonly minPageYield: number;
   private readonly pageTimeoutMs: number;
+  private readonly pageDelayMs: number;
   private readonly custodialThreshold: number;
   private readonly outputPath: string;
 
@@ -179,6 +181,7 @@ export class ZapMiner {
     this.maxAgeDays = options.maxAgeDays ?? 60;
     this.minPageYield = options.minPageYield ?? 20;
     this.pageTimeoutMs = options.pageTimeoutMs ?? 15000;
+    this.pageDelayMs = options.pageDelayMs ?? 500;
     this.custodialThreshold = options.custodialThreshold ?? 5;
     this.outputPath = options.outputPath;
   }
@@ -198,6 +201,7 @@ export class ZapMiner {
         maxPages: this.maxPages,
         maxAgeDays: this.maxAgeDays,
         minPageYield: this.minPageYield,
+        pageDelayMs: this.pageDelayMs,
         custodialThreshold: this.custodialThreshold,
         outputPath: this.outputPath,
       },
@@ -352,17 +356,6 @@ export class ZapMiner {
     isTimedOut: () => boolean,
   ): Promise<ZapEvent[]> {
     logger.info({ relay: url }, 'Connecting to relay');
-    let relay: { subscribe: Function; close: () => void } | null = null;
-    try {
-      relay = (await Promise.race([
-        Relay.connect(url),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('connect timeout')), 15_000)),
-      ])) as { subscribe: Function; close: () => void };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ relay: url, error: msg }, 'Relay connection failed');
-      return [];
-    }
 
     const allEvents: ZapEvent[] = [];
     const minAge = Math.floor(Date.now() / 1000) - this.maxAgeDays * 86400;
@@ -375,9 +368,34 @@ export class ZapMiner {
         break;
       }
 
-      const pageEvents = await fetchPage(relay!, until, this.pageSize, globalSeen, this.pageTimeoutMs);
+      // Fresh connection per page — some relays (damus, primal) rate-limit
+      // long-lived WebSocket connections that fire many REQs in succession.
+      // Opening a fresh connection per page avoids tripping per-connection
+      // rate buckets. The 500ms inter-page delay (below) spaces the connects
+      // so we don't trigger per-IP rate limits either.
+      let relay: { subscribe: Function; close: () => void } | null = null;
+      try {
+        relay = (await Promise.race([
+          Relay.connect(url),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('connect timeout')), 15_000)),
+        ])) as { subscribe: Function; close: () => void };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (pages === 0) {
+          logger.warn({ relay: url, error: msg }, 'Relay connection failed');
+        } else {
+          logger.warn({ relay: url, page: pages, error: msg }, 'Relay reconnect failed — stopping');
+        }
+        break;
+      }
+
+      const pageEvents = await fetchPage(relay, until, this.pageSize, globalSeen, this.pageTimeoutMs);
       pages++;
       allEvents.push(...pageEvents);
+
+      // Close the connection before the inter-page delay so the relay sees
+      // a clean disconnect, not an idle socket.
+      try { relay.close(); } catch { /* ignore */ }
 
       if (pageEvents.length === 0) {
         logger.debug({ relay: url, page: pages }, 'Relay exhausted (0 events)');
@@ -414,9 +432,13 @@ export class ZapMiner {
         'Page fetched',
       );
       until = oldest - 1;
-    }
 
-    try { relay!.close(); } catch { /* ignore */ }
+      // Inter-page throttle — avoids triggering per-IP rate limits on relays
+      // that monitor connection frequency (strfry default: ~5 conn/sec).
+      if (this.pageDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.pageDelayMs));
+      }
+    }
     logger.info({ relay: url, events: allEvents.length, pages }, 'Relay fetch complete');
     return allEvents;
   }
