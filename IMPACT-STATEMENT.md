@@ -65,7 +65,7 @@ The Lightning Network has been waiting for its reliability oracle. NIP-85 has be
 
 ---
 
-**Project:** [satrank.dev](https://satrank.dev) · **NIP-05:** `satrank@satrank.dev`
+**Project:** [satrank.dev](https://satrank.dev) · **NIP-05:** `satrank@satrank.dev` · **Contact:** contact@satrank.dev
 **Service pubkey:** `5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4`
 **Code:** [github.com/proofoftrust21/satrank](https://github.com/proofoftrust21/satrank) · **License:** AGPL-3.0
 **Long version:** [`IMPACT-STATEMENT-FULL.md`](IMPACT-STATEMENT-FULL.md)
