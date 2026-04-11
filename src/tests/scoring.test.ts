@@ -650,8 +650,8 @@ describe('ScoringService', () => {
     });
   });
 
-  describe('popularity bonus', () => {
-    it('adds bonus based on query_count', () => {
+  describe('popularity bonus (removed — gameable)', () => {
+    it('query_count has no effect on score', () => {
       const queried = makeAgent('pop-queried', { query_count: 100 });
       const unqueried = makeAgent('pop-unqueried', { query_count: 0 });
       agentRepo.insert(queried);
@@ -660,29 +660,8 @@ describe('ScoringService', () => {
       const scoreQueried = scoring.computeScore(queried.public_key_hash);
       const scoreUnqueried = scoring.computeScore(unqueried.public_key_hash);
 
-      // log2(101) * 2 ≈ 13.3 → capped at 10
-      expect(scoreQueried.total).toBeGreaterThan(scoreUnqueried.total);
-      expect(scoreQueried.total - scoreUnqueried.total).toBeLessThanOrEqual(10);
-    });
-
-    it('caps popularity bonus at 10 points', () => {
-      const mega = makeAgent('pop-mega', { query_count: 100000 });
-      const modest = makeAgent('pop-modest', { query_count: 10 });
-      agentRepo.insert(mega);
-      agentRepo.insert(modest);
-
-      const scoreMega = scoring.computeScore(mega.public_key_hash);
-      const scoreModest = scoring.computeScore(modest.public_key_hash);
-
-      // Both should get some bonus, but mega doesn't exceed +10 over base
-      // log2(100001)*2 ≈ 33 → capped at 10
-      // log2(11)*2 ≈ 6.9 → 7
-      const baseAgent = makeAgent('pop-base', { query_count: 0 });
-      agentRepo.insert(baseAgent);
-      const scoreBase = scoring.computeScore(baseAgent.public_key_hash);
-
-      expect(scoreMega.total - scoreBase.total).toBeLessThanOrEqual(10);
-      expect(scoreModest.total - scoreBase.total).toBeGreaterThan(0);
+      // Popularity bonus was removed — query_count should not affect score
+      expect(scoreQueried.total).toBe(scoreUnqueried.total);
     });
 
     it('no bonus when query_count is 0', () => {

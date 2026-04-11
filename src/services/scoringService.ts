@@ -10,7 +10,7 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ScoreComponents, ConfidenceLevel } from '../types';
 import { logger } from '../logger';
-import { computePopularityBonus } from '../utils/scoring';
+// computePopularityBonus removed — query_count is gameable (see modifier block)
 import { scoreComputeDuration } from '../middleware/metrics';
 import {
   WEIGHTS,
@@ -147,48 +147,46 @@ export class ScoringService {
       );
     }
 
-    // "manual" source penalty: linear ramp from 0.5 (0 tx) to 1.0 (150 tx)
+    // --- Multiplicative modifiers ---
+    // All post-composite adjustments are multiplicative (not additive) so a
+    // low-base-score node can't reach a high total via bonus stacking alone.
+    // A base-40 node × 1.15 = 46 max, not 40 + 33 = 73 as before.
+
+    // "manual" source penalty: linear ramp from ×0.5 (0 tx) to ×1.0 (150 tx)
     if (agent.source === 'manual' && verifiedTxCount < MANUAL_SOURCE_PENALTY_THRESHOLD) {
       const ratio = verifiedTxCount / MANUAL_SOURCE_PENALTY_THRESHOLD;
       const penaltyMultiplier = MANUAL_SOURCE_MIN_MULTIPLIER + (1 - MANUAL_SOURCE_MIN_MULTIPLIER) * ratio;
       total = Math.round(total * penaltyMultiplier);
-      logger.debug({ agentHash, source: agent.source, verifiedTxCount, penaltyMultiplier }, 'Manual source penalty applied');
     }
 
-    // Verified transaction bonus — real Observer Protocol tx boost any agent's score
+    // Verified transaction bonus — ×1.0 to ×1.10 based on Observer Protocol txns
     const verifiedForBonus = isLightningGraph
       ? this.txRepo.countVerifiedByAgent(agentHash)
       : verifiedTxCount;
     if (verifiedForBonus > 0) {
-      total = Math.min(100, total + Math.min(VERIFIED_TX_BONUS_CAP, Math.round(verifiedForBonus * VERIFIED_TX_BONUS_PER_TX)));
+      const verifiedMult = Math.min(1.10, 1.0 + verifiedForBonus * 0.003);
+      total = Math.min(100, Math.round(total * verifiedMult));
     }
 
-    // Popularity bonus — agents that are queried more often get a small boost
-    const popularityBonus = computePopularityBonus(agent.query_count);
-    if (popularityBonus > 0) {
-      total = Math.min(100, total + popularityBonus);
-    }
-
-    // LN+ community ratings bonus — social signal, max +8 pts
-    // Separate from the reputation component (which is now objective: centrality + peer trust)
+    // LN+ community ratings — ×1.0 to ×1.05 based on positive/negative ratio
     if (isLightningGraph && agent.positive_ratings > 0) {
       const ratingsRatio = agent.positive_ratings / (agent.positive_ratings + agent.negative_ratings + 1);
-      const lnplusBonus = Math.min(LNPLUS_BONUS_CAP, Math.round(Math.log2(agent.positive_ratings + 1) * ratingsRatio * 3));
-      if (lnplusBonus > 0) {
-        total = Math.min(100, total + lnplusBonus);
-      }
+      const lnplusScore = Math.log2(agent.positive_ratings + 1) * ratingsRatio * 3;
+      const lnplusMult = Math.min(1.05, 1.0 + Math.min(LNPLUS_BONUS_CAP, lnplusScore) * 0.006);
+      total = Math.min(100, Math.round(total * lnplusMult));
     }
 
-    // Probe-based unreachability penalty — distinct signal from regularity because
-    // a node that is DOWN right now (latest probe failed) deserves an extra hit beyond
-    // whatever its uptime-over-7-days says. Low-latency / short-hop bonuses were removed
-    // because they double-counted what the new multi-axis regularity already measures.
+    // Probe-based unreachability penalty — ×0.85 if the latest fresh probe failed
     if (this.probeRepo) {
       const probe = this.probeRepo.findLatest(agentHash);
       if (probe && (now - probe.probed_at) < PROBE_FRESHNESS_TTL && probe.reachable === 0) {
-        total = Math.max(0, total - PROBE_UNREACHABLE_PENALTY);
+        total = Math.max(0, Math.round(total * 0.85));
       }
     }
+
+    // Popularity bonus REMOVED — query_count is gameable (a node can query
+    // itself) and provided no real trust signal. The demand signal remains
+    // in last_queried_at for probe prioritization, just not in the score.
 
     const confidence = this.deriveConfidence(agent.total_transactions, agent.total_attestations_received);
 

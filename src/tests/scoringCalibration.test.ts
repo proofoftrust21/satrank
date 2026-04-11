@@ -281,7 +281,7 @@ describe('Probe bonuses — removed', () => {
     expect(withProbe.total).toBe(baseline.total);
   });
 
-  it('unreachable-penalty (−10) is still applied', () => {
+  it('unreachable-penalty (×0.85 multiplicative) is still applied', () => {
     const a = makeLnAgent('was-reachable');
     agentRepo.insert(a);
     const before = scoring.computeScore(a.public_key_hash).total;
@@ -298,8 +298,9 @@ describe('Probe bonuses — removed', () => {
     });
     const after = scoring.computeScore(a.public_key_hash).total;
     expect(after).toBeLessThan(before);
-    // Penalty is exactly −10 from the constant, clamped to ≥0
-    expect(before - after).toBe(Math.min(10, before));
+    // Multiplicative penalty: after ≈ before * 0.85 (± rounding)
+    expect(after).toBeGreaterThanOrEqual(Math.round(before * 0.85) - 1);
+    expect(after).toBeLessThanOrEqual(Math.round(before * 0.85) + 1);
   });
 });
 
