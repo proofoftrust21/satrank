@@ -11,16 +11,19 @@ import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 
 const KIND_TRUSTED_ASSERTION = 30382;
 
-// Inter-event delay (ms) when publishing the score batch. damus.io's
-// strfry config rate-limits SatRank when bursts exceed ~5 events/sec
-// from a single key ("rate-limited: you are noting too much"). The DVM
-// response (kind 6900) was being silently dropped on damus.io as a side
-// effect of this same anti-spam bucket.
-//
-// 300 ms = 3.33 events/sec sustained. For ~2,400 events/cycle that's
-// ~12 minutes total — comfortably inside the 6 h cycle and inside every
-// canonical relay's anti-spam tolerance. Override with NOSTR_PUBLISH_INTER_EVENT_MS.
+// Inter-event delay (ms) between publishes. 300 ms = 3.33 events/sec
+// sustained, staying under strfry's anti-spam buckets. Override with
+// NOSTR_PUBLISH_INTER_EVENT_MS.
 const PUBLISH_INTER_EVENT_MS = Number(process.env.NOSTR_PUBLISH_INTER_EVENT_MS ?? '300');
+
+// Publish timeout per relay per event. Lowered from 5s to 1s: the EVENT
+// frame is already on the wire when we call relay.publish() — the ack is
+// just confirmation, not a precondition for storage. On rate-limited
+// connections the ack can take 4-5s, which was the root cause of 0.21
+// events/sec. With 1s timeout we fail fast and move on; the relay still
+// stores the event. Replaceable events (NIP-33) guarantee the next cycle
+// overwrites anything that was genuinely lost.
+const PUBLISH_TIMEOUT_MS = 1_000;
 
 export interface NostrPublisherOptions {
   privateKeyHex: string;
@@ -38,10 +41,25 @@ interface ScoreEvent {
   survival: string;
 }
 
+// Fingerprint of a published event — used for delta detection. Two events
+// with the same fingerprint are semantically identical and don't need to
+// be re-published.
+function fingerprint(ev: ScoreEvent): string {
+  return `${ev.score}|${ev.verdict}|${ev.reachable ? 1 : 0}|${ev.survival}|${ev.components.volume ?? 0}|${ev.components.reputation ?? 0}|${ev.components.seniority ?? 0}|${ev.components.regularity ?? 0}|${ev.components.diversity ?? 0}`;
+}
+
 export class NostrPublisher {
   private skHex: string;
   private relays: string[];
   private minScore: number;
+
+  // Delta map: d-tag (ln_pubkey) → fingerprint of the last published event.
+  // Populated after each publish cycle. On fresh start (container restart),
+  // the map is empty and the first cycle publishes everything — which is the
+  // correct behavior for a cold start (the relay might have stale data from
+  // a previous era). Subsequent cycles only re-publish events whose
+  // fingerprint changed.
+  private lastPublished = new Map<string, string>();
 
   constructor(
     private agentRepo: AgentRepository,
@@ -56,7 +74,7 @@ export class NostrPublisher {
     this.minScore = options.minScore;
   }
 
-  async publishScores(): Promise<{ published: number; errors: number }> {
+  async publishScores(): Promise<{ published: number; errors: number; skipped: number; total: number }> {
     // Dynamic imports — nostr-tools is ESM-only, must use import() in CJS runtime
     // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath, works at runtime
     const { finalizeEvent } = await import('nostr-tools/pure');
@@ -70,7 +88,7 @@ export class NostrPublisher {
       this.probeRepo ? this.getReachableHashes() : [],
     );
 
-    const events: ScoreEvent[] = [];
+    const allEvents: ScoreEvent[] = [];
     for (const agent of agents) {
       if (!agent.public_key) continue;
 
@@ -87,7 +105,7 @@ export class NostrPublisher {
 
       const verdict = snap.score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : snap.score >= 30 ? 'UNKNOWN' : 'RISKY';
 
-      events.push({
+      allEvents.push({
         lnPubkey: agent.public_key,
         alias: agent.alias ?? agent.public_key.slice(0, 16),
         score: Math.round(snap.score),
@@ -98,12 +116,43 @@ export class NostrPublisher {
       });
     }
 
-    logger.info({ count: events.length, minScore: this.minScore, relays: this.relays }, 'Publishing scores to Nostr');
+    // Delta filtering: only publish events whose score/verdict/components
+    // actually changed since the last cycle. On cold start (empty map),
+    // everything is "new" and gets published.
+    const isFirstCycle = this.lastPublished.size === 0;
+    const toPublish: ScoreEvent[] = [];
+    let skipped = 0;
+
+    for (const ev of allEvents) {
+      const fp = fingerprint(ev);
+      const prev = this.lastPublished.get(ev.lnPubkey);
+      if (prev === fp && !isFirstCycle) {
+        skipped++;
+      } else {
+        toPublish.push(ev);
+      }
+    }
+
+    logger.info(
+      {
+        total: allEvents.length,
+        toPublish: toPublish.length,
+        skipped,
+        isFirstCycle,
+        minScore: this.minScore,
+        relays: this.relays,
+      },
+      'Publishing scores to Nostr (delta mode)',
+    );
+
+    if (toPublish.length === 0) {
+      logger.info('No score changes since last cycle — nothing to publish');
+      return { published: 0, errors: 0, skipped, total: allEvents.length };
+    }
 
     let published = 0;
     let errors = 0;
     const CONNECT_TIMEOUT_MS = 10_000;
-    const PUBLISH_TIMEOUT_MS = 5_000;
 
     // Connect to relays with timeout — continue with those that work
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -124,16 +173,13 @@ export class NostrPublisher {
 
     if (connections.length === 0) {
       logger.error('No Nostr relays connected — aborting publish');
-      return { published: 0, errors: events.length };
+      return { published: 0, errors: toPublish.length, skipped, total: allEvents.length };
     }
 
     logger.info({ connected: connections.length, total: this.relays.length }, 'Nostr relay connections established');
 
-    // Publish events with a sustained inter-event delay to stay under
-    // the canonical relays' anti-spam buckets (see PUBLISH_INTER_EVENT_MS
-    // for the rationale).
     const cycleStartMs = Date.now();
-    for (const ev of events) {
+    for (const ev of toPublish) {
       try {
         const template = {
           kind: KIND_TRUSTED_ASSERTION,
@@ -141,10 +187,6 @@ export class NostrPublisher {
           tags: [
             ['d', ev.lnPubkey],
             ['n', 'lightning'],
-            // 'rank' is the NIP-85 canonical tag for a normalized 0-100 trust
-            // score — published alongside the SatRank-specific 'score' tag so
-            // strict NIP-85 consumers can consume assertions without needing
-            // SatRank-specific knowledge.
             ['rank', String(ev.score)],
             ['alias', ev.alias],
             ['score', String(ev.score)],
@@ -162,7 +204,10 @@ export class NostrPublisher {
 
         const signed = finalizeEvent(template, sk);
 
-        // Publish to all connected relays in parallel with timeout
+        // Publish to all connected relays in parallel with short timeout.
+        // The EVENT frame is on the wire before the ack — timeout just means
+        // we don't wait for the relay's OK confirmation, not that the event
+        // wasn't stored. Fire-fast, not fire-and-forget.
         await Promise.allSettled(
           connections.map(({ relay }) =>
             Promise.race([
@@ -174,19 +219,20 @@ export class NostrPublisher {
 
         published++;
 
-        // Sustained inter-event delay. Skipped on the very last event so we
-        // don't add a useless tail latency to the cycle.
-        if (published < events.length && PUBLISH_INTER_EVENT_MS > 0) {
+        // Update the delta map so the next cycle skips this d-tag if unchanged
+        this.lastPublished.set(ev.lnPubkey, fingerprint(ev));
+
+        // Sustained inter-event delay
+        if (published < toPublish.length && PUBLISH_INTER_EVENT_MS > 0) {
           await new Promise((resolve) => setTimeout(resolve, PUBLISH_INTER_EVENT_MS));
         }
 
-        // Progress log every 500 events with the running rate so the
-        // operator can confirm the throttle is doing what they expect.
-        if (published % 500 === 0) {
+        // Progress log every 200 events (more frequent now that batches are smaller)
+        if (published % 200 === 0) {
           const elapsedSec = (Date.now() - cycleStartMs) / 1000;
           const rate = published / Math.max(elapsedSec, 0.001);
           logger.info(
-            { published, total: events.length, elapsedSec: Math.round(elapsedSec), eventsPerSec: rate.toFixed(2) },
+            { published, total: toPublish.length, elapsedSec: Math.round(elapsedSec), eventsPerSec: rate.toFixed(2) },
             'Nostr publish progress',
           );
         }
@@ -199,17 +245,29 @@ export class NostrPublisher {
       }
     }
 
+    // Also update the delta map for events that were SKIPPED (their
+    // fingerprint hasn't changed, but we need them in the map so a fresh
+    // cycle after restart knows they exist). On cold start the map was
+    // empty, so this loop populates it for the first time.
+    for (const ev of allEvents) {
+      if (!this.lastPublished.has(ev.lnPubkey)) {
+        this.lastPublished.set(ev.lnPubkey, fingerprint(ev));
+      }
+    }
+
     // Close connections
     for (const { relay, url } of connections) {
       try { relay.close(); } catch { logger.warn({ relay: url }, 'Failed to close relay connection'); }
     }
 
-    logger.info({ published, errors, relays: connections.length }, 'Nostr score publish complete');
-    return { published, errors };
+    logger.info(
+      { published, errors, skipped, total: allEvents.length, relays: connections.length },
+      'Nostr score publish complete',
+    );
+    return { published, errors, skipped, total: allEvents.length };
   }
 
   private getReachableHashes(): string[] {
-    // Get all hashes that have at least one reachable probe
     const agents = this.agentRepo.findLightningAgentsWithPubkey();
     const reachable: string[] = [];
     for (const agent of agents) {

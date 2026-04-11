@@ -429,7 +429,7 @@ async function main(): Promise<void> {
         nostrPublishFn = async () => {
           logger.info('Starting Nostr publish — Stream A (lightning-indexed)');
           const resultA = await nostrPublisher.publishScores();
-          logger.info({ published: resultA.published, errors: resultA.errors }, 'Stream A complete');
+          logger.info({ published: resultA.published, skipped: resultA.skipped, total: resultA.total, errors: resultA.errors }, 'Stream A complete');
 
           logger.info('Starting Nostr publish — Stream B (nostr-indexed)');
           const resultB = await nostrIndexedPublisher.publishFromMiningJson();
@@ -440,7 +440,7 @@ async function main(): Promise<void> {
           logger.info('Nostr cron publish triggered');
           nostrPublisher.publishScores()
             .then(resultA => {
-              logger.info({ published: resultA.published, errors: resultA.errors }, 'Stream A cron complete');
+              logger.info({ published: resultA.published, skipped: resultA.skipped, total: resultA.total, errors: resultA.errors }, 'Stream A cron complete');
               return nostrIndexedPublisher.publishFromMiningJson();
             })
             .then(resultB => {
