@@ -2,6 +2,7 @@
 // Usage: npm run crawl          (single run — all sources once)
 //        npm run crawl -- --cron (per-source intervals, configurable)
 import { writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { config } from '../config';
 import { logger } from '../logger';
 import { crawlDuration } from '../middleware/metrics';
@@ -387,6 +388,7 @@ async function main(): Promise<void> {
     // Nostr publisher — init before runFullCrawl so it publishes right after bulk scoring
     let nostrPublishFn: (() => Promise<void>) | undefined;
     let timerNostr: ReturnType<typeof setInterval> | null = null;
+    let timerZapMining: ReturnType<typeof setInterval> | null = null;
     logger.info({ hasKey: !!config.NOSTR_PRIVATE_KEY, keyLen: config.NOSTR_PRIVATE_KEY?.length ?? 0 }, 'Nostr publisher check');
     if (config.NOSTR_PRIVATE_KEY) {
       logger.info('Nostr private key found — loading publisher module');
@@ -394,25 +396,79 @@ async function main(): Promise<void> {
         const { NostrPublisher } = await import('../nostr/publisher');
         logger.info('Nostr publisher module loaded successfully');
         const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
+        const nostrRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim());
         const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
           privateKeyHex: config.NOSTR_PRIVATE_KEY,
-          relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
+          relays: nostrRelays,
           minScore: config.NOSTR_MIN_SCORE,
         });
 
+        // Stream B — zap-receipt mining + nostr-indexed publishing
+        const mappingsPath = join(dirname(config.DB_PATH), 'nostr-mappings.json');
+        const { ZapMiner } = await import('../nostr/zapMiner');
+        const zapMiner = new ZapMiner({
+          relays: config.ZAP_MINING_RELAYS.split(',').map(r => r.trim()),
+          pageSize: config.ZAP_MINING_PAGE_SIZE,
+          maxPages: config.ZAP_MINING_MAX_PAGES,
+          maxAgeDays: 60,
+          minPageYield: 20,
+          pageTimeoutMs: 15_000,
+          custodialThreshold: config.ZAP_CUSTODIAL_THRESHOLD,
+          outputPath: mappingsPath,
+        });
+
+        const { NostrIndexedPublisher } = await import('../nostr/nostrIndexedPublisher');
+        const nostrIndexedPublisher = new NostrIndexedPublisher(agentRepo, snapshotRepo, {
+          privateKeyHex: config.NOSTR_PRIVATE_KEY,
+          relays: nostrRelays,
+          minScore: config.NOSTR_MIN_SCORE,
+          mappingsPath,
+        });
+
+        // Dual publish function: Stream A (lightning-indexed) then Stream B (nostr-indexed)
         nostrPublishFn = async () => {
-          logger.info('Starting Nostr publish');
-          const result = await nostrPublisher.publishScores();
-          logger.info({ published: result.published, errors: result.errors }, 'Nostr publish complete');
+          logger.info('Starting Nostr publish — Stream A (lightning-indexed)');
+          const resultA = await nostrPublisher.publishScores();
+          logger.info({ published: resultA.published, errors: resultA.errors }, 'Stream A complete');
+
+          logger.info('Starting Nostr publish — Stream B (nostr-indexed)');
+          const resultB = await nostrIndexedPublisher.publishFromMiningJson();
+          logger.info({ published: resultB.published, errors: resultB.errors, dropped: resultB.dropped }, 'Stream B complete');
         };
 
         timerNostr = setInterval(() => {
           logger.info('Nostr cron publish triggered');
           nostrPublisher.publishScores()
-            .then(result => logger.info({ published: result.published, errors: result.errors }, 'Nostr cron publish complete'))
+            .then(resultA => {
+              logger.info({ published: resultA.published, errors: resultA.errors }, 'Stream A cron complete');
+              return nostrIndexedPublisher.publishFromMiningJson();
+            })
+            .then(resultB => {
+              logger.info({ published: resultB.published, errors: resultB.errors, dropped: resultB.dropped }, 'Stream B cron complete');
+            })
             .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Nostr cron publish error'));
         }, config.NOSTR_PUBLISH_INTERVAL_MS);
         logger.info({ intervalMs: config.NOSTR_PUBLISH_INTERVAL_MS, relays: config.NOSTR_RELAYS }, 'Nostr publisher started');
+
+        // Initial zap mining — produces the JSON that Stream B needs.
+        // Runs before the first crawl so the publish cycle has data.
+        try {
+          const miningResult = await zapMiner.mine();
+          logger.info(miningResult, 'Initial zap mining complete');
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Initial zap mining failed — Stream B will use stale JSON if available');
+        }
+
+        // Daily zap mining timer — mappings change slowly (weeks), no need to mine every 6h
+        timerZapMining = setInterval(() => {
+          logger.info('Zap mining cron triggered');
+          zapMiner.mine()
+            .then(result => logger.info(result, 'Zap mining cron complete'))
+            .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Zap mining cron error'));
+        }, config.ZAP_MINING_INTERVAL_MS);
+        timerZapMining.unref?.();
+        logger.info({ intervalMs: config.ZAP_MINING_INTERVAL_MS }, 'Zap mining cron timer started');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : '';
@@ -513,6 +569,7 @@ async function main(): Promise<void> {
       clearInterval(timerLnplus);
       if (timerProbe) clearInterval(timerProbe);
       if (timerNostr) clearInterval(timerNostr);
+      if (timerZapMining) clearInterval(timerZapMining);
       clearInterval(timerStaleSweep);
       clearInterval(timerRetention);
       closeDatabase();

@@ -44,6 +44,14 @@ const configSchema = z.object({
   NOSTR_RELAYS: z.string().default(DEFAULT_NOSTR_RELAYS_CSV),
   NOSTR_PUBLISH_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000), // 6 hours
   NOSTR_MIN_SCORE: z.coerce.number().int().min(0).default(30), // only publish nodes with score >= this
+  // Zap-receipt mining — builds (nostr_pubkey, ln_pubkey) mappings for Stream B
+  ZAP_MINING_RELAYS: z.string().default(
+    'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net,wss://relay.nostr.band,wss://nostr.wine,wss://relay.snort.social',
+  ),
+  ZAP_MINING_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000), // 24 hours
+  ZAP_MINING_PAGE_SIZE: z.coerce.number().int().positive().default(500),
+  ZAP_MINING_MAX_PAGES: z.coerce.number().int().positive().default(40),
+  ZAP_CUSTODIAL_THRESHOLD: z.coerce.number().int().positive().default(5),
 });
 
 const parsed = configSchema.safeParse(process.env);
