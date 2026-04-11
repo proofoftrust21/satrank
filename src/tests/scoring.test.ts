@@ -453,8 +453,10 @@ describe('ScoringService', () => {
       agentRepo.insert(node);
 
       const result = scoring.computeScore(node.public_key_hash);
-      // Peer trust only (no centrality): log10(0.1*100+1)/log10(201)*50 ≈ 23
-      expect(result.components.reputation).toBe(23);
+      // No centrality → peerTrust*0.65 + capTrend*0.35
+      // peerTrust: log10(11)/log10(201)*100 ≈ 45, capTrend: 50 (neutral, no snapshots)
+      // 45*0.65 + 50*0.35 ≈ 47
+      expect(result.components.reputation).toBe(47);
     });
 
     it('centrality bonuses use continuous exponential curve', () => {
@@ -484,14 +486,12 @@ describe('ScoringService', () => {
       const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
       const scorePeripheral = scoring.computeScore(peripheralNode.public_key_hash);
 
-      // Central: centrality = 25*exp(-20/100) + 25*exp(-30/100) = 20.5 + 18.5 = 39
-      // Peer trust = log10(0.1*100+1)/log10(201)*50 ≈ 23
-      // Total reputation ≈ 62
-      expect(scoreCentral.components.reputation).toBe(62);
-      // Peripheral: centrality = 25*exp(-200/100) + 25*exp(-300/100) ≈ 3.4 + 1.2 = 4.6
-      // Peer trust ≈ 23
-      // Total reputation ≈ 28
-      expect(scorePeripheral.components.reputation).toBe(28);
+      // Central: centrality=78 (50*exp(-0.2)+50*exp(-0.3)), peerTrust=45, capTrend=50
+      // 78*0.35 + 45*0.45 + 50*0.20 ≈ 58
+      expect(scoreCentral.components.reputation).toBe(58);
+      // Peripheral: centrality=9 (50*exp(-2.0)+50*exp(-3.0)), peerTrust=45, capTrend=50
+      // 9*0.35 + 45*0.45 + 50*0.20 ≈ 33
+      expect(scorePeripheral.components.reputation).toBe(33);
       // Continuous curve: central bonus > peripheral
       expect(scoreCentral.components.reputation).toBeGreaterThan(scorePeripheral.components.reputation);
     });

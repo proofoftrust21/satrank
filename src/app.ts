@@ -74,8 +74,10 @@ export function createApp() {
   const attestationRepo = new AttestationRepository(db);
   const snapshotRepo = new SnapshotRepository(db);
   const probeRepo = new ProbeRepository(db);
+  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
+  const feeSnapshotRepo = new FeeSnapshotRepository(db);
 
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
@@ -88,8 +90,6 @@ export function createApp() {
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
   });
-  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
-  const feeSnapshotRepo = new FeeSnapshotRepository(db);
 
   const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
   const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);

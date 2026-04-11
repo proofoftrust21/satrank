@@ -67,6 +67,7 @@ export class ScoringService {
     private snapshotRepo: SnapshotRepository,
     private db?: Database.Database,
     private probeRepo?: ProbeRepository,
+    private channelSnapshotRepo?: { findLatest: (h: string) => { capacity_sats: number } | undefined; findAt: (h: string, ts: number) => { capacity_sats: number } | undefined },
   ) {}
 
   // Returns an agent's score, using cache if the score is recent
@@ -112,7 +113,7 @@ export class ScoringService {
         ? this.computeLightningVolume(agent.total_transactions, maxNetworkChannels)
         : this.computeVolume(verifiedTxCount),
       reputation: isLightningGraph
-        ? this.computeLightningReputation(agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
+        ? this.computeLightningReputation(agentHash, agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
         : this.computeReputation(agentHash, now),
       seniority: this.computeSeniority(agent.first_seen, now),
       regularity: isLightningGraph
@@ -297,24 +298,75 @@ export class ScoringService {
     return Math.min(100, Math.round(score));
   }
 
-  // Reputation for Lightning nodes: centrality + peer trust (objective, on-chain signals)
+  // Reputation for Lightning nodes: centrality + peer trust + capacity trend
   // LN+ ratings are a separate bonus applied after the base score.
-  private computeLightningReputation(hubnessRank: number, betweennessRank: number, capacitySats: number | null, channels: number): number {
-    // Centrality (max 50 pts): how well-connected is this node in the graph?
-    // Hubness and betweenness each contribute up to 25 pts with exponential decay
+  private computeLightningReputation(
+    agentHash: string,
+    hubnessRank: number,
+    betweennessRank: number,
+    capacitySats: number | null,
+    channels: number,
+  ): number {
+    // --- Sub-signal 1: Centrality (0-100) ---
+    // How well-connected is this node in the graph?
     let centrality = 0;
-    if (hubnessRank > 0) centrality += 25 * Math.exp(-hubnessRank / 100);
-    if (betweennessRank > 0) centrality += 25 * Math.exp(-betweennessRank / 100);
+    if (hubnessRank > 0) centrality += 50 * Math.exp(-hubnessRank / 100);
+    if (betweennessRank > 0) centrality += 50 * Math.exp(-betweennessRank / 100);
+    centrality = Math.min(100, Math.round(centrality));
 
-    // Peer trust (max 50 pts): BTC per channel as inbound confidence proxy
-    // Others lock real sats in channels with you — that's skin-in-the-game trust
+    // --- Sub-signal 2: Peer trust (0-100) ---
+    // BTC per channel as inbound confidence proxy
     let peerTrust = 0;
     if (capacitySats && capacitySats > 0 && channels > 0) {
       const btcPerChannel = capacitySats / SATS_PER_BTC / channels;
-      peerTrust = Math.min(50, Math.round(Math.log10(btcPerChannel * 100 + 1) / Math.log10(201) * 50));
+      peerTrust = Math.min(100, Math.round(Math.log10(btcPerChannel * 100 + 1) / Math.log10(201) * 100));
     }
 
-    return Math.min(100, Math.round(centrality + peerTrust));
+    // --- Sub-signal 3: Capacity trend (0-100) ---
+    // Is the node gaining or losing capacity over 7 days?
+    // Growing = trusted by new peers. Draining = losing trust.
+    // Neutral (50) when no historical data is available.
+    const capTrend = this.computeCapacityTrend(agentHash);
+
+    // Weighted blend: peer trust is the strongest (capital commitment is the
+    // hardest to fake), centrality is next (graph topology), capacity trend
+    // adds trajectory signal (can't be faked without real BTC).
+    // When centrality data is absent (hubness=0, betweenness=0 for ~85% of
+    // nodes), its weight redistributes to the other two.
+    const hasCentrality = hubnessRank > 0 || betweennessRank > 0;
+    let score: number;
+    if (hasCentrality) {
+      score = centrality * 0.35 + peerTrust * 0.45 + capTrend * 0.20;
+    } else {
+      // No LN+ data — redistribute centrality weight to peer trust + trend
+      score = peerTrust * 0.65 + capTrend * 0.35;
+    }
+
+    return Math.min(100, Math.round(score));
+  }
+
+  // Capacity trend: compare latest channel_snapshot capacity with the
+  // snapshot from ~7 days ago. Returns 0-100 where:
+  //   0   = capacity dropped by ≥50%
+  //   50  = stable (no change) or no data
+  //   100 = capacity grew by ≥50%
+  // The sigmoid curve is centered at 0% change, steepness tuned so a ±20%
+  // weekly change maps to ~25/75 on the scale.
+  private computeCapacityTrend(agentHash: string): number {
+    if (!this.channelSnapshotRepo) return 50; // neutral when no repo injected
+
+    const latest = this.channelSnapshotRepo.findLatest(agentHash);
+    if (!latest) return 50;
+
+    const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
+    const older = this.channelSnapshotRepo.findAt(agentHash, sevenDaysAgo);
+    if (!older || older.capacity_sats === 0) return 50;
+
+    const delta = (latest.capacity_sats - older.capacity_sats) / older.capacity_sats;
+    // Sigmoid: maps delta ∈ [-∞,+∞] to [0,100], centered at 0, steepness=6
+    // At delta=0 → 50, delta=+0.20 → ~77, delta=-0.20 → ~23, delta=+0.50 → ~95
+    const trend = 100 / (1 + Math.exp(-6 * delta));
+    return Math.round(trend);
   }
 
   private computeVolume(count: number): number {

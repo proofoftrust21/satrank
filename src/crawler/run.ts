@@ -320,7 +320,10 @@ async function main(): Promise<void> {
   const attestationRepo = new AttestationRepository(db);
   const snapshotRepo = new SnapshotRepository(db);
   const probeRepo = new ProbeRepository(db);
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
+  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
+  const feeSnapshotRepo = new FeeSnapshotRepository(db);
+
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo);
 
   const observerClient = new HttpObserverClient({
     baseUrl: config.OBSERVER_BASE_URL,
@@ -333,8 +336,6 @@ async function main(): Promise<void> {
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
   });
-  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
-  const feeSnapshotRepo = new FeeSnapshotRepository(db);
   const lndGraphCrawlerInstance = new LndGraphCrawler(lndClient, agentRepo, channelSnapshotRepo, feeSnapshotRepo);
 
   const mempoolClient = new HttpMempoolClient();
