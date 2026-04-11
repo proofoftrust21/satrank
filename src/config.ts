@@ -46,7 +46,7 @@ const configSchema = z.object({
   NOSTR_MIN_SCORE: z.coerce.number().int().min(0).default(30), // only publish nodes with score >= this
   // Zap-receipt mining — builds (nostr_pubkey, ln_pubkey) mappings for Stream B
   ZAP_MINING_RELAYS: z.string().default(
-    'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net,wss://relay.nostr.band,wss://nostr.wine,wss://relay.snort.social',
+    'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net,wss://relay.nostr.band,wss://nostr.wine,wss://relay.snort.social,wss://nostr-pub.wellorder.net,wss://offchain.pub,wss://eden.nostr.land',
   ),
   ZAP_MINING_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000), // 24 hours
   ZAP_MINING_PAGE_SIZE: z.coerce.number().int().positive().default(500),

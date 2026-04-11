@@ -410,7 +410,7 @@ async function main(): Promise<void> {
           relays: config.ZAP_MINING_RELAYS.split(',').map(r => r.trim()),
           pageSize: config.ZAP_MINING_PAGE_SIZE,
           maxPages: config.ZAP_MINING_MAX_PAGES,
-          maxAgeDays: 60,
+          maxAgeDays: 90,
           minPageYield: 20,
           pageTimeoutMs: 15_000,
           custodialThreshold: config.ZAP_CUSTODIAL_THRESHOLD,
