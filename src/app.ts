@@ -1,6 +1,7 @@
 // Express application setup — dependency injection
 import express, { Router } from 'express';
 import path from 'path';
+import { readFileSync } from 'node:fs';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -58,7 +59,7 @@ import { openapiSpec } from './openapi';
 
 // Infra
 import { logger } from './logger';
-import { set as cacheSet } from './cache/memoryCache';
+import { set as cacheSet, getStale as cacheGetStale } from './cache/memoryCache';
 
 export function createApp() {
   const app = express();
@@ -184,9 +185,23 @@ export function createApp() {
     });
   });
 
-  // Static landing page
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-  app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', 'public') }));
+  // SSR boot: inject cached stats + leaderboard into index.html so the
+  // browser renders both sections at first paint, zero API fetch needed.
+  // The template is read once at startup (immutable inside the Docker image).
+  const publicDir = path.join(__dirname, '..', 'public');
+  const indexTemplate = readFileSync(path.join(publicDir, 'index.html'), 'utf8');
+
+  app.get('/', (_req, res) => {
+    const stats = cacheGetStale<Record<string, unknown>>('stats:network');
+    const top = cacheGetStale<{ data: unknown[] }>('agents:top:10:0:score');
+    const boot = { stats: stats ?? null, leaderboard: top ?? null };
+    const script = `<script>window.__SATRANK_BOOT__=${JSON.stringify(boot)}</script>`;
+    res.type('html').send(indexTemplate.replace('</head>', script + '\n</head>'));
+  });
+
+  // Static assets (CSS, JS, images, etc.)
+  app.use(express.static(publicDir));
+  app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: publicDir }));
 
   // Prometheus metrics endpoint — restricted to localhost/internal
   app.get('/metrics', (req, res, next) => {

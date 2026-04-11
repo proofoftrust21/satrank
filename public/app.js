@@ -119,25 +119,39 @@
   setupCopyBtn('copy-decide', 'decide-curl');
   setupCopyBtn('copy-sdk', 'sdk-code');
 
-  // -- Stats + Leaderboard in parallel --
-  var totalAgentsHint = null; // active agent count, used for rank copy in detail panel
-  fetchWithRetry(API + '/stats', 1)
-    .then(function (d) {
-      var s = d.data;
-      totalAgentsHint = s.totalAgents;
-      fadeUpdate(document.getElementById('stat-probed'), fmt(s.nodesProbed));
-      fadeUpdate(document.getElementById('stat-phantom'), s.phantomRate + '%');
-      fadeUpdate(document.getElementById('stat-reachable'), fmt(s.verifiedReachable));
-      fadeUpdate(document.getElementById('stat-probes-24h'), fmt(s.probes24h));
-      ['stat-probed', 'stat-phantom', 'stat-reachable', 'stat-probes-24h'].forEach(function (id) {
-        var el = document.getElementById(id);
-        if (el) el.classList.remove('loading');
-      });
-    })
-    .catch(setStatError);
+  // -- Stats + Leaderboard --
+  // The server injects cached data into the HTML as window.__SATRANK_BOOT__
+  // so both sections render at first paint without waiting for API fetches.
+  // Fallback to the fetch path if the boot data is missing (e.g. direct
+  // file open, CDN cache, or server running without warm-up).
+  var boot = window.__SATRANK_BOOT__ || null;
+  var totalAgentsHint = null;
 
-  // Leaderboard loads in parallel with stats (not sequentially)
-  loadTopAgents();
+  function applyStats(s) {
+    totalAgentsHint = s.totalAgents;
+    document.getElementById('stat-probed').textContent = fmt(s.nodesProbed);
+    document.getElementById('stat-phantom').textContent = s.phantomRate + '%';
+    document.getElementById('stat-reachable').textContent = fmt(s.verifiedReachable);
+    document.getElementById('stat-probes-24h').textContent = fmt(s.probes24h);
+    ['stat-probed', 'stat-phantom', 'stat-reachable', 'stat-probes-24h'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.classList.remove('loading');
+    });
+  }
+
+  if (boot && boot.stats) {
+    applyStats(boot.stats);
+  } else {
+    fetchWithRetry(API + '/stats', 1)
+      .then(function (d) { applyStats(d.data); })
+      .catch(setStatError);
+  }
+
+  if (boot && boot.leaderboard && boot.leaderboard.data) {
+    renderAgentRows(boot.leaderboard.data, false);
+  } else {
+    loadTopAgents();
+  }
 
   // -- Agent table rendering --
   var tbody = document.getElementById('top-agents');
