@@ -48,6 +48,8 @@ import {
   MAX_ATTESTATIONS_PER_AGENT,
   PROBE_UNREACHABLE_PENALTY,
   PROBE_FRESHNESS_TTL,
+  REPORT_SIGNAL_MIN_REPORTS,
+  REPORT_SIGNAL_CAP,
 } from '../config/scoring';
 
 export interface ScoreResult {
@@ -324,8 +326,15 @@ export class ScoringService {
   // Reputation with reinforced anti-gaming
   // Batch attester lookups to avoid N+1 queries
   private computeReputation(agentHash: string, now: number): number {
-    const attestations = this.attestationRepo.findBySubject(agentHash, MAX_ATTESTATIONS_PER_AGENT, 0);
-    if (attestations.length === 0) return 0;
+    const REPORT_CATEGORIES = new Set(['successful_transaction', 'failed_transaction', 'unresponsive']);
+    const allAttestations = this.attestationRepo.findBySubject(agentHash, MAX_ATTESTATIONS_PER_AGENT, 0);
+    // Exclude report-category attestations from the general reputation loop —
+    // they flow through computeReportSignal() instead (avoids double-counting)
+    const attestations = allAttestations.filter(a => !REPORT_CATEGORIES.has(a.category));
+    if (attestations.length === 0) {
+      // No general attestations — report signal alone can still contribute
+      return Math.min(100, Math.max(0, this.computeReportSignal(agentHash)));
+    }
 
     if (attestations.length >= MAX_ATTESTATIONS_PER_AGENT) {
       logger.warn({ agentHash, limit: MAX_ATTESTATIONS_PER_AGENT }, 'Attestation count truncated to limit for agent');
@@ -392,8 +401,31 @@ export class ScoringService {
       totalWeight += weight;
     }
 
-    if (totalWeight === 0) return 0;
-    return Math.min(100, Math.round(weightedSum / totalWeight));
+    if (totalWeight === 0) {
+      // No attestations — report signal alone can still contribute
+      return Math.min(100, Math.max(0, this.computeReportSignal(agentHash)));
+    }
+    const attestationScore = Math.round(weightedSum / totalWeight);
+    const reportAdjustment = this.computeReportSignal(agentHash);
+    return Math.min(100, Math.max(0, attestationScore + reportAdjustment));
+  }
+
+  /** Compute the report-based signal for the reputation component.
+   *  Returns a value in [-REPORT_SIGNAL_CAP, +REPORT_SIGNAL_CAP].
+   *  Only contributes when >= REPORT_SIGNAL_MIN_REPORTS reports exist (anti-manipulation).
+   *  Preimage-verified reports receive 2x weight (baked into reportSignalStats). */
+  private computeReportSignal(agentHash: string): number {
+    const stats = this.attestationRepo.reportSignalStats(agentHash);
+    if (stats.total < REPORT_SIGNAL_MIN_REPORTS) return 0;
+
+    const totalWeighted = stats.weightedSuccesses + stats.weightedFailures;
+    if (totalWeighted === 0) return 0;
+
+    // ratio: 0.0 (all failures) to 1.0 (all successes)
+    const successRatio = stats.weightedSuccesses / totalWeighted;
+    // Map 0.5 (neutral) to 0, 1.0 to +CAP, 0.0 to -CAP
+    const adjustment = (successRatio - 0.5) * 2 * REPORT_SIGNAL_CAP;
+    return Math.round(Math.min(REPORT_SIGNAL_CAP, Math.max(-REPORT_SIGNAL_CAP, adjustment)));
   }
 
   private computeSeniority(firstSeen: number, now: number): number {

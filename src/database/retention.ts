@@ -3,7 +3,7 @@
 // small and other readers/writers can interleave. Yields via
 // setImmediate between chunks to keep the crawler's event loop
 // responsive (heartbeat, probes, api IO). Invoked from
-// src/crawler/run.ts at startup and on a 24h interval.
+// src/crawler/run.ts at startup and on a 6h interval.
 import type Database from 'better-sqlite3';
 import { logger } from '../logger';
 import {

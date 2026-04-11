@@ -231,6 +231,23 @@ export class AttestationRepository {
     return { rate: row.weighted_successes / row.total_weight, dataPoints: row.data_points, uniqueReporters: row.unique_reporters };
   }
 
+  /** Report signal stats for scoring: weighted success/failure counts with verified bonus.
+   *  Each report contributes its `weight` (reporter credibility). Verified reports (preimage-proven)
+   *  get 2x weight. Returns raw weighted counts for the scoring engine to blend. */
+  reportSignalStats(subjectHash: string): { weightedSuccesses: number; weightedFailures: number; total: number } {
+    const row = this.db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN score >= 50 THEN weight * (1 + verified) ELSE 0 END), 0) as weighted_successes,
+        COALESCE(SUM(CASE WHEN score < 50 THEN weight * (1 + verified) ELSE 0 END), 0) as weighted_failures,
+        COUNT(*) as total
+      FROM attestations
+      WHERE subject_hash = ?
+      AND category IN ('successful_transaction', 'failed_transaction', 'unresponsive')
+    `).get(subjectHash) as { weighted_successes: number; weighted_failures: number; total: number };
+
+    return { weightedSuccesses: row.weighted_successes, weightedFailures: row.weighted_failures, total: row.total };
+  }
+
   /** Count reports from a specific attester in the last N seconds (rate limiting).
    *  When categories is provided, only counts attestations in those categories (C8). */
   countRecentByAttester(attesterHash: string, afterTimestamp: number, categories?: string[]): number {

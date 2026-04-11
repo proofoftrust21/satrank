@@ -36,5 +36,8 @@ export const RETENTION_POLICIES: readonly RetentionPolicy[] = [
  *  100k successfully. */
 export const RETENTION_CHUNK_SIZE = 50_000;
 
-/** Interval between scheduled retention runs in the crawler cron. */
-export const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Interval between scheduled retention runs in the crawler cron.
+ *  6 hours — matches the Nostr publisher cycle so retention runs at a
+ *  comparable cadence.  With ~650k probe_results rows/day added, 6h keeps
+ *  the table from growing unbounded between container restarts. */
+export const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;

@@ -165,3 +165,12 @@ export const PROBE_UNREACHABLE_PENALTY = 10;
 
 /** Max age (seconds) for probe data to be considered fresh for scoring. 24h. */
 export const PROBE_FRESHNESS_TTL = 86_400;
+
+// --- Report signal (closed feedback loop) ---
+
+/** Minimum number of reports before the signal contributes to reputation.
+ *  Prevents single-report manipulation. */
+export const REPORT_SIGNAL_MIN_REPORTS = 5;
+
+/** Maximum adjustment (positive or negative) from report signal on the reputation component (0-100 scale) */
+export const REPORT_SIGNAL_CAP = 10;
