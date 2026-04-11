@@ -14,9 +14,45 @@ import { SEVEN_DAYS_SEC } from '../utils/constants';
 import { logger } from '../logger';
 const EMPIRICAL_THRESHOLD = 10; // min data points before using empirical basis
 
+// Default probe amount for feeBudget calculation when amountSats is not provided
+const DEFAULT_AMOUNT_SATS = 1000;
+// Fee budget as fraction of the payment amount — fees above this cap P_path.feeScore to 0
+const FEE_BUDGET_RATIO = 0.01; // 1%
+
 // Sigmoid function: maps score (0-100) to probability (0-1), centered at 50
 function sigmoid(score: number, midpoint: number = 50, steepness: number = 0.1): number {
   return 1 / (1 + Math.exp(-steepness * (score - midpoint)));
+}
+
+// P_path — quality of the Lightning path from caller to target.
+// Continuous 0-1 signal derived from the pathfinding result. Captures HOW WELL
+// the path is, not just whether it exists (which is P_routable's binary job).
+//   - hopPenalty: 1-hop direct channel = 1.0, degrades ~8% per extra hop
+//   - altBonus:   more alternative routes = higher reliability
+//   - feeScore:   lower fee relative to amount = better path
+function computePathQuality(pathfinding: PathfindingResult | null, amountSats: number | undefined): number {
+  // No pathfinding data (caller unknown, LND down) — return neutral
+  if (!pathfinding) return 0.5;
+  // No route found — worst case
+  if (!pathfinding.reachable) return 0.0;
+
+  const hops = pathfinding.hops ?? 1;
+  const alternatives = pathfinding.alternatives ?? 1;
+  const feeMsat = pathfinding.estimatedFeeMsat ?? 0;
+
+  // Hop penalty: 1 hop = 1.0, each additional hop costs 8%, floor at 0.12
+  const hopPenalty = Math.max(0.12, 1 - (hops - 1) * 0.08);
+
+  // Alternative routes bonus: 1 route = 0.9, 2 routes = 1.0, 3+ = 1.0
+  const altBonus = Math.min(1, 0.8 + alternatives * 0.1);
+
+  // Fee score: 0 fee = 1.0, fee >= budget = 0.0
+  const feeBudgetMsat = (amountSats ?? DEFAULT_AMOUNT_SATS) * FEE_BUDGET_RATIO * 1000;
+  const feeScore = feeBudgetMsat > 0
+    ? 1 - Math.min(1, feeMsat / feeBudgetMsat)
+    : 1.0;
+
+  return hopPenalty * 0.5 + altBonus * 0.3 + feeScore * 0.2;
 }
 
 export class DecideService {
@@ -75,15 +111,18 @@ export class DecideService {
     const hasEmpirical = dataPoints >= EMPIRICAL_THRESHOLD && uniqueReporters >= 5;
     const pEmpirical = hasEmpirical ? empiricalRate : pTrust; // fallback to proxy
 
+    // P_path — path quality from the caller's position in the graph
+    const pPath = computePathQuality(verdictResult.pathfinding, amountSats);
+
     // Composite success rate
     const basis: 'proxy' | 'empirical' = hasEmpirical ? 'empirical' : 'proxy';
     let successRate: number;
     if (hasEmpirical) {
-      // Empirical mode: P_empirical dominates, but P_trust stays as safety net (node health)
-      successRate = pEmpirical * 0.45 + pTrust * 0.10 + pRoutable * 0.225 + pAvailable * 0.225;
+      // Empirical mode: P_empirical dominates, P_path personalises, P_trust is safety net
+      successRate = pEmpirical * 0.40 + pPath * 0.25 + pAvailable * 0.15 + pTrust * 0.10 + pRoutable * 0.10;
     } else {
-      // Proxy mode: trust score as primary signal
-      successRate = pTrust * 0.4 + pRoutable * 0.3 + pAvailable * 0.3;
+      // Proxy mode: trust score + path quality drive the decision
+      successRate = pTrust * 0.30 + pPath * 0.30 + pAvailable * 0.20 + pRoutable * 0.20;
     }
 
     // Clamp to [0, 1]
@@ -108,6 +147,7 @@ export class DecideService {
         routable: Math.round(pRoutable * 1000) / 1000,
         available: Math.round(pAvailable * 1000) / 1000,
         empirical: Math.round(pEmpirical * 1000) / 1000,
+        pathQuality: Math.round(pPath * 1000) / 1000,
       },
       basis,
       confidence: scoreResult.confidence,

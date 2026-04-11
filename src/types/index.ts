@@ -347,6 +347,7 @@ export interface DecideResponse {
     routable: number;
     available: number;
     empirical: number;
+    pathQuality: number;
   };
   basis: 'proxy' | 'empirical';
   confidence: ConfidenceLevel;

@@ -883,6 +883,7 @@ export const openapiSpec = {
               routable: { type: 'number', description: 'P_routable — route exists from caller to target (0 or 1)' },
               available: { type: 'number', description: 'P_available — probe uptime over 7 days' },
               empirical: { type: 'number', description: 'P_empirical — historical success rate from reports' },
+              pathQuality: { type: 'number', description: 'P_path — personalized path quality from caller to target (0-1, based on hops, fee, alternatives)' },
             },
           },
           basis: { type: 'string', enum: ['proxy', 'empirical'], description: 'proxy = <10 reports (using trust score), empirical = >=10 reports' },
