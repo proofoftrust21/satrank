@@ -177,11 +177,41 @@ export class ScoringService {
       total = Math.min(100, Math.round(total * lnplusMult));
     }
 
-    // Probe-based unreachability penalty — ×0.85 if the latest fresh probe failed
+    // Probe-based unreachability penalty — graduated by failure cause.
+    // A flat ×0.85 treated all unreachable nodes identically. But there are
+    // three distinct failure modes with very different trust implications:
+    //
+    //   Dead (gossip >30d stale + unreachable): channels are advertised but
+    //     the operator abandoned the node. Strong penalty.
+    //   Zombie (gossip 7-30d stale + unreachable): node may be offline or
+    //     poorly maintained. Moderate penalty.
+    //   Liquidity (gossip fresh + unreachable): node is alive (recent gossip
+    //     updates) but queryRoutes finds no path from our position. Often
+    //     single-channel nodes or capacity-constrained routes. Mild penalty.
+    //
+    // This uses agent.last_seen (gossip freshness) already in DB — zero
+    // additional API calls.
     if (this.probeRepo) {
       const probe = this.probeRepo.findLatest(agentHash);
       if (probe && (now - probe.probed_at) < PROBE_FRESHNESS_TTL && probe.reachable === 0) {
-        total = Math.max(0, Math.round(total * 0.85));
+        const gossipAgeSec = now - agent.last_seen;
+        const THIRTY_DAYS = 30 * 86400;
+        const SEVEN_DAYS = 7 * 86400;
+        const channels = agent.total_transactions || 1;
+        const disabledRatio = (agent as { disabled_channels?: number }).disabled_channels
+          ? ((agent as { disabled_channels?: number }).disabled_channels! / channels)
+          : 0;
+        let probeMult: number;
+        if (disabledRatio >= 0.8) {
+          probeMult = 0.65; // dead: 80%+ channels disabled in gossip
+        } else if (gossipAgeSec > THIRTY_DAYS) {
+          probeMult = 0.70; // dead: gossip stale 30d+ AND unreachable
+        } else if (gossipAgeSec > SEVEN_DAYS || disabledRatio >= 0.3) {
+          probeMult = 0.80; // zombie: gossip stale 7-30d or 30%+ disabled
+        } else {
+          probeMult = 0.90; // liquidity: gossip fresh, channels active, just no route from us
+        }
+        total = Math.max(0, Math.round(total * probeMult));
       }
     }
 

@@ -25,6 +25,7 @@ interface ParsedNode {
   channels: number;
   capacitySats: number;
   uniquePeers: number;
+  disabledChannels: number;
 }
 
 export class LndGraphCrawler {
@@ -83,7 +84,7 @@ export class LndGraphCrawler {
     // Index each node
     for (const node of graph.nodes) {
       try {
-        const stats = nodeStats.get(node.pub_key) ?? { channels: 0, capacitySats: 0, uniquePeers: 0 };
+        const stats = nodeStats.get(node.pub_key) ?? { channels: 0, capacitySats: 0, uniquePeers: 0, disabledChannels: 0 };
         const parsed: ParsedNode = {
           pubKey: node.pub_key,
           alias: node.alias || node.pub_key.slice(0, 20),
@@ -91,6 +92,7 @@ export class LndGraphCrawler {
           channels: stats.channels,
           capacitySats: stats.capacitySats,
           uniquePeers: stats.uniquePeers,
+          disabledChannels: stats.disabledChannels,
         };
         const action = this.indexNode(parsed);
         if (action === 'created') result.newAgents++;
@@ -178,14 +180,16 @@ export class LndGraphCrawler {
       channels: nodeInfo.num_channels,
       capacitySats: Number(nodeInfo.total_capacity),
       uniquePeers: 0, // Single-node fetch doesn't have edge data; updated on next full crawl
+      disabledChannels: 0, // Same — updated on next full crawl
     };
 
     return this.indexNode(parsed);
   }
 
-  private aggregateEdges(edges: LndEdge[]): Map<string, { channels: number; capacitySats: number; uniquePeers: number }> {
+  private aggregateEdges(edges: LndEdge[]): Map<string, { channels: number; capacitySats: number; uniquePeers: number; disabledChannels: number }> {
     const channels = new Map<string, { count: number; capacitySats: number }>();
     const peers = new Map<string, Set<string>>();
+    const disabled = new Map<string, number>();
 
     for (const edge of edges) {
       const cap = Number(edge.capacity);
@@ -204,11 +208,24 @@ export class LndGraphCrawler {
       if (!peers.has(edge.node2_pub)) peers.set(edge.node2_pub, new Set());
       peers.get(edge.node1_pub)!.add(edge.node2_pub);
       peers.get(edge.node2_pub)!.add(edge.node1_pub);
+
+      // Count disabled channel directions per node
+      if (edge.node1_policy?.disabled) {
+        disabled.set(edge.node1_pub, (disabled.get(edge.node1_pub) ?? 0) + 1);
+      }
+      if (edge.node2_policy?.disabled) {
+        disabled.set(edge.node2_pub, (disabled.get(edge.node2_pub) ?? 0) + 1);
+      }
     }
 
-    const stats = new Map<string, { channels: number; capacitySats: number; uniquePeers: number }>();
+    const stats = new Map<string, { channels: number; capacitySats: number; uniquePeers: number; disabledChannels: number }>();
     for (const [pub, ch] of channels) {
-      stats.set(pub, { channels: ch.count, capacitySats: ch.capacitySats, uniquePeers: peers.get(pub)?.size ?? 0 });
+      stats.set(pub, {
+        channels: ch.count,
+        capacitySats: ch.capacitySats,
+        uniquePeers: peers.get(pub)?.size ?? 0,
+        disabledChannels: disabled.get(pub) ?? 0,
+      });
     }
     return stats;
   }
@@ -236,6 +253,7 @@ export class LndGraphCrawler {
           node.alias,
           lastSeen,
           node.uniquePeers,
+          node.disabledChannels,
         );
       } else {
         this.agentRepo.updateCapacity(publicKeyHash, node.capacitySats, lastSeen);

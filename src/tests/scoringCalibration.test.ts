@@ -281,7 +281,9 @@ describe('Probe bonuses — removed', () => {
     expect(withProbe.total).toBe(baseline.total);
   });
 
-  it('unreachable-penalty (×0.85 multiplicative) is still applied', () => {
+  it('unreachable-penalty is graduated by failure cause', () => {
+    // Test node has fresh gossip (last_seen = NOW) and no disabled channels
+    // → classified as "liquidity constraint" → ×0.90 (mildest penalty)
     const a = makeLnAgent('was-reachable');
     agentRepo.insert(a);
     const before = scoring.computeScore(a.public_key_hash).total;
@@ -298,9 +300,9 @@ describe('Probe bonuses — removed', () => {
     });
     const after = scoring.computeScore(a.public_key_hash).total;
     expect(after).toBeLessThan(before);
-    // Multiplicative penalty: after ≈ before * 0.85 (± rounding)
-    expect(after).toBeGreaterThanOrEqual(Math.round(before * 0.85) - 1);
-    expect(after).toBeLessThanOrEqual(Math.round(before * 0.85) + 1);
+    // Graduated penalty for fresh-gossip + no disabled channels = ×0.90
+    expect(after).toBeGreaterThanOrEqual(Math.round(before * 0.90) - 1);
+    expect(after).toBeLessThanOrEqual(Math.round(before * 0.90) + 1);
   });
 });
 

@@ -200,19 +200,20 @@ export class AgentRepository {
     `).run(capacitySats, lastSeen, lastSeen, cutoff, hash);
   }
 
-  updateLightningStats(hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number, uniquePeers?: number): void {
+  updateLightningStats(hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number, uniquePeers?: number, disabledChannels?: number): void {
     const cutoff = this.staleCutoff();
     if (uniquePeers !== undefined && uniquePeers > 0) {
       try {
         this.db.prepare(`
           UPDATE agents
           SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ?,
+              disabled_channels = ?,
               stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
           WHERE public_key_hash = ?
-        `).run(channels, capacitySats, alias, lastSeen, uniquePeers, lastSeen, cutoff, hash);
+        `).run(channels, capacitySats, alias, lastSeen, uniquePeers, disabledChannels ?? 0, lastSeen, cutoff, hash);
         return;
       } catch {
-        // unique_peers column may not exist yet (migration pending) — fallback without it
+        // unique_peers or disabled_channels column may not exist yet — fallback without them
       }
     }
     this.db.prepare(`
