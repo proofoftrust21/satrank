@@ -343,8 +343,7 @@ export class ScoringService {
     return Math.min(100, Math.round(score));
   }
 
-  // Reputation for Lightning nodes: centrality + peer trust + capacity trend
-  // LN+ ratings are a separate bonus applied after the base score.
+  // Reputation for Lightning nodes: centrality + peer trust + routing quality + capacity trend + fee stability
   private computeLightningReputation(
     agentHash: string,
     hubnessRank: number,
@@ -353,11 +352,24 @@ export class ScoringService {
     channels: number,
   ): number {
     // --- Sub-signal 1: Centrality (0-100) ---
-    // How well-connected is this node in the graph?
-    let centrality = 0;
-    if (hubnessRank > 0) centrality += 50 * Math.exp(-hubnessRank / 100);
-    if (betweennessRank > 0) centrality += 50 * Math.exp(-betweennessRank / 100);
-    centrality = Math.min(100, Math.round(centrality));
+    // PRIMARY: sovereign PageRank computed hourly from the full LND graph.
+    // Covers 100% of nodes (vs ~70% with LN+ API). Every node — including
+    // a small agent with 2 channels — gets a meaningful centrality score
+    // based on WHO it connects to.
+    // FALLBACK: LN+ hubness/betweenness ranks when pagerank_score is not
+    // yet populated (first crawl after migration, or test environments).
+    const agent = this.agentRepo.findByHash(agentHash);
+    const pagerankScore = (agent as { pagerank_score?: number | null })?.pagerank_score;
+    let centrality: number;
+    if (pagerankScore != null && pagerankScore > 0) {
+      centrality = Math.round(pagerankScore);
+    } else {
+      // Legacy LN+ fallback
+      centrality = 0;
+      if (hubnessRank > 0) centrality += 50 * Math.exp(-hubnessRank / 100);
+      if (betweennessRank > 0) centrality += 50 * Math.exp(-betweennessRank / 100);
+      centrality = Math.min(100, Math.round(centrality));
+    }
 
     // --- Sub-signal 2: Peer trust (0-100) ---
     // BTC per channel as inbound confidence proxy
@@ -382,9 +394,10 @@ export class ScoringService {
     // fee sniping or unreliable routing configuration.
     const feeStability = this.computeFeeStability(agentHash);
 
-    // Weighted blend. When centrality data is absent (~85% of nodes), its
-    // weight redistributes across the other signals.
-    const hasCentrality = hubnessRank > 0 || betweennessRank > 0;
+    // Weighted blend. With PageRank, centrality data is available for ALL
+    // nodes in the graph (100% coverage). The "without centrality" path
+    // is now only for test environments without a graph crawler.
+    const hasCentrality = centrality > 0;
     let score: number;
     if (hasCentrality) {
       score = centrality * 0.20 + peerTrust * 0.30 + routingQuality * 0.20 + capTrend * 0.15 + feeStability * 0.15;

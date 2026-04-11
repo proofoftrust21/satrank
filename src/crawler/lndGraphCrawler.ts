@@ -5,6 +5,7 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { ChannelSnapshotRepository } from '../repositories/channelSnapshotRepository';
 import type { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import type { LndGraphClient, LndNode, LndEdge, LndNodeInfo } from './lndGraphClient';
+import { computePageRank } from '../scoring/pagerank';
 import { sha256 } from '../utils/crypto';
 import { logger } from '../logger';
 
@@ -146,6 +147,13 @@ export class LndGraphCrawler {
         const inserted = this.feeSnapshotRepo.insertBatchDeduped(feeSnapshots);
         logger.info({ candidates: feeSnapshots.length, inserted }, 'Fee snapshots stored (deduped)');
       }
+    }
+
+    // Compute sovereign PageRank from the full graph — replaces LN+ dependency
+    // for the centrality sub-signal. Covers 100% of nodes (vs ~70% with LN+).
+    if (graph.edges.length > 0) {
+      const prResult = computePageRank(graph.edges);
+      this.agentRepo.updatePageRankBatch(prResult.scores);
     }
 
     result.finishedAt = Math.floor(Date.now() / 1000);

@@ -366,6 +366,12 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 16, 'Composite index on fee_snapshots(channel_id, node1_pub, snapshot_at) for dedup lookup');
   }
 
+  // v18: pagerank_score for sovereign centrality (replaces LN+ dependency)
+  if (!hasVersion(db, 18)) {
+    try { db.exec('ALTER TABLE agents ADD COLUMN pagerank_score REAL DEFAULT NULL'); } catch { /* column already exists */ }
+    recordVersion(db, 18, 'pagerank_score column on agents — sovereign centrality replacing LN+ dependency');
+  }
+
   // v17: disabled_channels column on agents for probe failure classification.
   // Tracks how many of a node's channel directions are disabled in gossip.
   // Combined with probe reachability: unreachable + high disabled_channels = dead node.
@@ -383,6 +389,9 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  18: (db) => {
+    try { db.exec('ALTER TABLE agents DROP COLUMN pagerank_score'); } catch { /* SQLite < 3.35 */ }
+  },
   17: (db) => {
     try { db.exec('ALTER TABLE agents DROP COLUMN disabled_channels'); } catch { /* SQLite < 3.35 */ }
   },

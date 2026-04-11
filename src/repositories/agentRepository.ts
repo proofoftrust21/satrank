@@ -228,6 +228,16 @@ export class AgentRepository {
     this.db.prepare('UPDATE agents SET public_key = ? WHERE public_key_hash = ?').run(publicKey, hash);
   }
 
+  updatePageRankBatch(scores: Map<string, number>): void {
+    const stmt = this.db.prepare('UPDATE agents SET pagerank_score = ? WHERE public_key = ?');
+    const tx = this.db.transaction((entries: [string, number][]) => {
+      for (const [pubkey, score] of entries) {
+        stmt.run(score, pubkey);
+      }
+    });
+    tx(Array.from(scores.entries()));
+  }
+
   updateLnplusRatings(hash: string, positiveRatings: number, negativeRatings: number, lnplusRank: number, hubnessRank: number, betweennessRank: number, hopnessRank: number): void {
     this.db.prepare(`
       UPDATE agents SET positive_ratings = ?, negative_ratings = ?, lnplus_rank = ?, hubness_rank = ?, betweenness_rank = ?, hopness_rank = ?
