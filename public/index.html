@@ -146,10 +146,11 @@
   <div class="section nostr-section">
     <h2>Live on Nostr</h2>
     <p class="section-desc">
-      SatRank publishes trust assertions for the <strong>13,913 active Lightning nodes</strong>
-      it tracks as NIP-85 events (kind <code>30382</code>) every 6 hours on public Nostr relays.
-      ~2,400 assertions per cycle (score ≥ 30). Any Nostr-native agent or client can consume
-      scores without touching our API.
+      SatRank publishes trust assertions for the Lightning nodes it tracks as NIP-85 events
+      (kind <code>30382</code>) every 6 hours on public Nostr relays.
+      ~5,000 assertions maintained on relays (score &ge; 30). Any Nostr-native agent or client
+      can consume scores without touching our API. Live node count and stats are at
+      <a href="/api/stats">/api/stats</a>.
     </p>
     <p class="section-desc">
       This is the only NIP-85 provider scoring the Lightning payment graph. Every other
