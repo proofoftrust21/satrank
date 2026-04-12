@@ -14,6 +14,12 @@ import { SEVEN_DAYS_SEC } from '../utils/constants';
 import { logger } from '../logger';
 const EMPIRICAL_THRESHOLD = 10; // min data points before using empirical basis
 
+// If the most recent probe for the target is older than this, fire a live
+// queryRoutes before answering. Default: 30 minutes (matches the probe
+// crawler cycle). Override via DECIDE_REPROBE_STALE_SEC env var.
+const REPROBE_STALE_SEC = Number(process.env.DECIDE_REPROBE_STALE_SEC ?? '1800');
+const REPROBE_TIMEOUT_MS = 5_000;
+
 // Default probe amount for feeBudget calculation when amountSats is not provided
 const DEFAULT_AMOUNT_SATS = 1000;
 // Fee budget as fraction of the payment amount — fees above this cap P_path.feeScore to 0
@@ -91,17 +97,55 @@ export class DecideService {
       pRoutable = verdictResult.pathfinding.reachable ? 1.0 : 0.0;
     }
 
-    // P_available — probe uptime over 7 days
-    let pAvailable = 0.5; // default when no probe data
+    // P_available — probe uptime over 7 days, with on-demand re-probe
+    // when the latest probe is stale. This ensures the agent gets a fresh
+    // reachability signal, not a cached one from hours ago.
+    let pAvailable = 0.5;
     let lastProbeAgeMs: number | null = null;
     if (this.probeRepo) {
+      const lastProbe = this.probeRepo.findLatest(targetHash);
+      const now = Math.floor(Date.now() / 1000);
+      const probeAgeSec = lastProbe ? now - lastProbe.probed_at : Infinity;
+
+      // Re-probe on-demand if the last probe is stale and LND is available.
+      // Reuses the same queryRoutes call the DVM uses for live_ping.
+      if (probeAgeSec > REPROBE_STALE_SEC && this.lndClient) {
+        const agent = this.agentRepo.findByHash(targetHash);
+        if (agent?.public_key) {
+          try {
+            const response = await Promise.race([
+              this.lndClient.queryRoutes(agent.public_key, amountSats ?? 1000),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('reprobe timeout')), REPROBE_TIMEOUT_MS)),
+            ]);
+            const routes = response.routes ?? [];
+            const reachable = routes.length > 0;
+            const latencyMs = routes[0]?.hops ? null : null; // queryRoutes doesn't measure real latency
+            this.probeRepo.insert({
+              target_hash: targetHash,
+              probed_at: now,
+              reachable: reachable ? 1 : 0,
+              latency_ms: latencyMs,
+              hops: reachable ? routes[0].hops.length : null,
+              estimated_fee_msat: reachable ? (parseInt(routes[0].total_fees_msat, 10) || null) : null,
+              failure_reason: reachable ? null : 'no_route',
+            });
+            logger.info({ targetHash: targetHash.slice(0, 12), reachable, probeAgeSec }, 'On-demand re-probe completed');
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn({ targetHash: targetHash.slice(0, 12), error: msg }, 'On-demand re-probe failed');
+          }
+        }
+      }
+
+      // Read uptime from all probes (including the one we just inserted)
       const uptime = this.probeRepo.computeUptime(targetHash, SEVEN_DAYS_SEC);
       if (uptime !== null) {
         pAvailable = uptime;
       }
-      const lastProbe = this.probeRepo.findLatest(targetHash);
-      if (lastProbe) {
-        lastProbeAgeMs = Math.round(Date.now() - lastProbe.probed_at * 1000);
+      // Re-read the latest probe (may be the fresh one we just inserted)
+      const freshProbe = this.probeRepo.findLatest(targetHash);
+      if (freshProbe) {
+        lastProbeAgeMs = Math.round(Date.now() - freshProbe.probed_at * 1000);
       }
     }
 
