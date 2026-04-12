@@ -26,6 +26,10 @@ export interface Agent {
   query_count: number;
   unique_peers: number | null;
   last_queried_at: number | null;
+  /** Number of channel directions marked disabled in gossip policies. Updated hourly by the graph crawler. SQL DEFAULT 0. */
+  disabled_channels?: number;
+  /** Sovereign PageRank score (percentile 0-100). Computed hourly from the full LND graph. SQL DEFAULT NULL. */
+  pagerank_score?: number | null;
   /** 1 when the agent has not been seen in 90+ days (fossil). Soft-flagged; restored to 0 on next sighting. */
   stale?: number;
 }

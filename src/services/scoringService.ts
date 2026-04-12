@@ -198,8 +198,8 @@ export class ScoringService {
         const THIRTY_DAYS = 30 * 86400;
         const SEVEN_DAYS = 7 * 86400;
         const channels = agent.total_transactions || 1;
-        const disabledRatio = (agent as { disabled_channels?: number }).disabled_channels
-          ? ((agent as { disabled_channels?: number }).disabled_channels! / channels)
+        const disabledRatio = (agent.disabled_channels ?? 0) > 0
+          ? (agent.disabled_channels ?? 0) / channels
           : 0;
         let probeMult: number;
         if (disabledRatio >= 0.8) {
@@ -359,7 +359,7 @@ export class ScoringService {
     // FALLBACK: LN+ hubness/betweenness ranks when pagerank_score is not
     // yet populated (first crawl after migration, or test environments).
     const agent = this.agentRepo.findByHash(agentHash);
-    const pagerankScore = (agent as { pagerank_score?: number | null })?.pagerank_score;
+    const pagerankScore = agent?.pagerank_score;
     let centrality: number;
     if (pagerankScore != null && pagerankScore > 0) {
       centrality = Math.round(pagerankScore);
