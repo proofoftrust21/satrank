@@ -41,12 +41,12 @@
       <tr>
         <td><strong>Volume</strong></td>
         <td><span class="weight-bar wb-volume wb-25"></span>25%</td>
-        <td>Transaction throughput or channel count</td>
+        <td>Transaction throughput or channel count + capacity blend</td>
       </tr>
       <tr>
         <td><strong>Reputation</strong></td>
         <td><span class="weight-bar wb-reputation wb-30"></span>30%</td>
-        <td>Graph centrality, peer trust (BTC/channel), attestations</td>
+        <td>PageRank centrality, peer trust, routing quality, capacity trend, fee stability</td>
       </tr>
       <tr>
         <td><strong>Seniority</strong></td>
@@ -70,32 +70,33 @@
   <h2>Formulas</h2>
 
   <h3>Volume (Lightning nodes)</h3>
-  <p>Logarithmic scale with a fixed reference of 500 channels. Spreads the full 0&ndash;100 range across the real network distribution:</p>
-  <pre>volume = min(100, round(log(channels + 1) / log(501) * 100))</pre>
-  <p><em>5 channels: ~26. 20: ~48. 50: ~63. 100: ~74. 500+: 100.</em></p>
+  <p>50/50 blend of channel count and total capacity (in BTC). Channel count alone is gameable: 500 tiny channels totalling 0.005 BTC scored 100 under the old formula. Adding a capacity dimension prevents this while keeping real hubs at 85&ndash;100.</p>
+  <pre>channelScore  = min(100, log(channels + 1) / log(501) * 100)   // ref 500 channels
+capacityScore = min(100, log(btc + 1)      / log(51)  * 100)   // ref 50 BTC
+
+volume = round(channelScore * 0.5 + capacityScore * 0.5)</pre>
+  <p><em>500 ch / 0.005 BTC: ~50 (was 100). 2010 ch / 38 BTC: ~100. 20 ch / 0.5 BTC: ~35.</em></p>
 
   <h3>Volume (Observer Protocol agents)</h3>
   <p>Logarithmic scale normalized to a reference of 1000 verified transactions:</p>
   <pre>volume = min(100, round(log(count + 1) / log(1001) * 100))</pre>
 
   <h3>Reputation (Lightning nodes)</h3>
-  <p>Combines two objective, on-chain signals: graph centrality and peer trust.</p>
-  <pre>// Centrality (max 50 pts) — position in the network graph
-centrality = 25 * exp(-hubnessRank / 100) + 25 * exp(-betweennessRank / 100)
+  <p>Blends 5 objective sub-signals. With PageRank data (available for 100% of nodes):</p>
+  <pre>reputation = centrality * 0.20 + peerTrust * 0.30 + routingQuality * 0.20
+           + capTrend   * 0.15 + feeStability * 0.15</pre>
 
-// Peer trust (max 50 pts) — how much BTC others lock in channels with you
-btcPerChannel = capacitySats / 100_000_000 / channels
-peerTrust = min(50, round(log10(btcPerChannel * 100 + 1) / log10(201) * 50))
-
-reputation = min(100, centrality + peerTrust)</pre>
-  <p>
-    Centrality measures how well-connected a node is in the Lightning graph. Peer trust
-    measures how much real capital other nodes commit to channels with you &mdash; skin in the game.
-    Neither signal depends on external platforms or user ratings.
-  </p>
+  <p><strong>Sub-signals:</strong></p>
+  <ul>
+    <li><strong>Centrality (0&ndash;100)</strong> &mdash; sovereign PageRank computed hourly from the full LND graph (~11,700 nodes, ~41k edges, &lt;500ms). Capacity-weighted with log-scale edge weights so a 10 BTC channel is ~2.3x more influential than 0.1 BTC, not 100x. Percentile-normalized 0&ndash;100. Replaces the LN+ hubness/betweenness dependency &mdash; covers 100% of nodes vs ~70% before.</li>
+    <li><strong>Peer trust (0&ndash;100)</strong> &mdash; BTC per channel as inbound confidence proxy. <code>min(100, log10(btcPerChannel * 100 + 1) / log10(201) * 100)</code>. Unchanged formula, rescaled from 0&ndash;50 to 0&ndash;100.</li>
+    <li><strong>Routing quality (0&ndash;100)</strong> &mdash; absolute hop distance (60%) + latency (40%) from 1.7M+ probe results. Measures how well a node performs from SatRank&rsquo;s position in the graph. Proprietary, non-replicable signal: a fork of the code does not have these measurements.</li>
+    <li><strong>Capacity trend (0&ndash;100)</strong> &mdash; 7-day capacity delta from channel_snapshots. Sigmoid centered at 0% change: stable = 50, growing = higher, shrinking = lower. A +20% week maps to ~77; a -20% week maps to ~23.</li>
+    <li><strong>Fee stability (0&ndash;100)</strong> &mdash; fee change rate per channel per week from fee_snapshots. Sigmoid: 0 changes/channel/week = 100, 1 = ~73, 3 = ~27, 5+ = ~5. Nodes with stable fees score higher; frequent fee changes signal unreliable routing.</li>
+  </ul>
   <p>
     <strong>LN+ community ratings</strong> (from <a href="https://lightningnetwork.plus" style="color:#f7931a">lightningnetwork.plus</a>)
-    contribute a separate bonus of up to +8 points on the final score. This keeps the social signal
+    contribute a separate multiplicative modifier of up to &times;1.05 on the final score. This keeps the social signal
     without making 30% of the score depend on a third-party platform.
   </p>
 
@@ -159,22 +160,36 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <h3>Diversity (Observer Protocol agents)</h3>
   <pre>diversity = min(100, round(log(uniqueCounterparties + 1) / log(51) * 100))</pre>
 
-  <!-- Bonuses -->
-  <h2>Additional Bonuses</h2>
+  <!-- Modifiers -->
+  <h2>Post-Composite Modifiers</h2>
+  <p>
+    All post-composite adjustments are <strong>multiplicative</strong>, not additive. A base-40 node
+    cannot reach a high total via bonus stacking alone: 40 &times; 1.15 = 46 max, not 40 + 33 = 73.
+  </p>
 
   <div class="card">
-    <div class="card-title">Verified Transaction Bonus (max +15)</div>
-    <p>Agents with verified Observer Protocol transactions receive +0.5 points per verified tx, capped at +15. This applies to all agent types, including Lightning nodes that also have Observer Protocol activity.</p>
+    <div class="card-title">Verified Transaction Modifier (&times;1.0 to &times;1.10)</div>
+    <p>Agents with verified Observer Protocol transactions receive a multiplier: <code>min(1.10, 1.0 + verifiedCount * 0.003)</code>. This applies to all agent types, including Lightning nodes that also have Observer Protocol activity.</p>
   </div>
 
   <div class="card">
-    <div class="card-title">Popularity Bonus (max +10)</div>
-    <p>Each scored query is a demand signal. The bonus is <code>min(10, round(log2(queryCount + 1) * 2))</code>. An agent queried 100 times receives +13 (capped at +10).</p>
+    <div class="card-title">LN+ Community Ratings Modifier (&times;1.0 to &times;1.05)</div>
+    <p>Positive ratings from <a href="https://lightningnetwork.plus" style="color:#f7931a">LN+</a> contribute a multiplier based on the positive/negative ratio. This keeps the social signal as a reward, not a requirement.</p>
   </div>
 
   <div class="card">
-    <div class="card-title">LN+ Community Ratings Bonus (max +8)</div>
-    <p>Positive ratings from <a href="https://lightningnetwork.plus" style="color:#f7931a">LN+</a> contribute a bonus: <code>min(8, round(log2(positive + 1) * ratingsRatio * 3))</code> where ratingsRatio = positive / (positive + negative + 1). This keeps the social signal as a reward, not a requirement.</p>
+    <div class="card-title">Probe Unreachable Penalty (graduated)</div>
+    <p>When the latest probe shows a node unreachable, the score is multiplied by a factor that depends on the failure cause:</p>
+    <table>
+      <thead><tr><th>Cause</th><th>Multiplier</th><th>Condition</th></tr></thead>
+      <tbody>
+        <tr><td>Dead</td><td>&times;0.65</td><td>80%+ channels disabled in gossip</td></tr>
+        <tr><td>Abandoned</td><td>&times;0.70</td><td>Gossip stale &gt; 30 days</td></tr>
+        <tr><td>Zombie</td><td>&times;0.80</td><td>Gossip stale 7&ndash;30 days or 30%+ channels disabled</td></tr>
+        <tr><td>Liquidity</td><td>&times;0.90</td><td>Gossip fresh, channels active, no route from our position</td></tr>
+      </tbody>
+    </table>
+    <p>Dead nodes are penalized far more heavily than nodes that are simply liquidity-constrained.</p>
   </div>
 
   <!-- Confidence -->
@@ -213,7 +228,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <div class="card">
     <div class="card-title">LightningNetwork.Plus (LN+)</div>
-    <p>Community reputation platform. Provides positive/negative ratings and graph centrality metrics (hubness, betweenness, hopness). Centrality data feeds the reputation component; user ratings contribute a separate bonus (max +8 pts). Verifiable at <code>https://lightningnetwork.plus/nodes/{publicKey}</code>.</p>
+    <p>Community reputation platform. Provides positive/negative ratings. User ratings contribute a separate multiplicative modifier (&times;1.0 to &times;1.05). Centrality is now computed in-house via sovereign PageRank on the full LND graph, replacing the LN+ hubness/betweenness dependency. Verifiable at <code>https://lightningnetwork.plus/nodes/{publicKey}</code>.</p>
   </div>
 
   <div class="card">
@@ -259,6 +274,9 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <li><strong>Temporal decay.</strong> Attestation weight decays exponentially over time. Old attestations matter less than recent ones. This ensures scores reflect current behavior.</li>
     <li><strong>Negative ratings dilution.</strong> Community negative ratings on LN+ reduce the LN+ bonus. A node with more negatives than positives receives no bonus.</li>
     <li><strong>Manual source penalty.</strong> Agents registered manually (not discovered via protocol or graph) face a linear penalty until they accumulate sufficient verified transactions.</li>
+    <li><strong>Capacity-weighted volume.</strong> Volume is now a 50/50 blend of channel count and total capacity (BTC). This prevents gaming via hundreds of tiny channels with negligible capacity.</li>
+    <li><strong>Popularity bonus removed.</strong> The query-count-based popularity bonus was trivially gameable (a node could query itself). It has been removed from scoring entirely. The demand signal remains in <code>last_queried_at</code> for probe prioritization only.</li>
+    <li><strong>Graduated probe penalty.</strong> Unreachable nodes are penalized by cause: dead nodes (&times;0.65) and abandoned nodes (&times;0.70) are penalized far more heavily than liquidity-constrained nodes (&times;0.90). This replaces the old flat penalty.</li>
   </ul>
 
   <!-- Limitations -->
@@ -291,8 +309,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <ul>
     <li><strong>Transactions:</strong> Total count, verified count, and a sample of the 5 most recent transactions with tx IDs, protocol, amount bucket, and verification status.</li>
     <li><strong>Lightning Graph:</strong> Public key, channel count, capacity in sats, and a link to <code>mempool.space</code> where you can independently verify.</li>
-    <li><strong>Reputation:</strong> Hubness and betweenness centrality ranks, BTC per channel (peer trust), and a link to <code>lightningnetwork.plus</code> for independent verification of community ratings.</li>
-    <li><strong>Popularity:</strong> Query count and the computed popularity bonus, showing how much demand contributed to the score.</li>
+    <li><strong>Reputation:</strong> PageRank centrality score, BTC per channel (peer trust), routing quality, capacity trend, fee stability, and a link to <code>lightningnetwork.plus</code> for independent verification of community ratings.</li>
   </ul>
 
   <p>
@@ -303,7 +320,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <!-- Worked Example -->
   <h2>Worked Example: ACINQ</h2>
   <p>
-    ACINQ is a major Lightning node operator with ~2,004 channels and hundreds of BTC of
+    ACINQ is a major Lightning node operator with ~2,010 channels and ~38 BTC of
     verified capacity. Here is how the score is computed with full-node validation:
   </p>
 
@@ -312,27 +329,27 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <tbody>
       <tr>
         <td>Volume</td>
-        <td>2,004 channels (log scale, ref 500)</td>
+        <td>2,010 ch (channelScore=100) + 38 BTC (capacityScore=~95). Blend: 100&times;0.5 + 95&times;0.5</td>
         <td>100</td>
         <td>100 &times; 0.25 = 25.0</td>
       </tr>
       <tr>
         <td>Reputation</td>
-        <td>Hubness + betweenness top-10, peer trust from validated capacity</td>
-        <td>~77</td>
-        <td>77 &times; 0.30 = 23.1</td>
+        <td>PageRank=100 (top percentile) &times; 0.20 + peerTrust &times; 0.30 + routingQuality &times; 0.20 + capTrend &times; 0.15 + feeStability &times; 0.15</td>
+        <td>~84</td>
+        <td>84 &times; 0.30 = 25.2</td>
       </tr>
       <tr>
         <td>Seniority</td>
-        <td>~2,921 days (8 years, half-life 730d)</td>
+        <td>~2,925 days (8 years, half-life 730d)</td>
         <td>~98</td>
         <td>98 &times; 0.15 = 14.7</td>
       </tr>
       <tr>
         <td>Regularity</td>
         <td>Reachable every probe, ~5% latency jitter, stable 1-hop routes</td>
-        <td>~85</td>
-        <td>85 &times; 0.15 = 12.75</td>
+        <td>~89</td>
+        <td>89 &times; 0.15 = 13.35</td>
       </tr>
       <tr>
         <td>Diversity</td>
@@ -344,27 +361,26 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <tfoot>
       <tr>
         <td colspan="3"><strong>Base score</strong></td>
-        <td><strong>~91</strong></td>
+        <td><strong>~93</strong></td>
       </tr>
       <tr>
-        <td colspan="3">+ Popularity bonus (log2-scaled queries)</td>
-        <td>+2</td>
+        <td colspan="3">No multiplicative modifiers (0 LN+ ratings, reachable, no verified Observer tx)</td>
+        <td>&times;1.0</td>
       </tr>
       <tr>
         <td colspan="3"><strong>Final score</strong></td>
-        <td><strong>~93*</strong></td>
+        <td><strong>93</strong></td>
       </tr>
     </tfoot>
   </table>
 
   <p><em>
-    * Values updated April 2026 after the v15 scoring calibration. Under pre-v15 scoring,
-    ACINQ had regularity=100 (uptime only) and received two probe bonuses (+3 low-latency,
-    +2 short-hop) that duplicated the regularity signal, landing at 100. The new multi-axis
-    regularity reflects natural latency variance and route stability, and the probe
-    bonuses are removed; the resulting 93 is the honest measure of ACINQ&rsquo;s reliability.
-    Actual scores are computed in real-time and may differ slightly. ACINQ
-    has 0 LN+ ratings, so no LN+ bonus is applied.
+    Values updated April 2026. Reputation now uses sovereign PageRank (100% node coverage) instead of
+    LN+ hubness/betweenness (~70% coverage), and includes routing quality, capacity trend, and fee stability
+    sub-signals. Volume is a 50/50 blend of channel count and capacity, preventing tiny-channel gaming.
+    All post-composite adjustments are multiplicative. Popularity bonus removed (gameable). ACINQ
+    has 0 LN+ ratings, so no LN+ modifier is applied. Actual scores are computed in real-time and
+    may differ slightly.
   </em></p>
 
   <!-- Verdict API -->

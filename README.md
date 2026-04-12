@@ -5,7 +5,7 @@
 SatRank is a trust oracle for the Lightning Network. Before each payment, an agent queries SatRank for a GO/NO-GO decision — one request, one answer, 1 sat via L402.
 
 - Backed by a full **bitcoind v28.1** node + **LND**, not Neutrino or gossip — every channel capacity is UTXO-validated.
-- Tracks **13,913 active Lightning nodes** (schema v15, post-migration), probes them every 30 minutes, publishes trust assertions on Nostr every 6 hours.
+- Tracks **13,913 active Lightning nodes** (schema v18, post-migration), probes them every 30 minutes, publishes trust assertions on Nostr every 6 hours.
 - **~60 %** of the Lightning graph is unreachable in routing ("phantom nodes") — the exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
 - First **NIP-85** provider bridging the Lightning payment graph into the Web of Trust. Every other NIP-85 implementation scores the Nostr social graph — SatRank scores who you can actually pay.
 
@@ -44,7 +44,7 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>5 min] --> SE
 
-  GC --> DB[(SQLite<br/>schema v15)]
+  GC --> DB[(SQLite<br/>schema v18)]
   PC --> DB
   LP --> DB
 
@@ -85,8 +85,8 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | Probes executed / 24 h | **~650,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
 | NIP-85 events published per cycle | **~2,400** (score ≥ 30) | crawler log, `count=2424` on 2026-04-09 |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
-| Tests (vitest) | **464 / 34 files** green | `npm test` |
-| Schema version | **v15** | `SELECT * FROM schema_version` |
+| Tests (vitest) | **504 / 38 files** green | `npm test` |
+| Schema version | **v18** | `SELECT * FROM schema_version` |
 
 Numbers are pulled live from `/api/stats` (free endpoint, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
 
@@ -96,13 +96,13 @@ Composite score 0-100 computed from 5 weighted components:
 
 | Component | Weight | Measures |
 |---|---|---|
-| **Volume** | **25 %** | Channels (log scale, ref 500) or verified transactions (log) |
-| **Reputation** | **30 %** | Graph centrality (hubness + betweenness) + peer trust (BTC/channel). LN+ ratings as bonus, max +8 |
+| **Volume** | **25 %** | Channels x capacity blend (50/50 log scale, ref 500 ch / 50 BTC) or verified transactions (log) |
+| **Reputation** | **30 %** | 5 sub-signals: sovereign PageRank (100% coverage), peer trust, routing quality, capacity trend, fee stability |
 | **Seniority** | **15 %** | Days since first seen, exponential growth with 2-year half-life |
 | **Regularity** | **15 %** | Multi-axis consistency over 7 d (uptime 70 % + latency stability 20 % + hop stability 10 %) |
 | **Diversity** | **15 %** | Unique peers (log, ref 500) or unique counterparties (log) |
 
-Additional bonuses: verified-tx bonus up to +15, popularity bonus up to +10, LN+ ratings bonus up to +8.
+Multiplicative modifiers: verified-tx x1.0-1.10, LN+ ratings x1.0-1.05, probe penalty x0.65-0.90 (graduated by cause). Popularity bonus removed (gameable).
 
 **Anti-gaming:**
 - Mutual attestation loop detection (A↔B) with 95 % penalty
@@ -112,7 +112,7 @@ Additional bonuses: verified-tx bonus up to +15, popularity bonus up to +10, LN+
 - Attester score weighting (PageRank-like recursion)
 - Attestation source concentration penalty
 
-**Verdict thresholds** (`GET /api/agent/{hash}/verdict`): SAFE ≥ 47 (post-v15 recalibration), UNKNOWN 30-46, RISKY < 30 or critical flags. See `public/methodology.html` for the full rationale.
+**Verdict thresholds** (`GET /api/agent/{hash}/verdict`): SAFE >= 47 (post-v18 recalibration), UNKNOWN 30-46, RISKY < 30 or critical flags. See `public/methodology.html` for the full rationale.
 
 ## API
 
@@ -222,9 +222,9 @@ SatRank publishes kind 30382 events in **two indexed namespaces** to serve both 
 - **Lightning-indexed (extension).** `d = <66-char Lightning node pubkey>` — the default stream. Emitted every 6 hours for every active node with score ≥ 30 (~2,400 events per cycle). This extends NIP-85's "User as Subject" semantics from 32-byte Nostr pubkeys to 66-byte Lightning pubkeys (same secp256k1, different key space). It's the stream that makes the Lightning payment graph queryable via NIP-85 for the first time.
 - **Nostr-indexed (strict).** `d = <64-char Nostr pubkey>` — strictly conformant to NIP-85's subject-key requirement. Emitted for every (Nostr operator, Lightning node) pair SatRank can verify cryptographically.
 
-**How we build the mapping.** NIP-57 zap receipts (kind 9735) contain the recipient's Nostr pubkey in the `p` tag and the paid invoice in the `bolt11` tag. The BOLT11 invoice's destination (`payee_node_key`) is the Lightning node that settled the payment — cryptographically guaranteed by the invoice signature. Cross-referencing `p` and `payee_node_key` gives a verifiable `(nostr_pubkey, ln_pubkey)` tuple. The miner paginates backwards across 6 relays (`damus.io`, `nos.lol`, `relay.primal.net`, `relay.nostr.band`, `nostr.wine`, `relay.snort.social`) via NIP-01 `until`-based pagination, walking up to 40 pages × 500 events per relay with a 60-day age wall.
+**How we build the mapping.** NIP-57 zap receipts (kind 9735) contain the recipient's Nostr pubkey in the `p` tag and the paid invoice in the `bolt11` tag. The BOLT11 invoice's destination (`payee_node_key`) is the Lightning node that settled the payment — cryptographically guaranteed by the invoice signature. Cross-referencing `p` and `payee_node_key` gives a verifiable `(nostr_pubkey, ln_pubkey)` tuple. The miner paginates backwards across 9 relays (`damus.io`, `nos.lol`, `relay.primal.net`, `relay.nostr.band`, `nostr.wine`, `relay.snort.social` and 3 others) via NIP-01 `until`-based pagination, walking up to 40 pages × 500 events per relay with a 90-day age wall.
 
-**First production run (2026-04-09):** ~20,000 distinct zap receipts decoded, 302 distinct Lightning pubkeys extracted, 281 self-hosted candidates after the ≤5-nostr heuristic, **65 events** published after all filters (score ≥ 30, not stale, custodian alias rejected, exactly 1 nostr pk per ln pk). With the relaxed `ALLOW_SHARED_LNPK=1` mode: **94 events**.
+**Latest production run (2026-04-10):** ~15,900 distinct zap receipts decoded across 9 relays with a 90-day age wall, **81 strict-NIP-85 events** published after all filters (score >= 30, not stale, custodian alias rejected, exactly 1 nostr pk per ln pk).
 
 **Custodian filtering.** The same BOLT11 destination across many distinct Nostr pubkeys means a custodial wallet (Wallet of Satoshi, Alby, Minibits, …). SatRank drops any ln_pubkey paired with more than 1 distinct Nostr pubkey in the mining sample AND any node whose alias matches a known custodial/LSP pattern (`zlnd*`, `lndus*`, `*coordinator*`, `*.cash`, `zeus`, `alby`, `wos`, `cashu`, `minibits`, `phoenix`, `breez`, `muun`, `primal`, `nwc`, `fountain`, `wavlake`, `fedi`, `fewsats`, `lightspark`, `voltage`, `strike`, …). What remains is a conservative set of self-hosted operators.
 
@@ -407,7 +407,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - **pino** — structured logging
 - **Aperture / L402** — Lightning paywall for `/api/decide` and scored endpoints
 - **Docker Compose** — api + crawler containers with cap-drop-ALL, read-only FS, tmpfs, healthchecks
-- **vitest** — 464 unit + integration tests across 34 files, all green on the submission commit
+- **vitest** — 504 unit + integration tests across 38 files, all green on the submission commit
 
 ## Scripts
 
@@ -449,7 +449,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - [x] NIP-90 DVM for real-time trust checks (kind 5900 → 6900)
 - [x] NIP-05 verification (`satrank@satrank.dev`)
 - [x] Chunked retention cleanup cron for time-series tables
-- [x] v15 scoring calibration — multi-axis regularity, unique-peers diversity
+- [x] v18 scoring calibration — sovereign PageRank, 5 reputation sub-signals, multiplicative modifiers
 - [ ] 4tress connector — verified attestations
 - [ ] Trust network visualization dashboard
 - [ ] Per-component NIP-85 keys (`30382:volume`, `30382:reputation`, …)

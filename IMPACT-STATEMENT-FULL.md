@@ -30,7 +30,7 @@ Under the hood, SatRank runs a full-stack observability pipeline:
 - **LND** — gossip ingestion, peer discovery, probe routing.
 - **Probe routing** — every 30 minutes, SatRank probes the reachable graph from its own node, recording reachability, latency, and hop counts. That's roughly ~650,000 probes per 24 h in steady state (see live `/api/stats.probes24h`).
 - **Channel and fee snapshots** — every hour, captures topology and fee structure to detect churn and volatility.
-- **5-factor scoring** — volume, reputation, seniority, regularity, diversity. Composite score 0-100 with anti-gaming (mutual-loop detection, 3-hop and 4-hop cycle BFS, mandatory minimum age for attestations).
+- **5-factor scoring** — volume (channels x capacity blend), reputation (sovereign PageRank, peer trust, routing quality, capacity trend, fee stability), seniority, regularity, diversity. Composite score 0-100 with anti-gaming (mutual-loop detection, 3-hop and 4-hop cycle BFS, mandatory minimum age for attestations).
 - **Distribution via Nostr (NIP-85)** — every 6 hours, scores are signed and published to three canonical relays as kind `30382:rank` assertions. ~2,400 nodes per cycle (score ≥ 30). Zero platform lock-in.
 - **Real-time queries via DVM (NIP-90)** — any agent can publish a kind 5900 trust-check job and receive a signed kind 6900 response in seconds, with on-demand probing for unknown nodes.
 
@@ -54,7 +54,7 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>every 5 min] --> SE
 
-  GC --> DB[(SQLite · schema v15<br/>agents / snapshots / probes)]
+  GC --> DB[(SQLite · schema v18<br/>agents / snapshots / probes)]
   PC --> DB
   LP --> DB
 
@@ -177,10 +177,10 @@ SatRank publishes kind 30382 events in **two indexed streams** to serve both the
 - `d = <64-char Nostr pubkey>` — matches NIP-85's subject-key requirement exactly
 - **Same rank/verdict/components tags** as Stream A, so clients already consuming Stream A need zero extra code
 - Extra tags for traceability: `ln_pubkey` (the Lightning node being asserted about), `subject_type` (`mined_mapping` or `self_declaration`), `source` (`nip57_zap_receipt`), `zap_count` (evidence strength)
-- Built from **cryptographically-verifiable** `(nostr_pubkey, ln_pubkey)` mappings mined from NIP-57 zap receipts (kind 9735). The BOLT11 invoice in each receipt embeds the destination `payee_node_key` in its signature; cross-referencing with the `p` tag recipient gives a verified tuple. The miner paginates backwards across 6 relays (`damus.io`, `nos.lol`, `relay.primal.net`, `relay.nostr.band`, `nostr.wine`, `relay.snort.social`) via the NIP-01 `until` filter, walking up to 40 pages × 500 events per relay, stopping at a 60-day age wall.
+- Built from **cryptographically-verifiable** `(nostr_pubkey, ln_pubkey)` mappings mined from NIP-57 zap receipts (kind 9735). The BOLT11 invoice in each receipt embeds the destination `payee_node_key` in its signature; cross-referencing with the `p` tag recipient gives a verified tuple. The miner paginates backwards across 9 relays via the NIP-01 `until` filter, walking up to 40 pages x 500 events per relay, stopping at a 90-day age wall.
 - First paginated mining run on 2026-04-09 processed **19,930 distinct zap receipts** (100 % BOLT11-decodable, 18 unparseable) and resolved to **302 distinct Lightning pubkeys**, of which **281 had ≤ 5 distinct Nostr pubkeys** (the mining's self-hosted upper bound).
 - Custodian filter: drops any ln_pubkey paired with more than 1 distinct Nostr pubkey in the mining sample (strict mode, default) AND any node whose alias matches known custodial/LSP patterns (`zlnd*`, `lndus*`, `*coordinator*`, `*.cash`, `zeus`, `alby`, `wos`, `cashu`, `minibits`, `phoenix`, `breez`, `muun`, `primal`, `nwc`, `fountain`, `wavlake`, `fedi`, `fewsats`, `lightspark`, `voltage`, `strike`, …). Optional relaxed mode (`ALLOW_SHARED_LNPK=1`) publishes up to 5 nostr pubkeys per ln_pubkey for shared family/team nodes.
-- **Yield of the first production run (strict mode):** **65 strict-NIP-85 events** across 65 distinct Nostr operators. With relaxed mode: **94 events**. Plus 1 self-declaration event (SatRank's own Nostr pubkey → SatRank's own Lightning node).
+- **Yield of the latest production run (strict mode, 9 relays, 90 days):** **81 strict-NIP-85 events** across 81 distinct Nostr operators, from ~15,900 decoded zap receipts. Plus 1 self-declaration event (SatRank's own Nostr pubkey -> SatRank's own Lightning node).
 - Published via `scripts/nostr-publish-nostr-indexed.ts` (mined mappings) and `scripts/nostr-publish-self-declaration.ts` (SatRank's own Lightning node indexed by SatRank's own Nostr pubkey — the baseline self-proof).
 
 **Why dual publishing matters.** NIP-85 as written targets 32-byte Nostr pubkeys. SatRank's primary use case (Lightning node trust) targets 66-byte Lightning pubkeys — a different key space. Publishing both streams means:
@@ -259,13 +259,13 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Probe cycle coverage | full graph, every 30 minutes |
 | Score snapshots stored | **921,968** (retained 45 days, chunked purge) |
 | Scoring components | **5** (volume, reputation, seniority, regularity, diversity) |
-| Verdict SAFE threshold (post-v15 calibration) | **score ≥ 47** |
+| Verdict SAFE threshold (post-v18 calibration) | **score >= 47** |
 | Anti-gaming checks | mutual-loop, 3-hop BFS, 4-hop BFS, attester min-age, source concentration |
 | Bitcoin trust root | **bitcoind v28.1** full node |
 | Nostr relays published to | **3** canonical (damus.io, nos.lol, primal.net) |
 | Canonical NIP-85 result tag | **`rank`** (alongside `score` and 5 component tags) |
-| Test suite | **464 tests / 34 files**, all green on submission commit |
-| Database schema version | **v15** |
+| Test suite | **504 tests / 38 files**, all green on submission commit |
+| Database schema version | **v18** |
 
 ---
 
@@ -274,13 +274,13 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 - **TypeScript** strict mode, Node 22
 - **Express** — REST API, 40+ endpoints, NIP-05 handler
 - **better-sqlite3** — embedded database, WAL mode, chunked retention cleanup for time-series tables
-- **bitcoind v28.1** full node + **LND** for trust root and probing
+- **bitcoind v28.1** full node + **LND** for trust root, probing, and sovereign PageRank computation
 - **nostr-tools** — NIP-85 publishing (kind 30382 + 10040), NIP-90 DVM (kind 5900 → 6900), NIP-01 event signing
 - **zod** — input validation at every API boundary
 - **pino** — structured logging
 - **Docker Compose** — api + crawler containers with cap-drop-ALL, read-only filesystem, tmpfs, and liveness healthchecks
 - **L402 / Aperture** — paid gate for `/api/decide` (the 1-sat-per-query oracle endpoint)
-- **vitest** — 464 unit + integration tests across 34 files, all green on the submission commit
+- **vitest** — 504 unit + integration tests across 38 files, all green on the submission commit
 
 ---
 
@@ -292,7 +292,7 @@ SatRank isn't a hackathon project, it's infrastructure. The post-submission road
 - **Per-component NIP-85 keys.** The spec says providers MUST use different service keys per algorithm. SatRank currently uses one key for the composite score; the next iteration will split `30382:volume`, `30382:reputation`, `30382:regularity`, etc. onto their own service keys so users can pick-and-choose components in their kind 10040.
 - **Cross-signing with other NIP-85 providers.** SatRank's Lightning data is orthogonal to social WoT. A composite trust score that blends SatRank with Brainstorm / Vertex would give agents a unified "can I trust this npub AND can I pay them" decision in a single query. Interoperability is already in place via the shared relay layer; cross-signing is the natural extension.
 - **Delegated signing for wallets.** A wallet signing thousands of kind 10040 entries for its power users shouldn't need to prompt for each; NIP-26 delegated signing + a batched UI would remove that friction.
-- **Historical delta APIs on the `/api/agents/:hash/history` endpoint.** Now that the v15 scoring era is clean (pre-v15 snapshots purged 2026-04-09), the 7-day and 30-day deltas start fresh and become meaningful signals for trending nodes.
+- **Historical delta APIs on the `/api/agents/:hash/history` endpoint.** Now that the v18 scoring era is clean (pre-v18 snapshots purged), the 7-day and 30-day deltas start fresh and become meaningful signals for trending nodes.
 
 ---
 
@@ -304,7 +304,7 @@ Three reasons:
 
 2. **It's the only Lightning trust oracle that's Nostr-native from day one.** Not "we have a REST API and also we tweet the scores." The Nostr relays are the canonical distribution layer; NIP-05 verification, NIP-85 publishing (30382 + 10040), and NIP-90 DVM all share the same keypair and the same relay list.
 
-3. **It's production infrastructure, not a demo.** 13,913 active nodes, ~89,000 validated channels, ~9,630 BTC validated capacity, ~650,000 probes per 24 h, 921,968 score snapshots, ~2,400 NIP-85 events published per cycle, backup + recovery path, heartbeat healthchecks, 464-test typed suite, and a Hetzner deployment behind nginx with L402 paid gates on the personalized endpoint. All open source, all reproducible — live values at [`/api/stats`](https://satrank.dev/api/stats).
+3. **It's production infrastructure, not a demo.** 13,913 active nodes, ~89,000 validated channels, ~9,630 BTC validated capacity, ~650,000 probes per 24 h, 921,968 score snapshots, ~2,400 NIP-85 events published per cycle, backup + recovery path, heartbeat healthchecks, 504-test typed suite, and a Hetzner deployment behind nginx with L402 paid gates on the personalized endpoint. All open source, all reproducible — live values at [`/api/stats`](https://satrank.dev/api/stats).
 
 The Lightning Network has been waiting for its reliability oracle. NIP-85 has been waiting for its first real-world protocol bridge. SatRank is both.
 
