@@ -22,7 +22,7 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 
 ## Differentiation
 
-1. **Only NIP-85 provider on the Lightning payment graph.** Every other implementation (Brainstorm, Vertex, wot-scoring, nostr-wot-sdk) scores the Nostr social graph. SatRank bridges an orthogonal trust domain into NIP-85 with zero new kinds.
+1. **A NIP-85 provider on the Lightning payment graph.** Every other implementation (Brainstorm, Vertex, wot-scoring, nostr-wot-sdk) scores the Nostr social graph. SatRank bridges an orthogonal trust domain into NIP-85 with zero new kinds.
 2. **Dual publishing.** Stream A indexes by Lightning pubkey (extension, ~5,000 events / cycle, full graph coverage). Stream B indexes by Nostr pubkey for strict NIP-85 conformance, built from cryptographically-verifiable mappings mined from NIP-57 zap receipts (kind 9735 -> BOLT11 `payee_node_key`) across 9 relays with a 90-day age wall.
 3. **Closed feedback loop.** decide -> pay -> report. Reports are free, weighted by reporter score, with a 2x bonus for preimage-verified payments.
 4. **Multi-amount probing and batch pathfinding.** The probe crawler tests at 4 tiers (1k/10k/100k/1M sats) for hot nodes, exposing `maxRoutableAmount` per node. `POST /api/best-route` runs parallel pathfinding for up to 50 targets in a single call, letting agents find the optimal route in ~0.8 s.
@@ -63,8 +63,6 @@ Free distribution funds adoption, paid `/api/decide` funds infrastructure, free 
 1. **Only NIP-85 provider bridging the Lightning payment graph into the WoT.** A user listing SatRank + Brainstorm in a single kind 10040 receives both `rank` assertions in one REQ: Lightning reliability + social trust, no extra client code.
 2. **Nostr-native from day one,** same keypair, same relay list, same verification path for kind 0, 10040, 30382 (Stream A + B), 5900/6900 and NIP-05.
 3. **Production infrastructure, not a demo.** ~13,900 nodes scored, ~89 k validated channels, ~9,630 BTC validated capacity, 921 k snapshots retained, 504 tests, Docker hardening (cap-drop-ALL, read-only FS), L402 paid gate. All open-source, all reproducible.
-
-The Lightning Network has been waiting for its reliability oracle. NIP-85 has been waiting for its first real-world protocol bridge. SatRank is both.
 
 ---
 
