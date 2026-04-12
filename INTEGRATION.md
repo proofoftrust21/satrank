@@ -214,7 +214,7 @@ SatRank computes a composite trust score (0-100) from 5 weighted factors:
 | Factor | Weight | Source |
 |--------|--------|--------|
 | Volume | 25% | Verified transaction count (log-normalized) |
-| Reputation | 30% | Graph centrality + peer trust (BTC/channel). LN+ ratings as bonus (+8 max) |
+| Reputation | 30% | 5 sub-signals: sovereign PageRank, peer trust, routing quality, capacity trend, fee stability. LN+ ratings as multiplicative modifier (x1.0-1.05) |
 | Seniority | 15% | Days since first seen (diminishing returns) |
 | Regularity | 15% | Consistency of transaction intervals |
 | Diversity | 15% | Unique counterparties (log-normalized) |

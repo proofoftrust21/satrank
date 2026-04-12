@@ -218,7 +218,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <div class="card">
     <div class="card-title">LND Graph (Primary)</div>
-    <p>Full Lightning Network graph from our own LND node, backed by a full Bitcoin Core (<code>bitcoind v28.1</code>) node for channel validation. Currently indexing <strong>13,913 active Lightning nodes</strong> &mdash; cryptographically verified against the Bitcoin UTXO set &mdash; with <strong>4,225 stale nodes</strong> (not seen in 90+ days) preserved for history but excluded from scoring. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes. All numbers here are mirrored from the live <code>/api/stats</code> endpoint &mdash; if this paragraph ever disagrees with the landing page, the landing page wins.</p>
+    <p>Full Lightning Network graph from our own LND node, backed by a full Bitcoin Core (<code>bitcoind v28.1</code>) node for channel validation. Currently indexing <strong>~13,900 active Lightning nodes</strong> &mdash; cryptographically verified against the Bitcoin UTXO set &mdash; with <strong>4,225 stale nodes</strong> (not seen in 90+ days) preserved for history but excluded from scoring. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes. All numbers here are mirrored from the live <code>/api/stats</code> endpoint &mdash; if this paragraph ever disagrees with the landing page, the landing page wins.</p>
   </div>
 
   <div class="card">
@@ -247,7 +247,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   </p>
   <p>
     SatRank&rsquo;s full-node validation reduced the apparent graph by 4,225 nodes to
-    13,913 verified active nodes. The excluded nodes are <strong>stale</strong> (not seen
+    ~13,900 verified active nodes. The excluded nodes are <strong>stale</strong> (not seen
     in 90+ days) and are preserved in the database but excluded from scoring, publishing,
     and statistics. If a stale node reappears in the gossip with a recent update, it is
     automatically restored to the active set &mdash; no history is lost.
@@ -935,8 +935,9 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   <p>
     Each paid query is an anonymous, permissionless signal of demand. An agent that is queried
     frequently is one that others care about &mdash; partners evaluating transactions, services
-    checking trust, or researchers monitoring the network. This demand signal is captured in the
-    <strong>popularity bonus</strong> (max +10 points).
+    checking trust, or researchers monitoring the network. This demand signal is retained in
+    <code>last_queried_at</code> for probe prioritization only; the popularity bonus has been
+    removed from scoring (it was gameable).
   </p>
   <p>
     Unlike page views or API hits, L402 queries have a nonzero cost, which filters out noise.
@@ -980,7 +981,7 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   </p>
   <ul>
     <li>
-      <strong>Stream A &mdash; Lightning-indexed (extension, ~2,400 events / cycle).</strong>
+      <strong>Stream A &mdash; Lightning-indexed (extension, ~5,000 events / cycle).</strong>
       <code>d = &lt;lightning_pubkey&gt;</code>. The default broad stream covering every active
       Lightning node with score &ge; 30. Clients that understand Lightning pubkeys can query the
       entire payment graph this way.
@@ -1000,13 +1001,14 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
     the <code>bolt11</code> tag. The BOLT11 invoice&rsquo;s destination (<code>payee_node_key</code>)
     is cryptographically embedded in the invoice signature &mdash; we decode it and cross-reference
     with the <code>p</code> tag to get a verified <code>(nostr_pubkey, ln_pubkey)</code> tuple. The
-    miner paginates backwards across 6 relays
+    miner paginates backwards across 9 relays
     (<code>damus.io</code>, <code>nos.lol</code>, <code>relay.primal.net</code>,
-    <code>relay.nostr.band</code>, <code>nostr.wine</code>, <code>relay.snort.social</code>)
+    <code>relay.nostr.band</code>, <code>nostr.wine</code>, <code>relay.snort.social</code>
+    and 3 others)
     using NIP-01 <code>until</code>-based pagination, walking up to 40 pages of 500 events per
-    relay with a 60-day age wall. The first paginated run processed ~20,000 distinct receipts
-    (100&nbsp;% BOLT11-decodable), resolved 302 distinct Lightning pubkeys, and produced 281
-    self-hosted candidates &mdash; from which 65 survive the production filter below.
+    relay with a 90-day age wall. The latest production run processed ~15,500 distinct receipts,
+    resolved ~390 distinct Lightning pubkeys &mdash; from which 105 survive the production
+    filter below.
   </p>
   <p>
     <strong>Custodian filter.</strong> Any ln_pubkey paired with more than 1 distinct Nostr
