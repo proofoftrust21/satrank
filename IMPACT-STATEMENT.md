@@ -1,7 +1,7 @@
 # SatRank: Impact Statement
 
 **WoT-a-thon 2026, NIP-85 Excellence prize submission**
-*Route reliability for Lightning payments. The first NIP-85 provider on the payment graph.*
+*Route reliability for Lightning payments. A NIP-85 provider on the payment graph.*
 
 ---
 
