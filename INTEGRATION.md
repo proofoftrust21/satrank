@@ -40,8 +40,8 @@ Add to your MCP client configuration (`mcp-config.json`):
 
 | Tool | Description |
 |------|-------------|
-| `decide` | GO/NO-GO decision with success probability — the primary pre-transaction tool |
-| `report` | Report outcome (success/failure/timeout) — requires SATRANK_API_KEY (FREE) |
+| `decide` | GO/NO-GO decision with success probability, the primary pre-transaction tool |
+| `report` | Report outcome (success/failure/timeout), requires SATRANK_API_KEY (FREE) |
 | `get_profile` | Agent profile with reports, probe uptime, rank, evidence |
 | `get_agent_score` | Full trust score with components, evidence, and verification URLs |
 | `get_verdict` | SAFE/RISKY/UNKNOWN with risk profile and optional personal trust graph |
@@ -188,9 +188,9 @@ curl -H 'Authorization: L402 <macaroon>:<preimage>' \
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `POST /api/report` | API Key | Report outcome (FREE — no payment) |
+| `POST /api/report` | API Key | Report outcome (FREE, no payment) |
 | `GET /api/ping/{pubkey}` | None | Real-time reachability check (FREE) |
-| `POST /api/attestations` | API Key | Submit attestation (FREE — no payment) |
+| `POST /api/attestations` | API Key | Submit attestation (FREE, no payment) |
 | `GET /api/agents/top` | None | Leaderboard |
 | `GET /api/agents/search` | None | Search by alias |
 | `GET /api/agents/movers` | None | Top movers (7-day delta) |

@@ -11,9 +11,9 @@ Internet → nginx (443) → Aperture (8443) → Express (3000)
 ```
 
 - **nginx**: TLS termination, static assets, proxy to Aperture
-- **Aperture**: L402 reverse proxy — generates invoices, verifies payments
+- **Aperture**: L402 reverse proxy that generates invoices and verifies payments
 - **Express**: SatRank API (Docker container)
-- **LND**: Lightning node, backed by a local **bitcoind v28.1** full node for UTXO-validated channel data. Any LND deployment (self-hosted, Voltage, Nodana, …) works — it just needs to expose gRPC or REST with a macaroon.
+- **LND**: Lightning node, backed by a local **bitcoind v28.1** full node for UTXO-validated channel data. Any LND deployment (self-hosted, Voltage, Nodana, ...) works; it just needs to expose gRPC or REST with a macaroon.
 
 ## Prerequisites
 
@@ -61,11 +61,11 @@ dbdir: "/var/lib/aperture"
 ```
 
 **Notes:**
-- `price: 1` — 1 satoshi per query
-- `duration: 31536000` — L402 token valid for 1 year (365 days in seconds)
-- `pathregexp` — only agent/agents endpoints require payment; health/stats/version are free
+- `price: 1`: 1 satoshi per query
+- `duration: 31536000`: L402 token valid for 1 year (365 days in seconds)
+- `pathregexp`: only agent/agents endpoints require payment; health/stats/version are free
 - Replace `<LND_DATA_DIR>` with the absolute path to your LND data directory (where `tls.cert` and `data/chain/bitcoin/mainnet/admin.macaroon` live). Pointing Aperture at LND's live files instead of a copy means a cert regeneration on the LND side is picked up by `systemctl restart aperture` without any file juggling.
-- `host: "localhost:10009"` assumes LND is on the same host and listens on the loopback interface (recommended — see the `restlisten=127.0.0.1:10009` convention in `lnd.conf`). If LND is remote, replace with `hostname:port` and add that IP to LND's `tlsextraip`.
+- `host: "localhost:10009"` assumes LND is on the same host and listens on the loopback interface (recommended; see the `restlisten=127.0.0.1:10009` convention in `lnd.conf`). If LND is remote, replace with `hostname:port` and add that IP to LND's `tlsextraip`.
 
 ### Systemd: /etc/systemd/system/aperture.service
 
@@ -195,7 +195,7 @@ sudo nginx -t && sudo systemctl reload nginx
 - `/api/agent/{hash}`, `/api/agent/{hash}/verdict`, `/api/agent/{hash}/history`, `/api/agent/{hash}/attestations` → nginx → Aperture → Express (L402, 1 sat)
 - `/api/decide` → nginx → Aperture → Express (L402, 1 sat)
 - `/api/profile/{id}` → nginx → Aperture → Express (L402, 1 sat)
-- `/api/verdicts` → nginx → Express direct, gated at Express by `apertureGateAuth` middleware (L402, 1 sat/batch — the middleware returns 402 for non-loopback callers)
+- `/api/verdicts` → nginx → Express direct, gated at Express by `apertureGateAuth` middleware (L402, 1 sat/batch; the middleware returns 402 for non-loopback callers)
 - `/api/report`, `/api/attestations` → nginx → Express direct (free, X-API-Key required)
 - `/api/health`, `/api/stats`, `/api/ping/{pubkey}`, `/api/agents/top`, `/api/agents/movers`, `/api/agents/search`, `/api/docs`, `/api/openapi.json` → nginx → Express direct (free, no auth)
 - `/`, static assets, `/methodology.html` → nginx → Express static (free)
@@ -399,7 +399,7 @@ show exact counts (`scored X/Y errors=0`) for each pass.
 
 ## 8. Snapshot retention
 
-The `score_snapshots` table grows with every score computation — on the production
+The `score_snapshots` table grows with every score computation. On the production
 mainnet instance each cycle writes ~7,000+ rows, and the retention cron keeps the
 last 45 days.
 
@@ -407,14 +407,14 @@ The retention policy is defined in `src/config/retention.ts` and applied by a
 dedicated cron inside the crawler process (not embedded in each crawl):
 
 - **`RETENTION_POLICIES`** (flat cutoff per table):
-  - `probe_results`       — 14 days (regularity uses the last 7, kept 2× for margin)
-  - `score_snapshots`     — **45 days** (delta windows up to 30d, kept 1.5× for margin)
-  - `channel_snapshots`   — 14 days
-  - `fee_snapshots`       — 14 days
-- **`RETENTION_CHUNK_SIZE`** — deletes run in chunks of 50,000 rows per
+  - `probe_results`: 14 days (regularity uses the last 7, kept 2x for margin)
+  - `score_snapshots`: **45 days** (delta windows up to 30d, kept 1.5x for margin)
+  - `channel_snapshots`: 14 days
+  - `fee_snapshots`: 14 days
+- **`RETENTION_CHUNK_SIZE`**: deletes run in chunks of 50,000 rows per
   transaction so the SQLite WAL never balloons (previous multi-million-row
-  monolithic `DELETE` grew the WAL past 1 GB and stalled — that's why chunking).
-- **`RETENTION_INTERVAL_MS`** — the retention cron runs every **24 hours**,
+  monolithic `DELETE` grew the WAL past 1 GB and stalled, which is why chunking).
+- **`RETENTION_INTERVAL_MS`**: the retention cron runs every **24 hours**,
   independent from the crawler's data ingestion cycle. At startup it also runs
   once immediately.
 

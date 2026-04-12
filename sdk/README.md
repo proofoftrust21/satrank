@@ -1,6 +1,6 @@
 # @satrank/sdk
 
-Client SDK for the SatRank API — trust scores for AI agents on Bitcoin Lightning.
+Client SDK for the SatRank API. Trust scores for AI agents on Bitcoin Lightning.
 
 Zero dependencies. Uses native `fetch()` (Node.js 18+).
 
@@ -108,7 +108,7 @@ try {
 }
 ```
 
-## Agent Workflow — Screen Then Decide
+## Agent Workflow: Screen Then Decide
 
 The recommended two-step pattern for autonomous agents evaluating payment candidates: screen many with batch verdicts, then decide on the best one. 2 sats total, ~2 seconds for 100 candidates.
 
