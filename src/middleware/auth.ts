@@ -74,7 +74,23 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
     return;
   }
 
-  // Layer 1: localhost check (Aperture → Express on loopback)
+  // Path A: Operator token bypass — nginx routes X-Aperture-Token requests
+  // directly to Express (bypassing Aperture). The token proves the caller
+  // is the operator or an internal service with the shared secret.
+  // This path skips the localhost check because the request comes from
+  // the public internet (req.ip = client IP, not 127.0.0.1).
+  if (config.APERTURE_SHARED_SECRET) {
+    const provided = req.headers['x-aperture-token'] as string | undefined;
+    if (provided && safeEqual(provided, config.APERTURE_SHARED_SECRET)) {
+      next();
+      return;
+    }
+  }
+
+  // Path B: L402 payment flow — Aperture sits between nginx and Express.
+  // Aperture validates the L402 macaroon+preimage and forwards to Express
+  // on loopback. The localhost check confirms the request came through
+  // Aperture (port 8082 → port 3000 on 127.0.0.1).
   const ip = req.ip ?? req.socket.remoteAddress ?? '';
   const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 
@@ -83,21 +99,14 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
     return;
   }
 
-  // Layer 2: shared secret check — defense-in-depth for when Aperture
-  // is NOT in the request path. When Aperture validates an L402 token,
-  // it forwards the request with an Authorization header containing the
-  // macaroon+preimage. If that header is present, the request already
-  // went through Aperture's payment verification → trust it.
-  // Only enforce the shared secret for requests that bypassed Aperture
-  // (e.g., direct nginx → Express without payment, or misconfigured proxy).
+  // Additional defense-in-depth for Path B: if no L402 Authorization
+  // header is present, the request bypassed Aperture (e.g., nginx
+  // misconfiguration routing directly to Express on localhost). Block it.
   const hasL402Auth = (req.headers.authorization ?? '').startsWith('L402 ') ||
     (req.headers.authorization ?? '').startsWith('LSAT ');
   if (!hasL402Auth && config.APERTURE_SHARED_SECRET) {
-    const provided = req.headers['x-aperture-token'] as string | undefined;
-    if (!provided || !safeEqual(provided, config.APERTURE_SHARED_SECRET)) {
-      next(new PaymentRequiredError());
-      return;
-    }
+    next(new PaymentRequiredError());
+    return;
   }
 
   next();
