@@ -91,9 +91,6 @@ if (evidence.reputation) {
   console.log(evidence.reputation.sourceUrl); // lightningnetwork.plus link
 }
 
-// Popularity
-console.log(evidence.popularity.queryCount);
-console.log(evidence.popularity.bonusApplied); // 0-10
 ```
 
 ### Error Handling
