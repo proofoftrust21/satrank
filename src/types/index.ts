@@ -186,7 +186,6 @@ export interface HealthResponse {
 export interface NetworkStats {
   totalAgents: number;
   totalEndpoints: number;
-  totalAiAgents: number;
   nodesProbed: number;
   phantomRate: number;
   verifiedReachable: number;

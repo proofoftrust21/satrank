@@ -75,7 +75,6 @@ export class StatsService {
       return {
         totalAgents: this.agentRepo.count(),
         totalEndpoints: this.agentRepo.countBySource('lightning_graph'),
-        totalAiAgents: this.agentRepo.countBySource('observer_protocol'),
         nodesProbed,
         phantomRate: nodesProbed > 0 ? Math.round((1 - verifiedReachable / nodesProbed) * 100) : 0,
         verifiedReachable,
