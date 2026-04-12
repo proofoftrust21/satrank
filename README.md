@@ -5,7 +5,7 @@
 SatRank is a trust oracle for the Lightning Network. Before each payment, an agent queries SatRank for a GO/NO-GO decision: one request, one answer, 1 sat via L402.
 
 - Backed by a full **bitcoind v28.1** node + **LND**, not Neutrino or gossip. Every channel capacity is UTXO-validated.
-- Tracks **~13,900 active Lightning nodes** (schema v19, post-migration), probes them every 30 minutes, publishes trust assertions on Nostr every 6 hours.
+- Tracks **~13,900 active Lightning nodes** (schema v20, post-migration), probes them every 30 minutes at multiple amount tiers, publishes trust assertions on Nostr every 6 hours.
 - **61 %** of the Lightning graph is unreachable in routing ("phantom nodes"). The exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
 - First **NIP-85** provider bridging the Lightning payment graph into the Web of Trust. Every other NIP-85 implementation scores the Nostr social graph. SatRank scores who you can actually pay.
 
@@ -29,13 +29,15 @@ nak req -k 30382 -a 5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707d
 
 Prefer HTTP? SatRank also exposes the same data via a free `GET /api/agents/top` endpoint and a paid `POST /api/decide` endpoint gated by L402 (1 sat/query).
 
-## Agent workflow: screen then decide
+## Agent workflow: screen, route, decide
 
-The recommended pattern for autonomous agents making payments: screen many, then decide on one.
+The recommended pattern for autonomous agents making payments: screen many, pick the best route, then decide on the winner.
 
 **Step 1: Screen.** `POST /api/verdicts` with up to 100 target hashes in a single request. Returns score, verdict (SAFE/RISKY/UNKNOWN), and confidence for each target. One L402 payment of 1 sat covers the entire batch.
 
-**Step 2: Decide.** `POST /api/decide` on the single best candidate from step 1. Returns GO/NO-GO, 5 probability components, personalized pathfinding from your position, risk profile, and survival prediction. 1 sat.
+**Step 2: Route.** `POST /api/best-route` with the SAFE subset from step 1. Returns the top 3 candidates sorted by a composite rank (score, hops, fees). All pathfinding runs in parallel. 1 sat.
+
+**Step 3: Decide.** `POST /api/decide` on the top candidate from step 2. Returns GO/NO-GO, 5 probability components, personalized pathfinding from your position, risk profile, survival prediction, fee volatility index, and max routable amount. 1 sat.
 
 ```bash
 # Step 1: Screen 100 candidates (1 sat for the whole batch)
@@ -43,19 +45,25 @@ curl -X POST https://satrank.dev/api/verdicts \
   -H "Content-Type: application/json" \
   -d '{"hashes": ["<hash1>", "<hash2>", "...up to 100"]}'
 
-# Step 2: Decide on the best SAFE candidate (1 sat)
+# Step 2: Find best route among SAFE candidates (1 sat)
+curl -X POST https://satrank.dev/api/best-route \
+  -H "Content-Type: application/json" \
+  -d '{"targets": ["<safe1>", "<safe2>", "..."], "caller": "<your-hash>", "amountSats": 50000}'
+
+# Step 3: Decide on the winner (1 sat)
 curl -X POST https://satrank.dev/api/decide \
   -H "Content-Type: application/json" \
-  -d '{"target": "<best-safe-hash>", "caller": "<your-hash>"}'
+  -d '{"target": "<best-route-hash>", "caller": "<your-hash>"}'
 ```
 
 | Step | Endpoint | Latency | Cost | Returns |
 |------|----------|---------|------|---------|
 | Screen | `POST /api/verdicts` | ~1.5 s (100 targets, 15 ms/target) | 1 sat / batch | verdict + score + confidence per target |
-| Decide | `POST /api/decide` | ~230 ms (includes LND QueryRoutes) | 1 sat | GO/NO-GO + success rate + pathfinding |
-| **Total** | | **~2 seconds** | **2 sats** | **Informed decision from 100 candidates** |
+| Route | `POST /api/best-route` | ~0.8 s (parallel QueryRoutes) | 1 sat | top 3 candidates by composite rank |
+| Decide | `POST /api/decide` | ~0.5 s (with re-probe if stale) | 1 sat | GO/NO-GO + success rate + pathfinding + fee volatility |
+| **Total** | | **~3 seconds** | **3 sats** | **Fully informed decision from 100 candidates** |
 
-**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in 1.5 s. Decide on the highest-scoring SAFE node returns GO with rate=0.987 in 230 ms. Total: 2 sats, ~2 seconds.
+**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in 1.5 s. Best-route narrows to the top 3 by route quality in 0.8 s. Decide on the winner returns GO with rate=0.987, feeVolatilityIndex=0.91, maxRoutableAmount=100000 in 0.5 s. Total: 3 sats, ~3 seconds.
 
 ## Architecture
 
@@ -72,7 +80,7 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>5 min] --> SE
 
-  GC --> DB[(SQLite<br/>schema v19)]
+  GC --> DB[(SQLite<br/>schema v20)]
   PC --> DB
   LP --> DB
 
@@ -114,7 +122,7 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
 | Tests (vitest) | **504 / 38 files** green | `npm test` |
-| Schema version | **v19** | `SELECT * FROM schema_version` |
+| Schema version | **v20** | `SELECT * FROM schema_version` |
 
 Numbers are pulled live from `/api/stats` (free endpoint, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
 
@@ -140,7 +148,7 @@ Multiplicative modifiers: verified-tx x1.0-1.10, LN+ ratings x1.0-1.05, probe pe
 - Attester score weighting (PageRank-like recursion)
 - Attestation source concentration penalty
 
-**Verdict thresholds** (`GET /api/agent/{hash}/verdict`): SAFE >= 47 (post-v19 recalibration), UNKNOWN 30-46, RISKY < 30 or critical flags. See `public/methodology.html` for the full rationale.
+**Verdict thresholds** (`GET /api/agent/{hash}/verdict`): SAFE >= 47 (post-v19 recalibration, unchanged in v20), UNKNOWN 30-46, RISKY < 30 or critical flags. See `public/methodology.html` for the full rationale.
 
 ## API
 
@@ -177,7 +185,8 @@ curl https://satrank.dev/api/agent/<hash>/verdict
 
 | Method | Endpoint | Purpose | Cost |
 |---|---|---|---|
-| POST | `/api/decide` | GO/NO-GO with success probability + personalized pathfinding | 1 sat |
+| POST | `/api/decide` | GO/NO-GO with success probability + pathfinding + fee volatility + max routable amount | 1 sat |
+| POST | `/api/best-route` | Batch pathfinding for up to 50 targets, returns top 3 by composite rank | 1 sat |
 | POST | `/api/report` | Report transaction outcome (weighted by reporter score) | free (API key) |
 | GET | `/api/profile/:id` | Full agent profile with reports, uptime, rank | 1 sat |
 | GET | `/api/ping/:pubkey` | Real-time reachability (QueryRoutes live) | free |
@@ -467,7 +476,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - [x] Aperture integration (L402 reverse proxy): monetize queries in sats
 - [x] Observer Protocol crawler: automatic on-chain data ingestion
 - [x] Lightning graph crawler: channel topology and capacity via LND node (bitcoind v28.1 UTXO-validated)
-- [x] Route probe crawler: reachability testing every 30 minutes
+- [x] Route probe crawler: reachability testing every 30 minutes, multi-amount probing (1k/10k/100k/1M sats)
 - [x] TypeScript SDK for agents (`@satrank/sdk`)
 - [x] Verdict API: SAFE/RISKY/UNKNOWN binary decision
 - [x] MCP server: agent-native access via stdio (12 tools)
@@ -478,6 +487,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - [x] NIP-05 verification (`satrank@satrank.dev`)
 - [x] Chunked retention cleanup cron for time-series tables
 - [x] v19 scoring calibration: sovereign PageRank, 5 reputation sub-signals, multiplicative modifiers
+- [x] v20: multi-amount probing (1k/10k/100k/1M sats), re-probe on-demand for stale data, best-route batch pathfinding, feeVolatilityIndex, maxRoutableAmount
 - [ ] 4tress connector: verified attestations
 - [ ] Trust network visualization dashboard
 - [ ] Per-component NIP-85 keys (`30382:volume`, `30382:reputation`, …)

@@ -196,6 +196,7 @@ sudo nginx -t && sudo systemctl reload nginx
 - `/api/decide` → nginx → Aperture → Express (L402, 1 sat)
 - `/api/profile/{id}` → nginx → Aperture → Express (L402, 1 sat)
 - `/api/verdicts` → nginx → Express direct, gated at Express by `apertureGateAuth` middleware (L402, 1 sat/batch; the middleware returns 402 for non-loopback callers)
+- `/api/best-route` → nginx → Express direct, gated at Express by `apertureGateAuth` middleware (L402, 1 sat)
 - `/api/report`, `/api/attestations` → nginx → Express direct (free, X-API-Key required)
 - `/api/health`, `/api/stats`, `/api/ping/{pubkey}`, `/api/agents/top`, `/api/agents/movers`, `/api/agents/search`, `/api/docs`, `/api/openapi.json` → nginx → Express direct (free, no auth)
 - `/`, static assets, `/methodology.html` → nginx → Express static (free)
@@ -375,7 +376,8 @@ Each data source runs on its own timer in `--cron` mode. At startup, a full craw
 | `CRAWL_INTERVAL_LNPLUS_MS` | `86400000` (24 hours) | LN+ community ratings |
 | `CRAWL_INTERVAL_PROBE_MS` | `1800000` (30 min) | Route probe (reachability check) |
 | `PROBE_MAX_PER_SECOND` | `15` | Max probes per second (rate limiter) |
-| `PROBE_AMOUNT_SATS` | `1000` | Amount in sats to test routes with |
+| `PROBE_AMOUNT_SATS` | `1000` | Base amount in sats to test routes with (multi-amount probing escalates to 10k/100k/1M for hot nodes) |
+| `DECIDE_REPROBE_STALE_SEC` | `1800` | Max age (seconds) of probe data before `/api/decide` fires a live re-probe at the caller's amountSats |
 
 Override in `.env.production`:
 

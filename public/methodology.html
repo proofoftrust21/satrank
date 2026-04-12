@@ -277,6 +277,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     <li><strong>Capacity-weighted volume.</strong> Volume is now a 50/50 blend of channel count and total capacity (BTC). This prevents gaming via hundreds of tiny channels with negligible capacity.</li>
     <li><strong>Popularity bonus removed.</strong> The query-count-based popularity bonus was trivially gameable (a node could query itself). It has been removed from scoring entirely. The demand signal remains in <code>last_queried_at</code> for probe prioritization only.</li>
     <li><strong>Graduated probe penalty.</strong> Unreachable nodes are penalized by cause: dead nodes (&times;0.65) and abandoned nodes (&times;0.70) are penalized far more heavily than liquidity-constrained nodes (&times;0.90). This replaces the old flat penalty.</li>
+    <li><strong>Multi-amount probing (v20).</strong> The probe crawler now tests at 4 tiers: 1k, 10k, 100k, and 1M sats. Higher tiers run only for &ldquo;hot&rdquo; nodes (recently queried via <code>/decide</code>) and stop escalating at the first failure. The highest successful tier is exposed as <code>maxRoutableAmount</code> in the decide response. Migration v20 adds the <code>probe_amount_sats</code> column.</li>
   </ul>
 
   <!-- Limitations -->
@@ -500,19 +501,21 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   </p>
 
   <!-- Agent Workflow -->
-  <h3>Recommended Agent Workflow &mdash; Screen Then Decide</h3>
+  <h3>Recommended Agent Workflow: Screen, Route, Decide</h3>
   <p>
-    The optimal pattern for autonomous agents: screen many candidates in one batch, then make
-    a personalized decision on the best one. Two API calls, 2 sats, ~2 seconds.
+    The optimal pattern for autonomous agents: screen many candidates in one batch, find the best
+    route among the safe ones, then make a personalized decision on the winner. Three API calls,
+    3 sats, ~3 seconds.
   </p>
-  <pre>100 candidates &rarr; POST /api/verdicts &rarr; 42 SAFE &rarr; POST /api/decide &rarr; GO
-                       1 sat, ~1.5 s              1 sat, ~230 ms
-                                total: 2 sats, ~2 seconds</pre>
+  <pre>100 candidates &rarr; POST /api/verdicts &rarr; 42 SAFE &rarr; POST /api/best-route &rarr; top 3 &rarr; POST /api/decide &rarr; GO
+                       1 sat, ~1.5 s                       1 sat, ~0.8 s                    1 sat, ~0.5 s
+                                                    total: 3 sats, ~3 seconds</pre>
   <table>
     <thead><tr><th>Step</th><th>Endpoint</th><th>Latency</th><th>Cost</th><th>Returns</th></tr></thead>
     <tbody>
       <tr><td><strong>Screen</strong></td><td><code>POST /api/verdicts</code></td><td>~1.5 s (15 ms/target)</td><td>1 sat / batch</td><td>verdict + score + confidence per target</td></tr>
-      <tr><td><strong>Decide</strong></td><td><code>POST /api/decide</code></td><td>~230 ms (incl. QueryRoutes)</td><td>1 sat</td><td>GO/NO-GO + success rate + pathfinding</td></tr>
+      <tr><td><strong>Route</strong></td><td><code>POST /api/best-route</code></td><td>~0.8 s (parallel QueryRoutes)</td><td>1 sat</td><td>top 3 candidates by composite rank</td></tr>
+      <tr><td><strong>Decide</strong></td><td><code>POST /api/decide</code></td><td>~0.5 s (with re-probe if stale)</td><td>1 sat</td><td>GO/NO-GO + success rate + pathfinding + fee volatility</td></tr>
     </tbody>
   </table>
 
@@ -853,6 +856,20 @@ P_empirical = weighted success rate from past reports         // Did other agent
   <p>
     <code>go = true</code> when <code>successRate &ge; 0.5</code> and no critical flags
     (<code>fraud_reported</code>, <code>negative_reputation</code>).
+  </p>
+
+  <h3>Additional Decide Response Fields</h3>
+  <ul>
+    <li><strong><code>feeVolatilityIndex</code></strong> (0&ndash;1 or null) &mdash; fee stability of the target node. 0 = highly volatile fees, 1 = perfectly stable. Null when no fee snapshot data is available. Agents should treat values below 0.3 as a warning that fees may change before the payment settles.</li>
+    <li><strong><code>maxRoutableAmount</code></strong> (integer or null) &mdash; highest amount in sats for which a route was found in recent multi-amount probes (1k / 10k / 100k / 1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.</li>
+  </ul>
+
+  <h3>Re-probe on Demand</h3>
+  <p>
+    When the last probe for a target is older than 30 minutes (configurable via <code>DECIDE_REPROBE_STALE_SEC</code>),
+    <code>/api/decide</code> fires a live <code>queryRoutes</code> before answering, using the request&rsquo;s
+    <code>amountSats</code> (not the default 1k). This adds ~470 ms on the first call; subsequent calls within
+    30 minutes use the fresh cache. The result is stored in <code>probe_results</code> for future calls.
   </p>
 
   <h3>Report</h3>

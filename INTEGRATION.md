@@ -183,6 +183,7 @@ curl -H 'Authorization: L402 <macaroon>:<preimage>' \
 | `GET /api/agent/{hash}/history` | L402 | Score history over time |
 | `GET /api/agent/{hash}/attestations` | L402 | Attestations received |
 | `POST /api/verdicts` | L402 | Batch verdict (up to 100 hashes) |
+| `POST /api/best-route` | L402 | Batch pathfinding (up to 50 targets, top 3 by route quality) |
 
 ### Free endpoints
 

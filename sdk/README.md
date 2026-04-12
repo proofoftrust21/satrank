@@ -54,11 +54,12 @@ const results = await client.searchAgents('ACINQ');
 | `getStats()` | `NetworkStats` | Global network statistics |
 | `getHealth()` | `HealthResponse` | Service health |
 | `getVersion()` | `VersionResponse` | Build info |
-| `decide(input)` | `DecideResponse` | GO/NO-GO with 5 probabilities + pathfinding |
+| `decide(input)` | `DecideResponse` | GO/NO-GO with probabilities + pathfinding + feeVolatilityIndex + maxRoutableAmount |
 | `report(input)` | `ReportResponse` | Submit payment outcome (success/failure/timeout) |
 | `getBatchVerdicts(hashes)` | `BatchVerdictItem[]` | Screen up to 100 targets in one call |
 | `getProfile(id)` | `ProfileResponse` | Full agent profile with evidence |
 | `getMovers()` | `MoversResponse` | Top score movers (7-day delta) |
+| `bestRoute(input)` | `BestRouteResponse` | Batch pathfinding for up to 50 targets, top 3 by composite rank |
 | `transact(target, caller, payFn)` | `TransactResult` | Decide, pay, report in one call |
 
 ### L402 Authentication
@@ -156,9 +157,9 @@ The `transact()` response includes everything:
 
 Cost: 2 sats (1 for decide + 1 for report). Latency: ~500ms + your payment time.
 
-## Agent Workflow: Screen Then Decide
+## Agent Workflow: Screen, Route, Decide
 
-The recommended two-step pattern for autonomous agents evaluating payment candidates: screen many with batch verdicts, then decide on the best one. 2 sats total, ~2 seconds for 100 candidates.
+The recommended three-step pattern for autonomous agents evaluating payment candidates: screen many with batch verdicts, find the best route, then decide on the winner. 3 sats total, ~3 seconds for 100 candidates.
 
 ```typescript
 import { SatRankClient, SatRankError } from '@satrank/sdk';
@@ -180,30 +181,38 @@ const response = await fetch('https://satrank.dev/api/verdicts', {
 });
 const { verdicts } = await response.json();
 
-// Filter to SAFE nodes and sort by score
+// Filter to SAFE nodes
 const safeNodes = verdicts
   .filter((v: { verdict: string }) => v.verdict === 'SAFE')
-  .sort((a: { score: number }, b: { score: number }) => b.score - a.score);
+  .map((v: { hash: string }) => v.hash);
 
-// Step 2: Decide on the best candidate (1 sat, ~230ms incl. LND QueryRoutes)
-if (safeNodes.length > 0) {
-  const best = safeNodes[0];
-  const decision = await client.decide({
-    target: best.hash,
-    caller: '<your-pubkey-hash>',
-  });
+// Step 2: Find best route among SAFE candidates (1 sat, ~0.8s)
+const routeResult = await client.bestRoute({
+  targets: safeNodes,
+  caller: '<your-pubkey-hash>',
+  amountSats: 50000,
+});
+const topCandidate = routeResult.candidates[0]; // top by composite rank
 
-  if (decision.go) {
-    // Pay with confidence — successRate is 0-1, e.g. 0.987
-    console.log(`GO: ${best.hash}, rate=${decision.successRate}`);
-    await myWallet.pay(best.hash, amountSats);
-  }
+// Step 3: Decide on the winner (1 sat, ~0.5s with re-probe if stale)
+const decision = await client.decide({
+  target: topCandidate.target,
+  caller: '<your-pubkey-hash>',
+});
+
+if (decision.go) {
+  // Pay with confidence
+  // feeVolatilityIndex: 0 = volatile, 1 = stable (< 0.3 = warning)
+  // maxRoutableAmount: highest amount with a known route (compare with your payment)
+  console.log(`GO: rate=${decision.successRate}, feeVol=${decision.feeVolatilityIndex}, maxRoute=${decision.maxRoutableAmount}`);
+  await myWallet.pay(topCandidate.target, amountSats);
 }
 
 // Concrete numbers:
 // - 100 candidates screened in ~1.5s (15ms/target), 1 sat
-// - 1 decision in ~230ms, 1 sat
-// - Total: 2 sats, ~2 seconds, informed decision
+// - Best route found in ~0.8s (parallel QueryRoutes), 1 sat
+// - 1 decision in ~0.5s (re-probe if stale), 1 sat
+// - Total: 3 sats, ~3 seconds, fully informed decision
 ```
 
 ## License

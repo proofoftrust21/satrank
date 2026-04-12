@@ -24,7 +24,8 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 
 1. **Only NIP-85 provider on the Lightning payment graph.** Every other implementation (Brainstorm, Vertex, wot-scoring, nostr-wot-sdk) scores the Nostr social graph. SatRank bridges an orthogonal trust domain into NIP-85 with zero new kinds.
 2. **Dual publishing.** Stream A indexes by Lightning pubkey (extension, ~5,000 events / cycle, full graph coverage). Stream B indexes by Nostr pubkey for strict NIP-85 conformance, built from cryptographically-verifiable mappings mined from NIP-57 zap receipts (kind 9735 -> BOLT11 `payee_node_key`) across 9 relays with a 90-day age wall.
-3. **Closed feedback loop.** decide → pay → report. Reports are free, weighted by reporter score, with a 2× bonus for preimage-verified payments.
+3. **Closed feedback loop.** decide -> pay -> report. Reports are free, weighted by reporter score, with a 2x bonus for preimage-verified payments.
+4. **Multi-amount probing and batch pathfinding.** The probe crawler tests at 4 tiers (1k/10k/100k/1M sats) for hot nodes, exposing `maxRoutableAmount` per node. `POST /api/best-route` runs parallel pathfinding for up to 50 targets in a single call, letting agents find the optimal route in ~0.8 s.
 
 ## Key metrics (2026-04-09)
 
@@ -37,6 +38,8 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 | Strict NIP-85 events on relays (Stream B) | **105** |
 | Test suite | **504 tests / 38 files**, all green |
 | L402 paywall | **validated end-to-end** (1 sat per `/api/decide` call) |
+| Agent workflow | **3 sats, ~3 s** (screen 100 + best-route + decide) |
+| Schema version | **v20** |
 
 ## NIP-85 compliance
 

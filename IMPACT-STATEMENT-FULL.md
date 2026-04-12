@@ -28,7 +28,7 @@ Under the hood, SatRank runs a full-stack observability pipeline:
 
 - **bitcoind v28.1 full node** for UTXO validation for every channel in the Lightning graph.
 - **LND** for gossip ingestion, peer discovery, probe routing.
-- **Probe routing:** every 30 minutes, SatRank probes the reachable graph from its own node, recording reachability, latency, and hop counts. That's roughly ~650,000 probes per 24 h in steady state (see live `/api/stats.probes24h`).
+- **Probe routing:** every 30 minutes, SatRank probes the reachable graph from its own node at 4 amount tiers (1k, 10k, 100k, 1M sats for hot nodes), recording reachability, latency, and hop counts. That is roughly ~650,000 probes per 24 h in steady state (see live `/api/stats.probes24h`). When `/api/decide` encounters stale probe data (older than 30 min, configurable via `DECIDE_REPROBE_STALE_SEC`), it fires a live re-probe at the caller's actual amount before answering.
 - **Channel and fee snapshots:** every hour, captures topology and fee structure to detect churn and volatility.
 - **5-factor scoring:** volume (channels x capacity blend), reputation (sovereign PageRank, peer trust, routing quality, capacity trend, fee stability), seniority, regularity, diversity. Composite score 0-100 with anti-gaming (mutual-loop detection, 3-hop and 4-hop cycle BFS, mandatory minimum age for attestations).
 - **Distribution via Nostr (NIP-85):** every 6 hours, scores are signed and published to three canonical relays as kind `30382:rank` assertions. ~5,000 nodes per cycle (score ≥ 30). Zero platform lock-in.
@@ -54,7 +54,7 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>every 5 min] --> SE
 
-  GC --> DB[(SQLite · schema v19<br/>agents / snapshots / probes)]
+  GC --> DB[(SQLite · schema v20<br/>agents / snapshots / probes)]
   PC --> DB
   LP --> DB
 
@@ -140,6 +140,10 @@ Five capabilities unique to SatRank in the 2026 NIP-85 / WoT / Lightning landsca
 3. **Native L402 paywall on the `/api/decide` oracle endpoint.** 1 sat per personalized decision, a functioning crypto-native business model, not a theoretical monetization. Aperture reverse-proxies the gate.
 4. **Closed feedback loop.** `decide → pay → report`. Reports are free, weighted by the reporter's own score, and preimage-verified reports get a 2x weight bonus. Usage improves decisions, better decisions attract more usage.
 5. **Survival score.** 7-day forward-looking prediction (stable / at_risk / likely_dead) derived from score trajectory, probe stability, and gossip freshness. No machine learning, deterministic, reproducible from the data in this repo.
+6. **Multi-amount probing.** The probe crawler tests at 4 tiers (1k, 10k, 100k, 1M sats), escalating only for "hot" nodes recently queried via `/decide`. This exposes `maxRoutableAmount` per node so agents can verify capacity before committing to a payment amount. Higher tiers stop at the first failure to avoid wasting probe budget.
+7. **Re-probe on-demand.** When `/api/decide` encounters probe data older than 30 minutes (configurable via `DECIDE_REPROBE_STALE_SEC`), it fires a live `queryRoutes` at the request's actual `amountSats` before answering. Adds ~470 ms on the first call; subsequent calls within the window use the fresh cache.
+8. **Batch pathfinding.** `POST /api/best-route` runs parallel `queryRoutes` for up to 50 targets in a single L402-gated call (~500-800 ms for 50 targets). Returns the top 3 candidates sorted by a composite rank (score * 10 - hops * 50 - fee/1000). Combined with `/api/verdicts`, the full screen-route-decide workflow costs 3 sats and completes in ~3 seconds.
+9. **Fee volatility index.** The `/api/decide` response includes `feeVolatilityIndex` (0 = volatile, 1 = stable, null = no data). Agents can treat values below 0.3 as a warning that fees may shift before the payment settles.
 
 ---
 
@@ -259,13 +263,13 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Probe cycle coverage | full graph, every 30 minutes |
 | Score snapshots stored | **921,968** (retained 45 days, chunked purge) |
 | Scoring components | **5** (volume, reputation, seniority, regularity, diversity) |
-| Verdict SAFE threshold (post-v19 calibration) | **score >= 47** |
+| Verdict SAFE threshold (post-v19 calibration, unchanged in v20) | **score >= 47** |
 | Anti-gaming checks | mutual-loop, 3-hop BFS, 4-hop BFS, attester min-age, source concentration |
 | Bitcoin trust root | **bitcoind v28.1** full node |
 | Nostr relays published to | **3** canonical (damus.io, nos.lol, primal.net) |
 | Canonical NIP-85 result tag | **`rank`** (alongside `score` and 5 component tags) |
 | Test suite | **504 tests / 38 files**, all green on submission commit |
-| Database schema version | **v19** |
+| Database schema version | **v20** |
 
 ---
 
@@ -292,7 +296,7 @@ SatRank isn't a hackathon project, it's infrastructure. The post-submission road
 - **Per-component NIP-85 keys.** The spec says providers MUST use different service keys per algorithm. SatRank currently uses one key for the composite score; the next iteration will split `30382:volume`, `30382:reputation`, `30382:regularity`, etc. onto their own service keys so users can pick-and-choose components in their kind 10040.
 - **Cross-signing with other NIP-85 providers.** SatRank's Lightning data is orthogonal to social WoT. A composite trust score that blends SatRank with Brainstorm / Vertex would give agents a unified "can I trust this npub AND can I pay them" decision in a single query. Interoperability is already in place via the shared relay layer; cross-signing is the natural extension.
 - **Delegated signing for wallets.** A wallet signing thousands of kind 10040 entries for its power users shouldn't need to prompt for each; NIP-26 delegated signing + a batched UI would remove that friction.
-- **Historical delta APIs on the `/api/agents/:hash/history` endpoint.** Now that the v19 scoring era is clean (pre-v19 snapshots purged), the 7-day and 30-day deltas start fresh and become meaningful signals for trending nodes.
+- **Historical delta APIs on the `/api/agents/:hash/history` endpoint.** Now that the v20 scoring era is clean (pre-v19 snapshots purged), the 7-day and 30-day deltas start fresh and become meaningful signals for trending nodes.
 
 ---
 
