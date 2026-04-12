@@ -58,20 +58,39 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
 // L402 gate — Aperture handles payment verification and forwards valid requests.
 // In production, Express is behind Hetzner firewall (port 3000 blocked externally).
 // The only path to paid endpoints is: Internet → Nginx → Aperture → Express (localhost).
-// So we trust requests from localhost in production. In dev, always passthrough.
+//
+// Defense in depth: if APERTURE_SHARED_SECRET is configured, require it as an
+// X-Aperture-Token header in addition to the localhost check. This protects
+// against two scenarios:
+//   1. Aperture is not yet deployed (localhost check passes for nginx-forwarded
+//      requests, bypassing payment entirely).
+//   2. A CDN is added in front of nginx without incrementing `trust proxy` —
+//      an attacker could forge X-Forwarded-For: 127.0.0.1 and pass the IP check.
+// With the shared secret, both attacks fail because the secret is only known
+// to Aperture and Express.
 export function apertureGateAuth(req: Request, _res: Response, next: NextFunction): void {
   if (config.NODE_ENV !== 'production') {
     next();
     return;
   }
 
-  // In production: trust Aperture forwarding from localhost
+  // Layer 1: localhost check (Aperture → Express on loopback)
   const ip = req.ip ?? req.socket.remoteAddress ?? '';
-  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
-    next();
+  const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+
+  if (!isLocalhost) {
+    next(new PaymentRequiredError());
     return;
   }
 
-  // Direct access from non-localhost in production — reject
-  next(new PaymentRequiredError());
+  // Layer 2: shared secret check (if configured)
+  if (config.APERTURE_SHARED_SECRET) {
+    const provided = req.headers['x-aperture-token'] as string | undefined;
+    if (!provided || !safeEqual(provided, config.APERTURE_SHARED_SECRET)) {
+      next(new PaymentRequiredError());
+      return;
+    }
+  }
+
+  next();
 }

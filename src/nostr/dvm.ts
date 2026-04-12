@@ -66,7 +66,10 @@ export class SatRankDvm {
   // Deduplicate requests that arrive via multiple relays — each relay
   // forwards the same event id to its own subscription, and without this
   // the DVM would process and respond to the same job N times.
-  private seenRequests = new Set<string>();
+  // Time-bounded Map (event_id → timestamp) instead of unbounded Set:
+  // entries older than 5 minutes are pruned on each new request, which
+  // both caps memory and provides a predictable dedup window.
+  private seenRequests = new Map<string, number>();
 
   // Per-relay reconnect bookkeeping. Each relay has its own attempt counter
   // and its own pending timer; both are cleared on successful subscribe.
@@ -268,16 +271,18 @@ export class SatRankDvm {
     arrivedVia: string,
   ): Promise<void> {
     // Dedupe: a job can be forwarded by multiple relays; process and
-    // respond exactly once.
+    // respond exactly once. Time-bounded: entries older than 5 minutes
+    // are pruned so memory stays bounded and the dedup window is predictable.
+    const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+    const now = Date.now();
     if (this.seenRequests.has(event.id)) {
       logger.debug({ eventId: event.id.slice(0, 12), relay: arrivedVia }, 'DVM job request duplicate — ignored');
       return;
     }
-    this.seenRequests.add(event.id);
-    // Cap the dedupe set so it doesn't grow unbounded over days of uptime
-    if (this.seenRequests.size > 10_000) {
-      const first = this.seenRequests.values().next().value as string | undefined;
-      if (first) this.seenRequests.delete(first);
+    this.seenRequests.set(event.id, now);
+    // Prune expired entries on each new request — O(N) but N ≤ ~1000 in practice
+    for (const [id, ts] of this.seenRequests) {
+      if (now - ts > DEDUP_WINDOW_MS) this.seenRequests.delete(id);
     }
 
     const iTag = event.tags.find(t => t[0] === 'i');
