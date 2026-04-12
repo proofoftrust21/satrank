@@ -83,8 +83,16 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
     return;
   }
 
-  // Layer 2: shared secret check (if configured)
-  if (config.APERTURE_SHARED_SECRET) {
+  // Layer 2: shared secret check — defense-in-depth for when Aperture
+  // is NOT in the request path. When Aperture validates an L402 token,
+  // it forwards the request with an Authorization header containing the
+  // macaroon+preimage. If that header is present, the request already
+  // went through Aperture's payment verification → trust it.
+  // Only enforce the shared secret for requests that bypassed Aperture
+  // (e.g., direct nginx → Express without payment, or misconfigured proxy).
+  const hasL402Auth = (req.headers.authorization ?? '').startsWith('L402 ') ||
+    (req.headers.authorization ?? '').startsWith('LSAT ');
+  if (!hasL402Auth && config.APERTURE_SHARED_SECRET) {
     const provided = req.headers['x-aperture-token'] as string | undefined;
     if (!provided || !safeEqual(provided, config.APERTURE_SHARED_SECRET)) {
       next(new PaymentRequiredError());
