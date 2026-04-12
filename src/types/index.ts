@@ -360,6 +360,8 @@ export interface DecideResponse {
   riskProfile: RiskProfile;
   reason: string;
   survival: SurvivalResult;
+  /** Fee volatility index: 0 = highly volatile, 1 = perfectly stable. null when no fee data. */
+  feeVolatilityIndex: number | null;
   lastProbeAgeMs: number | null;
   latencyMs: number;
 }

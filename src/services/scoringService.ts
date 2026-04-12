@@ -476,7 +476,7 @@ export class ScoringService {
   //
   // Sigmoid: 0 changes → 100, 1 change/channel → ~73, 3 → ~27, 5+ → ~5
   // Returns neutral 50 when no fee data is available.
-  private computeFeeStability(agentHash: string): number {
+  computeFeeStability(agentHash: string): number {
     if (!this.feeSnapshotRepo) return 50; // neutral
 
     // Get the agent's LN pubkey

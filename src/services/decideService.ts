@@ -137,6 +137,11 @@ export class DecideService {
       ? this.survivalService.compute(targetHash)
       : { score: 100, prediction: 'stable' as const, signals: { scoreTrajectory: 'no data', probeStability: 'no data', gossipFreshness: 'no data' } };
 
+    // Fee volatility: 0-100 internal score mapped to 0-1 index (1 = stable).
+    // Returns null when no fee data is available for this target.
+    const feeStabilityRaw = this.scoringService.computeFeeStability(targetHash);
+    const feeVolatilityIndex = feeStabilityRaw === 50 ? null : Math.round(feeStabilityRaw) / 100;
+
     const latencyMs = Date.now() - startMs;
 
     return {
@@ -157,6 +162,7 @@ export class DecideService {
       riskProfile: verdictResult.riskProfile,
       reason: verdictResult.reason,
       survival,
+      feeVolatilityIndex,
       lastProbeAgeMs,
       latencyMs,
     };

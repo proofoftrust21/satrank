@@ -894,6 +894,7 @@ export const openapiSpec = {
           riskProfile: { $ref: '#/components/schemas/RiskProfile' },
           reason: { type: 'string' },
           survival: { $ref: '#/components/schemas/SurvivalResult' },
+          feeVolatilityIndex: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Fee stability of the target node (0 = highly volatile, 1 = perfectly stable). Null when no fee data is available. Agents should treat low values (<0.3) as a warning that fees may change between the decision and the actual payment.' },
           lastProbeAgeMs: { type: ['integer', 'null'], description: 'Milliseconds since the last probe for this node. Null if never probed.' },
           latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },
         },
