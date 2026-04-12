@@ -108,28 +108,38 @@ export class DecideService {
       const probeAgeSec = lastProbe ? now - lastProbe.probed_at : Infinity;
 
       // Re-probe on-demand if the last probe is stale and LND is available.
-      // Reuses the same queryRoutes call the DVM uses for live_ping.
+      // Escalates through the multi-amount tiers (1k, 10k, 100k, 1M) so the
+      // agent gets a fresh maxRoutableAmount at the scale of their payment,
+      // not just the default 1k. Stops at the first tier that fails.
       if (probeAgeSec > REPROBE_STALE_SEC && this.lndClient) {
         const agent = this.agentRepo.findByHash(targetHash);
         if (agent?.public_key) {
+          const tiers = [1_000, 10_000, 100_000, 1_000_000];
+          const requestedAmount = amountSats ?? 1000;
+          // Only escalate up to (and including) the tier that covers the requested amount.
+          // If amountSats=500k, test 1k/10k/100k/1M. If amountSats=5k, test 1k/10k.
+          const relevantTiers = tiers.filter(t => t <= Math.max(requestedAmount, 1000) * 2 || t === tiers[0]);
           try {
-            const response = await Promise.race([
-              this.lndClient.queryRoutes(agent.public_key, amountSats ?? 1000),
-              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('reprobe timeout')), REPROBE_TIMEOUT_MS)),
-            ]);
-            const routes = response.routes ?? [];
-            const reachable = routes.length > 0;
-            const latencyMs = routes[0]?.hops ? null : null; // queryRoutes doesn't measure real latency
-            this.probeRepo.insert({
-              target_hash: targetHash,
-              probed_at: now,
-              reachable: reachable ? 1 : 0,
-              latency_ms: latencyMs,
-              hops: reachable ? routes[0].hops.length : null,
-              estimated_fee_msat: reachable ? (parseInt(routes[0].total_fees_msat, 10) || null) : null,
-              failure_reason: reachable ? null : 'no_route',
-            });
-            logger.info({ targetHash: targetHash.slice(0, 12), reachable, probeAgeSec }, 'On-demand re-probe completed');
+            for (const tier of relevantTiers) {
+              const response = await Promise.race([
+                this.lndClient.queryRoutes(agent.public_key, tier),
+                new Promise<never>((_, reject) => setTimeout(() => reject(new Error('reprobe timeout')), REPROBE_TIMEOUT_MS)),
+              ]);
+              const routes = response.routes ?? [];
+              const reachable = routes.length > 0;
+              this.probeRepo.insert({
+                target_hash: targetHash,
+                probed_at: now,
+                reachable: reachable ? 1 : 0,
+                latency_ms: null,
+                hops: reachable ? routes[0].hops.length : null,
+                estimated_fee_msat: reachable ? (parseInt(routes[0].total_fees_msat, 10) || null) : null,
+                failure_reason: reachable ? null : 'no_route',
+                probe_amount_sats: tier,
+              });
+              if (!reachable) break; // stop escalating on first failure
+            }
+            logger.info({ targetHash: targetHash.slice(0, 12), tiers: relevantTiers.length, probeAgeSec }, 'On-demand multi-amount re-probe completed');
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.warn({ targetHash: targetHash.slice(0, 12), error: msg }, 'On-demand re-probe failed');
