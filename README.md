@@ -29,6 +29,34 @@ nak req -k 30382 -a 5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707d
 
 Prefer HTTP? SatRank also exposes the same data via a free `GET /api/agents/top` endpoint and a paid `POST /api/decide` endpoint gated by L402 (1 sat/query).
 
+## Agent workflow — screen then decide
+
+The recommended pattern for autonomous agents making payments: screen many, then decide on one.
+
+**Step 1 — Screen.** `POST /api/verdicts` with up to 100 target hashes in a single request. Returns score, verdict (SAFE/RISKY/UNKNOWN), and confidence for each target. One L402 payment of 1 sat covers the entire batch.
+
+**Step 2 — Decide.** `POST /api/decide` on the single best candidate from step 1. Returns GO/NO-GO, 5 probability components, personalized pathfinding from your position, risk profile, and survival prediction. 1 sat.
+
+```bash
+# Step 1: Screen 100 candidates (1 sat for the whole batch)
+curl -X POST https://satrank.dev/api/verdicts \
+  -H "Content-Type: application/json" \
+  -d '{"hashes": ["<hash1>", "<hash2>", "...up to 100"]}'
+
+# Step 2: Decide on the best SAFE candidate (1 sat)
+curl -X POST https://satrank.dev/api/decide \
+  -H "Content-Type: application/json" \
+  -d '{"target": "<best-safe-hash>", "caller": "<your-hash>"}'
+```
+
+| Step | Endpoint | Latency | Cost | Returns |
+|------|----------|---------|------|---------|
+| Screen | `POST /api/verdicts` | ~1.5 s (100 targets, 15 ms/target) | 1 sat / batch | verdict + score + confidence per target |
+| Decide | `POST /api/decide` | ~230 ms (includes LND QueryRoutes) | 1 sat | GO/NO-GO + success rate + pathfinding |
+| **Total** | | **~2 seconds** | **2 sats** | **Informed decision from 100 candidates** |
+
+**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in 1.5 s. Decide on the highest-scoring SAFE node returns GO with rate=0.987 in 230 ms. Total: 2 sats, ~2 seconds.
+
 ## Architecture
 
 ```mermaid

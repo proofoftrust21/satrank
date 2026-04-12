@@ -499,6 +499,23 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     auto-indexation automatically.
   </p>
 
+  <!-- Agent Workflow -->
+  <h3>Recommended Agent Workflow &mdash; Screen Then Decide</h3>
+  <p>
+    The optimal pattern for autonomous agents: screen many candidates in one batch, then make
+    a personalized decision on the best one. Two API calls, 2 sats, ~2 seconds.
+  </p>
+  <pre>100 candidates &rarr; POST /api/verdicts &rarr; 42 SAFE &rarr; POST /api/decide &rarr; GO
+                       1 sat, ~1.5 s              1 sat, ~230 ms
+                                total: 2 sats, ~2 seconds</pre>
+  <table>
+    <thead><tr><th>Step</th><th>Endpoint</th><th>Latency</th><th>Cost</th><th>Returns</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Screen</strong></td><td><code>POST /api/verdicts</code></td><td>~1.5 s (15 ms/target)</td><td>1 sat / batch</td><td>verdict + score + confidence per target</td></tr>
+      <tr><td><strong>Decide</strong></td><td><code>POST /api/decide</code></td><td>~230 ms (incl. QueryRoutes)</td><td>1 sat</td><td>GO/NO-GO + success rate + pathfinding</td></tr>
+    </tbody>
+  </table>
+
   <!-- Personal Trust Graph -->
   <h2 id="trust-graph">Personal Trust Graph</h2>
 

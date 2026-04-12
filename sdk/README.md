@@ -108,6 +108,56 @@ try {
 }
 ```
 
+## Agent Workflow — Screen Then Decide
+
+The recommended two-step pattern for autonomous agents evaluating payment candidates: screen many with batch verdicts, then decide on the best one. 2 sats total, ~2 seconds for 100 candidates.
+
+```typescript
+import { SatRankClient, SatRankError } from '@satrank/sdk';
+
+const client = new SatRankClient('https://satrank.dev', {
+  headers: { 'Authorization': 'L402 <macaroon>:<preimage>' },
+});
+
+// Step 1: Screen up to 100 candidates (1 sat for the whole batch, ~1.5s)
+const candidateHashes: string[] = [/* ...up to 100 SHA-256 hashes */];
+
+const response = await fetch('https://satrank.dev/api/verdicts', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'L402 <macaroon>:<preimage>',
+  },
+  body: JSON.stringify({ hashes: candidateHashes }),
+});
+const { verdicts } = await response.json();
+
+// Filter to SAFE nodes and sort by score
+const safeNodes = verdicts
+  .filter((v: { verdict: string }) => v.verdict === 'SAFE')
+  .sort((a: { score: number }, b: { score: number }) => b.score - a.score);
+
+// Step 2: Decide on the best candidate (1 sat, ~230ms incl. LND QueryRoutes)
+if (safeNodes.length > 0) {
+  const best = safeNodes[0];
+  const decision = await client.decide({
+    target: best.hash,
+    caller: '<your-pubkey-hash>',
+  });
+
+  if (decision.go) {
+    // Pay with confidence — successRate is 0-1, e.g. 0.987
+    console.log(`GO: ${best.hash}, rate=${decision.successRate}`);
+    await myWallet.pay(best.hash, amountSats);
+  }
+}
+
+// Concrete numbers:
+// - 100 candidates screened in ~1.5s (15ms/target), 1 sat
+// - 1 decision in ~230ms, 1 sat
+// - Total: 2 sats, ~2 seconds, informed decision
+```
+
 ## License
 
 AGPL-3.0
