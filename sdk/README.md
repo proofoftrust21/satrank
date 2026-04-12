@@ -54,6 +54,12 @@ const results = await client.searchAgents('ACINQ');
 | `getStats()` | `NetworkStats` | Global network statistics |
 | `getHealth()` | `HealthResponse` | Service health |
 | `getVersion()` | `VersionResponse` | Build info |
+| `decide(input)` | `DecideResponse` | GO/NO-GO with 5 probabilities + pathfinding |
+| `report(input)` | `ReportResponse` | Submit payment outcome (success/failure/timeout) |
+| `getBatchVerdicts(hashes)` | `BatchVerdictItem[]` | Screen up to 100 targets in one call |
+| `getProfile(id)` | `ProfileResponse` | Full agent profile with evidence |
+| `getMovers()` | `MoversResponse` | Top score movers (7-day delta) |
+| `transact(target, caller, payFn)` | `TransactResult` | Decide, pay, report in one call |
 
 ### L402 Authentication
 
@@ -107,6 +113,48 @@ try {
   }
 }
 ```
+
+## transact(): Decide, Pay, Report in One Call
+
+The full feedback loop automated. The agent calls `transact()`, the SDK handles decide (pre-flight check), executes your payment callback only if GO, then reports the outcome automatically. Verified reports (with preimage + paymentHash) get 2x weight in future scoring.
+
+```typescript
+import { SatRankClient } from '@satrank/sdk';
+
+const client = new SatRankClient('https://satrank.dev', {
+  headers: { 'Authorization': 'L402 <macaroon>:<preimage>' },
+});
+
+const result = await client.transact(
+  '03864ef025fd...', // target LN pubkey or SHA-256 hash
+  '024b550337d6...', // your LN pubkey or hash (the caller)
+  async () => {
+    // Your payment function. Only called if SatRank says GO.
+    // Return { success, preimage?, paymentHash? } for verified reporting.
+    const payment = await myLnd.sendPayment(targetInvoice);
+    return {
+      success: payment.status === 'SUCCEEDED',
+      preimage: payment.preimage,         // enables 2x report weight
+      paymentHash: payment.paymentHash,   // enables verification
+    };
+  },
+);
+
+if (result.paid) {
+  console.log(`Paid successfully, reported to SatRank`);
+  console.log(`Report weight: ${result.report?.weight}`);
+} else {
+  console.log(`SatRank said NO-GO: ${result.decision.reason}`);
+  // No payment was attempted, no report was submitted
+}
+```
+
+The `transact()` response includes everything:
+- `result.paid`: whether the payment went through
+- `result.decision`: the full DecideResponse (successRate, verdict, pathfinding, risk profile)
+- `result.report`: the ReportResponse (only present if payment was attempted)
+
+Cost: 2 sats (1 for decide + 1 for report). Latency: ~500ms + your payment time.
 
 ## Agent Workflow: Screen Then Decide
 

@@ -156,7 +156,6 @@ export interface HealthResponse {
 export interface NetworkStats {
   totalAgents: number;
   totalEndpoints: number;
-  totalAiAgents: number;
   nodesProbed: number;
   phantomRate: number;
   verifiedReachable: number;
@@ -349,6 +348,7 @@ export interface DecideResponse {
     routable: number;
     available: number;
     empirical: number;
+    pathQuality: number;
   };
   basis: 'proxy' | 'empirical';
   confidence: ConfidenceLevel;
@@ -358,6 +358,8 @@ export interface DecideResponse {
   riskProfile: RiskProfile;
   reason: string;
   survival: SurvivalResult;
+  /** 0 = volatile, 1 = stable, null = no fee data */
+  feeVolatilityIndex: number | null;
   lastProbeAgeMs: number | null;
   latencyMs: number;
 }
