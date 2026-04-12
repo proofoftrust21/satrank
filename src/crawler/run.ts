@@ -199,7 +199,11 @@ function runStaleSweep(agentRepo: AgentRepository): void {
 const SCORE_BATCH_SIZE = 500;
 
 /** Score a list of agents in batches, returning the number successfully scored. */
-function scoreBatch(agents: { public_key_hash: string }[], scoringService: ScoringService, label: string): number {
+// Yields the event loop between scoring batches via setImmediate so that
+// WebSocket pings (DVM relay subscriptions, heartbeat) can fire during
+// the 5+ minute scoring pipeline. Without this, the event loop was blocked
+// for the entire pipeline and relay subscriptions expired silently.
+async function scoreBatch(agents: { public_key_hash: string }[], scoringService: ScoringService, label: string): Promise<number> {
   let scored = 0;
   let errors = 0;
   for (let i = 0; i < agents.length; i += SCORE_BATCH_SIZE) {
@@ -219,11 +223,14 @@ function scoreBatch(agents: { public_key_hash: string }[], scoringService: Scori
     if (agents.length > SCORE_BATCH_SIZE) {
       logger.info({ scored, total: agents.length, errors }, `Bulk scoring progress (${label})`);
     }
+    // Yield the event loop so WebSocket pings and other async work
+    // (DVM subscriptions, heartbeat, etc.) can process between batches.
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
   return scored;
 }
 
-function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): void {
+async function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
   const startMs = Date.now();
 
   // Phase 1: Score all unscored agents that have exploitable data
@@ -232,7 +239,7 @@ function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringService
 
   if (unscoredCount > 0) {
     const unscored = agentRepo.findUnscoredWithData();
-    const scored = scoreBatch(unscored, scoringService, 'unscored');
+    const scored = await scoreBatch(unscored, scoringService, 'unscored');
     logger.info({ scored, total: unscored.length, durationMs: Date.now() - startMs }, 'Bulk scoring complete (unscored agents)');
   }
 
@@ -240,7 +247,7 @@ function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringService
   const alreadyScored = agentRepo.findScoredAgents();
   if (alreadyScored.length > 0) {
     const rescoreStart = Date.now();
-    const rescored = scoreBatch(alreadyScored, scoringService, 'rescore');
+    const rescored = await scoreBatch(alreadyScored, scoringService, 'rescore');
     logger.info({ rescored, total: alreadyScored.length, durationMs: Date.now() - rescoreStart }, 'Bulk rescore complete (existing agents)');
   }
 
@@ -270,7 +277,7 @@ async function runFullCrawl(
   await crawlLightning(lndGraphCrawler, mempoolCrawler);
 
   // Score immediately after LND crawl — don't wait for LN+ or probes
-  bulkScoreAll(agentRepo, scoringService, snapshotRepo);
+  await bulkScoreAll(agentRepo, scoringService, snapshotRepo);
 
   // Publish scores to Nostr right after scoring — before LN+ (2.5h) and probes (35min)
   if (nostrPublishFn) {
@@ -306,7 +313,7 @@ async function runFullCrawl(
   await Promise.all(parallelTasks);
 
   // Rescore with LN+ and probe data
-  bulkScoreAll(agentRepo, scoringService, snapshotRepo);
+  await bulkScoreAll(agentRepo, scoringService, snapshotRepo);
 }
 
 // --- Main ---

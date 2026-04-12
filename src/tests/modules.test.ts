@@ -24,7 +24,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { metricsMiddleware, metricsRegistry } from '../middleware/metrics';
 import { errorHandler } from '../middleware/errorHandler';
-const EXPECTED_SCHEMA_VERSION = 18;
+const EXPECTED_SCHEMA_VERSION = 19;
 
 function buildTestApp() {
   const db = new Database(':memory:');
@@ -156,7 +156,7 @@ describe('Migration rollback', () => {
     runMigrations(db);
 
     let versions = getAppliedVersions(db);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
 
     rollbackTo(db, 4);
 
@@ -200,7 +200,7 @@ describe('Migration rollback', () => {
     runMigrations(db);
 
     const versions = getAppliedVersions(db);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
 
     db.close();
   });

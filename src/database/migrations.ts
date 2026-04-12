@@ -366,6 +366,15 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 16, 'Composite index on fee_snapshots(channel_id, node1_pub, snapshot_at) for dedup lookup');
   }
 
+  // v19: probed_at index for countProbesLast24h — the query
+  // `SELECT COUNT(*) FROM probe_results WHERE probed_at >= ?` was doing a
+  // full table scan on 1.7M rows (~24s). The existing indexes start with
+  // target_hash so they can't be used for a probed_at-only filter.
+  if (!hasVersion(db, 19)) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_probe_time ON probe_results(probed_at)');
+    recordVersion(db, 19, 'idx_probe_time on probe_results(probed_at) for countProbesLast24h performance');
+  }
+
   // v18: pagerank_score for sovereign centrality (replaces LN+ dependency)
   if (!hasVersion(db, 18)) {
     try { db.exec('ALTER TABLE agents ADD COLUMN pagerank_score REAL DEFAULT NULL'); } catch { /* column already exists */ }
@@ -389,6 +398,9 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  19: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_probe_time');
+  },
   18: (db) => {
     try { db.exec('ALTER TABLE agents DROP COLUMN pagerank_score'); } catch { /* SQLite < 3.35 */ }
   },
