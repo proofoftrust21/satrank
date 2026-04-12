@@ -196,7 +196,12 @@ function runStaleSweep(agentRepo: AgentRepository): void {
   }
 }
 
-const SCORE_BATCH_SIZE = 500;
+// Batch size for scoring + event loop yield. 500 was too large — each
+// score takes ~15ms, so 500 scores = ~7.5s of continuous blocking. Relay
+// WebSocket pings fire every 5s and timed out during the blocked window,
+// killing DVM subscriptions. At 50 per batch, the blocking window is
+// ~750ms — well under the ping interval.
+const SCORE_BATCH_SIZE = 50;
 
 /** Score a list of agents in batches, returning the number successfully scored. */
 // Yields the event loop between scoring batches via setImmediate so that
@@ -220,7 +225,8 @@ async function scoreBatch(agents: { public_key_hash: string }[], scoringService:
         }
       }
     }
-    if (agents.length > SCORE_BATCH_SIZE) {
+    // Log every 500 scored (not every batch — that would be too verbose at batch=50)
+    if (scored % 500 === 0 && scored > 0) {
       logger.info({ scored, total: agents.length, errors }, `Bulk scoring progress (${label})`);
     }
     // Yield the event loop so WebSocket pings and other async work
