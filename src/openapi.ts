@@ -352,6 +352,36 @@ export const openapiSpec = {
       },
     },
     // --- Decision endpoints ---
+    '/best-route': {
+      post: {
+        summary: 'Find the best route among N candidates',
+        operationId: 'bestRoute',
+        description: 'Takes up to 50 target hashes and a caller pubkey. Runs queryRoutes in parallel for each target from the caller position. Returns the top 3 reachable candidates sorted by a composite of score, hops, and fee.',
+        tags: ['Decision'],
+        requestBody: { required: true, content: { 'application/json': { schema: {
+          type: 'object', required: ['targets', 'caller'],
+          properties: {
+            targets: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50, description: 'Target hashes or Lightning pubkeys' },
+            caller: { type: 'string', description: 'Caller hash or Lightning pubkey (for personalized pathfinding)' },
+            amountSats: { type: 'integer', minimum: 1, description: 'Payment amount for fee estimation' },
+          },
+        } } } },
+        responses: {
+          '200': { description: 'Top 3 routable candidates', content: { 'application/json': { schema: {
+            type: 'object', properties: {
+              data: { type: 'object', properties: {
+                candidates: { type: 'array', items: { type: 'object', properties: {
+                  publicKeyHash: { type: 'string' }, alias: { type: ['string', 'null'] },
+                  score: { type: 'integer' }, verdict: { type: 'string', enum: ['SAFE','RISKY','UNKNOWN'] },
+                  pathfinding: { $ref: '#/components/schemas/PathfindingResult' },
+                } } },
+                totalQueried: { type: 'integer' }, reachableCount: { type: 'integer' }, latencyMs: { type: 'integer' },
+              } },
+            },
+          } } } },
+        },
+      },
+    },
     '/decide': {
       post: {
         summary: 'GO / NO-GO decision with success probability',

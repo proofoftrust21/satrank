@@ -53,6 +53,12 @@ export const decideSchema = z.object({
   amountSats: z.number().int().positive().optional(),
 });
 
+export const bestRouteSchema = z.object({
+  targets: z.array(agentIdentifierSchema).min(1).max(50),
+  caller: agentIdentifierSchema,
+  amountSats: z.number().int().positive().optional(),
+});
+
 const reportOutcomeValues = ['success', 'failure', 'timeout'] as const;
 
 export const reportSchema = z.object({

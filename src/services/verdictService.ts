@@ -133,7 +133,7 @@ export class VerdictService {
     return { verdict, confidence: confidenceNum, reason, flags, personalTrust, riskProfile, pathfinding };
   }
 
-  private async computePathfinding(
+  async computePathfinding(
     callerLnPubkey: string,
     targetLnPubkey: string,
     callerHash: string,

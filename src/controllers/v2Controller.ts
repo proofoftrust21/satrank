@@ -12,7 +12,8 @@ import type { RiskService } from '../services/riskService';
 import type { SurvivalService } from '../services/survivalService';
 import type { ChannelFlowService } from '../services/channelFlowService';
 import type { FeeVolatilityService } from '../services/feeVolatilityService';
-import { agentIdentifierSchema, decideSchema, reportSchema } from '../middleware/validation';
+import type { VerdictService } from '../services/verdictService';
+import { agentIdentifierSchema, decideSchema, reportSchema, bestRouteSchema } from '../middleware/validation';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 import { normalizeIdentifier } from '../utils/identifier';
@@ -34,6 +35,7 @@ export class V2Controller {
     private survivalService?: SurvivalService,
     private channelFlowService?: ChannelFlowService,
     private feeVolatilityService?: FeeVolatilityService,
+    private verdictService?: VerdictService,
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -51,6 +53,78 @@ export class V2Controller {
       );
 
       res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  bestRoute = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const parsed = bestRouteSchema.safeParse(req.body);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
+
+      if (!this.verdictService) {
+        res.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE', message: 'Pathfinding not configured' } });
+        return;
+      }
+
+      const startMs = Date.now();
+      const caller = normalizeIdentifier(parsed.data.caller);
+      const callerAgent = this.agentRepo.findByHash(caller.hash);
+      const callerLnPubkey = callerAgent?.public_key ?? caller.pubkey;
+
+      if (!callerLnPubkey) {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Caller must have a Lightning pubkey for pathfinding' } });
+        return;
+      }
+
+      // Resolve all targets in parallel
+      const targetInfos = parsed.data.targets.map(t => {
+        const norm = normalizeIdentifier(t);
+        const agent = this.agentRepo.findByHash(norm.hash);
+        return { hash: norm.hash, pubkey: agent?.public_key ?? norm.pubkey, agent };
+      });
+
+      // queryRoutes in parallel for all targets with LN pubkeys
+      const pathResults = await Promise.all(
+        targetInfos.map(async (t) => {
+          if (!t.pubkey || !t.agent) return { ...t, pathfinding: null };
+          const pf = await this.verdictService!.computePathfinding(callerLnPubkey, t.pubkey, caller.hash, t.hash);
+          return { ...t, pathfinding: pf };
+        }),
+      );
+
+      // Filter to reachable, enrich with score + verdict, sort by composite rank
+      const reachable = pathResults
+        .filter(r => r.pathfinding?.reachable && r.agent)
+        .map(r => {
+          const scoreResult = this.scoringService.getScore(r.hash);
+          const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
+          const hops = r.pathfinding!.hops ?? 99;
+          const feeMsat = r.pathfinding!.estimatedFeeMsat ?? Infinity;
+          // Composite rank: fewer hops and lower fees are better
+          const rankScore = scoreResult.total * 10 - hops * 50 - feeMsat / 1000;
+          return {
+            publicKeyHash: r.hash,
+            alias: r.agent!.alias,
+            score: scoreResult.total,
+            verdict,
+            pathfinding: r.pathfinding!,
+            _rankScore: rankScore,
+          };
+        })
+        .sort((a, b) => b._rankScore - a._rankScore)
+        .slice(0, 3)
+        .map(({ _rankScore, ...rest }) => rest);
+
+      res.json({
+        data: {
+          candidates: reachable,
+          totalQueried: parsed.data.targets.length,
+          reachableCount: reachable.length,
+          latencyMs: Date.now() - startMs,
+        },
+      });
     } catch (err) {
       next(err);
     }

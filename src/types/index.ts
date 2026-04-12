@@ -370,6 +370,21 @@ export interface DecideResponse {
   latencyMs: number;
 }
 
+export interface BestRouteCandidate {
+  publicKeyHash: string;
+  alias: string | null;
+  score: number;
+  verdict: Verdict;
+  pathfinding: PathfindingResult;
+}
+
+export interface BestRouteResponse {
+  candidates: BestRouteCandidate[];
+  totalQueried: number;
+  reachableCount: number;
+  latencyMs: number;
+}
+
 export interface ReportRequest {
   target: string;
   reporter: string;

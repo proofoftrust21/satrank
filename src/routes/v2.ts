@@ -19,6 +19,7 @@ export function createV2Routes(controller: V2Controller): Router {
   const router = Router();
 
   router.post('/decide', apertureGateAuth, controller.decide);
+  router.post('/best-route', apertureGateAuth, controller.bestRoute);
   router.post('/report', reportRateLimit, apiKeyAuth, controller.report);
   router.get('/profile/:id', apertureGateAuth, controller.profile);
 
