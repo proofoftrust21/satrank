@@ -80,6 +80,8 @@ export interface ProbeResult {
   hops: number | null;
   estimated_fee_msat: number | null;
   failure_reason: string | null;
+  /** Amount in sats used for this probe (1000, 10000, 100000, 1000000). Added in v20. */
+  probe_amount_sats?: number;
 }
 
 // Detailed score components
@@ -362,6 +364,8 @@ export interface DecideResponse {
   survival: SurvivalResult;
   /** Fee volatility index: 0 = highly volatile, 1 = perfectly stable. null when no fee data. */
   feeVolatilityIndex: number | null;
+  /** Highest amount (sats) for which a route was found in recent probes. null if no multi-amount data. */
+  maxRoutableAmount: number | null;
   lastProbeAgeMs: number | null;
   latencyMs: number;
 }

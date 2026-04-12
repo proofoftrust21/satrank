@@ -8,8 +8,8 @@ export class ProbeRepository {
   /** Insert a new probe result */
   insert(result: Omit<ProbeResult, 'id'>): void {
     this.db.prepare(`
-      INSERT INTO probe_results (target_hash, probed_at, reachable, latency_ms, hops, estimated_fee_msat, failure_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO probe_results (target_hash, probed_at, reachable, latency_ms, hops, estimated_fee_msat, failure_reason, probe_amount_sats)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       result.target_hash,
       result.probed_at,
@@ -18,7 +18,26 @@ export class ProbeRepository {
       result.hops,
       result.estimated_fee_msat,
       result.failure_reason,
+      result.probe_amount_sats ?? 1000,
     );
+  }
+
+  /** Find the maximum amount (sats) for which a route exists to this target.
+   *  Looks at the most recent probe per amount tier within the given window.
+   *  Returns null if no probe data is available. */
+  findMaxRoutableAmount(targetHash: string, windowSec: number): number | null {
+    const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+    const row = this.db.prepare(`
+      SELECT MAX(probe_amount_sats) as max_amount
+      FROM (
+        SELECT probe_amount_sats, reachable,
+          ROW_NUMBER() OVER (PARTITION BY probe_amount_sats ORDER BY probed_at DESC) as rn
+        FROM probe_results
+        WHERE target_hash = ? AND probed_at >= ? AND probe_amount_sats IS NOT NULL
+      )
+      WHERE rn = 1 AND reachable = 1
+    `).get(targetHash, cutoff) as { max_amount: number | null } | undefined;
+    return row?.max_amount ?? null;
   }
 
   /** Find the most recent probe result for an agent */

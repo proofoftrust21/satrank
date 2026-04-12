@@ -366,6 +366,13 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 16, 'Composite index on fee_snapshots(channel_id, node1_pub, snapshot_at) for dedup lookup');
   }
 
+  // v20: probe_amount_sats column for multi-amount probing.
+  // Probes at 1k/10k/100k/1M sats reveal the max routable amount per node.
+  if (!hasVersion(db, 20)) {
+    try { db.exec('ALTER TABLE probe_results ADD COLUMN probe_amount_sats INTEGER DEFAULT 1000'); } catch { /* column already exists */ }
+    recordVersion(db, 20, 'probe_amount_sats column on probe_results for multi-amount probing');
+  }
+
   // v19: probed_at index for countProbesLast24h — the query
   // `SELECT COUNT(*) FROM probe_results WHERE probed_at >= ?` was doing a
   // full table scan on 1.7M rows (~24s). The existing indexes start with
@@ -398,6 +405,9 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  20: (db) => {
+    try { db.exec('ALTER TABLE probe_results DROP COLUMN probe_amount_sats'); } catch { /* SQLite < 3.35 */ }
+  },
   19: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_probe_time');
   },

@@ -149,6 +149,13 @@ export class DecideService {
       }
     }
 
+    // Max routable amount from multi-amount probing (1k/10k/100k/1M sats).
+    // null when no multi-amount data is available (node not hot enough to
+    // trigger higher-tier probes, or first cycle after deploy).
+    const maxRoutableAmount = this.probeRepo
+      ? this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC)
+      : null;
+
     // P_empirical — historical success rate from reports
     const { rate: empiricalRate, dataPoints, uniqueReporters } = this.attestationRepo.weightedSuccessRate(targetHash);
     // Require both sufficient data points AND diverse reporters to avoid single-agent self-reporting
@@ -207,6 +214,7 @@ export class DecideService {
       reason: verdictResult.reason,
       survival,
       feeVolatilityIndex,
+      maxRoutableAmount,
       lastProbeAgeMs,
       latencyMs,
     };
