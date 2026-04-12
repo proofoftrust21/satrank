@@ -195,7 +195,13 @@ export function createApp() {
     const stats = cacheGetStale<Record<string, unknown>>('stats:network');
     const top = cacheGetStale<{ data: unknown[] }>('agents:top:10:0:score');
     const boot = { stats: stats ?? null, leaderboard: top ?? null };
-    const script = `<script>window.__SATRANK_BOOT__=${JSON.stringify(boot)}</script>`;
+    // Escape </script>, <, >, & in JSON to prevent XSS via malicious node
+    // aliases (e.g. `</script><script>alert(1)//`) injected via LND gossip.
+    const safeJson = JSON.stringify(boot)
+      .replace(/</g, '\\u003c')
+      .replace(/>/g, '\\u003e')
+      .replace(/&/g, '\\u0026');
+    const script = `<script>window.__SATRANK_BOOT__=${safeJson}</script>`;
     res.type('html').send(indexTemplate.replace('</head>', script + '\n</head>'));
   });
 

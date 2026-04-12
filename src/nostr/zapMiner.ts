@@ -102,6 +102,10 @@ export function extractFromReceipt(ev: ZapEvent): RawMapping | null {
   const nostrPubkey = pTag[1];
   if (!/^[a-f0-9]{64}$/i.test(nostrPubkey)) return null;
   const invoice = bolt11Tag[1];
+  // Length cap: valid BOLT11 invoices are bounded. Reject excessively long
+  // strings to avoid feeding crafted inputs to the bolt11 parser (which
+  // depends on elliptic — a library with known curve validation issues).
+  if (invoice.length > 2000) return null;
   try {
     const decoded = bolt11.decode(invoice);
     const lnPubkey: string | undefined = decoded.payeeNodeKey;

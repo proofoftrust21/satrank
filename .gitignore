@@ -13,3 +13,5 @@ data/
 # Local development tooling — not meant to ship in the public repo
 .claude/
 CLAUDE.md
+scripts/nostr-mappings.json
+scripts/*.json
