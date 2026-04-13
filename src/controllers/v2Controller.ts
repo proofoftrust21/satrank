@@ -80,7 +80,31 @@ export class V2Controller {
       const callerLnPubkey = callerAgent?.public_key ?? caller.pubkey;
 
       if (!callerLnPubkey) {
-        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Caller must have a Lightning pubkey for pathfinding' } });
+        // Degraded response: return scores without pathfinding
+        const targetInfos = parsed.data.targets.map(t => {
+          const norm = normalizeIdentifier(t);
+          const agent = this.agentRepo.findByHash(norm.hash);
+          return { hash: norm.hash, agent };
+        });
+        const candidates = targetInfos
+          .filter(t => t.agent)
+          .map(t => {
+            const scoreResult = this.scoringService.getScore(t.hash);
+            const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
+            return { publicKeyHash: t.hash, alias: t.agent!.alias, score: scoreResult.total, verdict, pathfinding: null };
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 3);
+        res.json({
+          data: {
+            candidates,
+            totalQueried: parsed.data.targets.length,
+            reachableCount: 0,
+            unreachableCount: parsed.data.targets.length,
+            pathfindingContext: 'Caller has no known Lightning pubkey. Candidates ranked by score only (no pathfinding). Add walletProvider or callerNodePubkey to POST /api/decide for positional pathfinding.',
+            latencyMs: Date.now() - startMs,
+          },
+        });
         return;
       }
 

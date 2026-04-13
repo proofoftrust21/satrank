@@ -76,7 +76,7 @@ export class PingController {
           pubkey,
           reachable: hasRoute,
           hops: hasRoute ? routes[0].hops.length : null,
-          totalFeeMsat: hasRoute ? parseInt(routes[0].total_fees_msat, 10) || null : null,
+          totalFeeMsat: hasRoute ? (parseInt(routes[0].total_fees_msat, 10) || 0) : null,
           routeFound: hasRoute,
           fromCaller: !!fromPubkey,
           checkedAt: Math.floor(Date.now() / 1000),

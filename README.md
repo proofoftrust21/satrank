@@ -59,14 +59,14 @@ curl -X POST https://satrank.dev/api/decide \
 
 | Step | Endpoint | Latency | Cost | Returns |
 |------|----------|---------|------|---------|
-| Screen | `POST /api/verdicts` | ~1.5 s (100 targets, 15 ms/target) | 1 request | verdict + score + confidence per target |
-| Route | `POST /api/best-route` | ~0.8 s (parallel QueryRoutes) | 1 request | top 3 candidates by composite rank |
-| Decide | `POST /api/decide` | ~0.5 s (with re-probe if stale) | 1 request | GO/NO-GO + success rate + pathfinding + fee volatility |
-| **Total** | | **~3 seconds** | **3 requests** | **Fully informed decision from 100 candidates** |
+| Screen | `POST /api/verdicts` | ~250 ms | 1 request | verdict + score + confidence per target |
+| Route | `POST /api/best-route` | ~100 ms | 1 request | top 3 candidates by composite rank |
+| Decide | `POST /api/decide` | ~150 ms | 1 request | GO/NO-GO + success rate + pathfinding + fee volatility |
+| **Total** | | **~500 ms** | **3 requests** | **Fully informed decision from 100 candidates** |
 
 **Pricing:** 21 sats = 21 requests via L402 (1 sat/request effective). Each paid endpoint consumes 1 request from the token balance. The `X-SatRank-Balance` header tracks remaining requests. 7 complete workflows per token.
 
-**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in 1.5 s. Best-route narrows to the top 3 by route quality in 0.8 s. Decide on the winner returns GO with rate=0.987, targetFeeStability=0.91, maxRoutableAmount=100000 in 0.5 s. Total: 3 requests, ~3 seconds.
+**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in ~250 ms. Best-route narrows to the top 3 by route quality in ~100 ms. Decide on the winner returns GO with rate=0.987, targetFeeStability=0.91, maxRoutableAmount=100000 in ~150 ms. Total: 3 requests, under 1 second.
 
 ### Cost vs. value
 

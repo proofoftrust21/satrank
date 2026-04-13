@@ -43,7 +43,7 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
   const provided = req.headers['x-api-key'] as string | undefined;
 
   if (!provided) {
-    next(new AuthenticationError('X-API-Key header required'));
+    next(new AuthenticationError('X-API-Key header required. Request a key at contact@satrank.dev or see /api/docs.'));
     return;
   }
 

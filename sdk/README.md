@@ -187,7 +187,7 @@ Alternatively, pass `callerNodePubkey` with any Lightning pubkey to use as the p
 
 ## Agent Workflow: Screen, Route, Decide
 
-The recommended three-step pattern for autonomous agents evaluating payment candidates: screen many with batch verdicts, find the best route, then decide on the winner. 3 sats total, ~3 seconds for 100 candidates.
+The recommended three-step pattern for autonomous agents evaluating payment candidates: screen many with batch verdicts, find the best route, then decide on the winner. 3 requests, under 1 second for 100 candidates.
 
 ```typescript
 import { SatRankClient, SatRankError } from '@satrank/sdk';
@@ -196,7 +196,7 @@ const client = new SatRankClient('https://satrank.dev', {
   headers: { 'Authorization': 'L402 <macaroon>:<preimage>' },
 });
 
-// Step 1: Screen up to 100 candidates (1 request from L402 balance, ~1.5s)
+// Step 1: Screen up to 100 candidates (1 request from L402 balance, ~250ms)
 const candidateHashes: string[] = [/* ...up to 100 SHA-256 hashes */];
 
 const response = await fetch('https://satrank.dev/api/verdicts', {
@@ -214,7 +214,7 @@ const safeNodes = verdicts
   .filter((v: { verdict: string }) => v.verdict === 'SAFE')
   .map((v: { hash: string }) => v.hash);
 
-// Step 2: Find best route among SAFE candidates (1 request, ~0.8s)
+// Step 2: Find best route among SAFE candidates (1 request, ~100ms)
 const routeResult = await client.bestRoute({
   targets: safeNodes,
   caller: '<your-pubkey-hash>',
@@ -222,7 +222,7 @@ const routeResult = await client.bestRoute({
 });
 const topCandidate = routeResult.candidates[0]; // top by composite rank
 
-// Step 3: Decide on the winner (1 request, ~0.5s with re-probe if stale)
+// Step 3: Decide on the winner (1 request, ~150ms)
 const decision = await client.decide({
   target: topCandidate.target,
   caller: '<your-pubkey-hash>',
@@ -237,10 +237,10 @@ if (decision.go) {
 }
 
 // Concrete numbers:
-// - 100 candidates screened in ~1.5s (15ms/target), 1 request
-// - Best route found in ~0.8s (parallel QueryRoutes), 1 request
-// - 1 decision in ~0.5s (re-probe if stale), 1 request
-// - Total: 3 requests from L402 balance, ~3 seconds
+// - 100 candidates screened in ~250ms, 1 request
+// - Best route found in ~100ms, 1 request
+// - 1 decision in ~150ms, 1 request
+// - Total: 3 requests from L402 balance, ~500ms
 // - Pricing: 21 sats = 21 requests (7 complete workflows)
 ```
 

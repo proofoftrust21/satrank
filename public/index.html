@@ -124,7 +124,7 @@
 
   <!-- Agent Workflow — 3 sats pipeline -->
   <div class="section">
-    <h2>Agent workflow: 3 requests, 3 seconds</h2>
+    <h2>Agent workflow: 3 requests, under 1 second</h2>
     <p class="section-desc">Screen 100 candidates, find the best route, decide on the winner. 3 requests from your L402 balance.</p>
     <div class="cycle-steps">
       <div class="cycle-step">
@@ -132,7 +132,7 @@
         <div class="step-title">Screen</div>
         <div class="step-desc"><code>POST /api/verdicts</code> &mdash; up to 100 targets, verdict + score for each.</div>
         <div class="step-cost accent">1 request</div>
-        <div class="step-meta">~1.5s</div>
+        <div class="step-meta">~250ms</div>
       </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
@@ -140,7 +140,7 @@
         <div class="step-title">Route</div>
         <div class="step-desc"><code>POST /api/best-route</code> &mdash; parallel pathfinding, top 3 by quality.</div>
         <div class="step-cost accent">1 request</div>
-        <div class="step-meta">~0.8s</div>
+        <div class="step-meta">~100ms</div>
       </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
@@ -148,7 +148,7 @@
         <div class="step-title">Decide</div>
         <div class="step-desc"><code>POST /api/decide</code> &mdash; GO/NO-GO with success probability.</div>
         <div class="step-cost accent">1 request</div>
-        <div class="step-meta">~0.5s</div>
+        <div class="step-meta">~150ms</div>
       </div>
     </div>
   </div>
