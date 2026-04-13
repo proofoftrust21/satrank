@@ -41,4 +41,16 @@ export type {
   CreateAttestationResponse,
   BatchVerdictItem,
   MoversResponse,
+  // Decision types
+  WalletProvider,
+  DecideRequest,
+  DecideResponse,
+  ReportRequest,
+  ReportResponse,
+  ProfileResponse,
+  BestRouteRequest,
+  BestRouteResponse,
+  BestRouteCandidate,
+  PaymentResult,
+  TransactResult,
 } from './types';

@@ -38,7 +38,7 @@ export class VerdictService {
     private lndClient?: LndGraphClient,
   ) {}
 
-  async getVerdict(publicKeyHash: string, callerPubkey?: string): Promise<VerdictResponse> {
+  async getVerdict(publicKeyHash: string, callerPubkey?: string, pathfindingSourcePubkey?: string): Promise<VerdictResponse> {
     const agent = this.agentRepo.findByHash(publicKeyHash);
     if (!agent) {
       return {
@@ -112,15 +112,18 @@ export class VerdictService {
       agent, delta, { regularity: scoreResult.components.regularity },
     );
 
-    // Personalized pathfinding — real-time route query from caller to target
+    // Personalized pathfinding — real-time route query from source to target.
+    // Source priority: pathfindingSourcePubkey (walletProvider/callerNodePubkey) > caller's own LN pubkey.
     let pathfinding: PathfindingResult | null = null;
-    if (callerPubkey && this.lndClient) {
-      const callerAgent = this.agentRepo.findByHash(callerPubkey);
-      const callerLnPubkey = callerAgent?.public_key ?? null;
+    if (this.lndClient) {
       const targetLnPubkey = agent.public_key ?? null;
+      const sourcePubkey = pathfindingSourcePubkey
+        ?? this.agentRepo.findByHash(callerPubkey ?? '')?.public_key
+        ?? null;
 
-      if (callerLnPubkey && targetLnPubkey) {
-        pathfinding = await this.computePathfinding(callerLnPubkey, targetLnPubkey, callerPubkey, publicKeyHash);
+      if (sourcePubkey && targetLnPubkey) {
+        const cacheCallerHash = callerPubkey ?? sourcePubkey;
+        pathfinding = await this.computePathfinding(sourcePubkey, targetLnPubkey, cacheCallerHash, publicKeyHash);
         if (pathfinding && !pathfinding.reachable) {
           flags.push('unreachable_from_caller');
         }

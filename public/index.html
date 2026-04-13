@@ -59,13 +59,13 @@
       <button class="copy-btn" id="copy-decide" title="Copy to clipboard">Copy</button>
       <pre id="decide-curl">curl -X POST https://satrank.dev/api/decide \
   -H "Content-Type: application/json" \
-  -d '{"target": "02abc...def", "caller": "your-agent-hash"}'</pre>
+  -d '{"target": "02abc...def", "caller": "your-hash", "walletProvider": "phoenix"}'</pre>
     </div>
     <div class="decide-response">
       <pre>{ "go": true, "successRate": 0.827, "verdict": "SAFE", "survival": { "prediction": "stable" } }</pre>
     </div>
     <p class="decide-cost">1 sat &middot; &lt; 50ms</p>
-    <p class="decide-personal">The answer depends on where YOU are in the network. Same node, different routes, different fees.</p>
+    <p class="decide-personal">Pass your wallet provider (phoenix, wos, strike, blink...) and get pathfinding from YOUR position in the graph.</p>
   </div>
 
   <!-- The cycle: decide → pay → report -->

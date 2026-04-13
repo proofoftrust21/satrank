@@ -764,6 +764,25 @@ if delta7d < -2                         → falling</pre>
     <li>The result is returned as a <code>pathfinding</code> field in the verdict response</li>
   </ol>
 
+  <h3>Positional Pathfinding (walletProvider)</h3>
+  <p>
+    Most AI agents pay via wallet providers (Phoenix, WoS, Strike) and don&rsquo;t know their
+    position in the graph. Pass <code>walletProvider</code> in <code>POST /api/decide</code> and
+    SatRank computes pathfinding from the provider&rsquo;s hub node instead of from SatRank.
+  </p>
+  <p>
+    Supported providers: <code>phoenix</code> (ACINQ), <code>wos</code> (WalletOfSatoshi),
+    <code>strike</code>, <code>blink</code>, <code>breez</code>, <code>zeus</code>,
+    <code>coinos</code>, <code>cashapp</code> (Block).
+    Alternatively, pass <code>callerNodePubkey</code> with any Lightning pubkey.
+    If both are provided, <code>callerNodePubkey</code> takes priority.
+  </p>
+  <p>
+    Impact: a Phoenix agent gets 1&ndash;2 hop pathfinding (avg 1.7 hops) instead of
+    4.4 hops from SatRank&rsquo;s position. P_path improves from 0.50 (fallback) to 0.97 (real signal).
+    The <code>pathfinding.sourceNode</code> field in the response confirms which node was used as the origin.
+  </p>
+
   <h3>Response Fields</h3>
   <table>
     <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
@@ -774,6 +793,7 @@ if delta7d < -2                         → falling</pre>
       <tr><td><code>alternatives</code></td><td>integer</td><td>Number of alternative routes found</td></tr>
       <tr><td><code>latencyMs</code></td><td>integer</td><td>Route computation time in milliseconds</td></tr>
       <tr><td><code>source</code></td><td>string</td><td>Always <code>lnd_queryroutes</code></td></tr>
+      <tr><td><code>sourceNode</code></td><td>string</td><td>Pubkey used as pathfinding origin, or <code>satrank</code> for default position</td></tr>
     </tbody>
   </table>
 
@@ -860,7 +880,7 @@ P_empirical = weighted success rate from past reports         // Did other agent
 
   <h3>Additional Decide Response Fields</h3>
   <ul>
-    <li><strong><code>feeVolatilityIndex</code></strong> (0&ndash;1 or null) &mdash; fee stability of the target node. 0 = highly volatile fees, 1 = perfectly stable. Null when no fee snapshot data is available. Agents should treat values below 0.3 as a warning that fees may change before the payment settles.</li>
+    <li><strong><code>targetFeeStability</code></strong> (0&ndash;1 or null) &mdash; fee stability of the <em>target node only</em>, not the full route. 0 = highly volatile fees, 1 = perfectly stable. Null when no fee snapshot data is available. Agents should treat values below 0.3 as a warning that fees may change before the payment settles.</li>
     <li><strong><code>maxRoutableAmount</code></strong> (integer or null) &mdash; highest amount in sats for which a route was found in recent multi-amount probes (1k / 10k / 100k / 1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.</li>
   </ul>
 

@@ -56,8 +56,8 @@ Add to your MCP client configuration (`mcp-config.json`):
 ### Example: decide → pay → report
 ```
 # Step 1: Should I pay this agent?
-Agent calls decide({ target: "counterparty-hash", caller: "my-hash" })
-→ { go: true, successRate: 0.82, basis: "empirical", verdict: "SAFE" }
+Agent calls decide({ target: "counterparty-hash", caller: "my-hash", walletProvider: "phoenix" })
+→ { go: true, successRate: 0.98, basis: "empirical", verdict: "SAFE", pathfinding: { hops: 1, sourceNode: "03864ef..." } }
 
 # Step 2: Agent proceeds with payment (if go=true)
 
@@ -159,7 +159,9 @@ https://your-satrank-instance.com/api
 curl -X POST https://satrank.example/api/decide \
   -H 'Content-Type: application/json' \
   -H 'Authorization: L402 <macaroon>:<preimage>' \
-  -d '{"target": "<hash>", "caller": "<your-hash>"}'
+  -d '{"target": "<hash>", "caller": "<your-hash>", "walletProvider": "phoenix"}'
+# walletProvider: phoenix|wos|strike|blink|breez|zeus|coinos|cashapp
+# Or use callerNodePubkey for any Lightning pubkey as pathfinding source
 
 # Report outcome (FREE — API key only)
 curl -X POST https://satrank.example/api/report \

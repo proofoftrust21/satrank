@@ -21,6 +21,8 @@ import type {
   ProfileResponse,
   PaymentResult,
   TransactResult,
+  BestRouteRequest,
+  BestRouteResponse,
 } from './types';
 
 export class SatRankError extends Error {
@@ -142,6 +144,12 @@ export class SatRankClient {
   /** Submit outcome report (success / failure / timeout) */
   async report(input: ReportRequest): Promise<ReportResponse> {
     const envelope = await this.post<ApiEnvelope<ReportResponse>>(`/api/report`, input);
+    return envelope.data;
+  }
+
+  /** Batch pathfinding for up to 50 targets, returns top 3 by composite rank */
+  async bestRoute(input: BestRouteRequest): Promise<BestRouteResponse> {
+    const envelope = await this.post<ApiEnvelope<BestRouteResponse>>(`/api/best-route`, input);
     return envelope.data;
   }
 

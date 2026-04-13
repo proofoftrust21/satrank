@@ -37,7 +37,7 @@ The recommended pattern for autonomous agents making payments: screen many, pick
 
 **Step 2: Route.** `POST /api/best-route` with the SAFE subset from step 1. Returns the top 3 candidates sorted by a composite rank (score, hops, fees). All pathfinding runs in parallel. 1 sat.
 
-**Step 3: Decide.** `POST /api/decide` on the top candidate from step 2. Returns GO/NO-GO, 5 probability components, personalized pathfinding from your position, risk profile, survival prediction, fee volatility index, and max routable amount. 1 sat.
+**Step 3: Decide.** `POST /api/decide` on the top candidate from step 2. Returns GO/NO-GO, 5 probability components, personalized pathfinding from your position (or from your wallet provider's hub via `walletProvider`), risk profile, survival prediction, fee stability, and max routable amount. 1 sat.
 
 ```bash
 # Step 1: Screen 100 candidates (1 sat for the whole batch)
@@ -51,9 +51,10 @@ curl -X POST https://satrank.dev/api/best-route \
   -d '{"targets": ["<safe1>", "<safe2>", "..."], "caller": "<your-hash>", "amountSats": 50000}'
 
 # Step 3: Decide on the winner (1 sat)
+# walletProvider tells SatRank to compute pathfinding from your wallet's hub node
 curl -X POST https://satrank.dev/api/decide \
   -H "Content-Type: application/json" \
-  -d '{"target": "<best-route-hash>", "caller": "<your-hash>"}'
+  -d '{"target": "<best-route-hash>", "caller": "<your-hash>", "walletProvider": "phoenix"}'
 ```
 
 | Step | Endpoint | Latency | Cost | Returns |
@@ -63,7 +64,31 @@ curl -X POST https://satrank.dev/api/decide \
 | Decide | `POST /api/decide` | ~0.5 s (with re-probe if stale) | 1 sat | GO/NO-GO + success rate + pathfinding + fee volatility |
 | **Total** | | **~3 seconds** | **3 sats** | **Fully informed decision from 100 candidates** |
 
-**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in 1.5 s. Best-route narrows to the top 3 by route quality in 0.8 s. Decide on the winner returns GO with rate=0.987, feeVolatilityIndex=0.91, maxRoutableAmount=100000 in 0.5 s. Total: 3 sats, ~3 seconds.
+**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in 1.5 s. Best-route narrows to the top 3 by route quality in 0.8 s. Decide on the winner returns GO with rate=0.987, targetFeeStability=0.91, maxRoutableAmount=100000 in 0.5 s. Total: 3 sats, ~3 seconds.
+
+### Cost vs. value
+
+An agent making 1,000 payments/day spends ~3,000 sats/day (~$0.30 USD) on oracle fees. One avoided failed payment saves more: routing fees are lost on failure, the HTLC timeout locks capital for 30-60 seconds, and the retry adds another round-trip. At scale, the oracle pays for itself many times over.
+
+| Volume | Daily oracle cost | Break-even |
+|--------|-------------------|------------|
+| 100 payments/day | ~300 sats (~$0.03) | 1 avoided failure |
+| 1,000 payments/day | ~3,000 sats (~$0.30) | 1 avoided failure |
+| 10,000 payments/day | ~30,000 sats (~$3.00) | 1 avoided failure |
+
+### Positional pathfinding
+
+Most AI agents don't run their own LND node. They pay via wallet providers (Phoenix, WoS, Strike, etc.) and don't know their position in the graph. Without positional context, SatRank computes P_path from its own node — a poor proxy for the agent's actual route quality.
+
+Pass `walletProvider` in `/api/decide` and SatRank computes pathfinding from the provider's hub node instead:
+
+```json
+{ "target": "<hash>", "caller": "<hash>", "walletProvider": "phoenix" }
+```
+
+Supported providers: `phoenix`, `wos`, `strike`, `blink`, `breez`, `zeus`, `coinos`, `cashapp`. Alternatively, pass `callerNodePubkey` with any Lightning pubkey to use as the pathfinding source.
+
+Impact: a Phoenix agent querying Binance gets 1-hop / 0-fee pathfinding (P_path=0.97) instead of a null fallback (P_path=0.50). The successRate jumps from 0.74 to 0.98.
 
 ## Architecture
 
@@ -487,7 +512,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - [x] NIP-05 verification (`satrank@satrank.dev`)
 - [x] Chunked retention cleanup cron for time-series tables
 - [x] v19 scoring calibration: sovereign PageRank, 5 reputation sub-signals, multiplicative modifiers
-- [x] v20: multi-amount probing (1k/10k/100k/1M sats), re-probe on-demand for stale data, best-route batch pathfinding, feeVolatilityIndex, maxRoutableAmount
+- [x] v20: multi-amount probing (1k/10k/100k/1M sats), re-probe on-demand for stale data, best-route batch pathfinding, targetFeeStability, maxRoutableAmount
 - [ ] 4tress connector: verified attestations
 - [ ] Trust network visualization dashboard
 - [ ] Per-component NIP-85 keys (`30382:volume`, `30382:reputation`, …)

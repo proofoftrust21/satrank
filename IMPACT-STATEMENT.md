@@ -26,6 +26,7 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 2. **Dual publishing.** Stream A indexes by Lightning pubkey (extension, ~5,000 events / cycle, full graph coverage). Stream B indexes by Nostr pubkey for strict NIP-85 conformance, built from cryptographically-verifiable mappings mined from NIP-57 zap receipts (kind 9735 -> BOLT11 `payee_node_key`) across 9 relays with a 90-day age wall.
 3. **Closed feedback loop.** decide -> pay -> report. Reports are free, weighted by reporter score, with a 2x bonus for preimage-verified payments.
 4. **Multi-amount probing and batch pathfinding.** The probe crawler tests at 4 tiers (1k/10k/100k/1M sats) for hot nodes, exposing `maxRoutableAmount` per node. `POST /api/best-route` runs parallel pathfinding for up to 50 targets in a single call, letting agents find the optimal route in ~0.8 s.
+5. **Positional pathfinding.** Agents pass `walletProvider` (phoenix, wos, strike, blink, breez, zeus, coinos, cashapp) and SatRank computes pathfinding from the provider's hub node instead of its own. A Phoenix agent gets 1.7-hop routes (P_path=0.97) instead of 4.4-hop fallbacks (P_path=0.50).
 
 ## Key metrics (2026-04-09)
 

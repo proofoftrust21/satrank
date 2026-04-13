@@ -20,6 +20,7 @@ import { normalizeIdentifier } from '../utils/identifier';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL } from '../config/scoring';
+import { WALLET_PROVIDERS } from '../config/walletProviders';
 
 export class V2Controller {
   constructor(
@@ -46,10 +47,15 @@ export class V2Controller {
       const target = normalizeIdentifier(parsed.data.target);
       const caller = normalizeIdentifier(parsed.data.caller);
 
+      // Resolve pathfinding source: callerNodePubkey > walletProvider > caller's own pubkey
+      const pathfindingSourcePubkey = parsed.data.callerNodePubkey
+        ?? (parsed.data.walletProvider ? WALLET_PROVIDERS[parsed.data.walletProvider] : undefined);
+
       const result = await this.decideService.decide(
         target.hash,
         caller.hash,
         parsed.data.amountSats,
+        pathfindingSourcePubkey,
       );
 
       res.json({ data: result });
@@ -95,7 +101,7 @@ export class V2Controller {
       );
 
       // Filter to reachable, enrich with score + verdict, sort by composite rank
-      const reachable = pathResults
+      const allReachable = pathResults
         .filter(r => r.pathfinding?.reachable && r.agent)
         .map(r => {
           const scoreResult = this.scoringService.getScore(r.hash);
@@ -113,15 +119,21 @@ export class V2Controller {
             _rankScore: rankScore,
           };
         })
-        .sort((a, b) => b._rankScore - a._rankScore)
+        .sort((a, b) => b._rankScore - a._rankScore);
+      const candidates = allReachable
         .slice(0, 3)
         .map(({ _rankScore, ...rest }) => rest);
 
+      const totalQueried = parsed.data.targets.length;
+      const reachableCount = allReachable.length;
+
       res.json({
         data: {
-          candidates: reachable,
-          totalQueried: parsed.data.targets.length,
-          reachableCount: reachable.length,
+          candidates,
+          totalQueried,
+          reachableCount,
+          unreachableCount: totalQueried - reachableCount,
+          pathfindingContext: 'Pathfinding runs from the SatRank node position in the Lightning graph (limited outbound channels). Low reachability (e.g. 3/20) reflects graph topology, not target node quality. Targets unreachable from SatRank may be fully reachable from your node.',
           latencyMs: Date.now() - startMs,
         },
       });

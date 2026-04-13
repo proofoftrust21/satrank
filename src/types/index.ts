@@ -291,6 +291,8 @@ export interface PathfindingResult {
   alternatives: number;
   latencyMs: number;
   source: 'lnd_queryroutes';
+  /** The node used as pathfinding source. 'provider:<name>' for walletProvider, pubkey for callerNodePubkey, 'satrank' for default. */
+  sourceNode?: string;
 }
 
 export interface VerdictResponse {
@@ -362,10 +364,12 @@ export interface DecideResponse {
   riskProfile: RiskProfile;
   reason: string;
   survival: SurvivalResult;
-  /** Fee volatility index: 0 = highly volatile, 1 = perfectly stable. null when no fee data. */
-  feeVolatilityIndex: number | null;
+  /** Fee stability of the target node only (not the full route). 0 = highly volatile, 1 = perfectly stable. null when no fee data. */
+  targetFeeStability: number | null;
   /** Highest amount (sats) for which a route was found in recent probes. null if no multi-amount data. */
   maxRoutableAmount: number | null;
+  /** Raw empirical success rate from payment reports (0-1). null when insufficient reports (<10 data points or <5 unique reporters). */
+  reportedSuccessRate: number | null;
   lastProbeAgeMs: number | null;
   latencyMs: number;
 }
@@ -382,6 +386,9 @@ export interface BestRouteResponse {
   candidates: BestRouteCandidate[];
   totalQueried: number;
   reachableCount: number;
+  unreachableCount: number;
+  /** Explains that reachability depends on SatRank's graph position, not target quality. */
+  pathfindingContext: string;
   latencyMs: number;
 }
 

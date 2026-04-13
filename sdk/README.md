@@ -54,7 +54,7 @@ const results = await client.searchAgents('ACINQ');
 | `getStats()` | `NetworkStats` | Global network statistics |
 | `getHealth()` | `HealthResponse` | Service health |
 | `getVersion()` | `VersionResponse` | Build info |
-| `decide(input)` | `DecideResponse` | GO/NO-GO with probabilities + pathfinding + feeVolatilityIndex + maxRoutableAmount |
+| `decide(input)` | `DecideResponse` | GO/NO-GO with probabilities + positional pathfinding + targetFeeStability + maxRoutableAmount |
 | `report(input)` | `ReportResponse` | Submit payment outcome (success/failure/timeout) |
 | `getBatchVerdicts(hashes)` | `BatchVerdictItem[]` | Screen up to 100 targets in one call |
 | `getProfile(id)` | `ProfileResponse` | Full agent profile with evidence |
@@ -157,6 +157,34 @@ The `transact()` response includes everything:
 
 Cost: 2 sats (1 for decide + 1 for report). Latency: ~500ms + your payment time.
 
+### Cost vs. value
+
+| Volume | Daily oracle cost | Break-even |
+|--------|-------------------|------------|
+| 100 payments/day | ~300 sats (~$0.03) | 1 avoided failure |
+| 1,000 payments/day | ~3,000 sats (~$0.30) | 1 avoided failure |
+| 10,000 payments/day | ~30,000 sats (~$3.00) | 1 avoided failure |
+
+A failed Lightning payment costs more than the oracle fee: routing fees are lost, the HTLC timeout locks capital for 30-60 seconds, and the retry adds latency. The oracle pays for itself by avoiding a single bad payment per day.
+
+## Positional Pathfinding
+
+Most agents don't run their own LND node. They pay via wallet providers and don't know their position in the Lightning graph. Pass `walletProvider` to get pathfinding computed from your provider's hub node:
+
+```typescript
+const decision = await client.decide({
+  target: '<target-hash>',
+  caller: '<your-hash>',
+  walletProvider: 'phoenix',  // pathfinding from ACINQ's node
+});
+// decision.pathfinding.sourceNode = "03864ef025fd..."
+// decision.pathfinding.hops = 1  (instead of 4-5 from SatRank)
+```
+
+Supported providers: `phoenix`, `wos`, `strike`, `blink`, `breez`, `zeus`, `coinos`, `cashapp`.
+
+Alternatively, pass `callerNodePubkey` with any Lightning pubkey to use as the pathfinding source. If both are provided, `callerNodePubkey` takes priority.
+
 ## Agent Workflow: Screen, Route, Decide
 
 The recommended three-step pattern for autonomous agents evaluating payment candidates: screen many with batch verdicts, find the best route, then decide on the winner. 3 sats total, ~3 seconds for 100 candidates.
@@ -202,9 +230,9 @@ const decision = await client.decide({
 
 if (decision.go) {
   // Pay with confidence
-  // feeVolatilityIndex: 0 = volatile, 1 = stable (< 0.3 = warning)
+  // targetFeeStability: fee stability of the target node (0 = volatile, 1 = stable, < 0.3 = warning)
   // maxRoutableAmount: highest amount with a known route (compare with your payment)
-  console.log(`GO: rate=${decision.successRate}, feeVol=${decision.feeVolatilityIndex}, maxRoute=${decision.maxRoutableAmount}`);
+  console.log(`GO: rate=${decision.successRate}, feeVol=${decision.targetFeeStability}, maxRoute=${decision.maxRoutableAmount}`);
   await myWallet.pay(topCandidate.target, amountSats);
 }
 

@@ -78,6 +78,7 @@ export class DecideService {
     targetHash: string,
     callerHash: string,
     amountSats?: number,
+    pathfindingSourcePubkey?: string,
   ): Promise<DecideResponse> {
     const startMs = Date.now();
 
@@ -85,7 +86,7 @@ export class DecideService {
     this.agentRepo.touchLastQueried(targetHash);
 
     // Get the full verdict (reuses pathfinding, personal trust, flags, risk profile)
-    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash);
+    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash, pathfindingSourcePubkey);
 
     // P_trust — sigmoid of the trust score, centered at 50
     const scoreResult = this.scoringService.getScore(targetHash);
@@ -194,6 +195,9 @@ export class DecideService {
       verdictResult.flags.includes('negative_reputation');
     const go = successRate >= 0.5 && !hasCritical;
 
+    // reportedSuccessRate — raw empirical rate, null when insufficient data
+    const reportedSuccessRate = hasEmpirical ? Math.round(empiricalRate * 1000) / 1000 : null;
+
     const survival = this.survivalService
       ? this.survivalService.compute(targetHash)
       : { score: 100, prediction: 'stable' as const, signals: { scoreTrajectory: 'no data', probeStability: 'no data', gossipFreshness: 'no data' } };
@@ -201,7 +205,12 @@ export class DecideService {
     // Fee volatility: 0-100 internal score mapped to 0-1 index (1 = stable).
     // Returns null when no fee data is available for this target.
     const feeStabilityRaw = this.scoringService.computeFeeStability(targetHash);
-    const feeVolatilityIndex = feeStabilityRaw === 50 ? null : Math.round(feeStabilityRaw) / 100;
+    const targetFeeStability = feeStabilityRaw === 50 ? null : Math.round(feeStabilityRaw) / 100;
+
+    // Tag pathfinding result with the source node used
+    const pathfinding = verdictResult.pathfinding
+      ? { ...verdictResult.pathfinding, sourceNode: pathfindingSourcePubkey ?? 'satrank' }
+      : null;
 
     const latencyMs = Date.now() - startMs;
 
@@ -219,12 +228,13 @@ export class DecideService {
       confidence: scoreResult.confidence,
       verdict: verdictResult.verdict,
       flags: verdictResult.flags,
-      pathfinding: verdictResult.pathfinding,
+      pathfinding,
       riskProfile: verdictResult.riskProfile,
       reason: verdictResult.reason,
       survival,
-      feeVolatilityIndex,
+      targetFeeStability,
       maxRoutableAmount,
+      reportedSuccessRate,
       lastProbeAgeMs,
       latencyMs,
     };

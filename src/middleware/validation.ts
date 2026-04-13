@@ -1,5 +1,6 @@
 // Zod validation schemas for API inputs
 import { z } from 'zod';
+import { VALID_PROVIDERS } from '../config/walletProviders';
 
 export const publicKeyHashSchema = z.string().regex(/^[a-f0-9]{64}$/, 'Invalid SHA256 hash (expected 64 hex characters)');
 
@@ -46,11 +47,14 @@ export const topQuerySchema = z.object({
 
 // --- v2 schemas ---
 
+const lnPubkeySchema = z.string().regex(/^(02|03)[a-f0-9]{64}$/, '66-char compressed Lightning pubkey (02/03 prefix)');
+
 export const decideSchema = z.object({
   target: agentIdentifierSchema,
   caller: agentIdentifierSchema,
-  // H3: amountSats reserved for future amount-aware routing — not yet consumed by DecideService
   amountSats: z.number().int().positive().optional(),
+  walletProvider: z.enum(VALID_PROVIDERS as [string, ...string[]]).optional(),
+  callerNodePubkey: lnPubkeySchema.optional(),
 });
 
 export const bestRouteSchema = z.object({

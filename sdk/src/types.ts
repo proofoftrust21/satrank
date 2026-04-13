@@ -255,6 +255,8 @@ export interface PathfindingResult {
   alternatives: number;
   latencyMs: number;
   source: 'lnd_queryroutes';
+  /** Node used as pathfinding origin. Provider pubkey or 'satrank' for default. */
+  sourceNode?: string;
 }
 
 export interface VerdictResponse {
@@ -303,11 +305,16 @@ export interface MoversResponse {
 
 export type ReportOutcome = 'success' | 'failure' | 'timeout';
 
+export type WalletProvider = 'phoenix' | 'wos' | 'strike' | 'blink' | 'breez' | 'zeus' | 'coinos' | 'cashapp';
+
 export interface DecideRequest {
   target: string;
   caller: string;
   amountSats?: number;
-  intent?: 'pay' | 'receive';
+  /** Wallet provider name. SatRank computes P_path from the provider's hub node. */
+  walletProvider?: WalletProvider;
+  /** Lightning pubkey to use as pathfinding source. Overrides walletProvider. */
+  callerNodePubkey?: string;
 }
 
 export type SurvivalPrediction = 'stable' | 'at_risk' | 'likely_dead';
@@ -358,8 +365,12 @@ export interface DecideResponse {
   riskProfile: RiskProfile;
   reason: string;
   survival: SurvivalResult;
-  /** 0 = volatile, 1 = stable, null = no fee data */
-  feeVolatilityIndex: number | null;
+  /** Fee stability of the target node (not the full route). 0 = volatile, 1 = stable, null = no fee data */
+  targetFeeStability: number | null;
+  /** Highest amount (sats) with a known route. null = no multi-amount data */
+  maxRoutableAmount: number | null;
+  /** Raw empirical success rate from reports (0-1). null = insufficient data */
+  reportedSuccessRate: number | null;
   lastProbeAgeMs: number | null;
   latencyMs: number;
 }
@@ -412,6 +423,32 @@ export interface ProfileResponse {
   riskProfile: RiskProfile;
   evidence: ScoreEvidence;
   flags: VerdictFlag[];
+}
+
+// --- Best Route ---
+
+export interface BestRouteRequest {
+  targets: string[];
+  caller: string;
+  amountSats?: number;
+}
+
+export interface BestRouteCandidate {
+  publicKeyHash: string;
+  alias: string | null;
+  score: number;
+  verdict: Verdict;
+  pathfinding: PathfindingResult;
+}
+
+export interface BestRouteResponse {
+  candidates: BestRouteCandidate[];
+  totalQueried: number;
+  reachableCount: number;
+  unreachableCount: number;
+  /** Explains that reachability depends on SatRank's graph position, not target quality */
+  pathfindingContext: string;
+  latencyMs: number;
 }
 
 // --- Transact (decide → pay → report in one call) ---
