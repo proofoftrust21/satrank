@@ -254,7 +254,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Metric | Value |
 |---|---|
 | Active Lightning nodes tracked | **~13,900** |
-| Stale (90+ days, excluded from scoring) | **4,225** |
+| Stale (90+ days, excluded from scoring) | **~4,250** |
 | Phantom node share (unreachable in routing) | **61 %** (live) |
 | Verified reachable nodes | **~5,300-5,500** (live · `/api/stats.verifiedReachable`) |
 | Total channels (UTXO-validated) | **~88,950** (live · `/api/stats.totalChannels`) |

@@ -140,7 +140,7 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | Metric | Value | Source |
 |---|---|---|
 | Active Lightning nodes indexed | **~13,900** | `/api/stats` `totalAgents` |
-| Stale (not seen 90+ days, excluded from scoring) | **4,225** | `/api/stats` |
+| Stale (not seen 90+ days, excluded from scoring) | **~4,250** | `/api/stats` |
 | Phantom rate (unreachable in routing) | **61 %** (live) | `/api/stats` `phantomRate` |
 | Verified reachable | **~5,300-5,500** (live) | `/api/stats` `verifiedReachable` |
 | Total channels | **~88,950** (live) | `/api/stats` `totalChannels` |
