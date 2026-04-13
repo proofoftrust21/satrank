@@ -70,13 +70,13 @@ curl -X POST https://satrank.dev/api/decide \
 
 ### Cost vs. value
 
-An agent making 1,000 payments/day spends ~3,000 sats/day (~$0.30 USD) on oracle fees. One avoided failed payment saves more: routing fees are lost on failure, the HTLC timeout locks capital for 30-60 seconds, and the retry adds another round-trip. At scale, the oracle pays for itself many times over.
+An agent making 1,000 payments/day spends ~3,000 sats/day on oracle fees. One avoided failed payment saves more: routing fees are lost on failure, the HTLC timeout locks capital for 30-60 seconds, and the retry adds another round-trip. At scale, the oracle pays for itself many times over.
 
 | Volume | Daily oracle cost | Break-even |
 |--------|-------------------|------------|
-| 100 payments/day | ~300 sats (~$0.03) | 1 avoided failure |
-| 1,000 payments/day | ~3,000 sats (~$0.30) | 1 avoided failure |
-| 10,000 payments/day | ~30,000 sats (~$3.00) | 1 avoided failure |
+| 100 payments/day | ~300 sats | 1 avoided failure |
+| 1,000 payments/day | ~3,000 sats | 1 avoided failure |
+| 10,000 payments/day | ~30,000 sats | 1 avoided failure |
 
 ### Positional pathfinding
 

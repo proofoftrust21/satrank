@@ -161,9 +161,9 @@ Cost: 1 request from your L402 balance for decide (report is free). Latency: ~50
 
 | Volume | Daily oracle cost | Break-even |
 |--------|-------------------|------------|
-| 100 payments/day | ~300 sats (~$0.03) | 1 avoided failure |
-| 1,000 payments/day | ~3,000 sats (~$0.30) | 1 avoided failure |
-| 10,000 payments/day | ~30,000 sats (~$3.00) | 1 avoided failure |
+| 100 payments/day | ~300 sats | 1 avoided failure |
+| 1,000 payments/day | ~3,000 sats | 1 avoided failure |
+| 10,000 payments/day | ~30,000 sats | 1 avoided failure |
 
 A failed Lightning payment costs more than the oracle fee: routing fees are lost, the HTLC timeout locks capital for 30-60 seconds, and the retry adds latency. The oracle pays for itself by avoiding a single bad payment per day.
 
