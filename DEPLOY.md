@@ -5,7 +5,7 @@ Production deployment guide for SatRank on a VPS with L402 via Aperture.
 ## Architecture
 
 ```
-Internet → nginx (443) → Aperture (8443) → Express (3000)
+Internet → nginx (443) → Aperture (8082) → Express (3000)
                                 ↕
                          LND + bitcoind (mainnet)
 ```
@@ -34,7 +34,7 @@ cd /opt/aperture && go build -o /usr/local/bin/aperture ./cmd/aperture
 ### Config: /etc/aperture/aperture.yaml
 
 ```yaml
-listenaddr: "127.0.0.1:8443"
+listenaddr: "127.0.0.1:8082"
 debuglevel: "info"
 autocert: false
 
@@ -129,7 +129,7 @@ server {
     # `/api/agents/top`, `/api/agents/movers`, `/api/agents/search` do NOT match
     # (no hex id after `/agents/`) -- they fall through to Express and are free.
     location ~ ^/api/agent/[a-f0-9]+ {
-        proxy_pass https://127.0.0.1:8443;
+        proxy_pass https://127.0.0.1:8082;
         proxy_ssl_verify off;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -139,7 +139,7 @@ server {
 
     # Explicit paid routes (exact match on /api/decide, prefix on /api/profile/).
     location = /api/decide {
-        proxy_pass https://127.0.0.1:8443;
+        proxy_pass https://127.0.0.1:8082;
         proxy_ssl_verify off;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -148,7 +148,7 @@ server {
     }
 
     location ~ ^/api/profile/ {
-        proxy_pass https://127.0.0.1:8443;
+        proxy_pass https://127.0.0.1:8082;
         proxy_ssl_verify off;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

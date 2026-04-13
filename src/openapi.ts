@@ -500,7 +500,7 @@ export const openapiSpec = {
       l402: {
         type: 'http',
         scheme: 'L402',
-        description: 'L402 Lightning payment authentication. Send a request without credentials to receive HTTP 402 with a Lightning invoice (1 sat). Pay the invoice and include the token: Authorization: L402 <macaroon>:<preimage>',
+        description: 'L402 Lightning payment authentication. Send a request without credentials to receive HTTP 402 with a Lightning invoice (21 sats = 21 requests). Pay the invoice and include the token: Authorization: L402 <macaroon>:<preimage>. Each request decrements your balance (X-SatRank-Balance header).',
       },
     },
     parameters: {

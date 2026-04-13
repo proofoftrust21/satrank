@@ -60,6 +60,8 @@ const results = await client.searchAgents('ACINQ');
 | `getProfile(id)` | `ProfileResponse` | Full agent profile with evidence |
 | `getMovers()` | `MoversResponse` | Top score movers (7-day delta) |
 | `bestRoute(input)` | `BestRouteResponse` | Batch pathfinding for up to 50 targets, top 3 by composite rank |
+| `getVerdict(hash, callerPubkey?)` | `VerdictResponse` | SAFE/RISKY/UNKNOWN verdict with flags and risk profile |
+| `submitAttestation(input)` | `CreateAttestationResponse` | Submit a trust attestation (free, requires API key) |
 | `transact(target, caller, payFn)` | `TransactResult` | Decide, pay, report in one call |
 
 ### L402 Authentication
