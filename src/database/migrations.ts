@@ -368,6 +368,18 @@ export function runMigrations(db: Database.Database): void {
 
   // v20: probe_amount_sats column for multi-amount probing.
   // Probes at 1k/10k/100k/1M sats reveal the max routable amount per node.
+  // v21: token_balance for L402 quota system (21 requests per token)
+  if (!hasVersion(db, 21)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS token_balance (
+        payment_hash BLOB PRIMARY KEY,
+        remaining INTEGER NOT NULL DEFAULT 21,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    recordVersion(db, 21, 'token_balance table for L402 quota system');
+  }
+
   if (!hasVersion(db, 20)) {
     try { db.exec('ALTER TABLE probe_results ADD COLUMN probe_amount_sats INTEGER DEFAULT 1000'); } catch { /* column already exists */ }
     recordVersion(db, 20, 'probe_amount_sats column on probe_results for multi-amount probing');

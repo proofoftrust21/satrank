@@ -1037,11 +1037,15 @@ export const openapiSpec = {
         } } },
       },
       PaymentRequired: {
-        description: 'L402 payment required. Pay the Lightning invoice (1 sat) and retry with the L402 token.',
+        description: 'L402 payment required (21 sats = 21 requests). Pay the Lightning invoice and retry with the L402 token. If the error code is BALANCE_EXHAUSTED, remove the Authorization header and retry to get a new invoice.',
         headers: {
           'WWW-Authenticate': {
             description: 'L402 challenge containing a macaroon and a Lightning invoice. Format: L402 macaroon="<base64>", invoice="<bolt11>"',
             schema: { type: 'string', example: 'L402 macaroon="AGIAJEemVQ...", invoice="lnbc10n1pj..."' },
+          },
+          'X-SatRank-Balance': {
+            description: 'Remaining requests on the current L402 token. When 0, the next request returns BALANCE_EXHAUSTED.',
+            schema: { type: 'integer', example: 15 },
           },
         },
       },

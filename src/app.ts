@@ -46,6 +46,7 @@ import { AttestationController } from './controllers/attestationController';
 import { HealthController } from './controllers/healthController';
 import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
+import { createBalanceAuth } from './middleware/balanceAuth';
 
 // Routes
 import { createAgentRoutes } from './routes/agent';
@@ -251,10 +252,11 @@ export function createApp() {
       next();
     });
   }
-  api.use(createV2Routes(v2Controller));                  // decide, report, profile
-  api.use(createPingRoutes(pingController));              // ping/:pubkey (free, own rate limit)
-  api.use(createAgentRoutes(agentController));            // agent/:hash, verdict, top, search, movers
-  api.use(createAttestationRoutes(attestationController));// attestations
+  const balanceAuth = createBalanceAuth(db);
+  api.use(createV2Routes(v2Controller, balanceAuth));                  // decide, report, profile
+  api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
+  api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
+  api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
   api.use(createHealthRoutes(healthController));          // health, stats, version
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {

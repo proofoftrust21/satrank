@@ -38,9 +38,9 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 | Lightning-indexed events / cycle | **~5,000** (score ≥ 30) |
 | Strict NIP-85 events on relays (Stream B) | **105** |
 | Test suite | **504 tests / 38 files**, all green |
-| L402 paywall | **validated end-to-end** (1 sat per `/api/decide` call) |
-| Agent workflow | **3 sats, ~3 s** (screen 100 + best-route + decide) |
-| Schema version | **v20** |
+| L402 paywall | **validated end-to-end** (21 sats = 21 requests, 1 sat/req effective) |
+| Agent workflow | **3 requests, ~3 s** (screen 100 + best-route + decide) |
+| Schema version | **v21** |
 
 ## NIP-85 compliance
 
@@ -55,7 +55,7 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 Freemium, sustainable on Lightning rails alone:
 
 - **Free:** NIP-85 scores on relays, NIP-90 DVM, `/api/ping`, `/api/agents/top`, `/api/stats`, `/api/health`, reports.
-- **1 sat via L402:** `/api/decide` (personalized GO/NO-GO + pathfinding) and `/api/profile`, `/api/agent/:hash/*`, `/api/verdicts`.
+- **21 sats = 21 requests via L402:** `/api/decide`, `/api/verdicts`, `/api/best-route`, `/api/profile`, `/api/agent/:hash/*`. Token balance tracked via `X-SatRank-Balance` header. 1 sat/request effective.
 
 Free distribution funds adoption, paid `/api/decide` funds infrastructure, free reports fund accuracy. Margin is positive at any non-zero sustained call rate.
 

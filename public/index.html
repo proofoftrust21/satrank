@@ -15,10 +15,10 @@
     <img src="/logo.png" alt="SatRank logo" class="header-logo">
     <h1>SatRank</h1>
     <p>Route reliability for Lightning payments. Built for the agentic economy.</p>
-    <span class="badge">L402 — 1 sat per query ⚡</span>
+    <span class="badge">L402 — 21 sats = 21 requests</span>
     <div class="wotathon-cta" role="region" aria-label="WoT-a-thon 2026 submission">
       <div class="wotathon-cta-title">WoT-a-thon 2026 — NIP-85 Excellence submission</div>
-      <div class="wotathon-cta-sub">First NIP-85 provider on the Lightning payment graph · kind 30382:rank + 10040 + DVM 5900/6900</div>
+      <div class="wotathon-cta-sub">First NIP-85 provider on the Lightning payment graph &middot; kind 30382:rank + 10040 + DVM 5900/6900</div>
       <div class="wotathon-cta-links">
         <a href="https://github.com/proofoftrust21/satrank">Repo</a>
         <a href="https://github.com/proofoftrust21/satrank/blob/main/IMPACT-STATEMENT.md">Impact statement</a>
@@ -30,7 +30,7 @@
 </header>
 
 <main class="container">
-  <!-- Live stats — static values shown immediately, updated by JS when API responds -->
+  <!-- Live stats -->
   <div class="stats">
     <div class="stat-card">
       <div class="value loading" id="stat-probed">...</div>
@@ -53,7 +53,7 @@
   <!-- Hero — Should you pay? -->
   <div class="section decide-hero">
     <h2>Should you pay this node?</h2>
-    <p class="decide-subtitle">One request, one answer, 1 sat. If the answer is no, you just saved a failed payment.</p>
+    <p class="decide-subtitle">One request, one answer, 1 sat effective.</p>
 
     <div class="decide-code-block">
       <button class="copy-btn" id="copy-decide" title="Copy to clipboard">Copy</button>
@@ -62,36 +62,122 @@
   -d '{"target": "02abc...def", "caller": "your-hash", "walletProvider": "phoenix"}'</pre>
     </div>
     <div class="decide-response">
-      <pre>{ "go": true, "successRate": 0.827, "verdict": "SAFE", "survival": { "prediction": "stable" } }</pre>
+      <pre>{
+  "go": true,
+  "successRate": 0.978,
+  "basis": "empirical",
+  "confidence": "high",
+  "verdict": "SAFE",
+  "pathfinding": { "reachable": true, "hops": 1, "estimatedFeeMsat": 0, "sourceNode": "03864ef..." },
+  "targetFeeStability": 0.91,
+  "maxRoutableAmount": 100000,
+  "reportedSuccessRate": 0.94,
+  "lastProbeAgeMs": 42300,
+  "survival": { "prediction": "stable" },
+  "latencyMs": 55
+}</pre>
     </div>
-    <p class="decide-cost">1 sat &middot; &lt; 50ms</p>
-    <p class="decide-personal">Pass your wallet provider (phoenix, wos, strike, blink...) and get pathfinding from YOUR position in the graph.</p>
+    <p class="decide-cost">1 sat/request (21 sats = 21 requests) &middot; ~50ms &middot; header <code>X-SatRank-Balance</code> tracks remaining</p>
+  </div>
+
+  <!-- Before/After walletProvider -->
+  <div class="section">
+    <h2>Positional pathfinding</h2>
+    <p class="section-desc">
+      Most agents pay via wallet providers and don't know their position in the graph.
+      Pass <code>walletProvider</code> and SatRank computes pathfinding from your provider's hub node.
+    </p>
+    <div class="compare-grid">
+      <div class="compare-card compare-before">
+        <div class="compare-label">Without walletProvider</div>
+        <pre>{
+  "successRate": 0.737,
+  "basis": "proxy",
+  "pathfinding": null,
+  "components": {
+    "pathQuality": 0.500
+  }
+}</pre>
+        <div class="compare-note">Fallback &mdash; no pathfinding, P_path = 0.5</div>
+      </div>
+      <div class="compare-card compare-after">
+        <div class="compare-label">With walletProvider: "phoenix"</div>
+        <pre>{
+  "successRate": 0.978,
+  "basis": "proxy",
+  "pathfinding": {
+    "hops": 1,
+    "sourceNode": "03864ef..."
+  },
+  "components": {
+    "pathQuality": 0.970
+  }
+}</pre>
+        <div class="compare-note">Real signal &mdash; 1 hop from ACINQ, P_path = 0.97</div>
+      </div>
+    </div>
+    <p class="section-desc" style="margin-top:12px">
+      Supported: <code>phoenix</code> &middot; <code>wos</code> &middot; <code>strike</code> &middot; <code>blink</code> &middot; <code>breez</code> &middot; <code>zeus</code> &middot; <code>coinos</code> &middot; <code>cashapp</code>
+      <br>Or pass <code>callerNodePubkey</code> with any Lightning pubkey.
+    </p>
+  </div>
+
+  <!-- Agent Workflow — 3 sats pipeline -->
+  <div class="section">
+    <h2>Agent workflow: 3 requests, 3 seconds</h2>
+    <p class="section-desc">Screen 100 candidates, find the best route, decide on the winner. 3 requests from your L402 balance.</p>
+    <div class="cycle-steps">
+      <div class="cycle-step">
+        <div class="step-num">1</div>
+        <div class="step-title">Screen</div>
+        <div class="step-desc"><code>POST /api/verdicts</code> &mdash; up to 100 targets, verdict + score for each.</div>
+        <div class="step-cost accent">1 request</div>
+        <div class="step-meta">~1.5s</div>
+      </div>
+      <div class="cycle-arrow">&rarr;</div>
+      <div class="cycle-step">
+        <div class="step-num">2</div>
+        <div class="step-title">Route</div>
+        <div class="step-desc"><code>POST /api/best-route</code> &mdash; parallel pathfinding, top 3 by quality.</div>
+        <div class="step-cost accent">1 request</div>
+        <div class="step-meta">~0.8s</div>
+      </div>
+      <div class="cycle-arrow">&rarr;</div>
+      <div class="cycle-step">
+        <div class="step-num">3</div>
+        <div class="step-title">Decide</div>
+        <div class="step-desc"><code>POST /api/decide</code> &mdash; GO/NO-GO with success probability.</div>
+        <div class="step-cost accent">1 request</div>
+        <div class="step-meta">~0.5s</div>
+      </div>
+    </div>
   </div>
 
   <!-- The cycle: decide → pay → report -->
   <div class="section cycle-section">
+    <h2>Feedback loop</h2>
+    <p class="section-desc">Your reports make future decisions better for every agent on the network.</p>
     <div class="cycle-steps">
       <div class="cycle-step">
         <div class="step-num">1</div>
         <div class="step-title">Decide</div>
-        <div class="step-desc"><code>POST /api/decide</code> &mdash; GO or NO-GO with success probability.</div>
-        <div class="step-cost accent">1 sat</div>
+        <div class="step-desc">GO or NO-GO with success probability.</div>
+        <div class="step-cost accent">1 request</div>
       </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
         <div class="step-num">2</div>
         <div class="step-title">Pay</div>
-        <div class="step-desc">If <code>go: true</code>, proceed with the Lightning payment to your counterparty.</div>
+        <div class="step-desc">If <code>go: true</code>, proceed with the payment.</div>
       </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
         <div class="step-num">3</div>
         <div class="step-title">Report</div>
-        <div class="step-desc"><code>POST /api/report</code> &mdash; success, failure, or timeout.</div>
+        <div class="step-desc">Success, failure, or timeout. Preimage = 2x weight.</div>
         <div class="step-cost" style="color:#00c853">free</div>
       </div>
     </div>
-    <p class="cycle-flywheel">Your reports make future decisions better for every agent on the network.</p>
 
     <div class="sdk-oneliner">
       <p class="sdk-label">With the SDK, the full cycle is one line:</p>
@@ -100,49 +186,15 @@
         <pre id="sdk-code">const result = await satrank.transact(target, myHash, async () => {
   const payment = await myLnWallet.pay(invoice);
   return { success: payment.ok, preimage: payment.preimage, paymentHash: payment.hash };
-});</pre>
+});
+// Tip: pass walletProvider in the decide call for accurate pathfinding
+// await satrank.decide({ target, caller: myHash, walletProvider: 'phoenix' })</pre>
       </div>
       <p class="sdk-install"><code>npm install @satrank/sdk</code></p>
     </div>
   </div>
 
-  <!-- Leaderboard -->
-  <div class="section">
-    <h2 id="agents-heading">Leaderboard</h2>
-    <div class="search-bar">
-      <span class="search-icon">&#128269;</span>
-      <input type="text" id="search-input" placeholder="Search by name..." autocomplete="off">
-      <button class="search-clear" id="search-clear">&times;</button>
-    </div>
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Agent</th>
-          <th>Score</th>
-          <th>Vol</th>
-          <th>Rep</th>
-          <th>7d</th>
-          <th>Source</th>
-        </tr>
-      </thead>
-      <tbody id="top-agents">
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-lg"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-xl"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-lg"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-xl"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-lg"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-xl"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-lg"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-xl"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
-      </tbody>
-    </table>
-    <div class="agent-detail" id="agent-detail"></div>
-  </div>
-
-  <!-- Live on Nostr -->
+  <!-- Live on Nostr — BEFORE leaderboard -->
   <div class="section nostr-section">
     <h2>Live on Nostr</h2>
     <p class="section-desc">
@@ -182,18 +234,61 @@
     </p>
   </div>
 
-  <!-- API — Agent Decision -->
+  <!-- Leaderboard — compact -->
+  <div class="section">
+    <h2 id="agents-heading">Leaderboard</h2>
+    <div class="search-bar">
+      <span class="search-icon">&#128269;</span>
+      <input type="text" id="search-input" placeholder="Search by name..." autocomplete="off">
+      <button class="search-clear" id="search-clear">&times;</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Agent</th>
+          <th>Score</th>
+          <th>Vol</th>
+          <th>Rep</th>
+          <th>7d</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody id="top-agents">
+        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-lg"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
+        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-xl"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
+        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-lg"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
+        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-xl"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
+        <tr class="skeleton-row"><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-lg"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-sm"></span></td><td><span class="skeleton-bar w-md"></span></td></tr>
+      </tbody>
+    </table>
+    <div class="agent-detail" id="agent-detail"></div>
+  </div>
+
+  <!-- API — Agent Decision (all 5 endpoints together) -->
   <div class="section api-hero">
     <h2>Agent Decision API</h2>
     <p class="section-desc">
-      The 3 endpoints an autonomous agent needs. <strong>Decide</strong> before paying, <strong>report</strong> the outcome, <strong>query</strong> the profile. <a href="/methodology.html#decision-engine" style="color:#f7931a">How it works &rarr;</a>
+      The full pipeline: screen, route, decide, report, profile. <a href="/methodology.html#decision-engine" style="color:#f7931a">How it works &rarr;</a>
     </p>
     <ul class="endpoints endpoints-hero">
       <li>
         <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/verdicts</span>
+        <span class="endpoint-desc">Batch screen up to 100 targets</span>
+        <span class="endpoint-cost">1 req</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/best-route</span>
+        <span class="endpoint-desc">Parallel pathfinding, top 3 by route quality</span>
+        <span class="endpoint-cost">1 req</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/decide</span>
-        <span class="endpoint-desc">GO / NO-GO with success probability</span>
-        <span class="endpoint-cost">1 sat</span>
+        <span class="endpoint-desc">GO / NO-GO with success probability + positional pathfinding</span>
+        <span class="endpoint-cost">1 req</span>
       </li>
       <li>
         <span class="method method-post">POST</span>
@@ -205,7 +300,7 @@
         <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/profile/:id</span>
         <span class="endpoint-desc">Full agent profile with reports &amp; uptime</span>
-        <span class="endpoint-cost">1 sat</span>
+        <span class="endpoint-cost">1 req</span>
       </li>
     </ul>
   </div>
@@ -244,7 +339,7 @@
 
   <!-- API — Detailed Queries -->
   <div class="section">
-    <h2>Detailed Queries <span class="api-tag paid-tag">1 sat</span></h2>
+    <h2>Detailed Queries <span class="api-tag paid-tag">1 req each</span></h2>
     <ul class="endpoints">
       <li>
         <span class="method method-get">GET</span>
@@ -265,16 +360,6 @@
         <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/agent/:hash/attestations</span>
         <span class="endpoint-desc">Received attestations (list)</span>
-      </li>
-      <li>
-        <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/verdicts</span>
-        <span class="endpoint-desc">Batch verdicts (up to 100)</span>
-      </li>
-      <li>
-        <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/best-route</span>
-        <span class="endpoint-desc">Batch pathfinding (up to 50 targets, top 3 by route quality)</span>
       </li>
     </ul>
   </div>
@@ -307,6 +392,8 @@
     SatRank &mdash; Route reliability for Lightning payments
     <br>
     <a href="/methodology.html">How scoring works</a> &middot; <a href="/api/stats">Stats</a> &middot; <a href="/api/health">Health</a> &middot; <a href="/api/openapi.json">API Spec</a> &middot; <a href="https://njump.me/npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4">Nostr</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a> &middot; <a href="mailto:contact@satrank.dev">contact@satrank.dev</a>
+    <br>
+    <span style="font-size:0.8rem;color:#555">Listed on <a href="https://402index.io" style="color:#8888a0">402index.io</a></span>
   </div>
 </footer>
 

@@ -23,7 +23,7 @@ const GENERIC_MESSAGES: Record<string, string> = {
 // VALIDATION_ERROR messages are written by formatZodError and contain only
 // the field name, expected format, and the shape (not content) of the value
 // the client just submitted — nothing the client doesn't already know.
-const PASS_THROUGH_CODES = new Set(['VALIDATION_ERROR']);
+const PASS_THROUGH_CODES = new Set(['VALIDATION_ERROR', 'BALANCE_EXHAUSTED']);
 
 // Errors thrown by express.json() / body-parser before the router dispatches.
 // Body parser attaches `type` (string) and `status`/`statusCode` (number) to

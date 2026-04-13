@@ -309,11 +309,14 @@ export interface VerdictResponse {
 
 export type ReportOutcome = 'success' | 'failure' | 'timeout';
 
+export type WalletProvider = 'phoenix' | 'wos' | 'strike' | 'blink' | 'breez' | 'zeus' | 'coinos' | 'cashapp';
+
 export interface DecideRequest {
   target: string;
   caller: string;
   amountSats?: number;
-  intent?: 'pay' | 'receive';
+  walletProvider?: WalletProvider;
+  callerNodePubkey?: string;
 }
 
 export type SurvivalPrediction = 'stable' | 'at_risk' | 'likely_dead';

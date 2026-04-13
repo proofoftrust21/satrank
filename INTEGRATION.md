@@ -174,7 +174,7 @@ curl -H 'Authorization: L402 <macaroon>:<preimage>' \
   https://satrank.example/api/profile/<hash>
 ```
 
-### L402-gated endpoints (pay 1 sat per query)
+### L402-gated endpoints (21 sats = 21 requests, 1 sat/request effective)
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
@@ -234,7 +234,7 @@ Full methodology: `/methodology` on any SatRank instance.
 |---|---|---|---|---|
 | **Scoring method** | Composite 5-factor (volume, reputation, seniority, regularity, diversity) | Binary trust/distrust edges | Social influence aggregation | Behavioral clustering |
 | **Data sources** | Lightning graph (centrality, capacity), route probes, LN+ ratings (bonus) | User-created trust assertions | Twitter, GitHub, LinkedIn | On-chain transactions |
-| **Payment model** | L402 micropayments (1 sat/query) | Free | Freemium SaaS | Not public |
+| **Payment model** | L402 (21 sats = 21 reqs) | Free | Freemium SaaS | Not public |
 | **Anti-gaming** | Mutual-loop detection, attestation concentration limits, seniority gates | Sybil-vulnerable (trust is free) | Relies on social platform identity | On-chain cost as barrier |
 | **Evidence transparency** | Full: verification URLs to mempool.space, LN+, raw transaction samples | Partial: trust graph visible | Opaque scoring | Opaque scoring |
 | **Agent-native** | Yes: MCP tools, TypeScript SDK, REST API | No: designed for humans | No: web dashboard only | No: research prototype |

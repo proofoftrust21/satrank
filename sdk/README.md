@@ -155,7 +155,7 @@ The `transact()` response includes everything:
 - `result.decision`: the full DecideResponse (successRate, verdict, pathfinding, risk profile)
 - `result.report`: the ReportResponse (only present if payment was attempted)
 
-Cost: 2 sats (1 for decide + 1 for report). Latency: ~500ms + your payment time.
+Cost: 1 request from your L402 balance for decide (report is free). Latency: ~500ms + your payment time.
 
 ### Cost vs. value
 
@@ -196,7 +196,7 @@ const client = new SatRankClient('https://satrank.dev', {
   headers: { 'Authorization': 'L402 <macaroon>:<preimage>' },
 });
 
-// Step 1: Screen up to 100 candidates (1 sat for the whole batch, ~1.5s)
+// Step 1: Screen up to 100 candidates (1 request from L402 balance, ~1.5s)
 const candidateHashes: string[] = [/* ...up to 100 SHA-256 hashes */];
 
 const response = await fetch('https://satrank.dev/api/verdicts', {
@@ -214,7 +214,7 @@ const safeNodes = verdicts
   .filter((v: { verdict: string }) => v.verdict === 'SAFE')
   .map((v: { hash: string }) => v.hash);
 
-// Step 2: Find best route among SAFE candidates (1 sat, ~0.8s)
+// Step 2: Find best route among SAFE candidates (1 request, ~0.8s)
 const routeResult = await client.bestRoute({
   targets: safeNodes,
   caller: '<your-pubkey-hash>',
@@ -222,7 +222,7 @@ const routeResult = await client.bestRoute({
 });
 const topCandidate = routeResult.candidates[0]; // top by composite rank
 
-// Step 3: Decide on the winner (1 sat, ~0.5s with re-probe if stale)
+// Step 3: Decide on the winner (1 request, ~0.5s with re-probe if stale)
 const decision = await client.decide({
   target: topCandidate.target,
   caller: '<your-pubkey-hash>',
@@ -237,10 +237,11 @@ if (decision.go) {
 }
 
 // Concrete numbers:
-// - 100 candidates screened in ~1.5s (15ms/target), 1 sat
-// - Best route found in ~0.8s (parallel QueryRoutes), 1 sat
-// - 1 decision in ~0.5s (re-probe if stale), 1 sat
-// - Total: 3 sats, ~3 seconds, fully informed decision
+// - 100 candidates screened in ~1.5s (15ms/target), 1 request
+// - Best route found in ~0.8s (parallel QueryRoutes), 1 request
+// - 1 decision in ~0.5s (re-probe if stale), 1 request
+// - Total: 3 requests from L402 balance, ~3 seconds
+// - Pricing: 21 sats = 21 requests (7 complete workflows)
 ```
 
 ## License

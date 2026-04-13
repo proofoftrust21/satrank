@@ -1,6 +1,7 @@
 // Attestation routes — retrieval and submission
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import type { RequestHandler } from 'express';
 import type { AttestationController } from '../controllers/attestationController';
 import { apiKeyAuth, apertureGateAuth } from '../middleware/auth';
 
@@ -14,10 +15,12 @@ const writeRateLimit = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many write requests, please try again later' } },
 });
 
-export function createAttestationRoutes(controller: AttestationController): Router {
+const noopMiddleware: RequestHandler = (_req, _res, next) => next();
+
+export function createAttestationRoutes(controller: AttestationController, balanceAuth: RequestHandler = noopMiddleware): Router {
   const router = Router();
 
-  router.get('/agent/:publicKeyHash/attestations', apertureGateAuth, controller.getBySubject);
+  router.get('/agent/:publicKeyHash/attestations', apertureGateAuth, balanceAuth, controller.getBySubject);
   router.post('/attestations', writeRateLimit, apiKeyAuth, controller.create);
   // Temporary alias — remove after SDK clients migrate
   router.post('/attestation', writeRateLimit, apiKeyAuth, controller.create);

@@ -48,22 +48,24 @@ authenticator:
     macaroonpath: "<LND_DATA_DIR>/data/chain/bitcoin/mainnet/admin.macaroon"
     tlscertpath: "<LND_DATA_DIR>/tls.cert"
 
-servicesettings:
-  - name: "satrank"
+services:
+  - name: "satrank-api"
     hostregexp: "satrank.dev"
-    pathregexp: "/api/(agent|agents|decide|profile).*"
-    price: 1
-    duration: 31536000
-    capabilities:
-      - "read"
+    pathregexp: '^/api/(decide|verdicts|best-route|profile/|agent/[a-f0-9])'
+    protocol: "http"
+    address: "localhost:3000"
+    auth: "on"
+    price: 21
+    dynamicprice:
+      enabled: false
 
-dbdir: "/var/lib/aperture"
+dbbackend: "sqlite"
 ```
 
 **Notes:**
-- `price: 1`: 1 satoshi per query
-- `duration: 31536000`: L402 token valid for 1 year (365 days in seconds)
-- `pathregexp`: only agent/agents endpoints require payment; health/stats/version are free
+- `price: 21`: 21 sats per L402 token = 21 requests (1 sat/request effective)
+- Express tracks the balance via `token_balance` table and returns `X-SatRank-Balance` header
+- `pathregexp`: covers decide, verdicts, best-route, profile, agent/:hash (and sub-routes). Health/stats/ping/report are free
 - Replace `<LND_DATA_DIR>` with the absolute path to your LND data directory (where `tls.cert` and `data/chain/bitcoin/mainnet/admin.macaroon` live). Pointing Aperture at LND's live files instead of a copy means a cert regeneration on the LND side is picked up by `systemctl restart aperture` without any file juggling.
 - `host: "localhost:10009"` assumes LND is on the same host and listens on the loopback interface (recommended; see the `restlisten=127.0.0.1:10009` convention in `lnd.conf`). If LND is remote, replace with `hostname:port` and add that IP to LND's `tlsextraip`.
 
@@ -192,11 +194,11 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 **Routing logic (matches README + landing page cost tables):**
-- `/api/agent/{hash}`, `/api/agent/{hash}/verdict`, `/api/agent/{hash}/history`, `/api/agent/{hash}/attestations` → nginx → Aperture → Express (L402, 1 sat)
-- `/api/decide` → nginx → Aperture → Express (L402, 1 sat)
-- `/api/profile/{id}` → nginx → Aperture → Express (L402, 1 sat)
-- `/api/verdicts` → nginx → Express direct, gated at Express by `apertureGateAuth` middleware (L402, 1 sat/batch; the middleware returns 402 for non-loopback callers)
-- `/api/best-route` → nginx → Express direct, gated at Express by `apertureGateAuth` middleware (L402, 1 sat)
+- `/api/agent/{hash}`, `/api/agent/{hash}/verdict`, `/api/agent/{hash}/history`, `/api/agent/{hash}/attestations` → nginx → Aperture → Express (L402, 1 req from balance)
+- `/api/decide` → nginx → Aperture → Express (L402, 1 req from balance)
+- `/api/profile/{id}` → nginx → Aperture → Express (L402, 1 req from balance)
+- `/api/verdicts` → nginx → Aperture → Express (L402, 1 request from balance)
+- `/api/best-route` → nginx → Aperture → Express (L402, 1 request from balance)
 - `/api/report`, `/api/attestations` → nginx → Express direct (free, X-API-Key required)
 - `/api/health`, `/api/stats`, `/api/ping/{pubkey}`, `/api/agents/top`, `/api/agents/movers`, `/api/agents/search`, `/api/docs`, `/api/openapi.json` → nginx → Express direct (free, no auth)
 - `/`, static assets, `/methodology.html` → nginx → Express static (free)

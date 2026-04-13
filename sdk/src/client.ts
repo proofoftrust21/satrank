@@ -52,12 +52,19 @@ export class SatRankClient {
   private baseUrl: string;
   private timeout: number;
   private headers: Record<string, string>;
+  /** Remaining L402 balance (updated from X-SatRank-Balance header). null if unknown. */
+  lastBalance: number | null = null;
 
   constructor(baseUrl: string, options: SatRankClientOptions = {}) {
     // Remove trailing slash
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.timeout = options.timeout ?? 10000;
     this.headers = options.headers ?? {};
+  }
+
+  /** Returns the remaining L402 token balance, or null if not yet known. */
+  getBalance(): number | null {
+    return this.lastBalance;
   }
 
   /** Detailed agent score */
@@ -211,6 +218,10 @@ export class SatRankClient {
 
       const body = await response.json() as T & { error?: { code: string; message: string } };
 
+      // Track remaining balance from response header
+      const balanceHeader = response.headers.get('x-satrank-balance');
+      if (balanceHeader !== null) this.lastBalance = parseInt(balanceHeader, 10);
+
       if (!response.ok) {
         const errBody = body as { error?: { code: string; message: string } };
         throw new SatRankError(
@@ -255,6 +266,10 @@ export class SatRankClient {
       });
 
       const responseBody = await response.json() as T & { error?: { code: string; message: string } };
+
+      // Track remaining balance from response header
+      const balanceHeader = response.headers.get('x-satrank-balance');
+      if (balanceHeader !== null) this.lastBalance = parseInt(balanceHeader, 10);
 
       if (!response.ok) {
         const errBody = responseBody as { error?: { code: string; message: string } };

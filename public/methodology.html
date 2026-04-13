@@ -508,14 +508,14 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
     3 sats, ~3 seconds.
   </p>
   <pre>100 candidates &rarr; POST /api/verdicts &rarr; 42 SAFE &rarr; POST /api/best-route &rarr; top 3 &rarr; POST /api/decide &rarr; GO
-                       1 sat, ~1.5 s                       1 sat, ~0.8 s                    1 sat, ~0.5 s
+                       1 req, ~1.5 s                       1 req, ~0.8 s                    1 req, ~0.5 s
                                                     total: 3 sats, ~3 seconds</pre>
   <table>
     <thead><tr><th>Step</th><th>Endpoint</th><th>Latency</th><th>Cost</th><th>Returns</th></tr></thead>
     <tbody>
-      <tr><td><strong>Screen</strong></td><td><code>POST /api/verdicts</code></td><td>~1.5 s (15 ms/target)</td><td>1 sat / batch</td><td>verdict + score + confidence per target</td></tr>
-      <tr><td><strong>Route</strong></td><td><code>POST /api/best-route</code></td><td>~0.8 s (parallel QueryRoutes)</td><td>1 sat</td><td>top 3 candidates by composite rank</td></tr>
-      <tr><td><strong>Decide</strong></td><td><code>POST /api/decide</code></td><td>~0.5 s (with re-probe if stale)</td><td>1 sat</td><td>GO/NO-GO + success rate + pathfinding + fee volatility</td></tr>
+      <tr><td><strong>Screen</strong></td><td><code>POST /api/verdicts</code></td><td>~1.5 s (15 ms/target)</td><td>1 request</td><td>verdict + score + confidence per target</td></tr>
+      <tr><td><strong>Route</strong></td><td><code>POST /api/best-route</code></td><td>~0.8 s (parallel QueryRoutes)</td><td>1 request</td><td>top 3 candidates by composite rank</td></tr>
+      <tr><td><strong>Decide</strong></td><td><code>POST /api/decide</code></td><td>~0.5 s (with re-probe if stale)</td><td>1 request</td><td>GO/NO-GO + success rate + pathfinding + fee volatility</td></tr>
     </tbody>
   </table>
 
@@ -842,9 +842,9 @@ if delta7d < -2                         → falling</pre>
   <table>
     <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>POST /api/decide</code></td><td>1 sat</td><td>GO / NO-GO with success probability</td></tr>
+      <tr><td><code>POST /api/decide</code></td><td>1 req</td><td>GO / NO-GO with success probability</td></tr>
       <tr><td><code>POST /api/report</code></td><td>API Key</td><td>Report transaction outcome (free)</td></tr>
-      <tr><td><code>GET /api/profile/{id}</code></td><td>1 sat</td><td>Agent profile with reports, uptime, rank</td></tr>
+      <tr><td><code>GET /api/profile/{id}</code></td><td>1 req</td><td>Agent profile with reports, uptime, rank</td></tr>
     </tbody>
   </table>
 
@@ -983,8 +983,8 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   <!-- L402 as Signal -->
   <h2>L402 Payment as Data</h2>
   <p>
-    Accessing scored endpoints requires an L402 micropayment of 1 satoshi. This is not just an
-    access control mechanism &mdash; it is a data point.
+    Accessing scored endpoints requires an L402 token (21 sats = 21 requests, 1 sat/request effective).
+    This is not just an access control mechanism &mdash; it is a data point.
   </p>
   <p>
     Each paid query is an anonymous, permissionless signal of demand. An agent that is queried
@@ -995,8 +995,9 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   </p>
   <p>
     Unlike page views or API hits, L402 queries have a nonzero cost, which filters out noise.
-    A bot scraping every agent generates signal at 1 sat per query &mdash; sustainable for
-    legitimate research, expensive for spam.
+    A bot scraping every agent generates signal at 1 sat per request &mdash; sustainable for
+    legitimate research, expensive for spam. The <code>X-SatRank-Balance</code> header on each
+    response tracks remaining requests on the current token.
   </p>
 
   <!-- Nostr Distribution -->
