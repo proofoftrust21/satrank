@@ -121,7 +121,7 @@ const result = await satrank.transact('counterparty-hash', 'my-agent-hash', asyn
 });
 
 if (!result.paid) {
-  console.log(`Skipped — ${result.decision.reason}`);
+  console.log(`Skipped -- ${result.decision.reason}`);
 } else {
   console.log(`Paid. Report weight: ${result.report?.weight}`);
 }
@@ -132,11 +132,11 @@ if (!result.paid) {
 const result = await satrank.getScore('a1b2c3d4e5f6...');
 
 if (result.score.total < 30) {
-  console.log('Low trust — require escrow or decline');
+  console.log('Low trust -- require escrow or decline');
 } else if (result.score.total < 60) {
-  console.log('Medium trust — proceed with caution');
+  console.log('Medium trust -- proceed with caution');
 } else {
-  console.log('High trust — proceed normally');
+  console.log('High trust -- proceed normally');
 }
 ```
 
@@ -163,7 +163,7 @@ curl -X POST https://satrank.example/api/decide \
 # walletProvider: phoenix|wos|strike|blink|breez|zeus|coinos|cashapp
 # Or use callerNodePubkey for any Lightning pubkey as pathfinding source
 
-# Report outcome (FREE — API key only)
+# Report outcome (FREE -- API key only)
 curl -X POST https://satrank.example/api/report \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-api-key' \
@@ -175,6 +175,8 @@ curl -H 'Authorization: L402 <macaroon>:<preimage>' \
 ```
 
 ### L402-gated endpoints (21 sats = 21 requests, 1 sat/request effective)
+
+Each paid call consumes 1 request from the L402 token balance. The `X-SatRank-Balance` header on every response shows remaining requests. At 0, the next call returns `BALANCE_EXHAUSTED` (402) -- drop the Authorization header and retry to get a new invoice.
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|

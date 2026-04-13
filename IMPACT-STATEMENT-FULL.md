@@ -64,7 +64,7 @@ flowchart LR
 
   DB --> SE[Scoring engine<br/>5 components + anti-gaming]
 
-  SE --> API[REST API — 40+ endpoints<br/>free + L402-gated]
+  SE --> API[REST API -- 40+ endpoints<br/>free + L402-gated]
   SE --> NP[NIP-85 publisher<br/>kind 30382:rank · every 6 h]
   SE --> DVM[NIP-90 DVM<br/>kind 5900 → 6900]
 
@@ -147,8 +147,8 @@ Five capabilities unique to SatRank in the 2026 NIP-85 / WoT / Lightning landsca
 6. **Multi-amount probing.** The probe crawler tests at 4 tiers (1k, 10k, 100k, 1M sats), escalating only for "hot" nodes recently queried via `/decide`. This exposes `maxRoutableAmount` per node so agents can verify capacity before committing to a payment amount. Higher tiers stop at the first failure to avoid wasting probe budget.
 7. **Re-probe on-demand.** When `/api/decide` encounters probe data older than 30 minutes (configurable via `DECIDE_REPROBE_STALE_SEC`), it fires a live `queryRoutes` at the request's actual `amountSats` before answering. Adds ~470 ms on the first call; subsequent calls within the window use the fresh cache.
 8. **Batch pathfinding.** `POST /api/best-route` runs parallel `queryRoutes` for up to 50 targets in a single L402-gated call (~500-800 ms for 50 targets). Returns the top 3 candidates sorted by a composite rank (score * 10 - hops * 50 - fee/1000). Combined with `/api/verdicts`, the full screen-route-decide workflow uses 3 requests and completes in ~500 ms.
-9. **Target fee stability.** The `/api/decide` response includes `targetFeeStability` (0 = volatile, 1 = stable, null = no data) — measures fee stability of the target node only, not the full route. Agents can treat values below 0.3 as a warning that fees may shift before the payment settles.
-10. **Positional pathfinding.** Most AI agents don't run their own LND node — they pay via wallet providers (Phoenix, WoS, Strike, etc.). Pass `walletProvider: "phoenix"` in `/api/decide` and SatRank computes pathfinding from ACINQ's hub node (1.7 avg hops) instead of from SatRank's position (4.4 avg hops). Supports 8 providers: phoenix, wos, strike, blink, breez, zeus, coinos, cashapp. Alternatively, `callerNodePubkey` accepts any Lightning pubkey as the source.
+9. **Target fee stability.** The `/api/decide` response includes `targetFeeStability` (0 = volatile, 1 = stable, null = no data) -- measures fee stability of the target node only, not the full route. Agents can treat values below 0.3 as a warning that fees may shift before the payment settles.
+10. **Positional pathfinding.** Most AI agents don't run their own LND node -- they pay via wallet providers (Phoenix, WoS, Strike, etc.). Pass `walletProvider: "phoenix"` in `/api/decide` and SatRank computes pathfinding from ACINQ's hub node (1.7 avg hops) instead of from SatRank's position (4.4 avg hops). Supports 8 providers: phoenix, wos, strike, blink, breez, zeus, coinos, cashapp. Alternatively, `callerNodePubkey` accepts any Lightning pubkey as the source.
 
 ---
 

@@ -14,7 +14,7 @@ SatRank is a trust oracle for the Lightning Network. Before each payment, an age
 Any Nostr client can read SatRank's Lightning trust scores without an SDK, an API key, or a Lightning payment:
 
 ```bash
-# 1) Install nak — the command-line Nostr utility (https://github.com/fiatjaf/nak)
+# 1) Install nak -- the command-line Nostr utility (https://github.com/fiatjaf/nak)
 go install github.com/fiatjaf/nak@latest
 
 # 2) Fetch the 5 latest trust assertions for Lightning nodes
@@ -80,7 +80,7 @@ An agent making 1,000 payments/day spends ~3,000 sats/day on oracle fees. One av
 
 ### Positional pathfinding
 
-Most AI agents don't run their own LND node. They pay via wallet providers (Phoenix, WoS, Strike, etc.) and don't know their position in the graph. Without positional context, SatRank computes P_path from its own node — a poor proxy for the agent's actual route quality.
+Most AI agents don't run their own LND node. They pay via wallet providers (Phoenix, WoS, Strike, etc.) and don't know their position in the graph. Without positional context, SatRank computes P_path from its own node -- a poor proxy for the agent's actual route quality.
 
 Pass `walletProvider` in `/api/decide` and SatRank computes pathfinding from the provider's hub node instead:
 
@@ -187,7 +187,7 @@ curl -X POST https://satrank.dev/api/decide \
   -H "Content-Type: application/json" \
   -d '{"target": "<hash>", "caller": "<your-hash>"}'
 
-# Report transaction outcome (free — no L402)
+# Report transaction outcome (free -- no L402)
 curl -X POST https://satrank.dev/api/report \
   -H "Content-Type: application/json" \
   -H "X-API-Key: <key>" \

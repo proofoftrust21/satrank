@@ -41,7 +41,7 @@ autocert: false
 authenticator:
   lnd:
     # gRPC host of the LND node Aperture uses to mint L402 invoices.
-    # Prefer "localhost:10009" when LND runs on the same host — this avoids
+    # Prefer "localhost:10009" when LND runs on the same host -- this avoids
     # copying macaroons/certs around and picks up LND cert regenerations
     # automatically (Aperture re-reads `tlspath` on restart).
     host: "localhost:10009"
@@ -123,11 +123,11 @@ server {
     ssl_certificate /etc/letsencrypt/live/satrank.dev/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/satrank.dev/privkey.pem;
 
-    # L402-gated endpoints — proxy through Aperture.
+    # L402-gated endpoints -- proxy through Aperture.
     # `/api/agent/{hash}` and `/api/agent/{hash}/{verdict,history,attestations}`
     # all match because the regex requires a 64-hex-char id after `/agent/`.
     # `/api/agents/top`, `/api/agents/movers`, `/api/agents/search` do NOT match
-    # (no hex id after `/agents/`) — they fall through to Express and are free.
+    # (no hex id after `/agents/`) -- they fall through to Express and are free.
     location ~ ^/api/agent/[a-f0-9]+ {
         proxy_pass https://127.0.0.1:8443;
         proxy_ssl_verify off;
@@ -156,7 +156,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Free endpoint — report goes direct to Express (API key auth, no L402).
+    # Free endpoint -- report goes direct to Express (API key auth, no L402).
     location = /api/report {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
@@ -165,14 +165,14 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # NIP-05 (.well-known/nostr.json) — public JSON, needs CORS.
+    # NIP-05 (.well-known/nostr.json) -- public JSON, needs CORS.
     location /.well-known/nostr.json {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
         add_header Access-Control-Allow-Origin * always;
     }
 
-    # Catch-all — every non-paid `/api/*` (health, stats, agents/top,
+    # Catch-all -- every non-paid `/api/*` (health, stats, agents/top,
     # agents/movers, agents/search, ping, verdicts, attestations, docs,
     # openapi.json), plus static assets (landing page, methodology, icons).
     # `/api/verdicts` is L402-gated at the Express level via `apertureGateAuth`,
@@ -231,14 +231,23 @@ docker compose up -d
 # Health (free, bypasses Aperture)
 curl https://satrank.dev/api/health
 
-# L402-gated endpoint — should return 402
-curl -i https://satrank.dev/api/agents/top
-# HTTP/2 402
-# WWW-Authenticate: L402 macaroon="...", invoice="lnbc10n1..."
+# Free endpoint (no L402)
+curl https://satrank.dev/api/agents/top
 
-# Pay with lncli and retry
-lncli payinvoice lnbc10n1...
-curl -H "Authorization: L402 <macaroon>:<preimage>" https://satrank.dev/api/agents/top
+# L402-gated endpoint -- should return 402 with 21-sat invoice
+curl -i -X POST https://satrank.dev/api/decide \
+  -H 'Content-Type: application/json' \
+  -d '{"target": "<hash>", "caller": "<hash>"}'
+# HTTP/2 402
+# WWW-Authenticate: L402 macaroon="...", invoice="lnbc210n1..."
+
+# Pay with lncli and retry -- token gives 21 requests
+lncli payinvoice lnbc210n1...
+curl -X POST -H "Authorization: L402 <macaroon>:<preimage>" \
+  -H 'Content-Type: application/json' \
+  https://satrank.dev/api/decide \
+  -d '{"target": "<hash>", "caller": "<hash>"}'
+# X-SatRank-Balance: 20
 ```
 
 ## 4. Secrets management
@@ -315,7 +324,7 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "No agents indexed — possible data loss or migration failure"
+          summary: "No agents indexed -- possible data loss or migration failure"
 
       # p99 latency > 5s
       - alert: SatRankHighLatency
@@ -333,7 +342,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Score computation p99 > 2s — possible DB performance issue"
+          summary: "Score computation p99 > 2s -- possible DB performance issue"
 
       # Crawler taking too long (> 5 minutes)
       - alert: SatRankCrawlSlow

@@ -64,7 +64,7 @@ const results = await client.searchAgents('ACINQ');
 
 ### L402 Authentication
 
-Scored endpoints require L402 payment. Pass the token in headers:
+Scored endpoints require L402 payment (21 sats = 21 requests). Pass the token in headers:
 
 ```typescript
 const client = new SatRankClient('https://satrank.dev', {
@@ -72,6 +72,11 @@ const client = new SatRankClient('https://satrank.dev', {
     'Authorization': 'L402 <macaroon>:<preimage>',
   },
 });
+
+// Track remaining balance via X-SatRank-Balance header
+console.log(client.getBalance()); // 20, 19, 18... 0
+// At 0, the next call throws SatRankError with code BALANCE_EXHAUSTED
+// Drop the Authorization header and retry to get a new invoice
 ```
 
 ### Evidence
