@@ -528,6 +528,9 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
       DROP TABLE IF EXISTS agents;
     `);
   },
+  21: (db) => {
+    db.exec('DROP TABLE IF EXISTS token_balance');
+  },
 };
 
 /** Rolls back migrations from current to target version (exclusive).

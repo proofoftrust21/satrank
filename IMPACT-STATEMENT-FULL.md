@@ -64,7 +64,7 @@ flowchart LR
 
   DB --> SE[Scoring engine<br/>5 components + anti-gaming]
 
-  SE --> API[REST API -- 40+ endpoints<br/>free + L402-gated]
+  SE --> API[REST API -- 20 endpoints<br/>free + L402-gated]
   SE --> NP[NIP-85 publisher<br/>kind 30382:rank · every 6 h]
   SE --> DVM[NIP-90 DVM<br/>kind 5900 → 6900]
 
@@ -272,7 +272,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Bitcoin trust root | **bitcoind v28.1** full node |
 | Nostr relays published to | **3** canonical (damus.io, nos.lol, primal.net) |
 | Canonical NIP-85 result tag | **`rank`** (alongside `score` and 5 component tags) |
-| Test suite | **504 tests / 38 files**, all green on submission commit |
+| Test suite | **526 tests / 40 files**, all green on submission commit |
 | Database schema version | **v21** |
 
 ---
@@ -280,7 +280,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 ## Technology
 
 - **TypeScript** strict mode, Node 22
-- **Express** for the REST API, 40+ endpoints, NIP-05 handler
+- **Express** for the REST API, 20 endpoints, NIP-05 handler
 - **better-sqlite3** for the embedded database, WAL mode, chunked retention cleanup for time-series tables
 - **bitcoind v28.1** full node + **LND** for trust root, probing, and sovereign PageRank computation
 - **nostr-tools** for NIP-85 publishing (kind 30382 + 10040), NIP-90 DVM (kind 5900 → 6900), NIP-01 event signing
@@ -288,7 +288,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 - **pino** for structured logging
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only filesystem, tmpfs, and liveness healthchecks
 - **L402 / Aperture** as paid gate for `/api/decide` (the 1-sat-per-query oracle endpoint)
-- **vitest** for 504 unit + integration tests across 38 files, all green on the submission commit
+- **vitest** for 526 unit + integration tests across 40 files, all green on the submission commit
 
 ---
 

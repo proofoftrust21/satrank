@@ -112,7 +112,7 @@ flowchart LR
   LP --> DB
 
   DB --> SE[Scoring engine<br/>5 components + anti-gaming]
-  SE --> API[REST API<br/>40+ endpoints]
+  SE --> API[REST API<br/>20 endpoints]
   SE --> NP[NIP-85 publisher<br/>kind 30382:rank<br/>every 6h]
   SE --> DVM[DVM<br/>kind 5900 → 6900]
 
@@ -148,7 +148,7 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | Probes executed / 24 h | **~650,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
 | NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
-| Tests (vitest) | **504 / 38 files** green | `npm test` |
+| Tests (vitest) | **526 / 40 files** green | `npm test` |
 | Schema version | **v21** | `SELECT * FROM schema_version` |
 
 Numbers are pulled live from `/api/stats` (free endpoint, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
@@ -463,7 +463,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 ## Tech Stack
 
 - **TypeScript** strict mode, Node 22
-- **Express** for the REST API (40+ endpoints)
+- **Express** for the REST API (20 endpoints)
 - **better-sqlite3** for the embedded database, WAL mode, chunked retention cron
 - **bitcoind v28.1 + LND** as trust root, gossip ingestion, QueryRoutes probing
 - **nostr-tools** for NIP-85 publishing, NIP-90 DVM, NIP-01 event signing
@@ -471,7 +471,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - **pino** for structured logging
 - **Aperture / L402** as Lightning paywall for `/api/decide` and scored endpoints
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only FS, tmpfs, healthchecks
-- **vitest** for 504 unit + integration tests across 38 files, all green on the submission commit
+- **vitest** for 526 unit + integration tests across 40 files, all green on the submission commit
 
 ## Scripts
 
