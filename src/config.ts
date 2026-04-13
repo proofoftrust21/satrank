@@ -32,9 +32,9 @@ const configSchema = z.object({
   CRAWL_INTERVAL_OBSERVER_MS: z.coerce.number().int().positive().default(300_000),    // 5 min
   CRAWL_INTERVAL_LND_GRAPH_MS: z.coerce.number().int().positive().default(3_600_000), // 1 hour
   CRAWL_INTERVAL_LNPLUS_MS: z.coerce.number().int().positive().default(86_400_000),   // 24 hours
-  CRAWL_INTERVAL_PROBE_MS: z.coerce.number().int().positive().default(1_800_000),    // 30 min
+  CRAWL_INTERVAL_PROBE_MS: z.coerce.number().int().positive().default(60_000),       // 1 min (probe cycles chain continuously)
   // Probe routing: max probes per second (rate limiter)
-  PROBE_MAX_PER_SECOND: z.coerce.number().int().positive().default(15),
+  PROBE_MAX_PER_SECOND: z.coerce.number().int().positive().default(30),
   // Probe routing: amount in sats to test routes with
   PROBE_AMOUNT_SATS: z.coerce.number().int().positive().default(1000),
   // Node pubkey — shown in API responses so agents can open a direct channel

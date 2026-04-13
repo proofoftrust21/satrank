@@ -550,10 +550,13 @@ async function main(): Promise<void> {
 
     let timerProbe: ReturnType<typeof setInterval> | null = null;
     if (probeCrawlerInstance) {
+      let probeRunning = false;
       timerProbe = setInterval(() => {
+        if (probeRunning) return; // skip if previous cycle still running
+        probeRunning = true;
         crawlProbe(probeCrawlerInstance, probeRepo)
-          .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
-          .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Probe crawl error'));
+          .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Probe crawl error'))
+          .finally(() => { probeRunning = false; });
       }, intervals.probe);
       logger.info({ intervalMs: intervals.probe }, 'Probe cron timer started');
     } else {
