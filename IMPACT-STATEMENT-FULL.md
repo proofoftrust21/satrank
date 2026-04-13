@@ -16,6 +16,10 @@ The Lightning Network is a public good for instant Bitcoin payments, but from an
 
 For humans, this manifests as 30 % payment failure rates on first try. For autonomous agents paying for APIs, data, or other agents over L402, it's worse: a failed payment means a wasted compute cycle, a missed SLA, or a retry loop that blows the budget.
 
+**For humans, this manifests as 30 % payment failure rates on first try. For autonomous agents paying for APIs, data, or other agents over L402, it's worse: a failed payment means a wasted compute cycle, a missed SLA, or a retry loop that blows the budget.
+
+**For humans, this manifests as 30 % payment failure rates on first try. For autonomous agents paying for APIs, data, or other agents over L402, it's worse: a failed payment means a wasted compute cycle, a missed SLA, or a retry loop that blows the budget.
+
 **The Lightning Network needs a trust oracle. SatRank is it.**
 
 ---
@@ -309,8 +313,6 @@ Three reasons:
 2. **It's the only Lightning trust oracle that's Nostr-native from day one.** Not "we have a REST API and also we tweet the scores." The Nostr relays are the canonical distribution layer; NIP-05 verification, NIP-85 publishing (30382 + 10040), and NIP-90 DVM all share the same keypair and the same relay list.
 
 3. **It's production infrastructure, not a demo.** ~13,900 active nodes, ~89,000 validated channels, ~9,630 BTC validated capacity, ~650,000 probes per 24 h, 921,968 score snapshots, ~5,000 NIP-85 events published per cycle, backup + recovery path, heartbeat healthchecks, 504-test typed suite, and a Hetzner deployment behind nginx with L402 paid gates on the personalized endpoint. All open source, all reproducible. Live values at [`/api/stats`](https://satrank.dev/api/stats).
-
-The Lightning Network has been waiting for its reliability oracle. NIP-85 has been waiting for its first real-world protocol bridge. SatRank is both.
 
 ---
 
