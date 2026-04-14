@@ -4,6 +4,7 @@
 import { logger } from '../logger';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import { sha256 } from '../utils/crypto';
+import { isSafeUrl } from '../utils/ssrf';
 
 interface IndexService {
   url: string;
@@ -44,6 +45,7 @@ export class RegistryCrawler {
 
         for (const svc of services) {
           if (svc.protocol !== 'L402') continue;
+          if (!isSafeUrl(svc.url)) continue;
           try {
             const agentHash = await this.discoverNodeFromUrl(svc.url);
             if (agentHash) {

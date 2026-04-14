@@ -1,5 +1,7 @@
 // Decision API controller — decide, report, profile
+import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
+import type Database from 'better-sqlite3';
 import type { DecideService } from '../services/decideService';
 import type { ReportService } from '../services/reportService';
 import type { AgentService } from '../services/agentService';
@@ -41,6 +43,7 @@ export class V2Controller {
     private verdictService?: VerdictService,
     private serviceEndpointRepo?: ServiceEndpointRepository,
     private serviceProbeRepo?: ServiceProbeRepository,
+    private db?: Database.Database,
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -62,6 +65,19 @@ export class V2Controller {
         pathfindingSourcePubkey,
         parsed.data.serviceUrl,
       );
+
+      // Log the decide for report auth (link L402 token to target)
+      if (this.db) {
+        const authHeader = req.headers.authorization ?? '';
+        const preimageMatch = authHeader.match(/^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i);
+        if (preimageMatch) {
+          const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimageMatch[1], 'hex')).digest();
+          const now = Math.floor(Date.now() / 1000);
+          try {
+            this.db.prepare('INSERT OR IGNORE INTO decide_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)').run(paymentHash, target.hash, now);
+          } catch { /* table may not exist in tests */ }
+        }
+      }
 
       res.json({ data: result });
     } catch (err) {

@@ -77,17 +77,42 @@ export interface DecideServiceOptions {
   serviceProbeRepo?: ServiceProbeRepository;
 }
 
-// SSRF protection: block private/loopback IPs in serviceUrl
-const BLOCKED_HOSTS = /^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|\[::1?\]|\[::ffff:127\.\d+\.\d+\.\d+\]|\[::ffff:10\.\d+\.\d+\.\d+\]|\[::ffff:192\.168\.\d+\.\d+\])$/i;
+// SSRF protection: block private/loopback IPs, server's own IP, and resolve DNS before fetch
+const PRIVATE_IP_RE = /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|169\.254\.\d+\.\d+)$/;
+const BLOCKED_HOSTNAMES = /^(localhost|\[::1?\]|\[::ffff:.+\])$/i;
+const SERVER_IP = process.env.SERVER_IP ?? '178.104.108.108';
 const SERVICE_HEALTH_CACHE_TTL_SEC = 1800; // 30 min
 const SERVICE_HEALTH_TIMEOUT_MS = 3000;
 const SERVICE_HEALTH_NONBLOCK_MS = 500;
 
+function isIpBlocked(ip: string): boolean {
+  return PRIVATE_IP_RE.test(ip) || ip === SERVER_IP || ip === '0.0.0.0';
+}
+
 function isUrlBlocked(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    return BLOCKED_HOSTS.test(u.hostname);
+    if (!['http:', 'https:'].includes(u.protocol)) return true;
+    if (BLOCKED_HOSTNAMES.test(u.hostname)) return true;
+    if (isIpBlocked(u.hostname)) return true;
+    // Block IPv6-mapped IPv4 (extract and check the IPv4 part)
+    const mapped = u.hostname.match(/^\[::ffff:([\d.]+)\]$/i);
+    if (mapped && isIpBlocked(mapped[1])) return true;
+    return false;
   } catch { return true; }
+}
+
+/** Resolve hostname to IP and verify it's not private (anti-DNS-rebinding) */
+async function resolveAndCheck(urlStr: string): Promise<boolean> {
+  if (isUrlBlocked(urlStr)) return true;
+  try {
+    const { resolve4 } = await import('dns/promises');
+    const hostname = new URL(urlStr).hostname;
+    // Skip resolution for raw IPs (already checked above)
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return false;
+    const ips = await resolve4(hostname);
+    return ips.some(ip => isIpBlocked(ip));
+  } catch { return false; } // DNS failure = allow (could be transient)
 }
 
 function classifyHttp(status: number): 'healthy' | 'degraded' | 'down' {
@@ -238,7 +263,7 @@ export class DecideService {
 
     // Service health check (non-blocking)
     let serviceHealth: ServiceHealth | null = null;
-    if (serviceUrl && !isUrlBlocked(serviceUrl) && this.serviceEndpointRepo) {
+    if (serviceUrl && this.serviceEndpointRepo && !(await resolveAndCheck(serviceUrl))) {
       serviceHealth = await this.checkServiceHealth(targetHash, serviceUrl, startMs);
     }
 
@@ -364,7 +389,7 @@ export class DecideService {
         method: 'GET',
         signal: AbortSignal.timeout(SERVICE_HEALTH_TIMEOUT_MS),
         headers: { 'User-Agent': 'SatRank-HealthCheck/1.0' },
-        redirect: 'follow',
+        redirect: 'manual', // Don't follow redirects to prevent SSRF via 301→private IP
       });
       const latencyMs = Date.now() - start;
       const httpCode = resp.status;

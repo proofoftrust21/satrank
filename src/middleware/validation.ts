@@ -49,13 +49,18 @@ export const topQuerySchema = z.object({
 
 const lnPubkeySchema = z.string().regex(/^(02|03)[a-f0-9]{64}$/, '66-char compressed Lightning pubkey (02/03 prefix)');
 
+const httpUrlSchema = z.string().url().refine(url => {
+  try { return ['http:', 'https:'].includes(new URL(url).protocol); }
+  catch { return false; }
+}, 'Only http:// and https:// URLs allowed');
+
 export const decideSchema = z.object({
   target: agentIdentifierSchema,
   caller: agentIdentifierSchema,
   amountSats: z.number().int().positive().optional(),
   walletProvider: z.enum(VALID_PROVIDERS as [string, ...string[]]).optional(),
   callerNodePubkey: lnPubkeySchema.optional(),
-  serviceUrl: z.string().url().optional(),
+  serviceUrl: httpUrlSchema.optional(),
 });
 
 export const bestRouteSchema = z.object({
@@ -64,7 +69,7 @@ export const bestRouteSchema = z.object({
   amountSats: z.number().int().positive().optional(),
   walletProvider: z.enum(VALID_PROVIDERS as [string, ...string[]]).optional(),
   callerNodePubkey: lnPubkeySchema.optional(),
-  serviceUrls: z.record(z.string(), z.string().url()).optional(),
+  serviceUrls: z.record(publicKeyHashSchema, httpUrlSchema).optional(),
 });
 
 const reportOutcomeValues = ['success', 'failure', 'timeout'] as const;

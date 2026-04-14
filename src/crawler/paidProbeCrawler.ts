@@ -5,6 +5,7 @@ import type { ServiceEndpointRepository } from '../repositories/serviceEndpointR
 import type { ServiceProbeRepository } from '../repositories/serviceProbeRepository';
 import type { LndGraphClient } from './lndGraphClient';
 import { config } from '../config';
+import { isSafeUrl } from '../utils/ssrf';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const CONSECUTIVE_FAILURE_LIMIT = 3;
@@ -80,6 +81,7 @@ export class PaidProbeCrawler {
   }
 
   private async probeEndpoint(url: string, agentHash: string | null): Promise<void> {
+    if (!isSafeUrl(url)) return; // SSRF protection
     const now = Math.floor(Date.now() / 1000);
 
     // Step 1: GET the URL to trigger 402

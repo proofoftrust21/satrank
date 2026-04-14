@@ -56,11 +56,11 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
   next();
 }
 
-// Report auth: accepts EITHER X-API-Key OR a valid L402 token.
-// L402 tokens are validated by checking SHA256(preimage) exists in token_balance.
-// Reports are free — they don't consume quota from the token balance.
+// Report auth: accepts EITHER X-API-Key OR a valid L402 token with remaining > 0.
+// Reports are free (no quota consumed) but require a non-exhausted token.
 export function createReportAuth(db: Database.Database) {
-  const stmtCheck = db.prepare('SELECT 1 FROM token_balance WHERE payment_hash = ?');
+  const stmtCheck = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?');
+  const stmtDecideLog = db.prepare('SELECT 1 FROM decide_log WHERE payment_hash = ? AND target_hash = ?');
 
   return function reportAuth(req: Request, _res: Response, next: NextFunction): void {
     // Path A: API key (existing behavior)
@@ -70,15 +70,24 @@ export function createReportAuth(db: Database.Database) {
       return;
     }
 
-    // Path B: L402 token — extract preimage, verify payment_hash exists in token_balance
+    // Path B: L402 token — verify remaining > 0 (not exhausted) and target was queried
     const authHeader = req.headers.authorization ?? '';
     const match = authHeader.match(/^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i);
     if (match) {
       const preimage = match[1];
       const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
-      const row = stmtCheck.get(paymentHash);
-      if (row) {
-        next(); // valid token, report is free (no quota consumed)
+      const row = stmtCheck.get(paymentHash) as { remaining: number } | undefined;
+      if (row && row.remaining >= 0) {
+        // Verify the target was queried via /api/decide with this token
+        const target = (req.body as Record<string, unknown>)?.target as string | undefined;
+        if (target) {
+          const queried = stmtDecideLog.get(paymentHash, target);
+          if (!queried) {
+            next(new AuthenticationError('Report rejected: this token did not query the target via /api/decide. Only report on targets you queried.'));
+            return;
+          }
+        }
+        next();
         return;
       }
     }

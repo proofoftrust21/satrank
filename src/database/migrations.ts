@@ -368,6 +368,20 @@ export function runMigrations(db: Database.Database): void {
 
   // v20: probe_amount_sats column for multi-amount probing.
   // Probes at 1k/10k/100k/1M sats reveal the max routable amount per node.
+  // v25: decide_log for linking L402 tokens to target queries (report auth)
+  if (!hasVersion(db, 25)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS decide_log (
+        payment_hash BLOB NOT NULL,
+        target_hash TEXT NOT NULL,
+        decided_at INTEGER NOT NULL,
+        UNIQUE(payment_hash, target_hash)
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_decide_log_ph ON decide_log(payment_hash)');
+    recordVersion(db, 25, 'decide_log table for linking L402 tokens to decide targets');
+  }
+
   // v24: service_price_sats column on service_endpoints
   if (!hasVersion(db, 24)) {
     try { db.exec('ALTER TABLE service_endpoints ADD COLUMN service_price_sats INTEGER DEFAULT NULL'); } catch { /* exists */ }
@@ -585,6 +599,9 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   },
   24: (db) => {
     try { db.exec('ALTER TABLE service_endpoints DROP COLUMN service_price_sats'); } catch { /* SQLite < 3.35 */ }
+  },
+  25: (db) => {
+    db.exec('DROP TABLE IF EXISTS decide_log');
   },
 };
 

@@ -24,7 +24,7 @@ export class ServiceHealthCrawler {
           method: 'GET',
           signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
           headers: { 'User-Agent': 'SatRank-HealthCheck/1.0' },
-          redirect: 'follow',
+          redirect: 'manual',
         });
         const latencyMs = Date.now() - start;
         this.repo.upsert(endpoint.agent_hash, endpoint.url, resp.status, latencyMs);
