@@ -75,6 +75,7 @@ export interface LndGraphClient {
   getGraph(): Promise<LndGraph>;
   getNodeInfo(pubkey: string): Promise<LndNodeInfo | null>;
   queryRoutes(pubkey: string, amountSats: number, sourcePubKey?: string): Promise<LndQueryRoutesResponse>;
+  decodePayReq?(payReq: string): Promise<{ destination: string } | null>;
 }
 
 export interface LndClientOptions {
@@ -161,6 +162,15 @@ export class HttpLndGraphClient implements LndGraphClient {
         return null;
       }
       throw err;
+    }
+  }
+
+  async decodePayReq(payReq: string): Promise<{ destination: string } | null> {
+    try {
+      const data = await this.request<{ destination: string }>(`/v1/payreq/${payReq}`);
+      return data?.destination ? { destination: data.destination } : null;
+    } catch {
+      return null;
     }
   }
 
