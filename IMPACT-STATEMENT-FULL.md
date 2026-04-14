@@ -58,7 +58,7 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>every 5 min] --> SE
 
-  GC --> DB[(SQLite · schema v21<br/>agents / snapshots / probes)]
+  GC --> DB[(SQLite · schema v24<br/>agents / snapshots / probes)]
   PC --> DB
   LP --> DB
 
@@ -272,8 +272,8 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Bitcoin trust root | **bitcoind v28.1** full node |
 | Nostr relays published to | **3** canonical (damus.io, nos.lol, primal.net) |
 | Canonical NIP-85 result tag | **`rank`** (alongside `score` and 5 component tags) |
-| Test suite | **526 tests / 40 files**, all green on submission commit |
-| Database schema version | **v21** |
+| Test suite | **544 tests / 43 files**, all green on submission commit |
+| Database schema version | **v24** |
 
 ---
 
@@ -288,7 +288,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 - **pino** for structured logging
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only filesystem, tmpfs, and liveness healthchecks
 - **L402 / Aperture** as paid gate for `/api/decide` (the 1-sat-per-query oracle endpoint)
-- **vitest** for 526 unit + integration tests across 40 files, all green on the submission commit
+- **vitest** for 544 unit + integration tests across 43 files, all green on the submission commit
 
 ---
 

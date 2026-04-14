@@ -315,6 +315,8 @@ export interface DecideRequest {
   walletProvider?: WalletProvider;
   /** Lightning pubkey to use as pathfinding source. Overrides walletProvider. */
   callerNodePubkey?: string;
+  /** URL of the L402 service. SatRank checks HTTP health and returns serviceHealth. */
+  serviceUrl?: string;
 }
 
 export type SurvivalPrediction = 'stable' | 'at_risk' | 'likely_dead';
@@ -372,6 +374,17 @@ export interface DecideResponse {
   /** Raw empirical success rate from reports (0-1). null = insufficient data */
   reportedSuccessRate: number | null;
   lastProbeAgeMs: number | null;
+  /** HTTP health of the service behind this node. null when serviceUrl not provided. */
+  serviceHealth: {
+    url: string;
+    status: 'healthy' | 'degraded' | 'down' | 'checking' | 'unknown';
+    httpCode: number | null;
+    latencyMs: number | null;
+    uptimeRatio: number | null;
+    lastCheckedAt: number | null;
+    paidProbeResult: 'verified' | 'scam' | 'unverified' | null;
+    servicePriceSats: number | null;
+  } | null;
   latencyMs: number;
 }
 

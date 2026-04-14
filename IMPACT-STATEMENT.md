@@ -27,6 +27,7 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 3. **Closed feedback loop.** decide -> pay -> report. Reports are free, weighted by reporter score, with a 2x bonus for preimage-verified payments.
 4. **Multi-amount probing and batch pathfinding.** The probe crawler tests at 4 tiers (1k/10k/100k/1M sats) for hot nodes, exposing `maxRoutableAmount` per node. `POST /api/best-route` runs parallel pathfinding for up to 50 targets in a single call, letting agents find the optimal route in ~100 ms.
 5. **Positional pathfinding.** Agents pass `walletProvider` (phoenix, wos, strike, blink, breez, zeus, coinos, cashapp) and SatRank computes pathfinding from the provider's hub node instead of its own. A Phoenix agent gets 1.7-hop routes (P_path=0.97) instead of 4.4-hop fallbacks (P_path=0.50).
+6. **Sovereign Oracle.** SatRank autonomously crawls L402 registries (402index, L402Apps), extracts `payee_node_key` from BOLT11 invoices, maps endpoints to LN nodes, and health-checks them periodically. The `/api/decide` response includes `serviceHealth` (HTTP status, uptime, latency, service price) alongside LN routability. Agents get both "can I route the payment?" and "is the service alive?" in a single call.
 
 ## Key metrics (2026-04-09)
 
@@ -37,10 +38,10 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 | Probes / 24 h | **~650,000** |
 | Lightning-indexed events / cycle | **~5,000** (score ≥ 30) |
 | Strict NIP-85 events on relays (Stream B) | **105** |
-| Test suite | **526 tests / 40 files**, all green |
+| Test suite | **544 tests / 43 files**, all green |
 | L402 paywall | **validated end-to-end** (21 sats = 21 requests, 1 sat/req effective) |
 | Agent workflow | **3 requests, ~500 ms** (screen 100 + best-route + decide) |
-| Schema version | **v21** |
+| Schema version | **v24** |
 
 ## NIP-85 compliance
 
@@ -63,7 +64,7 @@ Free distribution funds adoption, paid `/api/decide` funds infrastructure, free 
 
 1. **Only NIP-85 provider bridging the Lightning payment graph into the WoT.** A user listing SatRank + Brainstorm in a single kind 10040 receives both `rank` assertions in one REQ: Lightning reliability + social trust, no extra client code.
 2. **Nostr-native from day one,** same keypair, same relay list, same verification path for kind 0, 10040, 30382 (Stream A + B), 5900/6900 and NIP-05.
-3. **Production infrastructure, not a demo.** ~13,900 nodes scored, ~89 k validated channels, ~9,630 BTC validated capacity, 921 k snapshots retained, 526 tests, Docker hardening (cap-drop-ALL, read-only FS), L402 paid gate. All open-source, all reproducible.
+3. **Production infrastructure, not a demo.** ~13,900 nodes scored, ~89 k validated channels, ~9,630 BTC validated capacity, 921 k snapshots retained, 544 tests, Docker hardening (cap-drop-ALL, read-only FS), L402 paid gate. All open-source, all reproducible.
 
 ---
 

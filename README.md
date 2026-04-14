@@ -5,7 +5,7 @@
 SatRank is a trust oracle for the Lightning Network. Before each payment, an agent queries SatRank for a GO/NO-GO decision: one request, one answer, 1 sat effective via L402 (21 sats = 21 requests).
 
 - Backed by a full **bitcoind v28.1** node + **LND**, not Neutrino or gossip. Every channel capacity is UTXO-validated.
-- Tracks **~13,900 active Lightning nodes** (schema v21, post-migration), probes them every 30 minutes at multiple amount tiers, publishes trust assertions on Nostr every 6 hours.
+- Tracks **~13,900 active Lightning nodes** (schema v24, post-migration), probes them every 30 minutes at multiple amount tiers, publishes trust assertions on Nostr every 6 hours.
 - **61 %** of the Lightning graph is unreachable in routing ("phantom nodes"). The exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
 - First **NIP-85** provider bridging the Lightning payment graph into the Web of Trust. Every other NIP-85 implementation scores the Nostr social graph. SatRank scores who you can actually pay.
 
@@ -107,7 +107,7 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>5 min] --> SE
 
-  GC --> DB[(SQLite<br/>schema v21)]
+  GC --> DB[(SQLite<br/>schema v24)]
   PC --> DB
   LP --> DB
 
@@ -148,7 +148,7 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | Probes executed / 24 h | **~650,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
 | NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
-| Tests (vitest) | **526 / 40 files** green | `npm test` |
+| Tests (vitest) | **544 / 43 files** green | `npm test` |
 | Schema version | **v21** | `SELECT * FROM schema_version` |
 
 Numbers are pulled live from `/api/stats` (free endpoint, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
@@ -471,7 +471,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - **pino** for structured logging
 - **Aperture / L402** as Lightning paywall for `/api/decide` and scored endpoints
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only FS, tmpfs, healthchecks
-- **vitest** for 526 unit + integration tests across 40 files, all green on the submission commit
+- **vitest** for 544 unit + integration tests across 43 files, all green on the submission commit
 
 ## Scripts
 
@@ -516,6 +516,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - [x] v19 scoring calibration: sovereign PageRank, 5 reputation sub-signals, multiplicative modifiers
 - [x] v20: multi-amount probing (1k/10k/100k/1M sats), re-probe on-demand for stale data, best-route batch pathfinding, targetFeeStability, maxRoutableAmount
 - [x] v21: L402 balance system (21 sats = 21 requests), positional pathfinding (walletProvider + callerNodePubkey), reportedSuccessRate
+- [x] v22-v24: Sovereign Oracle -- HTTP service health check (serviceUrl in /decide, serviceHealth in response), autonomous endpoint registry (100 endpoints, 16 LN nodes from 402index + L402Apps), paid probe scam detection (kill switch, circuit breaker), composite best-route 4D ranking, service pricing from BOLT11, report via L402 token, payInvoice in LND client
 - [ ] 4tress connector: verified attestations
 - [ ] Trust network visualization dashboard
 - [ ] Per-component NIP-85 keys (`30382:volume`, `30382:reputation`, …)

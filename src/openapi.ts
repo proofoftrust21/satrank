@@ -905,6 +905,7 @@ export const openapiSpec = {
           amountSats: { type: 'integer', minimum: 1, description: 'Optional: transaction amount in sats for fee estimation' },
           walletProvider: { type: 'string', enum: ['phoenix', 'wos', 'strike', 'blink', 'breez', 'zeus', 'coinos', 'cashapp'], description: 'Wallet provider name. SatRank computes P_path from the provider hub node instead of from SatRank. Agents using NWC/Phoenixd/custodial wallets should set this for accurate pathfinding.' },
           callerNodePubkey: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$', description: 'Lightning pubkey to use as pathfinding source. Overrides walletProvider. Use when the agent knows its own node pubkey or its LSP pubkey.' },
+          serviceUrl: { type: 'string', format: 'uri', description: 'URL of the L402 service behind the target node. SatRank checks HTTP health and returns serviceHealth in the response. SSRF-protected (private IPs blocked).' },
         },
       },
       DecideResponse: {
@@ -935,6 +936,13 @@ export const openapiSpec = {
           maxRoutableAmount: { type: ['integer', 'null'], description: 'Highest amount in sats for which a route was found in recent multi-amount probes (1k/10k/100k/1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.' },
           reportedSuccessRate: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Raw empirical success rate from payment reports (0-1). Null when insufficient data (< 10 reports or < 5 unique reporters). Distinct from successRate which blends proxies.' },
           lastProbeAgeMs: { type: ['integer', 'null'], description: 'Milliseconds since the last probe for this node. Null if never probed.' },
+          serviceHealth: { oneOf: [{ type: 'object', properties: {
+            url: { type: 'string' }, status: { type: 'string', enum: ['healthy', 'degraded', 'down', 'checking', 'unknown'] },
+            httpCode: { type: ['integer', 'null'] }, latencyMs: { type: ['integer', 'null'] },
+            uptimeRatio: { type: ['number', 'null'] }, lastCheckedAt: { type: ['integer', 'null'] },
+            paidProbeResult: { type: ['string', 'null'], enum: ['verified', 'scam', 'unverified', null] },
+            servicePriceSats: { type: ['integer', 'null'], description: 'Price from BOLT11 invoice' },
+          } }, { type: 'null' }], description: 'HTTP health of the service behind this node. Null when serviceUrl not provided.' },
           latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },
         },
         required: ['go', 'successRate', 'components', 'basis', 'confidence', 'verdict', 'flags', 'reason', 'survival', 'latencyMs'],
