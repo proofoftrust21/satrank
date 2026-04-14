@@ -59,7 +59,7 @@
       <button class="copy-btn" id="copy-decide" title="Copy to clipboard">Copy</button>
       <pre id="decide-curl">curl -X POST https://satrank.dev/api/decide \
   -H "Content-Type: application/json" \
-  -d '{"target": "02abc...def", "caller": "your-hash", "walletProvider": "phoenix"}'</pre>
+  -d '{"target": "02abc...def", "caller": "your-hash", "walletProvider": "phoenix", "serviceUrl": "https://api.example.com"}'</pre>
     </div>
     <div class="decide-response">
       <pre>{
@@ -282,19 +282,19 @@
       <li>
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/best-route</span>
-        <span class="endpoint-desc">Parallel pathfinding, top 3 by route quality</span>
+        <span class="endpoint-desc">4D ranking (route + trust + health + probe), top 3. Accepts walletProvider.</span>
         <span class="endpoint-cost">1 req</span>
       </li>
       <li>
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/decide</span>
-        <span class="endpoint-desc">GO / NO-GO with success probability + positional pathfinding</span>
+        <span class="endpoint-desc">GO / NO-GO + pathfinding + service health + fee stability</span>
         <span class="endpoint-cost">1 req</span>
       </li>
       <li>
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/report</span>
-        <span class="endpoint-desc">Report transaction outcome</span>
+        <span class="endpoint-desc">Report transaction outcome (L402 token or API key)</span>
         <span class="endpoint-cost free">free</span>
       </li>
       <li>
