@@ -55,6 +55,7 @@ export const decideSchema = z.object({
   amountSats: z.number().int().positive().optional(),
   walletProvider: z.enum(VALID_PROVIDERS as [string, ...string[]]).optional(),
   callerNodePubkey: lnPubkeySchema.optional(),
+  serviceUrl: z.string().url().optional(),
 });
 
 export const bestRouteSchema = z.object({

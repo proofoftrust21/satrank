@@ -56,6 +56,7 @@ export class V2Controller {
         caller.hash,
         parsed.data.amountSats,
         pathfindingSourcePubkey,
+        parsed.data.serviceUrl,
       );
 
       res.json({ data: result });

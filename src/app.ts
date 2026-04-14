@@ -47,6 +47,7 @@ import { HealthController } from './controllers/healthController';
 import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
 import { createBalanceAuth } from './middleware/balanceAuth';
+import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 
 // Routes
 import { createAgentRoutes } from './routes/agent';
@@ -104,9 +105,11 @@ export function createApp() {
     lndGraphCrawler, agentRepo, scoringService, config.AUTO_INDEX_MAX_PER_MINUTE,
   );
 
+  const serviceEndpointRepo = new ServiceEndpointRepository(db);
   const decideService = new DecideService({
     agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService,
     probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined, survivalService,
+    serviceEndpointRepo,
   });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 

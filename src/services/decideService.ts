@@ -3,13 +3,14 @@
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
+import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
 import type { ScoringService } from './scoringService';
 import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { VerdictService } from './verdictService';
 import type { SurvivalService } from './survivalService';
-import type { DecideResponse, VerdictFlag, Verdict, ConfidenceLevel, PathfindingResult } from '../types';
+import type { DecideResponse, ServiceHealth, VerdictFlag, Verdict, ConfidenceLevel, PathfindingResult } from '../types';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
 import { logger } from '../logger';
 const EMPIRICAL_THRESHOLD = 10; // min data points before using empirical basis
@@ -71,6 +72,26 @@ export interface DecideServiceOptions {
   probeRepo?: ProbeRepository;
   lndClient?: LndGraphClient;
   survivalService?: SurvivalService;
+  serviceEndpointRepo?: ServiceEndpointRepository;
+}
+
+// SSRF protection: block private/loopback IPs in serviceUrl
+const BLOCKED_HOSTS = /^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|\[::1?\])$/i;
+const SERVICE_HEALTH_CACHE_TTL_SEC = 1800; // 30 min
+const SERVICE_HEALTH_TIMEOUT_MS = 3000;
+const SERVICE_HEALTH_NONBLOCK_MS = 500;
+
+function isUrlBlocked(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    return BLOCKED_HOSTS.test(u.hostname);
+  } catch { return true; }
+}
+
+function classifyHttp(status: number): 'healthy' | 'degraded' | 'down' {
+  if (status === 402 || (status >= 200 && status < 300)) return 'healthy';
+  if (status >= 300 && status < 500) return 'degraded';
+  return 'down';
 }
 
 export class DecideService {
@@ -81,6 +102,7 @@ export class DecideService {
   private probeRepo?: ProbeRepository;
   private lndClient?: LndGraphClient;
   private survivalService?: SurvivalService;
+  private serviceEndpointRepo?: ServiceEndpointRepository;
 
   constructor(opts: DecideServiceOptions) {
     this.agentRepo = opts.agentRepo;
@@ -90,6 +112,7 @@ export class DecideService {
     this.probeRepo = opts.probeRepo;
     this.lndClient = opts.lndClient;
     this.survivalService = opts.survivalService;
+    this.serviceEndpointRepo = opts.serviceEndpointRepo;
   }
 
   async decide(
@@ -97,6 +120,7 @@ export class DecideService {
     callerHash: string,
     amountSats?: number,
     pathfindingSourcePubkey?: string,
+    serviceUrl?: string,
   ): Promise<DecideResponse> {
     const startMs = Date.now();
 
@@ -208,10 +232,17 @@ export class DecideService {
     // Clamp to [0, 1]
     successRate = Math.max(0, Math.min(1, successRate));
 
-    // GO decision: successRate >= 0.5 AND no critical flags
+    // Service health check (non-blocking)
+    let serviceHealth: ServiceHealth | null = null;
+    if (serviceUrl && !isUrlBlocked(serviceUrl) && this.serviceEndpointRepo) {
+      serviceHealth = await this.checkServiceHealth(targetHash, serviceUrl, startMs);
+    }
+
+    // GO decision: successRate >= 0.5 AND no critical flags AND service not down
     const hasCritical = verdictResult.flags.includes('fraud_reported') ||
       verdictResult.flags.includes('negative_reputation');
-    const go = successRate >= 0.5 && !hasCritical;
+    const serviceDown = serviceHealth?.status === 'down';
+    const go = successRate >= 0.5 && !hasCritical && !serviceDown;
 
     // reportedSuccessRate — raw empirical rate, null when insufficient data
     const reportedSuccessRate = hasEmpirical ? Math.round(empiricalRate * 1000) / 1000 : null;
@@ -254,7 +285,82 @@ export class DecideService {
       maxRoutableAmount,
       reportedSuccessRate,
       lastProbeAgeMs,
+      serviceHealth,
       latencyMs,
     };
+  }
+
+  /** Check HTTP health of a service URL. Non-blocking: if cache miss takes > 500ms,
+   *  returns { status: 'checking' } immediately and finishes in background. */
+  private async checkServiceHealth(agentHash: string, url: string, decideStartMs: number): Promise<ServiceHealth> {
+    // 1. Check cache
+    const cached = this.serviceEndpointRepo!.findByUrl(url);
+    const now = Math.floor(Date.now() / 1000);
+
+    if (cached?.last_checked_at && (now - cached.last_checked_at) < SERVICE_HEALTH_CACHE_TTL_SEC) {
+      const uptimeRatio = cached.check_count >= 3
+        ? Math.round((cached.success_count / cached.check_count) * 1000) / 1000
+        : null;
+      return {
+        url,
+        status: cached.last_http_status ? classifyHttp(cached.last_http_status) : 'unknown',
+        httpCode: cached.last_http_status,
+        latencyMs: cached.last_latency_ms,
+        uptimeRatio,
+        lastCheckedAt: cached.last_checked_at,
+      };
+    }
+
+    // 2. Live check with non-blocking timeout
+    const elapsed = Date.now() - decideStartMs;
+    const remainingBudget = SERVICE_HEALTH_NONBLOCK_MS - elapsed;
+
+    if (remainingBudget <= 50) {
+      // Already spent too long — fire background check, return 'checking'
+      this.fireBackgroundCheck(agentHash, url);
+      return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null };
+    }
+
+    // Race: live check vs budget timeout
+    const checkPromise = this.doHttpCheck(agentHash, url);
+    const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), remainingBudget));
+
+    const result = await Promise.race([checkPromise, timeoutPromise]);
+    if (result) return result;
+
+    // Budget exceeded — the check continues in background, return 'checking'
+    checkPromise.catch(() => {}); // prevent unhandled rejection
+    return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null };
+  }
+
+  private fireBackgroundCheck(agentHash: string, url: string): void {
+    this.doHttpCheck(agentHash, url).catch((err: unknown) => {
+      logger.warn({ url, error: err instanceof Error ? err.message : String(err) }, 'Background service health check failed');
+    });
+  }
+
+  private async doHttpCheck(agentHash: string, url: string): Promise<ServiceHealth> {
+    try {
+      const start = Date.now();
+      const resp = await fetch(url, {
+        method: 'GET',
+        signal: AbortSignal.timeout(SERVICE_HEALTH_TIMEOUT_MS),
+        headers: { 'User-Agent': 'SatRank-HealthCheck/1.0' },
+        redirect: 'follow',
+      });
+      const latencyMs = Date.now() - start;
+      const httpCode = resp.status;
+
+      this.serviceEndpointRepo!.upsert(agentHash, url, httpCode, latencyMs);
+      const updated = this.serviceEndpointRepo!.findByUrl(url);
+      const uptimeRatio = updated && updated.check_count >= 3
+        ? Math.round((updated.success_count / updated.check_count) * 1000) / 1000
+        : null;
+
+      return { url, status: classifyHttp(httpCode), httpCode, latencyMs, uptimeRatio, lastCheckedAt: Math.floor(Date.now() / 1000) };
+    } catch {
+      this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0);
+      return { url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: Math.floor(Date.now() / 1000) };
+    }
   }
 }

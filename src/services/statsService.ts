@@ -18,7 +18,7 @@ const NETWORK_STATS_CACHE_KEY = 'stats:network';
 const NETWORK_STATS_TTL_MS = 5 * 60_000;
 
 // Must match the latest migration version in migrations.ts
-const EXPECTED_SCHEMA_VERSION = 21;
+const EXPECTED_SCHEMA_VERSION = 22;
 
 export class StatsService {
   constructor(

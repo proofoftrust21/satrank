@@ -368,6 +368,26 @@ export function runMigrations(db: Database.Database): void {
 
   // v20: probe_amount_sats column for multi-amount probing.
   // Probes at 1k/10k/100k/1M sats reveal the max routable amount per node.
+  // v22: service_endpoints for HTTP health tracking (sovereign oracle)
+  if (!hasVersion(db, 22)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS service_endpoints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_hash TEXT,
+        url TEXT NOT NULL UNIQUE,
+        last_http_status INTEGER,
+        last_latency_ms INTEGER,
+        last_checked_at INTEGER,
+        check_count INTEGER DEFAULT 0,
+        success_count INTEGER DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_url ON service_endpoints(url)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_checked ON service_endpoints(last_checked_at)');
+    recordVersion(db, 22, 'service_endpoints table for HTTP health tracking');
+  }
+
   // v21: token_balance for L402 quota system (21 requests per token)
   if (!hasVersion(db, 21)) {
     db.exec(`
@@ -530,6 +550,9 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   },
   21: (db) => {
     db.exec('DROP TABLE IF EXISTS token_balance');
+  },
+  22: (db) => {
+    db.exec('DROP TABLE IF EXISTS service_endpoints');
   },
 };
 

@@ -343,6 +343,15 @@ export interface CapacityHealth {
   trend: 'growing' | 'stable' | 'declining';
 }
 
+export interface ServiceHealth {
+  url: string;
+  status: 'healthy' | 'degraded' | 'down' | 'checking' | 'unknown';
+  httpCode: number | null;
+  latencyMs: number | null;
+  uptimeRatio: number | null;
+  lastCheckedAt: number | null;
+}
+
 export interface FeeVolatility {
   index: number;
   interpretation: 'stable' | 'moderate' | 'volatile';
@@ -374,6 +383,8 @@ export interface DecideResponse {
   /** Raw empirical success rate from payment reports (0-1). null when insufficient reports (<10 data points or <5 unique reporters). */
   reportedSuccessRate: number | null;
   lastProbeAgeMs: number | null;
+  /** HTTP health of the service behind this node. null when no serviceUrl provided or no data available. */
+  serviceHealth: ServiceHealth | null;
   latencyMs: number;
 }
 
