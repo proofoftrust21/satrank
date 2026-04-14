@@ -82,16 +82,19 @@ volume = round(channelScore * 0.5 + capacityScore * 0.5)</pre>
   <pre>volume = min(100, round(log(count + 1) / log(1001) * 100))</pre>
 
   <h3>Reputation (Lightning nodes)</h3>
-  <p>Blends 5 objective sub-signals. With PageRank data (available for 100% of nodes):</p>
+  <p>Blends 5 objective sub-signals. With PageRank data (100% of nodes in production):</p>
   <pre>reputation = centrality * 0.20 + peerTrust * 0.30 + routingQuality * 0.20
-           + capTrend   * 0.15 + feeStability * 0.15</pre>
+           + capTrend   * 0.15 + feeStability * 0.15
+
+// Fallback without centrality (test environments only):
+reputation = peerTrust * 0.35 + routingQuality * 0.25 + capTrend * 0.20 + feeStability * 0.20</pre>
 
   <p><strong>Sub-signals:</strong></p>
   <ul>
     <li><strong>Centrality (0&ndash;100)</strong> &mdash; sovereign PageRank computed hourly from the full LND graph (~11,700 nodes, ~41k edges, &lt;500ms). Capacity-weighted with log-scale edge weights so a 10 BTC channel is ~2.3x more influential than 0.1 BTC, not 100x. Percentile-normalized 0&ndash;100. Replaces the LN+ hubness/betweenness dependency &mdash; covers 100% of nodes vs ~70% before.</li>
     <li><strong>Peer trust (0&ndash;100)</strong> &mdash; BTC per channel as inbound confidence proxy. <code>min(100, log10(btcPerChannel * 100 + 1) / log10(201) * 100)</code>. Unchanged formula, rescaled from 0&ndash;50 to 0&ndash;100.</li>
-    <li><strong>Routing quality (0&ndash;100)</strong> &mdash; absolute hop distance (60%) + latency (40%) from 1.7M+ probe results. Measures how well a node performs from SatRank&rsquo;s position in the graph. Proprietary, non-replicable signal: a fork of the code does not have these measurements.</li>
-    <li><strong>Capacity trend (0&ndash;100)</strong> &mdash; 7-day capacity delta from channel_snapshots. Sigmoid centered at 0% change: stable = 50, growing = higher, shrinking = lower. A +20% week maps to ~77; a -20% week maps to ~23.</li>
+    <li><strong>Routing quality (0&ndash;100)</strong> &mdash; hop distance (60%: 1 hop = 100, -12 per extra hop, floor 4) + latency (40%: 0ms = 100, 300ms+ = 0) from probe results over 7 days. Requires &ge; 3 reachable probes. Measures how well a node performs from SatRank&rsquo;s position in the graph. Proprietary signal: a fork without our probe history defaults to 50.</li>
+    <li><strong>Capacity trend (0&ndash;100)</strong> &mdash; 7-day capacity delta from channel_snapshots. Sigmoid centered at 0% change: no change = 50, growth = higher, shrinkage = lower. A +20% week maps to ~77; a -20% week maps to ~23. Returns 50 (neutral) when no snapshot history is available.</li>
     <li><strong>Fee stability (0&ndash;100)</strong> &mdash; fee change rate per channel per week from fee_snapshots. Sigmoid: 0 changes/channel/week = 100, 1 = ~73, 3 = ~27, 5+ = ~5. Nodes with stable fees score higher; frequent fee changes signal unreliable routing.</li>
   </ul>
   <p>
@@ -403,7 +406,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <table>
     <thead><tr><th>Verdict</th><th>Condition</th></tr></thead>
     <tbody>
-      <tr><td><strong>RISKY</strong></td><td>Score &lt; 30 with confidence &ge; low (0.25), OR delta_7d &lt; &minus;15, OR <code>negative_reputation</code> flag, OR <code>fraud_reported</code> flag</td></tr>
+      <tr><td><strong>RISKY</strong></td><td><code>fraud_reported</code> or <code>negative_reputation</code> flag, OR <code>unreachable</code> (fresh probe), OR delta_7d &lt; &minus;15, OR score &lt; 30 with confidence &ge; low (0.25)</td></tr>
       <tr><td><strong>SAFE</strong></td><td>Score &ge; 47, no critical flags, confidence &ge; medium (0.5)</td></tr>
       <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;46, OR score &lt; 30 with very low confidence, OR score &ge; 47 with confidence &lt; medium</td></tr>
     </tbody>
@@ -458,7 +461,7 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
 
   <h3>Structured Attestation Categories</h3>
   <p>
-    When submitting attestations via <code>POST /api/attestation</code>, agents can now include
+    When submitting attestations via <code>POST /api/attestations</code>, agents can include
     a <code>category</code> field: <code>successful_transaction</code>,
     <code>failed_transaction</code>, <code>dispute</code>, <code>fraud</code>,
     <code>unresponsive</code>, or <code>general</code> (default).
@@ -495,13 +498,12 @@ regularity = min(100, round(100 * exp(-cv)))</pre>
   <h3>Batch Verdict</h3>
   <p>
     <code>POST /api/verdicts</code> accepts up to 100 hashes in a single request, returning an
-    array of verdicts. This is 10x more efficient than individual queries for agents that need to
-    screen multiple counterparties before transacting. Unknown Lightning pubkeys trigger
-    auto-indexation automatically.
+    array of verdicts. One request screens 100 targets, each consuming a single unit from the L402
+    balance. Unknown Lightning pubkeys trigger auto-indexation automatically.
   </p>
 
   <!-- Agent Workflow -->
-  <h3>Recommended Agent Workflow: Screen, Route, Decide</h3>
+  <h2 id="agent-workflow">Agent Workflow: Screen, Route, Decide</h2>
   <p>
     The optimal pattern for autonomous agents: screen many candidates in one batch, find the best
     route among the safe ones, then make a personalized decision on the winner. Three API calls,
