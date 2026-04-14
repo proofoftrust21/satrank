@@ -33,7 +33,7 @@ export class ServiceEndpointRepository {
     `);
 
     this.stmtFindByUrl = db.prepare('SELECT * FROM service_endpoints WHERE url = ?');
-    this.stmtFindByAgent = db.prepare('SELECT * FROM service_endpoints WHERE agent_hash = ?');
+    this.stmtFindByAgent = db.prepare('SELECT * FROM service_endpoints WHERE agent_hash = ? ORDER BY last_checked_at DESC');
     this.stmtFindStale = db.prepare(`
       SELECT * FROM service_endpoints
       WHERE check_count >= ? AND (last_checked_at IS NULL OR last_checked_at < ?)

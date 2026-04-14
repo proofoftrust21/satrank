@@ -76,6 +76,7 @@ export interface LndGraphClient {
   getNodeInfo(pubkey: string): Promise<LndNodeInfo | null>;
   queryRoutes(pubkey: string, amountSats: number, sourcePubKey?: string): Promise<LndQueryRoutesResponse>;
   decodePayReq?(payReq: string): Promise<{ destination: string } | null>;
+  payInvoice?(paymentRequest: string, feeLimitSat?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
 }
 
 export interface LndClientOptions {
@@ -171,6 +172,32 @@ export class HttpLndGraphClient implements LndGraphClient {
       return data?.destination ? { destination: data.destination } : null;
     } catch {
       return null;
+    }
+  }
+
+  async payInvoice(paymentRequest: string, feeLimitSat: number = 10): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }> {
+    if (!this.macaroonHex) throw new Error('LND macaroon not loaded');
+    const url = `${this.restUrl}/v1/channels/transactions`;
+    const body = JSON.stringify({ payment_request: paymentRequest, fee_limit: { fixed: String(feeLimitSat) } });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000); // 60s for payment settlement
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Grpc-Metadata-macaroon': this.macaroonHex, 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      const data = await response.json() as Record<string, string>;
+      if (data.payment_error) {
+        return { paymentPreimage: '', paymentHash: '', paymentError: data.payment_error };
+      }
+      return { paymentPreimage: data.payment_preimage ?? '', paymentHash: data.payment_hash ?? '' };
+    } catch (err: unknown) {
+      clearTimeout(timeout);
+      const msg = err instanceof Error ? err.message : String(err);
+      return { paymentPreimage: '', paymentHash: '', paymentError: msg };
     }
   }
 

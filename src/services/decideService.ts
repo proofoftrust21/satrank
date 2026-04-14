@@ -78,7 +78,7 @@ export interface DecideServiceOptions {
 }
 
 // SSRF protection: block private/loopback IPs in serviceUrl
-const BLOCKED_HOSTS = /^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|\[::1?\])$/i;
+const BLOCKED_HOSTS = /^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|\[::1?\]|\[::ffff:127\.\d+\.\d+\.\d+\]|\[::ffff:10\.\d+\.\d+\.\d+\]|\[::ffff:192\.168\.\d+\.\d+\])$/i;
 const SERVICE_HEALTH_CACHE_TTL_SEC = 1800; // 30 min
 const SERVICE_HEALTH_TIMEOUT_MS = 3000;
 const SERVICE_HEALTH_NONBLOCK_MS = 500;
