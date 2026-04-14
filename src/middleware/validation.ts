@@ -62,6 +62,9 @@ export const bestRouteSchema = z.object({
   targets: z.array(agentIdentifierSchema).min(1).max(50),
   caller: agentIdentifierSchema,
   amountSats: z.number().int().positive().optional(),
+  walletProvider: z.enum(VALID_PROVIDERS as [string, ...string[]]).optional(),
+  callerNodePubkey: lnPubkeySchema.optional(),
+  serviceUrls: z.record(z.string(), z.string().url()).optional(),
 });
 
 const reportOutcomeValues = ['success', 'failure', 'timeout'] as const;

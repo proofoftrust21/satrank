@@ -6,6 +6,8 @@ import type { AgentService } from '../services/agentService';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
+import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { ServiceProbeRepository } from '../repositories/serviceProbeRepository';
 import type { ScoringService } from '../services/scoringService';
 import type { TrendService } from '../services/trendService';
 import type { RiskService } from '../services/riskService';
@@ -37,6 +39,8 @@ export class V2Controller {
     private channelFlowService?: ChannelFlowService,
     private feeVolatilityService?: FeeVolatilityService,
     private verdictService?: VerdictService,
+    private serviceEndpointRepo?: ServiceEndpointRepository,
+    private serviceProbeRepo?: ServiceProbeRepository,
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -125,16 +129,50 @@ export class V2Controller {
         }),
       );
 
+      const serviceUrls = parsed.data.serviceUrls;
+      const hasServiceData = serviceUrls && Object.keys(serviceUrls).length > 0;
+
       // Filter to reachable, enrich with score + verdict, sort by composite rank
       const allReachable = pathResults
         .filter(r => r.pathfinding?.reachable && r.agent)
         .map(r => {
           const scoreResult = this.scoringService.getScore(r.hash);
           const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
+
+          // Route quality (0-100) from pathfinding
           const hops = r.pathfinding!.hops ?? 99;
-          const feeMsat = r.pathfinding!.estimatedFeeMsat ?? Infinity;
-          // Composite rank: fewer hops and lower fees are better
-          const rankScore = scoreResult.total * 10 - hops * 50 - feeMsat / 1000;
+          const hopPenalty = Math.max(12, 100 - (hops - 1) * 8);
+          const alternatives = r.pathfinding!.alternatives ?? 1;
+          const altBonus = Math.min(100, 80 + alternatives * 10);
+          const routeQuality = hopPenalty * 0.6 + altBonus * 0.4;
+
+          // Trust score (0-100)
+          const trust = scoreResult.total;
+
+          // HTTP health (0-100) from service_endpoints
+          let httpHealth = 50; // neutral default
+          const url = serviceUrls?.[r.hash];
+          const endpoint = url
+            ? this.serviceEndpointRepo?.findByUrl(url)
+            : this.serviceEndpointRepo?.findByAgent(r.hash)?.[0]; // auto-lookup from registry
+          if (endpoint && endpoint.check_count >= 1) {
+            httpHealth = Math.round((endpoint.success_count / endpoint.check_count) * 100);
+          }
+
+          // Paid probe signal (0 or 100)
+          let probeSignal = 50; // neutral default
+          const probeUrl = url ?? endpoint?.url;
+          if (probeUrl && this.serviceProbeRepo) {
+            const probe = this.serviceProbeRepo.findLatest(probeUrl);
+            if (probe?.body_valid) probeSignal = 100;
+            else if (probe && probe.paid_sats > 0 && !probe.body_valid) probeSignal = 0;
+          }
+
+          // Composite rank: multi-dimensional when service data available
+          const rankScore = hasServiceData
+            ? routeQuality * 0.35 + trust * 0.25 + httpHealth * 0.25 + probeSignal * 0.15
+            : routeQuality * 0.50 + trust * 0.50; // graceful degradation
+
           return {
             publicKeyHash: r.hash,
             alias: r.agent!.alias,
