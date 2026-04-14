@@ -845,7 +845,7 @@ if delta7d < -2                         → falling</pre>
     <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
     <tbody>
       <tr><td><code>POST /api/decide</code></td><td>1 req</td><td>GO / NO-GO with success probability</td></tr>
-      <tr><td><code>POST /api/report</code></td><td>API Key</td><td>Report transaction outcome (free)</td></tr>
+      <tr><td><code>POST /api/report</code></td><td>L402 token or API Key</td><td>Report transaction outcome (free, no quota consumed)</td></tr>
       <tr><td><code>GET /api/profile/{id}</code></td><td>1 req</td><td>Agent profile with reports, uptime, rank</td></tr>
     </tbody>
   </table>
@@ -878,8 +878,10 @@ P_empirical = weighted success rate from past reports         // Did other agent
   </p>
 
   <p>
-    <code>go = true</code> when <code>successRate &ge; 0.5</code> and no critical flags
-    (<code>fraud_reported</code>, <code>negative_reputation</code>).
+    <code>go = true</code> when <code>successRate &ge; 0.5</code>, no critical flags
+    (<code>fraud_reported</code>, <code>negative_reputation</code>), service not down
+    (<code>serviceHealth.status !== 'down'</code>), and no scam detected
+    (<code>serviceHealth.paidProbeResult !== 'scam'</code>).
   </p>
 
   <h3>Additional Decide Response Fields</h3>
@@ -888,6 +890,7 @@ P_empirical = weighted success rate from past reports         // Did other agent
     <li><strong><code>maxRoutableAmount</code></strong> (integer or null) &mdash; highest amount in sats for which a route was found in recent multi-amount probes (1k / 10k / 100k / 1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.</li>
     <li><strong><code>reportedSuccessRate</code></strong> (0&ndash;1 or null) &mdash; raw empirical success rate from payment reports. Null when fewer than 10 reports from 5+ unique reporters exist. Distinct from <code>successRate</code> which blends all 5 signals.</li>
     <li><strong><code>lastProbeAgeMs</code></strong> (integer or null) &mdash; milliseconds since the last probe for this node. Null if never probed. Low values indicate fresh data; high values mean the probe may be stale (re-probe triggers at 30 minutes).</li>
+    <li><strong><code>serviceHealth</code></strong> (object or null) &mdash; HTTP health of the service behind this node. Requires <code>serviceUrl</code> in the request. Contains: <code>url</code>, <code>status</code> (healthy/degraded/down/checking/unknown), <code>httpCode</code>, <code>latencyMs</code>, <code>uptimeRatio</code> (after 3+ checks), <code>paidProbeResult</code> (verified/scam/unverified), <code>servicePriceSats</code> (from BOLT11 invoice). A 402 response counts as healthy (the service is up and accepting payments).</li>
   </ul>
 
   <h3>Re-probe on Demand</h3>
@@ -898,11 +901,27 @@ P_empirical = weighted success rate from past reports         // Did other agent
     30 minutes use the fresh cache. The result is stored in <code>probe_results</code> for future calls.
   </p>
 
+  <h3>Sovereign Oracle</h3>
+  <p>
+    SatRank autonomously collects service-level data without depending on third-party registries.
+    Five features combine LN routing intelligence with HTTP service health:
+  </p>
+  <ol>
+    <li><strong>Service health check.</strong> Pass <code>serviceUrl</code> in <code>POST /api/decide</code> and SatRank checks HTTP availability (GET with 3s timeout, SSRF-protected). A 402 response = healthy. Results are cached 30 minutes and returned as <code>serviceHealth</code> in the response. Non-blocking: if the check exceeds 500ms, SatRank returns <code>status: "checking"</code> immediately and finishes in background.</li>
+    <li><strong>Autonomous registry.</strong> A crawler scans 402index.io and L402Apps every 24h, extracts BOLT11 invoices from 402 responses, decodes <code>payee_node_key</code> via LND, and maps URLs to LN node hashes in <code>service_endpoints</code>. Currently ~100 endpoints mapped to ~16 distinct LN nodes. Service price (<code>servicePriceSats</code>) is extracted from the invoice amount.</li>
+    <li><strong>Paid probe scam detection.</strong> SatRank pays L402 endpoints (up to 10 sats each, 50 probes/day max) and verifies the response is valid (status 200, non-empty body). Results: <code>verified</code> (delivered), <code>scam</code> (paid but nothing delivered), or <code>unverified</code>. Circuit breaker: 3 consecutive failures disable probing for 1 hour. Kill switch: <code>PAID_PROBE_ENABLED</code> env var.</li>
+    <li><strong>Composite best-route.</strong> <code>POST /api/best-route</code> ranks candidates using 4 dimensions: route quality (35%), trust score (25%), HTTP health (25%), paid probe signal (15%). Falls back to 50/50 route+trust when no service data is available. Auto-lookup: if the registry has mapped a URL for a target node, it is used automatically without the agent providing <code>serviceUrls</code>.</li>
+    <li><strong>Routable amount from provider.</strong> The on-demand multi-amount re-probe (1k/10k/100k/1M sats) uses <code>walletProvider</code> as the <code>source_pub_key</code> in queryRoutes, so <code>maxRoutableAmount</code> reflects capacity from the agent&rsquo;s wallet provider, not from SatRank.</li>
+  </ol>
+
   <h3>Report</h3>
   <p>
     After a transaction, agents report the outcome: <code>success</code>,
     <code>failure</code>, or <code>timeout</code>. Reports are
-    <strong>free</strong> (no payment required) to maximize participation.
+    <strong>free</strong> (no payment required, no quota consumed) to maximize participation.
+    Authentication: L402 token (from a prior <code>/api/decide</code> call) or API key.
+    Reports are linked to the target via <code>decide_log</code> &mdash; an agent can only
+    report on targets it queried. This prevents sybil report spam.
   </p>
   <ul>
     <li><strong>Reporter weighting:</strong> Each report&rsquo;s weight is proportional to the reporter&rsquo;s own SatRank score (floor 0.3, cap 1.0). High-trust reporters have more influence.</li>
@@ -1095,9 +1114,9 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   </p>
   <p>
     The mining and publishing logic live in
-    <code>scripts/nostr-mine-zap-mappings.ts</code> and
-    <code>scripts/nostr-publish-nostr-indexed.ts</code>; the one-shot self-declaration
-    (SatRank&rsquo;s own Nostr pubkey &rarr; SatRank&rsquo;s own Lightning node) is in
+    <code>src/nostr/zapMiner.ts</code> and
+    <code>src/nostr/nostrIndexedPublisher.ts</code> (integrated into the crawler cron).
+    The one-shot self-declaration is in
     <code>scripts/nostr-publish-self-declaration.ts</code>.
   </p>
 
