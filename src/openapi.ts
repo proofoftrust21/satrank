@@ -940,7 +940,6 @@ export const openapiSpec = {
             url: { type: 'string' }, status: { type: 'string', enum: ['healthy', 'degraded', 'down', 'checking', 'unknown'] },
             httpCode: { type: ['integer', 'null'] }, latencyMs: { type: ['integer', 'null'] },
             uptimeRatio: { type: ['number', 'null'] }, lastCheckedAt: { type: ['integer', 'null'] },
-            paidProbeResult: { type: ['string', 'null'], enum: ['verified', 'scam', 'unverified', null] },
             servicePriceSats: { type: ['integer', 'null'], description: 'Price from BOLT11 invoice' },
           } }, { type: 'null' }], description: 'HTTP health of the service behind this node. Null when serviceUrl not provided.' },
           latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },

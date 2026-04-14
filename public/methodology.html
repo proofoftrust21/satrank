@@ -880,8 +880,7 @@ P_empirical = weighted success rate from past reports         // Did other agent
   <p>
     <code>go = true</code> when <code>successRate &ge; 0.5</code>, no critical flags
     (<code>fraud_reported</code>, <code>negative_reputation</code>), service not down
-    (<code>serviceHealth.status !== 'down'</code>), and no scam detected
-    (<code>serviceHealth.paidProbeResult !== 'scam'</code>).
+    (<code>serviceHealth.status !== 'down'</code>).
   </p>
 
   <h3>Additional Decide Response Fields</h3>
@@ -890,7 +889,7 @@ P_empirical = weighted success rate from past reports         // Did other agent
     <li><strong><code>maxRoutableAmount</code></strong> (integer or null) &mdash; highest amount in sats for which a route was found in recent multi-amount probes (1k / 10k / 100k / 1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.</li>
     <li><strong><code>reportedSuccessRate</code></strong> (0&ndash;1 or null) &mdash; raw empirical success rate from payment reports. Null when fewer than 10 reports from 5+ unique reporters exist. Distinct from <code>successRate</code> which blends all 5 signals.</li>
     <li><strong><code>lastProbeAgeMs</code></strong> (integer or null) &mdash; milliseconds since the last probe for this node. Null if never probed. Low values indicate fresh data; high values mean the probe may be stale (re-probe triggers at 30 minutes).</li>
-    <li><strong><code>serviceHealth</code></strong> (object or null) &mdash; HTTP health of the service behind this node. Requires <code>serviceUrl</code> in the request. Contains: <code>url</code>, <code>status</code> (healthy/degraded/down/checking/unknown), <code>httpCode</code>, <code>latencyMs</code>, <code>uptimeRatio</code> (after 3+ checks), <code>paidProbeResult</code> (verified/scam/unverified), <code>servicePriceSats</code> (from BOLT11 invoice). A 402 response counts as healthy (the service is up and accepting payments).</li>
+    <li><strong><code>serviceHealth</code></strong> (object or null) &mdash; HTTP health of the service behind this node. Requires <code>serviceUrl</code> in the request. Contains: <code>url</code>, <code>status</code> (healthy/degraded/down/checking/unknown), <code>httpCode</code>, <code>latencyMs</code>, <code>uptimeRatio</code> (after 3+ checks), <code>servicePriceSats</code> (from BOLT11 invoice). A 402 response counts as healthy (the service is up and accepting payments).</li>
   </ul>
 
   <h3>Re-probe on Demand</h3>
@@ -909,8 +908,7 @@ P_empirical = weighted success rate from past reports         // Did other agent
   <ol>
     <li><strong>Service health check.</strong> Pass <code>serviceUrl</code> in <code>POST /api/decide</code> and SatRank checks HTTP availability (GET with 3s timeout, SSRF-protected). A 402 response = healthy. Results are cached 30 minutes and returned as <code>serviceHealth</code> in the response. Non-blocking: if the check exceeds 500ms, SatRank returns <code>status: "checking"</code> immediately and finishes in background.</li>
     <li><strong>Autonomous registry.</strong> A crawler scans 402index.io and L402Apps every 24h, extracts BOLT11 invoices from 402 responses, decodes <code>payee_node_key</code> via LND, and maps URLs to LN node hashes in <code>service_endpoints</code>. Currently ~100 endpoints mapped to ~16 distinct LN nodes. Service price (<code>servicePriceSats</code>) is extracted from the invoice amount.</li>
-    <li><strong>Paid probe scam detection.</strong> SatRank pays L402 endpoints (up to 10 sats each, 50 probes/day max) and verifies the response is valid (status 200, non-empty body). Results: <code>verified</code> (delivered), <code>scam</code> (paid but nothing delivered), or <code>unverified</code>. Circuit breaker: 3 consecutive failures disable probing for 1 hour. Kill switch: <code>PAID_PROBE_ENABLED</code> env var.</li>
-    <li><strong>Composite best-route.</strong> <code>POST /api/best-route</code> ranks candidates using 4 dimensions: route quality (35%), trust score (25%), HTTP health (25%), paid probe signal (15%). Falls back to 50/50 route+trust when no service data is available. Auto-lookup: if the registry has mapped a URL for a target node, it is used automatically without the agent providing <code>serviceUrls</code>.</li>
+    <li><strong>Composite best-route.</strong> <code>POST /api/best-route</code> ranks candidates using 3 dimensions: route quality (40%), trust score (30%), HTTP health (30%). Falls back to 50/50 route+trust when no service data is available. Auto-lookup: if the registry has mapped a URL for a target node, it is used automatically without the agent providing <code>serviceUrls</code>.</li>
     <li><strong>Routable amount from provider.</strong> The on-demand multi-amount re-probe (1k/10k/100k/1M sats) uses <code>walletProvider</code> as the <code>source_pub_key</code> in queryRoutes, so <code>maxRoutableAmount</code> reflects capacity from the agent&rsquo;s wallet provider, not from SatRank.</li>
   </ol>
 

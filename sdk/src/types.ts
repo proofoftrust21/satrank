@@ -382,7 +382,6 @@ export interface DecideResponse {
     latencyMs: number | null;
     uptimeRatio: number | null;
     lastCheckedAt: number | null;
-    paidProbeResult: 'verified' | 'scam' | 'unverified' | null;
     servicePriceSats: number | null;
   } | null;
   latencyMs: number;

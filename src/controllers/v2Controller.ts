@@ -9,7 +9,6 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
-import type { ServiceProbeRepository } from '../repositories/serviceProbeRepository';
 import type { ScoringService } from '../services/scoringService';
 import type { TrendService } from '../services/trendService';
 import type { RiskService } from '../services/riskService';
@@ -42,7 +41,6 @@ export class V2Controller {
     private feeVolatilityService?: FeeVolatilityService,
     private verdictService?: VerdictService,
     private serviceEndpointRepo?: ServiceEndpointRepository,
-    private serviceProbeRepo?: ServiceProbeRepository,
     private db?: Database.Database,
   ) {}
 
@@ -179,18 +177,9 @@ export class V2Controller {
             httpHealth = Math.round((endpoint.success_count / endpoint.check_count) * 100);
           }
 
-          // Paid probe signal (0 or 100)
-          let probeSignal = 50; // neutral default
-          const probeUrl = url ?? endpoint?.url;
-          if (probeUrl && this.serviceProbeRepo) {
-            const probe = this.serviceProbeRepo.findLatest(probeUrl);
-            if (probe?.body_valid) probeSignal = 100;
-            else if (probe && probe.paid_sats > 0 && !probe.body_valid) probeSignal = 0;
-          }
-
-          // Composite rank: multi-dimensional when service data available
+          // Composite rank: 3D when service data available
           const rankScore = hasServiceData
-            ? routeQuality * 0.35 + trust * 0.25 + httpHealth * 0.25 + probeSignal * 0.15
+            ? routeQuality * 0.40 + trust * 0.30 + httpHealth * 0.30
             : routeQuality * 0.50 + trust * 0.50; // graceful degradation
 
           return {

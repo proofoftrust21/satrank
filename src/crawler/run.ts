@@ -588,21 +588,7 @@ async function main(): Promise<void> {
     timerRegistry.unref?.();
     logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'Registry crawler timer started');
 
-    // Paid probe crawler — pays L402 endpoints to verify honesty (every 24h, disabled by default)
-    if (config.PAID_PROBE_ENABLED && lndClient.isConfigured()) {
-      const { PaidProbeCrawler } = await import('./paidProbeCrawler');
-      const { ServiceProbeRepository } = await import('../repositories/serviceProbeRepository');
-      const serviceProbeRepo = new ServiceProbeRepository(db);
-      const paidProbeCrawler = new PaidProbeCrawler(serviceEndpointRepo, serviceProbeRepo, lndClient);
-      const timerPaidProbe = setInterval(() => {
-        paidProbeCrawler.run()
-          .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Paid probe crawl error'));
-      }, config.PAID_PROBE_INTERVAL_MS);
-      timerPaidProbe.unref?.();
-      logger.info({ intervalMs: config.PAID_PROBE_INTERVAL_MS }, 'Paid probe crawler timer started');
-    } else {
-      logger.info('Paid probe crawler NOT started (PAID_PROBE_ENABLED=false or LND not configured)');
-    }
+
 
     // Daily stale sweep — flags agents whose last_seen has fallen outside the 90-day window.
     const timerStaleSweep = setInterval(() => runStaleSweep(agentRepo), STALE_SWEEP_INTERVAL_MS);

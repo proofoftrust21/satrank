@@ -187,7 +187,7 @@ const decision = await client.decide({
 });
 // decision.pathfinding.sourceNode = "03864ef025fd..."
 // decision.pathfinding.hops = 1  (instead of 4-5 from SatRank)
-// decision.serviceHealth = { status: "healthy", servicePriceSats: 1, paidProbeResult: "verified" }
+// decision.serviceHealth = { status: "healthy", servicePriceSats: 1 }
 ```
 
 Supported providers: `phoenix`, `wos`, `strike`, `blink`, `breez`, `zeus`, `coinos`, `cashapp`.

@@ -516,7 +516,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - [x] v19 scoring calibration: sovereign PageRank, 5 reputation sub-signals, multiplicative modifiers
 - [x] v20: multi-amount probing (1k/10k/100k/1M sats), re-probe on-demand for stale data, best-route batch pathfinding, targetFeeStability, maxRoutableAmount
 - [x] v21: L402 balance system (21 sats = 21 requests), positional pathfinding (walletProvider + callerNodePubkey), reportedSuccessRate
-- [x] v22-v25: Sovereign Oracle -- HTTP service health check (serviceUrl in /decide, serviceHealth in response), autonomous endpoint registry (100 endpoints, 16 LN nodes from 402index + L402Apps), paid probe scam detection (kill switch, circuit breaker), composite best-route 4D ranking, service pricing from BOLT11, report via L402 token, payInvoice in LND client
+- [x] v22-v25: Sovereign Oracle -- HTTP service health check (serviceUrl in /decide, serviceHealth in response), autonomous endpoint registry (100 endpoints, 16 LN nodes from 402index + L402Apps), composite best-route 3D ranking (route + trust + health), service pricing from BOLT11, report via L402 token, decide_log for report auth, SSRF protection with DNS resolution
 - [ ] 4tress connector: verified attestations
 - [ ] Trust network visualization dashboard
 - [ ] Per-component NIP-85 keys (`30382:volume`, `30382:reputation`, …)

@@ -39,11 +39,6 @@ const configSchema = z.object({
   PROBE_AMOUNT_SATS: z.coerce.number().int().positive().default(1000),
   // Registry crawler — discovers L402 endpoints from 402index.io
   CRAWL_INTERVAL_REGISTRY_MS: z.coerce.number().int().positive().default(86_400_000), // 24 hours
-  // Paid probe — pays L402 endpoints to verify they deliver
-  PAID_PROBE_ENABLED: z.coerce.boolean().default(false), // kill switch, default OFF
-  PAID_PROBE_MAX_SATS: z.coerce.number().int().positive().default(5),
-  PAID_PROBE_MAX_PER_DAY: z.coerce.number().int().positive().default(50),
-  PAID_PROBE_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000), // 24 hours
   // Node pubkey — shown in API responses so agents can open a direct channel
   NODE_PUBKEY: z.string().regex(/^(02|03)[a-f0-9]{64}$/).optional(),
   // Nostr — publish scores as NIP-85 kind 30382 events

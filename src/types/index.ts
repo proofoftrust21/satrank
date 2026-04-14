@@ -350,8 +350,6 @@ export interface ServiceHealth {
   latencyMs: number | null;
   uptimeRatio: number | null;
   lastCheckedAt: number | null;
-  /** Result of paid L402 probe: verified (response valid), scam (paid but invalid), unverified (not probed yet) */
-  paidProbeResult: 'verified' | 'scam' | 'unverified' | null;
   /** Price of the service in sats (from BOLT11 invoice), null if unknown */
   servicePriceSats: number | null;
 }
