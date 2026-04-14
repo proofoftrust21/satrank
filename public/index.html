@@ -15,9 +15,9 @@
     <img src="/logo.png" alt="SatRank logo" class="header-logo">
     <h1>SatRank</h1>
     <p>Route reliability for Lightning payments. Built for the agentic economy.</p>
-    <span class="badge">L402 — 21 sats = 21 requests</span>
+    <span class="badge">L402 &mdash; 21 sats = 21 requests</span>
     <div class="wotathon-cta" role="region" aria-label="WoT-a-thon 2026 submission">
-      <div class="wotathon-cta-title">WoT-a-thon 2026 — NIP-85 Excellence submission</div>
+      <div class="wotathon-cta-title">WoT-a-thon 2026 &mdash; NIP-85 Excellence submission</div>
       <div class="wotathon-cta-sub">First NIP-85 provider on the Lightning payment graph &middot; kind 30382:rank + 10040 + DVM 5900/6900</div>
       <div class="wotathon-cta-links">
         <a href="https://github.com/proofoftrust21/satrank">Repo</a>
@@ -50,10 +50,10 @@
     </div>
   </div>
 
-  <!-- Hero — Should you pay? -->
+  <!-- Hero -->
   <div class="section decide-hero">
     <h2>Should you pay this node?</h2>
-    <p class="decide-subtitle">One request, one answer, 1 sat effective.</p>
+    <p class="decide-subtitle">61% of Lightning nodes are unreachable. SatRank checks routing, service health, and trust score before you pay.</p>
 
     <div class="decide-code-block">
       <button class="copy-btn" id="copy-decide" title="Copy to clipboard">Copy</button>
@@ -64,24 +64,55 @@
     <div class="decide-response">
       <pre>{
   "go": true,
-  "successRate": 0.978,
-  "basis": "empirical",
-  "confidence": "high",
+  "successRate": 0.97,
+  "basis": "proxy",
+  "confidence": "very_high",
   "verdict": "SAFE",
-  "pathfinding": { "reachable": true, "hops": 1, "estimatedFeeMsat": 0, "sourceNode": "03864ef..." },
-  "serviceHealth": { "status": "healthy", "httpCode": 402, "servicePriceSats": 1, "paidProbeResult": "verified" },
-  "targetFeeStability": 0.91,
+  "pathfinding": { "reachable": true, "hops": 2, "estimatedFeeMsat": 0, "sourceNode": "03864ef..." },
+  "serviceHealth": { "status": "healthy", "httpCode": 402, "servicePriceSats": 1, "paidProbeResult": "unverified" },
+  "targetFeeStability": 0.95,
   "maxRoutableAmount": 100000,
-  "reportedSuccessRate": 0.94,
+  "reportedSuccessRate": null,
   "lastProbeAgeMs": 42300,
   "survival": { "prediction": "stable" },
-  "latencyMs": 55
+  "latencyMs": 110
 }</pre>
     </div>
-    <p class="decide-cost">1 sat/request (21 sats = 21 requests) &middot; ~50ms &middot; header <code>X-SatRank-Balance</code> tracks remaining</p>
+    <p class="decide-cost">1 sat/request (21 sats = 21 requests) &middot; header <code>X-SatRank-Balance</code> tracks remaining</p>
   </div>
 
-  <!-- Before/After walletProvider -->
+  <!-- NIP-85 on Nostr — right after hero for WoT-a-thon judges -->
+  <div class="section nostr-section">
+    <h2>NIP-85 trust assertions for Lightning</h2>
+    <p class="section-desc">
+      Other NIP-85 providers score the Nostr social graph (follows, mutes, zaps).
+      SatRank scores <strong>payment routing</strong> &mdash; can this node actually receive your sats?
+      ~5,000 assertions published every 6 hours on public relays. Any Nostr client reads them without an SDK.
+    </p>
+    <ul class="endpoints">
+      <li>
+        <span class="method method-get">NIP-85</span>
+        <span class="endpoint-path">kind 30382</span>
+        <span class="endpoint-desc">Trusted assertions &mdash; score, verdict, components, reachability</span>
+      </li>
+      <li>
+        <span class="method method-get">NIP-90</span>
+        <span class="endpoint-path">kind 5900 &rarr; 6900</span>
+        <span class="endpoint-desc">DVM trust-check &mdash; real-time score for any Lightning node</span>
+      </li>
+      <li>
+        <span class="method method-get">NIP-05</span>
+        <span class="endpoint-path">satrank@satrank.dev</span>
+        <span class="endpoint-desc">Verified Nostr identity</span>
+      </li>
+    </ul>
+    <p class="section-desc">
+      Relays: <code>relay.damus.io</code> &middot; <code>nos.lol</code> &middot; <code>relay.primal.net</code>
+      &middot; <a href="/methodology.html#nostr-distribution" style="color:#f7931a">How it works &rarr;</a>
+    </p>
+  </div>
+
+  <!-- Positional pathfinding -->
   <div class="section">
     <h2>Positional pathfinding</h2>
     <p class="section-desc">
@@ -93,7 +124,6 @@
         <div class="compare-label">Without walletProvider</div>
         <pre>{
   "successRate": 0.737,
-  "basis": "proxy",
   "pathfinding": null,
   "components": {
     "pathQuality": 0.500
@@ -104,17 +134,16 @@
       <div class="compare-card compare-after">
         <div class="compare-label">With walletProvider: "phoenix"</div>
         <pre>{
-  "successRate": 0.978,
-  "basis": "proxy",
+  "successRate": 0.97,
   "pathfinding": {
-    "hops": 1,
+    "hops": 2,
     "sourceNode": "03864ef..."
   },
   "components": {
-    "pathQuality": 0.970
+    "pathQuality": 0.930
   }
 }</pre>
-        <div class="compare-note">Real signal &mdash; 1 hop from ACINQ, P_path = 0.97</div>
+        <div class="compare-note">Real signal &mdash; 2 hops from ACINQ, P_path = 0.93</div>
       </div>
     </div>
     <p class="section-desc" style="margin-top:12px">
@@ -123,119 +152,102 @@
     </p>
   </div>
 
-  <!-- Agent Workflow — 3 sats pipeline -->
+  <!-- Unified workflow: Screen → Route → Decide → Pay → Report -->
   <div class="section">
-    <h2>Agent workflow: 3 requests, under 1 second</h2>
-    <p class="section-desc">Screen 100 candidates, find the best route, decide on the winner. 3 requests from your L402 balance.</p>
+    <h2>Agent workflow: screen, route, decide, pay, report</h2>
+    <p class="section-desc">5 steps, 3 paid requests (~500ms), then pay and report for free. The report feeds future decisions.</p>
     <div class="cycle-steps">
       <div class="cycle-step">
         <div class="step-num">1</div>
         <div class="step-title">Screen</div>
-        <div class="step-desc"><code>POST /api/verdicts</code> &mdash; up to 100 targets, verdict + score for each.</div>
-        <div class="step-cost accent">1 request</div>
+        <div class="step-desc"><code>POST /api/verdicts</code> &mdash; up to 100 targets.</div>
+        <div class="step-cost accent">1 req</div>
         <div class="step-meta">~250ms</div>
       </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
         <div class="step-num">2</div>
         <div class="step-title">Route</div>
-        <div class="step-desc"><code>POST /api/best-route</code> &mdash; parallel pathfinding, top 3 by quality.</div>
-        <div class="step-cost accent">1 request</div>
+        <div class="step-desc"><code>POST /api/best-route</code> &mdash; 4D ranking, top 3.</div>
+        <div class="step-cost accent">1 req</div>
         <div class="step-meta">~100ms</div>
       </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
         <div class="step-num">3</div>
         <div class="step-title">Decide</div>
-        <div class="step-desc"><code>POST /api/decide</code> &mdash; GO/NO-GO with success probability.</div>
-        <div class="step-cost accent">1 request</div>
+        <div class="step-desc"><code>POST /api/decide</code> &mdash; GO/NO-GO.</div>
+        <div class="step-cost accent">1 req</div>
         <div class="step-meta">~150ms</div>
       </div>
-    </div>
-  </div>
-
-  <!-- The cycle: decide → pay → report -->
-  <div class="section cycle-section">
-    <h2>Feedback loop</h2>
-    <p class="section-desc">Your reports make future decisions better for every agent on the network.</p>
-    <div class="cycle-steps">
-      <div class="cycle-step">
-        <div class="step-num">1</div>
-        <div class="step-title">Decide</div>
-        <div class="step-desc">GO or NO-GO with success probability.</div>
-        <div class="step-cost accent">1 request</div>
-      </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
-        <div class="step-num">2</div>
+        <div class="step-num">4</div>
         <div class="step-title">Pay</div>
-        <div class="step-desc">If <code>go: true</code>, proceed with the payment.</div>
+        <div class="step-desc">If <code>go: true</code>, pay the counterparty.</div>
       </div>
       <div class="cycle-arrow">&rarr;</div>
       <div class="cycle-step">
-        <div class="step-num">3</div>
+        <div class="step-num">5</div>
         <div class="step-title">Report</div>
-        <div class="step-desc">Success, failure, or timeout. Preimage = 2x weight.</div>
+        <div class="step-desc"><code>POST /api/report</code> &mdash; success/failure/timeout.</div>
         <div class="step-cost" style="color:#00c853">free</div>
       </div>
     </div>
-
     <div class="sdk-oneliner">
-      <p class="sdk-label">With the SDK, the full cycle is one line:</p>
+      <p class="sdk-label">With the SDK, steps 3-5 are one line:</p>
       <div class="decide-code-block">
         <button class="copy-btn" id="copy-sdk" title="Copy to clipboard">Copy</button>
         <pre id="sdk-code">const result = await satrank.transact(target, myHash, async () => {
   const payment = await myLnWallet.pay(invoice);
   return { success: payment.ok, preimage: payment.preimage, paymentHash: payment.hash };
-});
-// Tip: pass walletProvider in the decide call for accurate pathfinding
-// await satrank.decide({ target, caller: myHash, walletProvider: 'phoenix' })</pre>
+});</pre>
       </div>
       <p class="sdk-install"><code>npm install @satrank/sdk</code></p>
     </div>
   </div>
 
-  <!-- Live on Nostr — BEFORE leaderboard -->
-  <div class="section nostr-section">
-    <h2>Live on Nostr</h2>
+  <!-- Sovereign Oracle -->
+  <div class="section">
+    <h2>Sovereign Oracle</h2>
     <p class="section-desc">
-      SatRank publishes trust assertions for the Lightning nodes it tracks as NIP-85 events
-      (kind <code>30382</code>) every 6 hours on public Nostr relays.
-      ~5,000 assertions maintained on relays (score &ge; 30). Any Nostr-native agent or client
-      can consume scores without touching our API. Live node count and stats are at
-      <a href="/api/stats">/api/stats</a>.
+      SatRank checks both the Lightning route <strong>and</strong> the HTTP service.
+      Pass <code>serviceUrl</code> and get routing + availability in a single call.
     </p>
-    <p class="section-desc">
-      This is the only NIP-85 provider scoring the Lightning payment graph. Every other
-      provider scores the Nostr social graph (follows, mutes, zaps). SatRank scores
-      <strong>who you can pay</strong>.
-    </p>
-    <ul class="endpoints">
-      <li>
-        <span class="method method-get">NIP-85</span>
-        <span class="endpoint-path">kind 30382</span>
-        <span class="endpoint-desc">Trusted assertions — score, verdict, components, reachability</span>
-      </li>
-      <li>
-        <span class="method method-get">NIP-90</span>
-        <span class="endpoint-path">kind 5900 &rarr; 6900</span>
-        <span class="endpoint-desc">DVM trust-check — real-time score for any Lightning node</span>
-      </li>
-      <li>
-        <span class="method method-get">NIP-05</span>
-        <span class="endpoint-path">satrank@satrank.dev</span>
-        <span class="endpoint-desc">Verified Nostr identity</span>
-      </li>
-    </ul>
-    <p class="section-desc">
-      Relays: <code>relay.damus.io</code> &middot; <code>nos.lol</code> &middot; <code>relay.primal.net</code>
-    </p>
-    <p class="section-desc">
-      <a href="/methodology.html#nostr-distribution" style="color:#f7931a">How Nostr distribution works &rarr;</a>
+    <div class="compare-grid">
+      <div class="compare-card compare-before">
+        <div class="compare-label">Without serviceUrl</div>
+        <pre>{
+  "go": true,
+  "serviceHealth": null
+}
+// Service is actually down.
+// Agent pays, gets nothing.</pre>
+        <div class="compare-note">Blind spot &mdash; routing OK but service dead</div>
+      </div>
+      <div class="compare-card compare-after">
+        <div class="compare-label">With serviceUrl</div>
+        <pre>{
+  "go": false,
+  "serviceHealth": {
+    "status": "down",
+    "httpCode": null
+  }
+}
+// Agent skips, saves sats.</pre>
+        <div class="compare-note">Full picture &mdash; route + service health</div>
+      </div>
+    </div>
+    <p class="section-desc" style="margin-top:12px">
+      <strong>Health check:</strong> HTTP probe with SSRF protection, 30-min cache, non-blocking mode.
+      <strong>Registry:</strong> ~100 L402 endpoints mapped to ~16 LN nodes (from 402index + L402Apps).
+      <strong>Paid probes:</strong> SatRank pays endpoints (up to 10 sats) to verify they deliver after payment.
+      <strong>4D ranking:</strong> <code>/api/best-route</code> ranks by route quality (35%) + trust (25%) + HTTP health (25%) + probe signal (15%).
+      <strong>Price:</strong> <code>servicePriceSats</code> extracted from BOLT11 invoices.
     </p>
   </div>
 
-  <!-- Leaderboard — compact -->
+  <!-- Leaderboard — bottom -->
   <div class="section">
     <h2 id="agents-heading">Leaderboard</h2>
     <div class="search-bar">
@@ -266,25 +278,14 @@
     <div class="agent-detail" id="agent-detail"></div>
   </div>
 
-  <!-- API — Agent Decision (all 5 endpoints together) -->
+  <!-- API Reference — compact -->
   <div class="section api-hero">
-    <h2>Agent Decision API</h2>
+    <h2>API Reference</h2>
     <p class="section-desc">
-      The full pipeline: screen, route, decide, report, profile. <a href="/methodology.html#decision-engine" style="color:#f7931a">How it works &rarr;</a>
+      20 endpoints. 21 sats = 21 requests. Free endpoints: ping, search, leaderboard, stats, report.
+      <a href="/api/docs" style="color:#f7931a">Interactive API explorer (Swagger UI) &rarr;</a>
     </p>
     <ul class="endpoints endpoints-hero">
-      <li>
-        <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/verdicts</span>
-        <span class="endpoint-desc">Batch screen up to 100 targets</span>
-        <span class="endpoint-cost">1 req</span>
-      </li>
-      <li>
-        <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/best-route</span>
-        <span class="endpoint-desc">4D ranking (route + trust + health + probe), top 3. Accepts walletProvider.</span>
-        <span class="endpoint-cost">1 req</span>
-      </li>
       <li>
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/decide</span>
@@ -293,98 +294,35 @@
       </li>
       <li>
         <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/best-route</span>
+        <span class="endpoint-desc">4D ranking (route + trust + health + probe), top 3</span>
+        <span class="endpoint-cost">1 req</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/verdicts</span>
+        <span class="endpoint-desc">Batch screen up to 100 targets</span>
+        <span class="endpoint-cost">1 req</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
         <span class="endpoint-path">/api/report</span>
-        <span class="endpoint-desc">Report transaction outcome (L402 token or API key)</span>
+        <span class="endpoint-desc">Report outcome (L402 token or API key)</span>
         <span class="endpoint-cost free">free</span>
       </li>
       <li>
         <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/profile/:id</span>
-        <span class="endpoint-desc">Full agent profile with reports &amp; uptime</span>
-        <span class="endpoint-cost">1 req</span>
-      </li>
-    </ul>
-  </div>
-
-  <!-- API — Discovery -->
-  <div class="section">
-    <h2>Discovery <span class="api-tag free-tag">free</span></h2>
-    <ul class="endpoints">
-      <li>
-        <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/ping/:pubkey</span>
-        <span class="endpoint-desc">Real-time reachability check (QueryRoutes live)</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/agents/top</span>
-        <span class="endpoint-desc">Leaderboard by score</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/agents/movers</span>
-        <span class="endpoint-desc">Top movers (7-day delta)</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/agents/search?alias=...</span>
-        <span class="endpoint-desc">Search by alias</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/stats</span>
-        <span class="endpoint-desc">Network statistics</span>
+        <span class="endpoint-desc">Live reachability check</span>
+        <span class="endpoint-cost free">free</span>
       </li>
     </ul>
-  </div>
-
-  <!-- API — Detailed Queries -->
-  <div class="section">
-    <h2>Detailed Queries <span class="api-tag paid-tag">1 req each</span></h2>
-    <ul class="endpoints">
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/agent/:hash</span>
-        <span class="endpoint-desc">Detailed score &amp; evidence</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/agent/:hash/verdict</span>
-        <span class="endpoint-desc">SAFE / RISKY / UNKNOWN</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/agent/:hash/history</span>
-        <span class="endpoint-desc">Score history</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/agent/:hash/attestations</span>
-        <span class="endpoint-desc">Received attestations (list)</span>
-      </li>
-    </ul>
-  </div>
-
-  <!-- API — Tools -->
-  <div class="section">
-    <h2>Tools</h2>
-    <ul class="endpoints">
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path">/api/health</span>
-        <span class="endpoint-desc">Service status</span>
-      </li>
-      <li>
-        <span class="method method-get">GET</span>
-        <span class="endpoint-path"><a href="/api/docs" style="color:#c0c0d8">/api/docs</a></span>
-        <span class="endpoint-desc">Interactive API explorer (Swagger UI)</span>
-      </li>
-      <li>
-        <span class="method method-post">POST</span>
-        <span class="endpoint-path">/api/attestations</span>
-        <span class="endpoint-desc">Submit attestation (free, API key required)</span>
-      </li>
-    </ul>
+    <p class="section-desc" style="margin-top:8px">
+      Also: <code>/api/profile/:id</code>, <code>/api/agent/:hash</code> (score + evidence),
+      <code>/api/agent/:hash/verdict</code>, <code>/api/agents/top</code>,
+      <code>/api/agents/search</code>, <code>/api/stats</code>, <code>/api/health</code>,
+      <code>/api/attestations</code>. Full spec at <a href="/api/openapi.json" style="color:#f7931a">/api/openapi.json</a>.
+    </p>
   </div>
 </main>
 
