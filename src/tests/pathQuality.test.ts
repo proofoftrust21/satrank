@@ -98,10 +98,10 @@ describe('decide / pathQuality non-regression', () => {
     const riskService = new RiskService();
     const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
     const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
-    decideService = new DecideService(
+    decideService = new DecideService({
       agentRepo, attestationRepo, scoringService, trendService, riskService,
-      verdictService, probeRepo, undefined, survivalService,
-    );
+      verdictService, probeRepo, survivalService,
+    });
 
     const now = Math.floor(Date.now() / 1000);
     // Directly insert a pre-scored agent via raw SQL to bypass INSERT

@@ -61,18 +61,36 @@ function computePathQuality(pathfinding: PathfindingResult | null, amountSats: n
   return hopPenalty * 0.5 + altBonus * 0.3 + feeScore * 0.2;
 }
 
+export interface DecideServiceOptions {
+  agentRepo: AgentRepository;
+  attestationRepo: AttestationRepository;
+  scoringService: ScoringService;
+  trendService: TrendService;
+  riskService: RiskService;
+  verdictService: VerdictService;
+  probeRepo?: ProbeRepository;
+  lndClient?: LndGraphClient;
+  survivalService?: SurvivalService;
+}
+
 export class DecideService {
-  constructor(
-    private agentRepo: AgentRepository,
-    private attestationRepo: AttestationRepository,
-    private scoringService: ScoringService,
-    private trendService: TrendService,
-    private riskService: RiskService,
-    private verdictService: VerdictService,
-    private probeRepo?: ProbeRepository,
-    private lndClient?: LndGraphClient,
-    private survivalService?: SurvivalService,
-  ) {}
+  private agentRepo: AgentRepository;
+  private attestationRepo: AttestationRepository;
+  private scoringService: ScoringService;
+  private verdictService: VerdictService;
+  private probeRepo?: ProbeRepository;
+  private lndClient?: LndGraphClient;
+  private survivalService?: SurvivalService;
+
+  constructor(opts: DecideServiceOptions) {
+    this.agentRepo = opts.agentRepo;
+    this.attestationRepo = opts.attestationRepo;
+    this.scoringService = opts.scoringService;
+    this.verdictService = opts.verdictService;
+    this.probeRepo = opts.probeRepo;
+    this.lndClient = opts.lndClient;
+    this.survivalService = opts.survivalService;
+  }
 
   async decide(
     targetHash: string,
@@ -123,7 +141,7 @@ export class DecideService {
           try {
             for (const tier of relevantTiers) {
               const response = await Promise.race([
-                this.lndClient.queryRoutes(agent.public_key, tier),
+                this.lndClient.queryRoutes(agent.public_key, tier, pathfindingSourcePubkey),
                 new Promise<never>((_, reject) => setTimeout(() => reject(new Error('reprobe timeout')), REPROBE_TIMEOUT_MS)),
               ]);
               const routes = response.routes ?? [];

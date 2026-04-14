@@ -86,7 +86,7 @@ function buildTestApp() {
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const riskService = new RiskService();
   const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
-  const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo);
+  const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
 
@@ -436,7 +436,7 @@ describe('DecideService', () => {
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
     const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
-    const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo);
+    const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
 
     const result = await decideService.decide(sha256('bob'), sha256('alice'));
     expect(result.basis).toBe('proxy');

@@ -104,7 +104,10 @@ export function createApp() {
     lndGraphCrawler, agentRepo, scoringService, config.AUTO_INDEX_MAX_PER_MINUTE,
   );
 
-  const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined, survivalService);
+  const decideService = new DecideService({
+    agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService,
+    probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined, survivalService,
+  });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService);

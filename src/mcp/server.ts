@@ -119,7 +119,10 @@ const lndClient = new HttpLndGraphClient({
   timeoutMs: config.LND_TIMEOUT_MS,
 });
 const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
-const decideService = new DecideService(agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+const decideService = new DecideService({
+  agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService,
+  probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined,
+});
 const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
 // MCP server creation (low-level API to avoid TS2589 with .tool())
