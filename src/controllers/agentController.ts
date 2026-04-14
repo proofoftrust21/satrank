@@ -164,8 +164,15 @@ export class AgentController {
 
   getMovers = (_req: Request, res: Response, next: NextFunction): void => {
     try {
-      const { up, down } = this.trendService.getTopMovers(5);
-      res.json({ data: { up, down } });
+      const response = memoryCache.getOrCompute(
+        'agents:movers',
+        TOP_CACHE_TTL_MS,
+        () => {
+          const { up, down } = this.trendService.getTopMovers(5);
+          return { data: { gainers: up, losers: down } };
+        },
+      );
+      res.json(response);
     } catch (err) {
       next(err);
     }

@@ -124,7 +124,7 @@ export function createApp() {
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
   // hits a real user. Failures are logged but non-fatal: the endpoints will
   // rebuild on demand if the warm-up SQL fails for any reason.
-  warmUpCaches(statsService, agentController);
+  warmUpCaches(statsService, agentController, trendService);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
   // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.
@@ -295,7 +295,7 @@ export function createApp() {
 /** Synchronously populate the hot caches so the first visitor skips the cold-start cost.
  *  After this runs once, getOrCompute will serve everything instantly and refresh in
  *  the background. All calls are wrapped so a warm-up failure never blocks startup. */
-function warmUpCaches(statsService: StatsService, agentController: AgentController): void {
+function warmUpCaches(statsService: StatsService, agentController: AgentController, trendService: TrendService): void {
   const start = Date.now();
   try {
     statsService.getNetworkStats();
@@ -304,16 +304,25 @@ function warmUpCaches(statsService: StatsService, agentController: AgentControll
     logger.warn({ error: msg }, 'Cache warm-up: getNetworkStats failed');
   }
 
-  // Prime the leaderboard key the landing page actually hits. The controller's
-  // getOrCompute wrapper re-uses this exact cache key, so a single synchronous
-  // build here is enough to cover the homepage first load. 5-min TTL matches the
-  // stats cache and the TOP_CACHE_TTL_MS constant in agentController.
+  // Prime leaderboard variants that agents commonly request.
+  // The getOrCompute wrapper re-uses these exact cache keys.
+  for (const limit of [5, 10, 20]) {
+    try {
+      const response = agentController.buildTopResponse(limit, 0, 'score');
+      cacheSet(`agents:top:${limit}:0:score`, response, 5 * 60_000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ error: msg, limit }, 'Cache warm-up: buildTopResponse failed');
+    }
+  }
+
+  // Prime movers cache
   try {
-    const response = agentController.buildTopResponse(10, 0, 'score');
-    cacheSet('agents:top:10:0:score', response, 5 * 60_000);
+    const { up, down } = trendService.getTopMovers(5);
+    cacheSet('agents:movers', { data: { gainers: up, losers: down } }, 5 * 60_000);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: msg }, 'Cache warm-up: buildTopResponse failed');
+    logger.warn({ error: msg }, 'Cache warm-up: getTopMovers failed');
   }
 
   logger.info({ durationMs: Date.now() - start }, 'Cache warm-up complete');
