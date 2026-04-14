@@ -148,7 +148,7 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | Probes executed / 24 h | **~650,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
 | NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
-| Tests (vitest) | **544 / 43 files** green | `npm test` |
+| Tests (vitest) | **539 / 42 files** green | `npm test` |
 | Schema version | **v21** | `SELECT * FROM schema_version` |
 
 Numbers are pulled live from `/api/stats` (free endpoint, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
@@ -471,7 +471,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - **pino** for structured logging
 - **Aperture / L402** as Lightning paywall for `/api/decide` and scored endpoints
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only FS, tmpfs, healthchecks
-- **vitest** for 544 unit + integration tests across 43 files, all green on the submission commit
+- **vitest** for 539 unit + integration tests across 42 files, all green on the submission commit
 
 ## Scripts
 

@@ -38,7 +38,7 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 | Probes / 24 h | **~650,000** |
 | Lightning-indexed events / cycle | **~5,000** (score ≥ 30) |
 | Strict NIP-85 events on relays (Stream B) | **105** |
-| Test suite | **544 tests / 43 files**, all green |
+| Test suite | **539 tests / 42 files**, all green |
 | L402 paywall | **validated end-to-end** (21 sats = 21 requests, 1 sat/req effective) |
 | Agent workflow | **3 requests, ~500 ms** (screen 100 + best-route + decide) |
 | Schema version | **v25** |
@@ -64,7 +64,7 @@ Free distribution funds adoption, paid `/api/decide` funds infrastructure, free 
 
 1. **Only NIP-85 provider bridging the Lightning payment graph into the WoT.** A user listing SatRank + Brainstorm in a single kind 10040 receives both `rank` assertions in one REQ: Lightning reliability + social trust, no extra client code.
 2. **Nostr-native from day one,** same keypair, same relay list, same verification path for kind 0, 10040, 30382 (Stream A + B), 5900/6900 and NIP-05.
-3. **Production infrastructure, not a demo.** ~13,900 nodes scored, ~89 k validated channels, ~9,630 BTC validated capacity, 921 k snapshots retained, 544 tests, Docker hardening (cap-drop-ALL, read-only FS), L402 paid gate. All open-source, all reproducible.
+3. **Production infrastructure, not a demo.** ~13,900 nodes scored, ~89 k validated channels, ~9,630 BTC validated capacity, 921 k snapshots retained, 539 tests, Docker hardening (cap-drop-ALL, read-only FS), L402 paid gate. All open-source, all reproducible.
 
 ---
 

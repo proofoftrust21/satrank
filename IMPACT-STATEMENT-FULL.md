@@ -272,7 +272,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Bitcoin trust root | **bitcoind v28.1** full node |
 | Nostr relays published to | **3** canonical (damus.io, nos.lol, primal.net) |
 | Canonical NIP-85 result tag | **`rank`** (alongside `score` and 5 component tags) |
-| Test suite | **544 tests / 43 files**, all green on submission commit |
+| Test suite | **539 tests / 42 files**, all green on submission commit |
 | Database schema version | **v25** |
 
 ---
@@ -288,7 +288,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 - **pino** for structured logging
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only filesystem, tmpfs, and liveness healthchecks
 - **L402 / Aperture** as paid gate for `/api/decide` (the 1-sat-per-query oracle endpoint)
-- **vitest** for 544 unit + integration tests across 43 files, all green on the submission commit
+- **vitest** for 539 unit + integration tests across 42 files, all green on the submission commit
 
 ---
 
