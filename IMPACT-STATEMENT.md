@@ -41,7 +41,7 @@ SatRank is a Lightning trust oracle distributed over Nostr. One question (*"can 
 | Test suite | **544 tests / 43 files**, all green |
 | L402 paywall | **validated end-to-end** (21 sats = 21 requests, 1 sat/req effective) |
 | Agent workflow | **3 requests, ~500 ms** (screen 100 + best-route + decide) |
-| Schema version | **v24** |
+| Schema version | **v25** |
 
 ## NIP-85 compliance
 

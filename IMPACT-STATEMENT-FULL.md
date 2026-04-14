@@ -58,7 +58,7 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>every 5 min] --> SE
 
-  GC --> DB[(SQLite · schema v24<br/>agents / snapshots / probes)]
+  GC --> DB[(SQLite · schema v25<br/>agents / snapshots / probes)]
   PC --> DB
   LP --> DB
 
@@ -273,7 +273,7 @@ Stable infrastructure numbers are pinned here. Entries tagged **(live)** are dyn
 | Nostr relays published to | **3** canonical (damus.io, nos.lol, primal.net) |
 | Canonical NIP-85 result tag | **`rank`** (alongside `score` and 5 component tags) |
 | Test suite | **544 tests / 43 files**, all green on submission commit |
-| Database schema version | **v24** |
+| Database schema version | **v25** |
 
 ---
 

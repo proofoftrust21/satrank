@@ -41,7 +41,7 @@ Add to your MCP client configuration (`mcp-config.json`):
 | Tool | Description |
 |------|-------------|
 | `decide` | GO/NO-GO decision with success probability, the primary pre-transaction tool |
-| `report` | Report outcome (success/failure/timeout), requires SATRANK_API_KEY (FREE) |
+| `report` | Report outcome (success/failure/timeout), L402 token or API key (FREE) |
 | `get_profile` | Agent profile with reports, probe uptime, rank, evidence |
 | `get_agent_score` | Full trust score with components, evidence, and verification URLs |
 | `get_verdict` | SAFE/RISKY/UNKNOWN with risk profile and optional personal trust graph |
@@ -56,8 +56,8 @@ Add to your MCP client configuration (`mcp-config.json`):
 ### Example: decide → pay → report
 ```
 # Step 1: Should I pay this agent?
-Agent calls decide({ target: "counterparty-hash", caller: "my-hash", walletProvider: "phoenix" })
-→ { go: true, successRate: 0.98, basis: "empirical", verdict: "SAFE", pathfinding: { hops: 1, sourceNode: "03864ef..." } }
+Agent calls decide({ target: "counterparty-hash", caller: "my-hash", walletProvider: "phoenix", serviceUrl: "https://api.example.com" })
+→ { go: true, successRate: 0.98, verdict: "SAFE", pathfinding: { hops: 1, sourceNode: "03864ef..." }, serviceHealth: { status: "healthy", servicePriceSats: 1 } }
 
 # Step 2: Agent proceeds with payment (if go=true)
 
@@ -163,7 +163,7 @@ curl -X POST https://satrank.example/api/decide \
 # walletProvider: phoenix|wos|strike|blink|breez|zeus|coinos|cashapp
 # Or use callerNodePubkey for any Lightning pubkey as pathfinding source
 
-# Report outcome (FREE -- API key only)
+# Report outcome (FREE -- L402 token or API key)
 curl -X POST https://satrank.example/api/report \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-api-key' \
@@ -193,7 +193,7 @@ Each paid call consumes 1 request from the L402 token balance. The `X-SatRank-Ba
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `POST /api/report` | API Key | Report outcome (FREE, no payment) |
+| `POST /api/report` | L402 token or API Key | Report outcome (FREE, no quota consumed) |
 | `GET /api/ping/{pubkey}` | None | Real-time reachability check (FREE) |
 | `POST /api/attestations` | API Key | Submit attestation (FREE, no payment) |
 | `GET /api/agents/top` | None | Leaderboard |
