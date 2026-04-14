@@ -82,7 +82,11 @@ export class V2Controller {
       const startMs = Date.now();
       const caller = normalizeIdentifier(parsed.data.caller);
       const callerAgent = this.agentRepo.findByHash(caller.hash);
-      const callerLnPubkey = callerAgent?.public_key ?? caller.pubkey;
+      // Resolve pathfinding source: callerNodePubkey > walletProvider > caller's own pubkey
+      const callerLnPubkey = parsed.data.callerNodePubkey
+        ?? (parsed.data.walletProvider ? WALLET_PROVIDERS[parsed.data.walletProvider] : undefined)
+        ?? callerAgent?.public_key
+        ?? caller.pubkey;
 
       if (!callerLnPubkey) {
         // Degraded response: return scores without pathfinding

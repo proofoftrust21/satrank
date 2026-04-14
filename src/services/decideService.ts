@@ -180,7 +180,7 @@ export class DecideService {
                 reachable: reachable ? 1 : 0,
                 latency_ms: null,
                 hops: reachable ? routes[0].hops.length : null,
-                estimated_fee_msat: reachable ? (parseInt(routes[0].total_fees_msat, 10) || null) : null,
+                estimated_fee_msat: reachable ? (parseInt(routes[0].total_fees_msat, 10) || 0) : null,
                 failure_reason: reachable ? null : 'no_route',
                 probe_amount_sats: tier,
               });
@@ -311,6 +311,7 @@ export class DecideService {
     const cached = this.serviceEndpointRepo!.findByUrl(url);
     const now = Math.floor(Date.now() / 1000);
     const paidProbeResult = this.getPaidProbeResult(url);
+    const servicePriceSats = cached?.service_price_sats ?? null;
 
     if (cached?.last_checked_at && (now - cached.last_checked_at) < SERVICE_HEALTH_CACHE_TTL_SEC) {
       const uptimeRatio = cached.check_count >= 3
@@ -324,6 +325,7 @@ export class DecideService {
         uptimeRatio,
         lastCheckedAt: cached.last_checked_at,
         paidProbeResult,
+        servicePriceSats,
       };
     }
 
@@ -334,7 +336,7 @@ export class DecideService {
     if (remainingBudget <= 50) {
       // Already spent too long — fire background check, return 'checking'
       this.fireBackgroundCheck(agentHash, url);
-      return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, paidProbeResult };
+      return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, paidProbeResult, servicePriceSats };
     }
 
     // Race: live check vs budget timeout
@@ -346,7 +348,7 @@ export class DecideService {
 
     // Budget exceeded — the check continues in background, return 'checking'
     checkPromise.catch(() => {}); // prevent unhandled rejection
-    return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, paidProbeResult };
+    return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, paidProbeResult, servicePriceSats };
   }
 
   private fireBackgroundCheck(agentHash: string, url: string): void {
@@ -374,11 +376,12 @@ export class DecideService {
         : null;
 
       const ppr = this.getPaidProbeResult(url);
-      return { url, status: classifyHttp(httpCode), httpCode, latencyMs, uptimeRatio, lastCheckedAt: Math.floor(Date.now() / 1000), paidProbeResult: ppr };
+      const ep = this.serviceEndpointRepo!.findByUrl(url);
+      return { url, status: classifyHttp(httpCode), httpCode, latencyMs, uptimeRatio, lastCheckedAt: Math.floor(Date.now() / 1000), paidProbeResult: ppr, servicePriceSats: ep?.service_price_sats ?? null };
     } catch {
       this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0);
       const ppr = this.getPaidProbeResult(url);
-      return { url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: Math.floor(Date.now() / 1000), paidProbeResult: ppr };
+      return { url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: Math.floor(Date.now() / 1000), paidProbeResult: ppr, servicePriceSats: null };
     }
   }
 }

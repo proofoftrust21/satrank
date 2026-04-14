@@ -166,10 +166,10 @@ export class HttpLndGraphClient implements LndGraphClient {
     }
   }
 
-  async decodePayReq(payReq: string): Promise<{ destination: string } | null> {
+  async decodePayReq(payReq: string): Promise<{ destination: string; num_satoshis?: string } | null> {
     try {
-      const data = await this.request<{ destination: string }>(`/v1/payreq/${payReq}`);
-      return data?.destination ? { destination: data.destination } : null;
+      const data = await this.request<{ destination: string; num_satoshis?: string }>(`/v1/payreq/${payReq}`);
+      return data?.destination ? { destination: data.destination, num_satoshis: data.num_satoshis } : null;
     } catch {
       return null;
     }

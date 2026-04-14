@@ -166,7 +166,7 @@ export class VerdictService {
       const result: PathfindingResult = {
         reachable: hasRoute,
         hops: hasRoute ? routes[0].hops.length : null,
-        estimatedFeeMsat: hasRoute ? parseInt(routes[0].total_fees_msat, 10) || null : null,
+        estimatedFeeMsat: hasRoute ? (parseInt(routes[0].total_fees_msat, 10) || 0) : null,
         alternatives: routes.length,
         latencyMs,
         source: 'lnd_queryroutes',

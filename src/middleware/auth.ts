@@ -2,6 +2,7 @@
 // Aperture gateway verification for L402-gated endpoints
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
+import type Database from 'better-sqlite3';
 import { config } from '../config';
 import { AppError } from '../errors';
 
@@ -53,6 +54,43 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
   }
 
   next();
+}
+
+// Report auth: accepts EITHER X-API-Key OR a valid L402 token.
+// L402 tokens are validated by checking SHA256(preimage) exists in token_balance.
+// Reports are free — they don't consume quota from the token balance.
+export function createReportAuth(db: Database.Database) {
+  const stmtCheck = db.prepare('SELECT 1 FROM token_balance WHERE payment_hash = ?');
+
+  return function reportAuth(req: Request, _res: Response, next: NextFunction): void {
+    // Path A: API key (existing behavior)
+    const apiKey = req.headers['x-api-key'] as string | undefined;
+    if (apiKey && config.API_KEY && safeEqual(apiKey, config.API_KEY)) {
+      next();
+      return;
+    }
+
+    // Path B: L402 token — extract preimage, verify payment_hash exists in token_balance
+    const authHeader = req.headers.authorization ?? '';
+    const match = authHeader.match(/^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i);
+    if (match) {
+      const preimage = match[1];
+      const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
+      const row = stmtCheck.get(paymentHash);
+      if (row) {
+        next(); // valid token, report is free (no quota consumed)
+        return;
+      }
+    }
+
+    // Path C: dev mode passthrough
+    if (config.NODE_ENV !== 'production' && !config.API_KEY) {
+      next();
+      return;
+    }
+
+    next(new AuthenticationError('X-API-Key or valid L402 token required. Request a key at contact@satrank.dev or use your existing L402 token.'));
+  };
 }
 
 // L402 gate — Aperture handles payment verification and forwards valid requests.

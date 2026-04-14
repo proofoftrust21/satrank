@@ -11,6 +11,7 @@ export interface ServiceEndpoint {
   check_count: number;
   success_count: number;
   created_at: number;
+  service_price_sats: number | null;
 }
 
 export class ServiceEndpointRepository {
@@ -58,5 +59,9 @@ export class ServiceEndpointRepository {
   findStale(minCheckCount: number, maxAgeSec: number, limit: number): ServiceEndpoint[] {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
     return this.stmtFindStale.all(minCheckCount, cutoff, limit) as ServiceEndpoint[];
+  }
+
+  updatePrice(url: string, priceSats: number): void {
+    this.db.prepare('UPDATE service_endpoints SET service_price_sats = ? WHERE url = ?').run(priceSats, url);
   }
 }

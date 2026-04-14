@@ -368,6 +368,12 @@ export function runMigrations(db: Database.Database): void {
 
   // v20: probe_amount_sats column for multi-amount probing.
   // Probes at 1k/10k/100k/1M sats reveal the max routable amount per node.
+  // v24: service_price_sats column on service_endpoints
+  if (!hasVersion(db, 24)) {
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN service_price_sats INTEGER DEFAULT NULL'); } catch { /* exists */ }
+    recordVersion(db, 24, 'service_price_sats column on service_endpoints for L402 invoice pricing');
+  }
+
   // v23: service_probes for paid L402 scam detection (sovereign oracle)
   if (!hasVersion(db, 23)) {
     db.exec(`
@@ -576,6 +582,9 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   },
   23: (db) => {
     db.exec('DROP TABLE IF EXISTS service_probes');
+  },
+  24: (db) => {
+    try { db.exec('ALTER TABLE service_endpoints DROP COLUMN service_price_sats'); } catch { /* SQLite < 3.35 */ }
   },
 };
 

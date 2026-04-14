@@ -26,7 +26,7 @@ const FETCH_TIMEOUT_MS = 5000;
 export class RegistryCrawler {
   constructor(
     private serviceEndpointRepo: ServiceEndpointRepository,
-    private decodeBolt11?: (invoice: string) => Promise<{ destination: string } | null>,
+    private decodeBolt11?: (invoice: string) => Promise<{ destination: string; num_satoshis?: string } | null>,
   ) {}
 
   async run(): Promise<{ discovered: number; updated: number; errors: number }> {
@@ -117,7 +117,13 @@ export class RegistryCrawler {
       if (this.decodeBolt11) {
         const decoded = await this.decodeBolt11(invoice);
         if (decoded?.destination) {
-          return sha256(decoded.destination);
+          const agentHash = sha256(decoded.destination);
+          // Store the price from the invoice
+          const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
+          if (priceSats && priceSats > 0) {
+            this.serviceEndpointRepo.updatePrice(serviceUrl, priceSats);
+          }
+          return agentHash;
         }
       }
 

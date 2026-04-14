@@ -18,12 +18,12 @@ const reportRateLimit = rateLimit({
 
 const noopMiddleware: RequestHandler = (_req, _res, next) => next();
 
-export function createV2Routes(controller: V2Controller, balanceAuth: RequestHandler = noopMiddleware): Router {
+export function createV2Routes(controller: V2Controller, balanceAuth: RequestHandler = noopMiddleware, reportAuth: RequestHandler = apiKeyAuth): Router {
   const router = Router();
 
   router.post('/decide', apertureGateAuth, balanceAuth, controller.decide);
   router.post('/best-route', apertureGateAuth, balanceAuth, controller.bestRoute);
-  router.post('/report', reportRateLimit, apiKeyAuth, controller.report);
+  router.post('/report', reportRateLimit, reportAuth, controller.report);
   router.get('/profile/:id', apertureGateAuth, balanceAuth, controller.profile);
 
   return router;

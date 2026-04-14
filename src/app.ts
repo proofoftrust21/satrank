@@ -47,6 +47,7 @@ import { HealthController } from './controllers/healthController';
 import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
 import { createBalanceAuth } from './middleware/balanceAuth';
+import { createReportAuth } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { ServiceProbeRepository } from './repositories/serviceProbeRepository';
 
@@ -261,7 +262,8 @@ export function createApp() {
     });
   }
   const balanceAuth = createBalanceAuth(db);
-  api.use(createV2Routes(v2Controller, balanceAuth));                  // decide, report, profile
+  const reportAuth = createReportAuth(db);
+  api.use(createV2Routes(v2Controller, balanceAuth, reportAuth));      // decide, report, profile
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
