@@ -563,6 +563,47 @@ async function main(): Promise<void> {
       logger.warn('Probe cron timer NOT started — LND not configured');
     }
 
+    // Service health crawler — periodic HTTP checks on known endpoints (every 5 min)
+    const { ServiceHealthCrawler } = await import('./serviceHealthCrawler');
+    const { ServiceEndpointRepository } = await import('../repositories/serviceEndpointRepository');
+    const serviceEndpointRepo = new ServiceEndpointRepository(db);
+    const serviceHealthCrawler = new ServiceHealthCrawler(serviceEndpointRepo);
+    const timerServiceHealth = setInterval(() => {
+      serviceHealthCrawler.run()
+        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Service health crawl error'));
+    }, 300_000); // 5 minutes
+    timerServiceHealth.unref?.();
+    logger.info({ intervalMs: 300_000 }, 'Service health crawler timer started');
+
+    // Registry crawler — discovers L402 endpoints from 402index.io (every 24h)
+    const { RegistryCrawler } = await import('./registryCrawler');
+    const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq
+      ? (invoice: string) => lndClient.decodePayReq!(invoice)
+      : undefined;
+    const registryCrawler = new RegistryCrawler(serviceEndpointRepo, decodeBolt11);
+    const timerRegistry = setInterval(() => {
+      registryCrawler.run()
+        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Registry crawl error'));
+    }, config.CRAWL_INTERVAL_REGISTRY_MS);
+    timerRegistry.unref?.();
+    logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'Registry crawler timer started');
+
+    // Paid probe crawler — pays L402 endpoints to verify honesty (every 24h, disabled by default)
+    if (config.PAID_PROBE_ENABLED && lndClient.isConfigured()) {
+      const { PaidProbeCrawler } = await import('./paidProbeCrawler');
+      const { ServiceProbeRepository } = await import('../repositories/serviceProbeRepository');
+      const serviceProbeRepo = new ServiceProbeRepository(db);
+      const paidProbeCrawler = new PaidProbeCrawler(serviceEndpointRepo, serviceProbeRepo, lndClient);
+      const timerPaidProbe = setInterval(() => {
+        paidProbeCrawler.run()
+          .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Paid probe crawl error'));
+      }, config.PAID_PROBE_INTERVAL_MS);
+      timerPaidProbe.unref?.();
+      logger.info({ intervalMs: config.PAID_PROBE_INTERVAL_MS }, 'Paid probe crawler timer started');
+    } else {
+      logger.info('Paid probe crawler NOT started (PAID_PROBE_ENABLED=false or LND not configured)');
+    }
+
     // Daily stale sweep — flags agents whose last_seen has fallen outside the 90-day window.
     const timerStaleSweep = setInterval(() => runStaleSweep(agentRepo), STALE_SWEEP_INTERVAL_MS);
     logger.info({ intervalMs: STALE_SWEEP_INTERVAL_MS, thresholdSec: STALE_THRESHOLD_SEC }, 'Stale sweep cron timer started');

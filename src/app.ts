@@ -48,6 +48,7 @@ import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
+import { ServiceProbeRepository } from './repositories/serviceProbeRepository';
 
 // Routes
 import { createAgentRoutes } from './routes/agent';
@@ -106,17 +107,18 @@ export function createApp() {
   );
 
   const serviceEndpointRepo = new ServiceEndpointRepository(db);
+  const serviceProbeRepo = new ServiceProbeRepository(db);
   const decideService = new DecideService({
     agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService,
     probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined, survivalService,
-    serviceEndpointRepo,
+    serviceEndpointRepo, serviceProbeRepo,
   });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
-  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo);
+  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, serviceProbeRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
 
   // Cache warm-up — fills the stats and leaderboard caches before the first
