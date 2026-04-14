@@ -104,13 +104,19 @@ volume = round(channelScore * 0.5 + capacityScore * 0.5)</pre>
   <p>
     Weighted average of attestation scores with exponential time decay (half-life: 30 days).
     Each attestation's weight is multiplied by the attester's own score, normalized to [0, 1].
+    When enough payment reports exist (&ge; 5), the report signal (success/failure weighted by
+    reporter score, preimage-verified = 2x weight) contributes even without attestations.
     See <a href="#anti-gaming">Anti-Gaming</a> for penalty mechanisms.
   </p>
   <p>
-    When no attestations exist yet, reputation is 0 and its 30% weight is redistributed
+    When no attestations or reports exist, reputation is 0 and its 30% weight is redistributed
     to the other 4 components (<code>volume * 0.36 + seniority * 0.21 + regularity * 0.21 + diversity * 0.21</code>).
-    This allows new agents to score fairly based on their transaction history alone, while
-    attestations build over time.
+  </p>
+  <p>
+    <em>Current state: ~30 Observer Protocol agents are indexed, with near-zero attestation activity.
+    In practice, 99.8% of scored agents are Lightning nodes whose reputation is computed via the
+    5 sub-signals described above (PageRank, peer trust, routing quality, capacity trend, fee stability).
+    The attestation system is functional but awaiting adoption.</em>
   </p>
 
   <h3>Seniority</h3>
