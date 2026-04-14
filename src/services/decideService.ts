@@ -4,6 +4,7 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { ServiceProbeRepository } from '../repositories/serviceProbeRepository';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
 import type { ScoringService } from './scoringService';
 import type { TrendService } from './trendService';
@@ -73,6 +74,7 @@ export interface DecideServiceOptions {
   lndClient?: LndGraphClient;
   survivalService?: SurvivalService;
   serviceEndpointRepo?: ServiceEndpointRepository;
+  serviceProbeRepo?: ServiceProbeRepository;
 }
 
 // SSRF protection: block private/loopback IPs in serviceUrl
@@ -103,6 +105,7 @@ export class DecideService {
   private lndClient?: LndGraphClient;
   private survivalService?: SurvivalService;
   private serviceEndpointRepo?: ServiceEndpointRepository;
+  private serviceProbeRepo?: ServiceProbeRepository;
 
   constructor(opts: DecideServiceOptions) {
     this.agentRepo = opts.agentRepo;
@@ -113,6 +116,7 @@ export class DecideService {
     this.lndClient = opts.lndClient;
     this.survivalService = opts.survivalService;
     this.serviceEndpointRepo = opts.serviceEndpointRepo;
+    this.serviceProbeRepo = opts.serviceProbeRepo;
   }
 
   async decide(
@@ -242,7 +246,8 @@ export class DecideService {
     const hasCritical = verdictResult.flags.includes('fraud_reported') ||
       verdictResult.flags.includes('negative_reputation');
     const serviceDown = serviceHealth?.status === 'down';
-    const go = successRate >= 0.5 && !hasCritical && !serviceDown;
+    const isScam = serviceHealth?.paidProbeResult === 'scam';
+    const go = successRate >= 0.5 && !hasCritical && !serviceDown && !isScam;
 
     // reportedSuccessRate — raw empirical rate, null when insufficient data
     const reportedSuccessRate = hasEmpirical ? Math.round(empiricalRate * 1000) / 1000 : null;
@@ -290,12 +295,22 @@ export class DecideService {
     };
   }
 
+  private getPaidProbeResult(url: string): 'verified' | 'scam' | 'unverified' | null {
+    if (!this.serviceProbeRepo) return null;
+    const probe = this.serviceProbeRepo.findLatest(url);
+    if (!probe) return 'unverified';
+    if (probe.body_valid) return 'verified';
+    if (probe.paid_sats > 0 && !probe.body_valid) return 'scam';
+    return 'unverified';
+  }
+
   /** Check HTTP health of a service URL. Non-blocking: if cache miss takes > 500ms,
    *  returns { status: 'checking' } immediately and finishes in background. */
   private async checkServiceHealth(agentHash: string, url: string, decideStartMs: number): Promise<ServiceHealth> {
     // 1. Check cache
     const cached = this.serviceEndpointRepo!.findByUrl(url);
     const now = Math.floor(Date.now() / 1000);
+    const paidProbeResult = this.getPaidProbeResult(url);
 
     if (cached?.last_checked_at && (now - cached.last_checked_at) < SERVICE_HEALTH_CACHE_TTL_SEC) {
       const uptimeRatio = cached.check_count >= 3
@@ -308,6 +323,7 @@ export class DecideService {
         latencyMs: cached.last_latency_ms,
         uptimeRatio,
         lastCheckedAt: cached.last_checked_at,
+        paidProbeResult,
       };
     }
 
@@ -318,7 +334,7 @@ export class DecideService {
     if (remainingBudget <= 50) {
       // Already spent too long — fire background check, return 'checking'
       this.fireBackgroundCheck(agentHash, url);
-      return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null };
+      return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, paidProbeResult };
     }
 
     // Race: live check vs budget timeout
@@ -330,7 +346,7 @@ export class DecideService {
 
     // Budget exceeded — the check continues in background, return 'checking'
     checkPromise.catch(() => {}); // prevent unhandled rejection
-    return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null };
+    return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, paidProbeResult };
   }
 
   private fireBackgroundCheck(agentHash: string, url: string): void {
@@ -357,10 +373,12 @@ export class DecideService {
         ? Math.round((updated.success_count / updated.check_count) * 1000) / 1000
         : null;
 
-      return { url, status: classifyHttp(httpCode), httpCode, latencyMs, uptimeRatio, lastCheckedAt: Math.floor(Date.now() / 1000) };
+      const ppr = this.getPaidProbeResult(url);
+      return { url, status: classifyHttp(httpCode), httpCode, latencyMs, uptimeRatio, lastCheckedAt: Math.floor(Date.now() / 1000), paidProbeResult: ppr };
     } catch {
       this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0);
-      return { url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: Math.floor(Date.now() / 1000) };
+      const ppr = this.getPaidProbeResult(url);
+      return { url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: Math.floor(Date.now() / 1000), paidProbeResult: ppr };
     }
   }
 }

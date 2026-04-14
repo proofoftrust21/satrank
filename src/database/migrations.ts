@@ -368,6 +368,26 @@ export function runMigrations(db: Database.Database): void {
 
   // v20: probe_amount_sats column for multi-amount probing.
   // Probes at 1k/10k/100k/1M sats reveal the max routable amount per node.
+  // v23: service_probes for paid L402 scam detection (sovereign oracle)
+  if (!hasVersion(db, 23)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS service_probes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT NOT NULL,
+        agent_hash TEXT,
+        probed_at INTEGER NOT NULL,
+        paid_sats INTEGER NOT NULL,
+        payment_hash TEXT,
+        http_status INTEGER,
+        body_valid INTEGER NOT NULL DEFAULT 0,
+        response_latency_ms INTEGER,
+        error TEXT
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_service_probes_url ON service_probes(url, probed_at)');
+    recordVersion(db, 23, 'service_probes table for paid L402 scam detection');
+  }
+
   // v22: service_endpoints for HTTP health tracking (sovereign oracle)
   if (!hasVersion(db, 22)) {
     db.exec(`
@@ -553,6 +573,9 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   },
   22: (db) => {
     db.exec('DROP TABLE IF EXISTS service_endpoints');
+  },
+  23: (db) => {
+    db.exec('DROP TABLE IF EXISTS service_probes');
   },
 };
 
