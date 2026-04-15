@@ -144,7 +144,7 @@ export class RegistryCrawler {
         method: 'GET',
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
-        redirect: 'follow',
+        redirect: 'manual', // SSRF: don't follow redirects (could chain to internal IPs)
       });
 
       if (resp.status !== 402) return null; // not an L402 endpoint

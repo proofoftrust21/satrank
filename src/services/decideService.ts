@@ -23,6 +23,9 @@ const REPROBE_TIMEOUT_MS = 5_000;
 
 // Default probe amount for feeBudget calculation when amountSats is not provided
 const DEFAULT_AMOUNT_SATS = 1000;
+// Rate limit on-demand re-probes: max 1 per target per 5 minutes
+const REPROBE_RATE_LIMIT_SEC = 300;
+const recentReprobes = new Map<string, number>(); // targetHash → timestamp
 // Fee budget as fraction of the payment amount — fees above this cap P_path.feeScore to 0
 const FEE_BUDGET_RATIO = 0.01; // 1%
 
@@ -75,8 +78,9 @@ export interface DecideServiceOptions {
   serviceEndpointRepo?: ServiceEndpointRepository;
 }
 
-// SSRF protection: block private/loopback IPs, server's own IP, and resolve DNS before fetch
-const PRIVATE_IP_RE = /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|169\.254\.\d+\.\d+)$/;
+// SSRF protection: use shared isPrivateIp + resolve DNS once and fetch by IP
+import { isPrivateIp } from '../utils/ssrf';
+
 const BLOCKED_HOSTNAMES = /^(localhost|\[::1?\]|\[::ffff:.+\])$/i;
 const SERVER_IP = process.env.SERVER_IP ?? '178.104.108.108';
 const SERVICE_HEALTH_CACHE_TTL_SEC = 1800; // 30 min
@@ -84,33 +88,35 @@ const SERVICE_HEALTH_TIMEOUT_MS = 3000;
 const SERVICE_HEALTH_NONBLOCK_MS = 500;
 
 function isIpBlocked(ip: string): boolean {
-  return PRIVATE_IP_RE.test(ip) || ip === SERVER_IP || ip === '0.0.0.0';
+  return isPrivateIp(ip) || ip === '0.0.0.0';
 }
 
 function isUrlBlocked(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     if (!['http:', 'https:'].includes(u.protocol)) return true;
+    if (u.username || u.password) return true; // block credentials in URL
     if (BLOCKED_HOSTNAMES.test(u.hostname)) return true;
     if (isIpBlocked(u.hostname)) return true;
-    // Block IPv6-mapped IPv4 (extract and check the IPv4 part)
     const mapped = u.hostname.match(/^\[::ffff:([\d.]+)\]$/i);
     if (mapped && isIpBlocked(mapped[1])) return true;
     return false;
   } catch { return true; }
 }
 
-/** Resolve hostname to IP and verify it's not private (anti-DNS-rebinding) */
-async function resolveAndCheck(urlStr: string): Promise<boolean> {
-  if (isUrlBlocked(urlStr)) return true;
+/** Resolve hostname to IP, verify it's not private, return the resolved IP.
+ *  Returns null if blocked, or the original hostname if it's a raw IP. */
+async function resolveAndPin(urlStr: string): Promise<string | null> {
+  if (isUrlBlocked(urlStr)) return null;
   try {
-    const { resolve4 } = await import('dns/promises');
     const hostname = new URL(urlStr).hostname;
-    // Skip resolution for raw IPs (already checked above)
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return false;
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return hostname;
+    const { resolve4 } = await import('dns/promises');
     const ips = await resolve4(hostname);
-    return ips.some(ip => isIpBlocked(ip));
-  } catch { return false; } // DNS failure = allow (could be transient)
+    if (ips.length === 0) return null;
+    if (ips.some(ip => isIpBlocked(ip))) return null;
+    return ips[0]; // pin to resolved IP — prevents DNS rebinding
+  } catch { return null; }
 }
 
 function classifyHttp(status: number): 'healthy' | 'degraded' | 'down' {
@@ -186,7 +192,10 @@ export class DecideService {
       // actual route the payment would take (not SatRank's position).
       const currentMax = this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC);
       const needsHigherTier = amountSats != null && currentMax !== null && amountSats > currentMax;
-      if ((probeAgeSec > REPROBE_STALE_SEC || needsHigherTier) && this.lndClient) {
+      const lastReprobe = recentReprobes.get(targetHash) ?? 0;
+      const reprobeAllowed = (now - lastReprobe) >= REPROBE_RATE_LIMIT_SEC;
+      if ((probeAgeSec > REPROBE_STALE_SEC || needsHigherTier) && reprobeAllowed && this.lndClient) {
+        recentReprobes.set(targetHash, now);
         const agent = this.agentRepo.findByHash(targetHash);
         if (agent?.public_key) {
           const tiers = [1_000, 10_000, 100_000, 1_000_000];
@@ -264,10 +273,13 @@ export class DecideService {
     // Clamp to [0, 1]
     successRate = Math.max(0, Math.min(1, successRate));
 
-    // Service health check (non-blocking)
+    // Service health check (non-blocking) — resolve DNS once, pin IP to prevent rebinding
     let serviceHealth: ServiceHealth | null = null;
-    if (serviceUrl && this.serviceEndpointRepo && !(await resolveAndCheck(serviceUrl))) {
-      serviceHealth = await this.checkServiceHealth(targetHash, serviceUrl, startMs);
+    if (serviceUrl && this.serviceEndpointRepo) {
+      const pinnedIp = await resolveAndPin(serviceUrl);
+      if (pinnedIp) {
+        serviceHealth = await this.checkServiceHealth(targetHash, serviceUrl, startMs, pinnedIp);
+      }
     }
 
     // GO decision: successRate >= 0.5 AND no critical flags AND service not down
@@ -324,7 +336,7 @@ export class DecideService {
 
   /** Check HTTP health of a service URL. Non-blocking: if cache miss takes > 500ms,
    *  returns { status: 'checking' } immediately and finishes in background. */
-  private async checkServiceHealth(agentHash: string, url: string, decideStartMs: number): Promise<ServiceHealth> {
+  private async checkServiceHealth(agentHash: string, url: string, decideStartMs: number, pinnedIp?: string): Promise<ServiceHealth> {
     // 1. Check cache
     const cached = this.serviceEndpointRepo!.findByUrl(url);
     const now = Math.floor(Date.now() / 1000);
@@ -352,12 +364,12 @@ export class DecideService {
 
     if (remainingBudget <= 50) {
       // Already spent too long — fire background check, return 'checking'
-      this.fireBackgroundCheck(agentHash, url);
+      this.fireBackgroundCheck(agentHash, url, pinnedIp);
       return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats };
     }
 
     // Race: live check vs budget timeout
-    const checkPromise = this.doHttpCheck(agentHash, url);
+    const checkPromise = this.doHttpCheck(agentHash, url, pinnedIp);
     const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), remainingBudget));
 
     const result = await Promise.race([checkPromise, timeoutPromise]);
@@ -368,20 +380,30 @@ export class DecideService {
     return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats };
   }
 
-  private fireBackgroundCheck(agentHash: string, url: string): void {
-    this.doHttpCheck(agentHash, url).catch((err: unknown) => {
+  private fireBackgroundCheck(agentHash: string, url: string, pinnedIp?: string): void {
+    this.doHttpCheck(agentHash, url, pinnedIp).catch((err: unknown) => {
       logger.warn({ url, error: err instanceof Error ? err.message : String(err) }, 'Background service health check failed');
     });
   }
 
-  private async doHttpCheck(agentHash: string, url: string): Promise<ServiceHealth> {
+  private async doHttpCheck(agentHash: string, url: string, pinnedIp?: string): Promise<ServiceHealth> {
     try {
       const start = Date.now();
-      const resp = await fetch(url, {
+      // Use pinned IP to prevent DNS rebinding: replace hostname with resolved IP,
+      // pass original hostname in Host header so TLS/vhost routing still works.
+      let fetchUrl = url;
+      const headers: Record<string, string> = { 'User-Agent': 'SatRank-HealthCheck/1.0' };
+      if (pinnedIp) {
+        const u = new URL(url);
+        headers['Host'] = u.host;
+        u.hostname = pinnedIp;
+        fetchUrl = u.toString();
+      }
+      const resp = await fetch(fetchUrl, {
         method: 'GET',
         signal: AbortSignal.timeout(SERVICE_HEALTH_TIMEOUT_MS),
-        headers: { 'User-Agent': 'SatRank-HealthCheck/1.0' },
-        redirect: 'manual', // Don't follow redirects to prevent SSRF via 301→private IP
+        headers,
+        redirect: 'manual',
       });
       const latencyMs = Date.now() - start;
       const httpCode = resp.status;

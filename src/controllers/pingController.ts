@@ -26,8 +26,17 @@ export class PingController {
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params.pubkey, { fallbackField: 'pubkey' }));
       const pubkey = parsed.data;
 
-      // Mark as hot node for priority probing
+      // Only allow pinging indexed nodes — prevents arbitrary network recon via SatRank's LND
       const hash = sha256(pubkey);
+      if (this.agentRepo) {
+        const agent = this.agentRepo.findByHash(hash);
+        if (!agent) {
+          res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Node not indexed. Only indexed Lightning nodes can be pinged.' } });
+          return;
+        }
+      }
+
+      // Mark as hot node for priority probing
       this.agentRepo?.touchLastQueried(hash);
 
       // Last probe age

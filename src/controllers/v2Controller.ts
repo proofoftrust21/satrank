@@ -138,14 +138,20 @@ export class V2Controller {
         return { hash: norm.hash, pubkey: agent?.public_key ?? norm.pubkey, agent };
       });
 
-      // queryRoutes in parallel for all targets with LN pubkeys
-      const pathResults = await Promise.all(
-        targetInfos.map(async (t) => {
-          if (!t.pubkey || !t.agent) return { ...t, pathfinding: null };
-          const pf = await this.verdictService!.computePathfinding(callerLnPubkey, t.pubkey, caller.hash, t.hash);
-          return { ...t, pathfinding: pf };
-        }),
-      );
+      // queryRoutes with concurrency cap (max 10 parallel LND calls to prevent saturation)
+      const LND_CONCURRENCY_CAP = 10;
+      const pathResults: Array<typeof targetInfos[number] & { pathfinding: Awaited<ReturnType<VerdictService['computePathfinding']>> | null }> = [];
+      for (let i = 0; i < targetInfos.length; i += LND_CONCURRENCY_CAP) {
+        const batch = targetInfos.slice(i, i + LND_CONCURRENCY_CAP);
+        const batchResults = await Promise.all(
+          batch.map(async (t) => {
+            if (!t.pubkey || !t.agent) return { ...t, pathfinding: null };
+            const pf = await this.verdictService!.computePathfinding(callerLnPubkey, t.pubkey, caller.hash, t.hash);
+            return { ...t, pathfinding: pf };
+          }),
+        );
+        pathResults.push(...batchResults);
+      }
 
       const serviceUrls = parsed.data.serviceUrls;
 

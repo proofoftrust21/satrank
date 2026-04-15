@@ -77,15 +77,18 @@ export function createReportAuth(db: Database.Database) {
       const preimage = match[1];
       const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
       const row = stmtCheck.get(paymentHash) as { remaining: number } | undefined;
-      if (row && row.remaining >= 0) {
-        // Verify the target was queried via /api/decide with this token
+      if (row && row.remaining > 0) {
+        // Target MUST be present — don't rely on downstream Zod to catch this
         const target = (req.body as Record<string, unknown>)?.target as string | undefined;
-        if (target) {
-          const queried = stmtDecideLog.get(paymentHash, target);
-          if (!queried) {
-            next(new AuthenticationError('Report rejected: this token did not query the target via /api/decide. Only report on targets you queried.'));
-            return;
-          }
+        if (!target || typeof target !== 'string') {
+          next(new AuthenticationError('Report requires a target field'));
+          return;
+        }
+        // Verify the target was queried via /api/decide with this token
+        const queried = stmtDecideLog.get(paymentHash, target);
+        if (!queried) {
+          next(new AuthenticationError('Report rejected: this token did not query the target via /api/decide. Only report on targets you queried.'));
+          return;
         }
         next();
         return;

@@ -5,16 +5,18 @@
 // kick off a background rebuild. Only the very first caller on an empty key
 // pays the rebuild cost synchronously — and the startup warm-up handles that.
 //
-// Intentionally minimal: no LRU, no metrics, no persistence. Entries are few
-// and small enough that the map stays bounded without eviction logic.
+// LRU eviction at MAX_ENTRIES prevents unbounded memory growth from dynamic
+// cache keys (e.g. per-query variants of /agents/top?sort_by=X).
 
 import { logger } from '../logger';
 
 interface CacheEntry<T> {
   data: T;
   expiry: number;
+  lastAccess: number;
 }
 
+const MAX_ENTRIES = 500;
 const store = new Map<string, CacheEntry<unknown>>();
 /** Keys currently being refreshed in the background. Prevents thundering herd. */
 const refreshing = new Set<string>();
@@ -31,6 +33,7 @@ export function get<T>(key: string): T | null {
     store.delete(key);
     return null;
   }
+  entry.lastAccess = Date.now();
   return entry.data as T;
 }
 
@@ -43,7 +46,19 @@ export function getStale<T>(key: string): T | null {
 
 /** Stores a value under the given key with the supplied TTL. */
 export function set<T>(key: string, data: T, ttlMs: number = DEFAULT_TTL_MS): void {
-  store.set(key, { data, expiry: Date.now() + ttlMs });
+  store.set(key, { data, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+  evictIfNeeded();
+}
+
+/** LRU eviction: when store exceeds MAX_ENTRIES, remove least-recently-accessed entries. */
+function evictIfNeeded(): void {
+  if (store.size <= MAX_ENTRIES) return;
+  // Sort entries by lastAccess ascending, remove the oldest
+  const entries = [...store.entries()].sort((a, b) => a[1].lastAccess - b[1].lastAccess);
+  const toRemove = entries.length - MAX_ENTRIES;
+  for (let i = 0; i < toRemove; i++) {
+    store.delete(entries[i][0]);
+  }
 }
 
 /** Stale-while-revalidate: returns the cached value immediately if present,
@@ -55,6 +70,7 @@ export function getOrCompute<T>(key: string, ttlMs: number, compute: () => T): T
 
   if (entry && now <= entry.expiry) {
     // Fresh hit
+    entry.lastAccess = now;
     return entry.data as T;
   }
 
@@ -65,7 +81,8 @@ export function getOrCompute<T>(key: string, ttlMs: number, compute: () => T): T
       setImmediate(() => {
         try {
           const fresh = compute();
-          store.set(key, { data: fresh, expiry: Date.now() + ttlMs });
+          store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+          evictIfNeeded();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.warn({ key, error: msg }, 'Cache background refresh failed — keeping stale entry');
@@ -79,7 +96,8 @@ export function getOrCompute<T>(key: string, ttlMs: number, compute: () => T): T
 
   // Cold miss — no data at all, have to compute synchronously
   const fresh = compute();
-  store.set(key, { data: fresh, expiry: Date.now() + ttlMs });
+  store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+  evictIfNeeded();
   return fresh;
 }
 
