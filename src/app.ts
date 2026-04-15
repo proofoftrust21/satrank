@@ -272,9 +272,15 @@ export function createApp() {
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
   api.use(createHealthRoutes(healthController));          // health, stats, version
-  api.get('/services', serviceController.search);         // service discovery (free)
-  api.get('/services/categories', serviceController.categories); // list categories (free)
-  api.get('/watchlist', watchlistController.getChanges);  // verdict change polling (free)
+  // Free discovery/monitoring endpoints — own rate limits (expensive SQL, no L402 gate)
+  const discoveryRateLimit = rateLimit({
+    windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false,
+    keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    message: { error: { code: 'RATE_LIMITED', message: 'Too many discovery requests, please try again later' } },
+  });
+  api.get('/services', discoveryRateLimit, serviceController.search);
+  api.get('/services/categories', discoveryRateLimit, serviceController.categories);
+  api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');

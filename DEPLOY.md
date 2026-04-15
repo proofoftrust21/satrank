@@ -123,6 +123,12 @@ server {
     ssl_certificate /etc/letsencrypt/live/satrank.dev/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/satrank.dev/privkey.pem;
 
+    # Security headers (duplicated from Express helmet for defense-in-depth)
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
     # L402-gated endpoints -- proxy through Aperture.
     # `/api/agent/{hash}` and `/api/agent/{hash}/{verdict,history,attestations}`
     # all match because the regex requires a 64-hex-char id after `/agent/`.

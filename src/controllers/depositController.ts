@@ -130,13 +130,28 @@ export class DepositController {
       throw new ValidationError('preimage does not match paymentHash (SHA256(preimage) != paymentHash)');
     }
 
-    // Check if already redeemed
     const paymentHashBuf = Buffer.from(body.paymentHash, 'hex');
-    const existing = this.db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?')
+
+    // Atomic check-and-insert in a transaction to prevent race conditions.
+    // Two concurrent requests with the same paymentHash: only the first credits,
+    // the second gets alreadyRedeemed instead of a duplicate success.
+    const checkAndInsert = this.db.transaction((quota: number) => {
+      const existing = this.db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?')
+        .get(paymentHashBuf) as { remaining: number } | undefined;
+      if (existing) return { alreadyRedeemed: true, balance: existing.remaining };
+
+      const now = Math.floor(Date.now() / 1000);
+      this.db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
+        .run(paymentHashBuf, quota, now);
+      return { alreadyRedeemed: false, balance: quota };
+    });
+
+    // Quick check outside transaction (avoids LND call for already-redeemed tokens)
+    const preCheck = this.db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?')
       .get(paymentHashBuf) as { remaining: number } | undefined;
-    if (existing) {
+    if (preCheck) {
       res.json({
-        balance: existing.remaining,
+        balance: preCheck.remaining,
         paymentHash: body.paymentHash,
         alreadyRedeemed: true,
         instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
@@ -155,11 +170,19 @@ export class DepositController {
       return;
     }
 
-    // Credit the balance (1 sat = 1 request)
+    // Atomic credit — handles concurrent requests safely
     const quota = parseInt(invoice.value, 10);
-    const now = Math.floor(Date.now() / 1000);
-    this.db.prepare('INSERT OR IGNORE INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
-      .run(paymentHashBuf, quota, now);
+    const result = checkAndInsert(quota);
+
+    if (result.alreadyRedeemed) {
+      res.json({
+        balance: result.balance,
+        paymentHash: body.paymentHash,
+        alreadyRedeemed: true,
+        instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+      });
+      return;
+    }
 
     logger.info({ paymentHash: body.paymentHash.slice(0, 16), quota }, 'Deposit verified and balance credited');
 

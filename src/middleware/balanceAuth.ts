@@ -1,6 +1,12 @@
 // L402 token balance middleware — quota system (21 requests per token)
 // After apertureGateAuth verifies the L402 token is valid, this middleware
 // tracks usage via a per-payment_hash counter in SQLite.
+//
+// Security note: the token balance IS the rate limit for paid endpoints.
+// Each request costs 1 sat, making abuse economically self-limiting.
+// IP-based rate limiting (express-rate-limit) provides the first layer;
+// token balance provides the economic layer. IPv6 subnet rotation can
+// bypass IP limits but cannot bypass token balance (attacker must pay).
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';

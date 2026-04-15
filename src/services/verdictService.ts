@@ -26,7 +26,7 @@ const CONFIDENCE_MAP: Record<ConfidenceLevel, number> = {
 };
 
 export class VerdictService {
-  private pathCache = new Map<string, { result: PathfindingResult; expiresAt: number }>();
+  private pathCache = new Map<string, { result: PathfindingResult; expiresAt: number; lastAccess: number }>();
 
   constructor(
     private agentRepo: AgentRepository,
@@ -165,6 +165,7 @@ export class VerdictService {
     const cacheKey = `${callerHash}:${targetHash}`;
     const cached = this.pathCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
+      cached.lastAccess = Date.now();
       return cached.result;
     }
 
@@ -189,22 +190,21 @@ export class VerdictService {
         source: 'lnd_queryroutes',
       };
 
-      // Cache result — enforce max size with LRU-style eviction
-      this.pathCache.set(cacheKey, { result, expiresAt: Date.now() + PATH_CACHE_TTL_MS });
+      // Cache result — enforce max size with LRU eviction
+      const now = Date.now();
+      this.pathCache.set(cacheKey, { result, expiresAt: now + PATH_CACHE_TTL_MS, lastAccess: now });
 
       if (this.pathCache.size > PATH_CACHE_MAX_SIZE) {
-        const now = Date.now();
+        // Purge expired first
         for (const [key, entry] of this.pathCache) {
           if (entry.expiresAt <= now) this.pathCache.delete(key);
         }
-        // If still over limit after TTL eviction, drop oldest entries (Map iterates in insertion order)
+        // LRU eviction: remove least-recently-accessed entries
         if (this.pathCache.size > PATH_CACHE_MAX_SIZE) {
-          const excess = this.pathCache.size - PATH_CACHE_MAX_SIZE;
-          let removed = 0;
-          for (const key of this.pathCache.keys()) {
-            if (removed >= excess) break;
-            this.pathCache.delete(key);
-            removed++;
+          const sorted = [...this.pathCache.entries()].sort((a, b) => a[1].lastAccess - b[1].lastAccess);
+          const excess = sorted.length - PATH_CACHE_MAX_SIZE;
+          for (let i = 0; i < excess; i++) {
+            this.pathCache.delete(sorted[i][0]);
           }
         }
       }

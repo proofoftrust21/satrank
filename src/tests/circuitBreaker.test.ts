@@ -41,14 +41,21 @@ describe('CircuitBreaker', () => {
     expect(cb.getState()).toBe('half_open');
   });
 
-  it('closes on success after half_open probe', () => {
-    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 2, initialBackoffMs: 1000 });
+  it('closes after recoveryThreshold consecutive successes in half_open', () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 2, recoveryThreshold: 3, initialBackoffMs: 1000 });
     cb.onFailure();
     cb.onFailure();
     vi.advanceTimersByTime(1001);
     cb.canExecute(); // triggers half_open
+
     cb.onSuccess();
-    expect(cb.getState()).toBe('closed');
+    expect(cb.getState()).toBe('half_open'); // not yet — needs 3
+
+    cb.onSuccess();
+    expect(cb.getState()).toBe('half_open'); // still needs 1 more
+
+    cb.onSuccess();
+    expect(cb.getState()).toBe('closed'); // 3 consecutive successes → closed
     expect(cb.canExecute()).toBe(true);
   });
 

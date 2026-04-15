@@ -21,7 +21,8 @@ class PaymentRequiredError extends AppError {
 }
 
 // Constant-time comparison via HMAC — normalizes lengths to eliminate timing oracle
-function safeEqual(provided: string, expected: string): boolean {
+function safeEqual(provided: string | undefined, expected: string | undefined): boolean {
+  if (!provided || !expected) return false;
   const key = crypto.randomBytes(32);
   const a = crypto.createHmac('sha256', key).update(provided).digest();
   const b = crypto.createHmac('sha256', key).update(expected).digest();
