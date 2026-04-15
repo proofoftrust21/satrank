@@ -149,7 +149,7 @@ The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP
 | NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
 | Tests (vitest) | **539 / 42 files** green | `npm test` |
-| Schema version | **v21** | `SELECT * FROM schema_version` |
+| Schema version | **v25** | `SELECT * FROM schema_version` |
 
 Numbers are pulled live from `/api/stats` (free endpoint, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
 
@@ -226,7 +226,9 @@ curl https://satrank.dev/api/agent/<hash>/verdict
 | GET | `/api/agents/search?alias=…` | Search by alias | free |
 | POST | `/api/verdicts` | Batch verdicts for up to 100 hashes | 1 req |
 | POST | `/api/attestations` | Submit attestation | free (API key) |
+| POST | `/api/deposit` | Buy 21–10,000 requests in one invoice | free |
 | GET | `/api/health` | DB status, schema version, agents indexed, uptime | free |
+| GET | `/api/version` | Build version and schema info | free |
 | GET | `/api/stats` | Network statistics | free |
 | GET | `/api/docs` | Interactive Swagger UI | free |
 | GET | `/api/openapi.json` | OpenAPI 3 spec | free |

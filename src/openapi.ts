@@ -189,8 +189,8 @@ export const openapiSpec = {
                 data: {
                   type: 'object',
                   properties: {
-                    up: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
-                    down: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+                    gainers: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+                    losers: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
                   },
                 },
               },
@@ -358,6 +358,7 @@ export const openapiSpec = {
         operationId: 'bestRoute',
         description: 'Takes up to 50 target hashes and a caller pubkey. Runs queryRoutes in parallel for each target from the caller position. Returns the top 3 reachable candidates sorted by a composite of score, hops, and fee.',
         tags: ['Decision'],
+        security: [{ l402: [] }],
         requestBody: { required: true, content: { 'application/json': { schema: {
           type: 'object', required: ['targets', 'caller'],
           properties: {

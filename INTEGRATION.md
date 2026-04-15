@@ -205,6 +205,7 @@ Both tokens work on all paid endpoints. The `X-SatRank-Balance` header on every 
 | `GET /api/agents/search` | None | Search by alias |
 | `GET /api/agents/movers` | None | Top movers (7-day delta) |
 | `GET /api/health` | None | Service health |
+| `GET /api/version` | None | Build version and schema info |
 | `GET /api/stats` | None | Network statistics |
 
 > **Reports and attestations are free.** They are the fuel of the trust network.
