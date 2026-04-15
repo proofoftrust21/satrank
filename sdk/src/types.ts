@@ -297,8 +297,62 @@ export interface BatchVerdictItem extends VerdictResponse {
 }
 
 export interface MoversResponse {
-  up: TopMover[];
-  down: TopMover[];
+  gainers: TopMover[];
+  losers: TopMover[];
+}
+
+// --- Deposit types ---
+
+export interface DepositInvoiceResponse {
+  invoice: string;
+  paymentHash: string;
+  amount: number;
+  quotaGranted: number;
+  expiresIn: number;
+  instructions: string;
+}
+
+export interface DepositVerifyResponse {
+  balance: number;
+  paymentHash: string;
+  token: string;
+  instructions: string;
+}
+
+// --- Service discovery types ---
+
+export interface ServiceSearchParams {
+  q?: string;
+  category?: string;
+  minScore?: number;
+  minUptime?: number;
+  sort?: 'score' | 'price' | 'uptime';
+  limit?: number;
+  offset?: number;
+}
+
+export interface ServiceResult {
+  name: string | null;
+  description: string | null;
+  category: string | null;
+  provider: string | null;
+  url: string;
+  priceSats: number | null;
+  httpHealth: 'healthy' | 'degraded' | 'down' | null;
+  uptimeRatio: number | null;
+  latencyMs: number | null;
+  lastCheckedAt: number | null;
+  node: {
+    publicKeyHash: string;
+    alias: string | null;
+    score: number | null;
+    verdict: Verdict | null;
+  } | null;
+}
+
+export interface ServiceCategory {
+  category: string;
+  count: number;
 }
 
 // --- Decision types ---

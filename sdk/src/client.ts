@@ -23,6 +23,12 @@ import type {
   TransactResult,
   BestRouteRequest,
   BestRouteResponse,
+  DepositInvoiceResponse,
+  DepositVerifyResponse,
+  ServiceSearchParams,
+  ServiceResult,
+  ServiceCategory,
+  WalletProvider,
 } from './types';
 
 export class SatRankError extends Error {
@@ -166,6 +172,62 @@ export class SatRankClient {
     return envelope.data;
   }
 
+  // --- Service discovery (free) ---
+
+  /** Search L402 services by keyword, category, score, or uptime. Free endpoint. */
+  async searchServices(params: ServiceSearchParams = {}): Promise<{ data: ServiceResult[]; meta: PaginationMeta }> {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set('q', params.q);
+    if (params.category) qs.set('category', params.category);
+    if (params.minScore !== undefined) qs.set('minScore', String(params.minScore));
+    if (params.minUptime !== undefined) qs.set('minUptime', String(params.minUptime));
+    if (params.sort) qs.set('sort', params.sort);
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
+    const query = qs.toString();
+    return this.get<{ data: ServiceResult[]; meta: PaginationMeta }>(`/api/services${query ? `?${query}` : ''}`);
+  }
+
+  /** List available service categories with counts. Free endpoint. */
+  async getCategories(): Promise<ServiceCategory[]> {
+    const envelope = await this.get<{ data: ServiceCategory[] }>(`/api/services/categories`);
+    return envelope.data;
+  }
+
+  // --- Deposit (free endpoint, generates Lightning invoice) ---
+
+  /**
+   * Request a deposit invoice for bulk L402 balance (21–10,000 sats, 1 sat = 1 request).
+   *
+   * This is phase 1 of a two-step process:
+   * 1. Call `deposit(amount)` → receive a BOLT11 Lightning invoice
+   * 2. Pay the invoice with your Lightning wallet (out-of-band)
+   * 3. Call `verifyDeposit(paymentHash, preimage)` → receive your token
+   * 4. Use the token on all paid endpoints: `Authorization: L402 deposit:<preimage>`
+   *
+   * The deposit token replaces the standard L402 token for all paid endpoints.
+   * Both token types work interchangeably.
+   */
+  async deposit(amount: number): Promise<DepositInvoiceResponse> {
+    return this.post<DepositInvoiceResponse>(`/api/deposit`, { amount });
+  }
+
+  /**
+   * Verify a deposit payment and activate the balance (phase 2).
+   *
+   * Call this after paying the invoice from `deposit()`. The preimage proves
+   * payment and becomes your auth token: `Authorization: L402 deposit:<preimage>`.
+   *
+   * @param paymentHash - The paymentHash returned by deposit() phase 1
+   * @param preimage - The preimage from your Lightning wallet after payment
+   * @returns The token string and balance. Set headers.Authorization to the token value.
+   */
+  async verifyDeposit(paymentHash: string, preimage: string): Promise<DepositVerifyResponse> {
+    return this.post<DepositVerifyResponse>(`/api/deposit`, { paymentHash, preimage });
+  }
+
+  // --- Transact (decide → pay → report) ---
+
   /**
    * Decide → Pay → Report in one call. The full cycle.
    *
@@ -174,14 +236,23 @@ export class SatRankClient {
    * @param payFn - Your payment function. Called only if decide returns go=true.
    *                Must return { success, preimage?, paymentHash? }.
    *                Provide preimage + paymentHash for 2x weight bonus on the report.
+   * @param options - Optional: walletProvider, amountSats, serviceUrl for positional pathfinding and health check
    * @returns { paid, decision, report? }
    */
   async transact(
     target: string,
     caller: string,
     payFn: () => Promise<PaymentResult>,
+    options?: { walletProvider?: WalletProvider; amountSats?: number; serviceUrl?: string; callerNodePubkey?: string },
   ): Promise<TransactResult> {
-    const decision = await this.decide({ target, caller });
+    const decision = await this.decide({
+      target,
+      caller,
+      walletProvider: options?.walletProvider,
+      amountSats: options?.amountSats,
+      serviceUrl: options?.serviceUrl,
+      callerNodePubkey: options?.callerNodePubkey,
+    });
 
     if (!decision.go) {
       return { paid: false, decision };

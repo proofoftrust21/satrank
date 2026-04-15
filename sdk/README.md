@@ -62,7 +62,11 @@ const results = await client.searchAgents('ACINQ');
 | `bestRoute(input)` | `BestRouteResponse` | Batch pathfinding for up to 50 targets, top 3 by composite rank |
 | `getVerdict(hash, callerPubkey?)` | `VerdictResponse` | SAFE/RISKY/UNKNOWN verdict with flags and risk profile |
 | `submitAttestation(input)` | `CreateAttestationResponse` | Submit a trust attestation (free, requires API key) |
-| `transact(target, caller, payFn)` | `TransactResult` | Decide, pay, report in one call |
+| `transact(target, caller, payFn, options?)` | `TransactResult` | Decide, pay, report in one call (options: walletProvider, amountSats, serviceUrl) |
+| `searchServices(params?)` | `{ data, meta }` | Browse L402 services by keyword, category, score, uptime (free) |
+| `getCategories()` | `ServiceCategory[]` | List available service categories (free) |
+| `deposit(amount)` | `DepositInvoiceResponse` | Request a deposit invoice (21–10,000 sats, free endpoint) |
+| `verifyDeposit(paymentHash, preimage)` | `DepositVerifyResponse` | Activate deposit balance after payment |
 
 ### L402 Authentication
 
@@ -146,6 +150,7 @@ const result = await client.transact(
       paymentHash: payment.paymentHash,   // enables verification
     };
   },
+  { walletProvider: 'phoenix', amountSats: 50000 }, // optional: positional pathfinding
 );
 
 if (result.paid) {
@@ -163,6 +168,31 @@ The `transact()` response includes everything:
 - `result.report`: the ReportResponse (only present if payment was attempted)
 
 Cost: 1 request from your L402 balance for decide (report is free). Latency: ~500ms + your payment time.
+
+## Deposit: Buy Bulk Balance
+
+The deposit flow is a two-step process. SatRank generates a Lightning invoice, you pay it with your wallet, then you verify the payment to activate your balance.
+
+```typescript
+// Step 1: Request an invoice (free endpoint, no auth needed)
+const invoice = await client.deposit(500); // 500 sats = 500 requests
+console.log(invoice.invoice);    // "lnbc5u1..." — pay this with your wallet
+console.log(invoice.paymentHash); // "a1b2c3..." — you'll need this in step 3
+
+// Step 2: Pay the invoice with your Lightning wallet (out-of-band)
+// Use NWC, Phoenix, LND, or any wallet. SatRank never touches your funds.
+const preimage = await myWallet.pay(invoice.invoice);
+
+// Step 3: Verify payment and activate balance
+const result = await client.verifyDeposit(invoice.paymentHash, preimage);
+console.log(result.token);   // "L402 deposit:be7740a4..." — your auth token
+console.log(result.balance); // 500
+
+// Step 4: Use the token on all paid endpoints
+const authedClient = new SatRankClient('https://satrank.dev', {
+  headers: { 'Authorization': result.token },
+});
+```
 
 ### Cost vs. value
 

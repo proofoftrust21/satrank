@@ -53,4 +53,11 @@ export type {
   BestRouteCandidate,
   PaymentResult,
   TransactResult,
+  // Deposit types
+  DepositInvoiceResponse,
+  DepositVerifyResponse,
+  // Service discovery types
+  ServiceSearchParams,
+  ServiceResult,
+  ServiceCategory,
 } from './types';
