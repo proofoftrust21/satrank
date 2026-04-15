@@ -114,9 +114,12 @@ async function resolveAndCheck(urlStr: string): Promise<boolean> {
 }
 
 function classifyHttp(status: number): 'healthy' | 'degraded' | 'down' {
-  if (status === 402 || (status >= 200 && status < 300)) return 'healthy';
-  if (status >= 300 && status < 500) return 'degraded';
-  return 'down';
+  if (status >= 200 && status < 300) return 'healthy';  // 2xx success
+  if (status === 301 || status === 302 || status === 307 || status === 308) return 'healthy'; // normal redirects
+  if (status === 402) return 'healthy';                  // L402 paywall gate
+  if (status === 401 || status === 403) return 'degraded'; // access issue
+  if (status >= 400 && status < 500) return 'degraded';  // other client errors
+  return 'down';                                         // 5xx, 0 (timeout/DNS), anything else
 }
 
 export class DecideService {
