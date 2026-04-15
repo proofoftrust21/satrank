@@ -148,9 +148,9 @@ export class V2Controller {
       );
 
       const serviceUrls = parsed.data.serviceUrls;
-      const hasServiceData = serviceUrls && Object.keys(serviceUrls).length > 0;
 
       // Filter to reachable, enrich with score + verdict, sort by composite rank
+      let anyServiceData = !!(serviceUrls && Object.keys(serviceUrls).length > 0);
       const allReachable = pathResults
         .filter(r => r.pathfinding?.reachable && r.agent)
         .map(r => {
@@ -175,12 +175,8 @@ export class V2Controller {
             : this.serviceEndpointRepo?.findByAgent(r.hash)?.[0]; // auto-lookup from registry
           if (endpoint && endpoint.check_count >= 1) {
             httpHealth = Math.round((endpoint.success_count / endpoint.check_count) * 100);
+            anyServiceData = true; // registry auto-lookup found data → use 3D ranking
           }
-
-          // Composite rank: 3D when service data available
-          const rankScore = hasServiceData
-            ? routeQuality * 0.40 + trust * 0.30 + httpHealth * 0.30
-            : routeQuality * 0.50 + trust * 0.50; // graceful degradation
 
           return {
             publicKeyHash: r.hash,
@@ -188,16 +184,28 @@ export class V2Controller {
             score: scoreResult.total,
             verdict,
             pathfinding: r.pathfinding!,
-            _rankScore: rankScore,
+            _routeQuality: routeQuality,
+            _trust: trust,
+            _httpHealth: httpHealth,
+            _hasHealth: !!(endpoint && endpoint.check_count >= 1),
           };
+        });
+
+      // Composite rank: 3D when ANY target has service data (request or registry)
+      const ranked = allReachable
+        .map(r => {
+          const rankScore = anyServiceData
+            ? r._routeQuality * 0.40 + r._trust * 0.30 + r._httpHealth * 0.30
+            : r._routeQuality * 0.50 + r._trust * 0.50; // graceful degradation
+          return { ...r, _rankScore: rankScore };
         })
         .sort((a, b) => b._rankScore - a._rankScore);
-      const candidates = allReachable
+      const candidates = ranked
         .slice(0, 3)
-        .map(({ _rankScore, ...rest }) => rest);
+        .map(({ _rankScore, _routeQuality, _trust, _httpHealth, _hasHealth, ...rest }) => rest);
 
       const totalQueried = parsed.data.targets.length;
-      const reachableCount = allReachable.length;
+      const reachableCount = ranked.length;
 
       res.json({
         data: {
