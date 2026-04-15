@@ -9,6 +9,10 @@ export class AgentRepository {
     return this.db.prepare('SELECT * FROM agents WHERE public_key_hash = ?').get(hash) as Agent | undefined;
   }
 
+  findByPubkey(pubkey: string): Agent | undefined {
+    return this.db.prepare('SELECT * FROM agents WHERE public_key = ?').get(pubkey) as Agent | undefined;
+  }
+
   findAll(limit: number, offset: number): Agent[] {
     return this.db.prepare('SELECT * FROM agents WHERE stale = 0 ORDER BY avg_score DESC LIMIT ? OFFSET ?').all(limit, offset) as Agent[];
   }

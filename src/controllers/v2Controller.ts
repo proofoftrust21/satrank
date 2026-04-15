@@ -19,7 +19,7 @@ import type { VerdictService } from '../services/verdictService';
 import { agentIdentifierSchema, decideSchema, reportSchema, bestRouteSchema } from '../middleware/validation';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
-import { normalizeIdentifier } from '../utils/identifier';
+import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
 import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
@@ -49,7 +49,7 @@ export class V2Controller {
       const parsed = decideSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
-      const target = normalizeIdentifier(parsed.data.target);
+      const target = resolveIdentifier(parsed.data.target, p => this.agentRepo.findByPubkey(p));
       const caller = normalizeIdentifier(parsed.data.caller);
 
       // Resolve pathfinding source: callerNodePubkey > walletProvider > caller's own pubkey
@@ -105,7 +105,7 @@ export class V2Controller {
       if (!callerLnPubkey) {
         // Degraded response: return scores without pathfinding
         const targetInfos = parsed.data.targets.map(t => {
-          const norm = normalizeIdentifier(t);
+          const norm = resolveIdentifier(t, p => this.agentRepo.findByPubkey(p));
           const agent = this.agentRepo.findByHash(norm.hash);
           return { hash: norm.hash, agent };
         });
@@ -133,7 +133,7 @@ export class V2Controller {
 
       // Resolve all targets in parallel
       const targetInfos = parsed.data.targets.map(t => {
-        const norm = normalizeIdentifier(t);
+        const norm = resolveIdentifier(t, p => this.agentRepo.findByPubkey(p));
         const agent = this.agentRepo.findByHash(norm.hash);
         return { hash: norm.hash, pubkey: agent?.public_key ?? norm.pubkey, agent };
       });
@@ -251,7 +251,7 @@ export class V2Controller {
       const idParsed = agentIdentifierSchema.safeParse(req.params.id);
       if (!idParsed.success) throw new ValidationError(formatZodError(idParsed.error, req.params.id, { fallbackField: 'id' }));
 
-      const { hash } = normalizeIdentifier(idParsed.data);
+      const { hash } = resolveIdentifier(idParsed.data, p => this.agentRepo.findByPubkey(p));
 
       const agent = this.agentRepo.findByHash(hash);
       if (!agent) {

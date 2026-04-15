@@ -8,7 +8,7 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { TrendService } from '../services/trendService';
 import { agentIdentifierSchema, paginationSchema, topQuerySchema, searchQuerySchema, batchVerdictsSchema } from '../middleware/validation';
 import { ValidationError, NotFoundError } from '../errors';
-import { normalizeIdentifier } from '../utils/identifier';
+import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
 import { logger } from '../logger';
 import * as memoryCache from '../cache/memoryCache';
 import { formatZodError } from '../utils/zodError';
@@ -56,7 +56,7 @@ export class AgentController {
       const parsed = agentIdentifierSchema.safeParse(req.params.publicKeyHash);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
 
-      const { hash, pubkey } = normalizeIdentifier(parsed.data);
+      const { hash, pubkey } = resolveIdentifier(parsed.data, p => this.agentRepo.findByPubkey(p));
 
       try {
         const result = this.agentService.getAgentScore(hash);
@@ -81,7 +81,7 @@ export class AgentController {
     try {
       const hashParsed = agentIdentifierSchema.safeParse(req.params.publicKeyHash);
       if (!hashParsed.success) throw new ValidationError(formatZodError(hashParsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
-      const { hash: agentHash } = normalizeIdentifier(hashParsed.data);
+      const { hash: agentHash } = resolveIdentifier(hashParsed.data, p => this.agentRepo.findByPubkey(p));
 
       const paginationParsed = paginationSchema.safeParse(req.query);
       if (!paginationParsed.success) throw new ValidationError(formatZodError(paginationParsed.error, req.query));
@@ -188,7 +188,7 @@ export class AgentController {
       const parsed = agentIdentifierSchema.safeParse(req.params.publicKeyHash);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
 
-      const { hash, pubkey } = normalizeIdentifier(parsed.data);
+      const { hash, pubkey } = resolveIdentifier(parsed.data, p => this.agentRepo.findByPubkey(p));
 
       // Extract caller pubkey from query param or header — accepts 64-char hash or 66-char Lightning pubkey
       const callerRaw = typeof req.query.caller_pubkey === 'string' ? req.query.caller_pubkey
@@ -230,7 +230,7 @@ export class AgentController {
       // Batch verdicts: no caller_pubkey, no pathfinding (would be N * 100ms)
       const results: Array<{ publicKeyHash: string } & Awaited<ReturnType<typeof this.verdictService.getVerdict>>> = [];
       for (const identifier of parsed.data.hashes) {
-        const { hash, pubkey } = normalizeIdentifier(identifier);
+        const { hash, pubkey } = resolveIdentifier(identifier, p => this.agentRepo.findByPubkey(p));
         const verdict = await this.verdictService.getVerdict(hash);
 
         // Auto-index unknown Lightning pubkeys (capped per batch to prevent abuse)
