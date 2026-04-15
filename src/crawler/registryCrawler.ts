@@ -78,24 +78,27 @@ export class RegistryCrawler {
           if (svc.protocol !== 'L402') continue;
           if (!isSafeUrl(svc.url)) continue;
           try {
+            const meta = {
+              name: svc.name?.trim() || null,
+              description: svc.description?.trim() || null,
+              category: normalizeCategory(svc.category),
+              provider: svc.provider?.trim() || null,
+            };
+
+            // Update metadata for URLs already in the registry (even without decoder)
+            const existing = this.serviceEndpointRepo.findByUrl(svc.url);
+            if (existing) {
+              this.serviceEndpointRepo.updateMetadata(svc.url, meta);
+              result.updated++;
+              continue; // already registered, skip node discovery
+            }
+
+            // New URL — try to discover the backing LN node
             const agentHash = await this.discoverNodeFromUrl(svc.url);
             if (agentHash) {
-              const existing = this.serviceEndpointRepo.findByUrl(svc.url);
-              if (existing) {
-                result.updated++;
-              } else {
-                result.discovered++;
-              }
-              // Upsert with status 0 (not health-checked yet, just registered)
-              // The health crawler will check it later
+              result.discovered++;
               this.serviceEndpointRepo.upsert(agentHash, svc.url, 0, 0);
-              // Store discovery metadata from 402index
-              this.serviceEndpointRepo.updateMetadata(svc.url, {
-                name: svc.name?.trim() || null,
-                description: svc.description?.trim() || null,
-                category: normalizeCategory(svc.category),
-                provider: svc.provider?.trim() || null,
-              });
+              this.serviceEndpointRepo.updateMetadata(svc.url, meta);
             }
           } catch (err: unknown) {
             result.errors++;
