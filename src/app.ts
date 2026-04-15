@@ -48,6 +48,7 @@ import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
 import { DepositController } from './controllers/depositController';
 import { ServiceController } from './controllers/serviceController';
+import { WatchlistController } from './controllers/watchlistController';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createReportAuth } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
@@ -123,6 +124,7 @@ export function createApp() {
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, scoringService);
+  const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
 
   // Cache warm-up — fills the stats and leaderboard caches before the first
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
@@ -272,6 +274,7 @@ export function createApp() {
   api.use(createHealthRoutes(healthController));          // health, stats, version
   api.get('/services', serviceController.search);         // service discovery (free)
   api.get('/services/categories', serviceController.categories); // list categories (free)
+  api.get('/watchlist', watchlistController.getChanges);  // verdict change polling (free)
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');

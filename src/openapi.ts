@@ -516,6 +516,38 @@ export const openapiSpec = {
         },
       },
     },
+    '/watchlist': {
+      get: {
+        summary: 'Poll for verdict changes on watched targets',
+        operationId: 'getWatchlist',
+        description: 'Returns verdicts that changed since the given timestamp. Free endpoint — use as a fallback when Nostr NIP-85 subscription is not available. For real-time updates, subscribe to kind 30382 events on relay.damus.io, nos.lol, or relay.primal.net (published every 30 min, delta-only).',
+        tags: ['Monitoring'],
+        parameters: [
+          { name: 'targets', in: 'query', required: true, schema: { type: 'string' }, description: 'Comma-separated 64-char hex hashes (max 50)' },
+          { name: 'since', in: 'query', required: false, schema: { type: 'integer', minimum: 0 }, description: 'Unix timestamp — only return changes after this time. Omit for all latest verdicts.' },
+        ],
+        responses: {
+          '200': { description: 'Changed verdicts since the given timestamp', content: { 'application/json': { schema: { type: 'object', properties: {
+            data: { type: 'array', items: { type: 'object', properties: {
+              publicKeyHash: { type: 'string' },
+              alias: { type: ['string', 'null'] },
+              score: { type: 'integer' },
+              previousScore: { type: ['integer', 'null'] },
+              verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
+              components: { type: ['object', 'null'] },
+              changedAt: { type: 'integer' },
+            } } },
+            meta: { type: 'object', properties: {
+              since: { type: 'integer' },
+              queriedAt: { type: 'integer' },
+              targets: { type: 'integer' },
+              changed: { type: 'integer' },
+            } },
+          } } } } },
+          '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
     '/services': {
       get: {
         summary: 'Discover L402 services by category or keyword',

@@ -283,6 +283,75 @@ if (decision.go) {
 // - Pricing: 1 sat = 1 request (L402: 21 sats/21 reqs, or deposit: up to 10,000)
 ```
 
+## Monitoring: Watch for Verdict Changes
+
+Two options for monitoring your targets. **Nostr is recommended** (real-time, free, decentralized). HTTP polling is the fallback.
+
+### Option 1: Nostr NIP-85 Subscription (recommended)
+
+SatRank publishes NIP-85 kind 30382 events every 30 minutes (delta-only — unchanged agents are skipped). Subscribe via any Nostr relay to get real-time push notifications when a score changes.
+
+```typescript
+import { SatRankClient } from '@satrank/sdk';
+
+const client = new SatRankClient('https://satrank.dev');
+
+// Subscribe to score changes for specific Lightning nodes
+const unsubscribe = client.watchNostr(
+  [
+    '03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f', // ACINQ
+    '026165850492521f4ac8abd9bd8088123446d126f648ca35e60f88177dc149ceb2', // Boltz
+  ],
+  (event) => {
+    console.log(`${event.alias}: score=${event.score} verdict=${event.verdict} reachable=${event.reachable}`);
+    // event.components = { volume: 100, reputation: 75, ... }
+  },
+);
+
+// Later: stop watching
+unsubscribe();
+```
+
+Under the hood, the SDK opens WebSocket connections to 3 Nostr relays and sends:
+```json
+["REQ", "satrank-xxx", {
+  "kinds": [30382],
+  "authors": ["5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4"],
+  "#d": ["03864ef...", "026165..."]
+}]
+```
+
+Any Nostr client (nak, nostr-tools, nostcat) can do the same without the SDK.
+
+### Option 2: HTTP Polling (fallback)
+
+Poll `GET /api/watchlist` for changes. Free endpoint, no L402 required.
+
+```typescript
+const unsubscribe = client.watchPoll(
+  ['hash1...', 'hash2...'], // SHA-256 hashes (max 50)
+  { intervalMs: 300_000 },  // poll every 5 minutes
+  (changes) => {
+    for (const c of changes) {
+      console.log(`${c.alias}: ${c.previousScore} → ${c.score} (${c.verdict})`);
+    }
+  },
+);
+
+// Later: stop polling
+unsubscribe();
+```
+
+Or call `getWatchlist()` directly for one-shot queries:
+
+```typescript
+const result = await client.getWatchlist(
+  ['hash1...', 'hash2...'],
+  Math.floor(Date.now() / 1000) - 3600, // changes in the last hour
+);
+console.log(`${result.meta.changed} targets changed`);
+```
+
 ## License
 
 AGPL-3.0

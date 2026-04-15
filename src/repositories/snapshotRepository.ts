@@ -42,6 +42,30 @@ export class SnapshotRepository {
     `).run(snapshot.snapshot_id, snapshot.agent_hash, snapshot.score, snapshot.components, snapshot.computed_at);
   }
 
+  /** Find the most recent snapshot per agent where the score differs from the previous snapshot,
+   *  filtered to snapshots computed after `since`. Used by GET /api/watchlist. */
+  findChangedSince(agentHashes: string[], since: number): Array<{ agent_hash: string; score: number; previous_score: number | null; components: string; computed_at: number }> {
+    if (agentHashes.length === 0) return [];
+    const placeholders = agentHashes.map(() => '?').join(',');
+    // For each target, get the latest snapshot after `since` and compare to the one before it
+    return this.db.prepare(`
+      SELECT cur.agent_hash, cur.score, prev.score AS previous_score, cur.components, cur.computed_at
+      FROM (
+        SELECT agent_hash, score, components, computed_at,
+          ROW_NUMBER() OVER (PARTITION BY agent_hash ORDER BY computed_at DESC) AS rn
+        FROM score_snapshots
+        WHERE agent_hash IN (${placeholders}) AND computed_at > ?
+      ) cur
+      LEFT JOIN (
+        SELECT agent_hash, score, computed_at,
+          ROW_NUMBER() OVER (PARTITION BY agent_hash ORDER BY computed_at DESC) AS rn
+        FROM score_snapshots
+        WHERE agent_hash IN (${placeholders}) AND computed_at <= ?
+      ) prev ON prev.agent_hash = cur.agent_hash AND prev.rn = 1
+      WHERE cur.rn = 1 AND (prev.score IS NULL OR cur.score != prev.score)
+    `).all(...agentHashes, since, ...agentHashes, since) as Array<{ agent_hash: string; score: number; previous_score: number | null; components: string; computed_at: number }>;
+  }
+
   countByAgent(agentHash: string): number {
     const row = this.db.prepare(
       'SELECT COUNT(*) as count FROM score_snapshots WHERE agent_hash = ?'

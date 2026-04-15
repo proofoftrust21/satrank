@@ -1,6 +1,6 @@
 // @satrank/sdk — Client SDK for the SatRank API
 export { SatRankClient, SatRankError } from './client';
-export type { SatRankClientOptions } from './client';
+export type { SatRankClientOptions, NostrScoreEvent, WatchlistChange, WatchlistResponse } from './client';
 export type {
   AgentScoreResponse,
   TopAgentsResponse,

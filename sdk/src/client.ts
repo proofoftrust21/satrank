@@ -271,6 +271,105 @@ export class SatRankClient {
     return { paid: payment.success, decision, report };
   }
 
+  // --- Monitoring ---
+
+  /** Poll GET /api/watchlist for verdict changes. Free endpoint.
+   *  Returns only targets whose score changed since `since`. */
+  async getWatchlist(targets: string[], since?: number): Promise<WatchlistResponse> {
+    const qs = `targets=${targets.join(',')}`  + (since != null ? `&since=${since}` : '');
+    return this.get<WatchlistResponse>(`/api/watchlist?${qs}`);
+  }
+
+  /**
+   * Poll /api/watchlist on an interval. Calls `onChanges` only when scores change.
+   * Returns an unsubscribe function to stop polling.
+   *
+   * This is the HTTP fallback. For real-time updates, use Nostr NIP-85 subscriptions
+   * (see watchNostr() or the README for the Nostr REQ pattern).
+   */
+  watchPoll(
+    targets: string[],
+    options: { intervalMs?: number },
+    onChanges: (changes: WatchlistChange[]) => void,
+  ): () => void {
+    let since = Math.floor(Date.now() / 1000);
+    let stopped = false;
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const result = await this.getWatchlist(targets, since);
+        if (result.data.length > 0) {
+          onChanges(result.data);
+        }
+        since = result.meta.queriedAt;
+      } catch { /* swallow — retry next cycle */ }
+      if (!stopped) timer = setTimeout(poll, options.intervalMs ?? 300_000);
+    };
+
+    let timer: ReturnType<typeof setTimeout> = setTimeout(poll, 0);
+    return () => { stopped = true; clearTimeout(timer); };
+  }
+
+  /**
+   * Subscribe to NIP-85 kind 30382 score changes via Nostr relays.
+   * Requires a WebSocket-capable runtime (Node 22+, browsers, Deno, Bun).
+   *
+   * This is the recommended real-time monitoring method. SatRank publishes
+   * delta-only events every 30 minutes to 3 public relays.
+   *
+   * @param targets Lightning pubkeys (02/03 prefix, 66 chars) to watch
+   * @param onEvent Called for each score change event with parsed tags
+   * @param relays Override default relays (default: relay.damus.io, nos.lol, relay.primal.net)
+   * @returns Unsubscribe function that closes all relay connections
+   */
+  watchNostr(
+    targets: string[],
+    onEvent: (event: NostrScoreEvent) => void,
+    relays: string[] = SATRANK_RELAYS,
+  ): () => void {
+    const sockets: WebSocket[] = [];
+    const subId = `satrank-${Date.now().toString(36)}`;
+
+    const filter = {
+      kinds: [30382],
+      authors: [SATRANK_NOSTR_PUBKEY],
+      '#d': targets,
+    };
+
+    for (const relay of relays) {
+      try {
+        const ws = new WebSocket(relay);
+        sockets.push(ws);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(['REQ', subId, filter]));
+        };
+
+        ws.onmessage = (msg) => {
+          try {
+            const data = JSON.parse(typeof msg.data === 'string' ? msg.data : msg.data.toString());
+            if (data[0] === 'EVENT' && data[1] === subId && data[2]) {
+              const event = parseNostrScoreEvent(data[2]);
+              if (event) onEvent(event);
+            }
+          } catch { /* malformed event — skip */ }
+        };
+
+        ws.onerror = () => { /* relay down — others continue */ };
+      } catch { /* WebSocket not available or relay unreachable */ }
+    }
+
+    return () => {
+      for (const ws of sockets) {
+        try {
+          ws.send(JSON.stringify(['CLOSE', subId]));
+          ws.close();
+        } catch { /* already closed */ }
+      }
+    };
+  }
+
   private async get<T>(path: string): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
@@ -366,4 +465,63 @@ export class SatRankClient {
       clearTimeout(timer);
     }
   }
+}
+
+// --- Nostr constants and helpers ---
+
+const SATRANK_NOSTR_PUBKEY = '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4';
+const SATRANK_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
+
+export interface NostrScoreEvent {
+  pubkey: string;
+  lnPubkey: string;
+  alias: string | null;
+  score: number | null;
+  verdict: string | null;
+  reachable: boolean | null;
+  components: Record<string, number> | null;
+  createdAt: number;
+}
+
+export interface WatchlistChange {
+  publicKeyHash: string;
+  alias: string | null;
+  score: number;
+  previousScore: number | null;
+  verdict: 'SAFE' | 'RISKY' | 'UNKNOWN';
+  components: Record<string, number> | null;
+  changedAt: number;
+}
+
+export interface WatchlistResponse {
+  data: WatchlistChange[];
+  meta: { since: number; queriedAt: number; targets: number; changed: number };
+}
+
+function parseNostrScoreEvent(event: { pubkey: string; tags: string[][]; created_at: number }): NostrScoreEvent | null {
+  const tags = new Map(event.tags.map(t => [t[0], t[1]]));
+  const lnPubkey = tags.get('d');
+  if (!lnPubkey) return null;
+  const scoreStr = tags.get('rank');
+  return {
+    pubkey: event.pubkey,
+    lnPubkey,
+    alias: tags.get('alias') ?? null,
+    score: scoreStr ? parseInt(scoreStr, 10) : null,
+    verdict: tags.get('verdict') ?? null,
+    reachable: tags.get('reachable') === 'true' ? true : tags.get('reachable') === 'false' ? false : null,
+    components: parseComponents(tags),
+    createdAt: event.created_at,
+  };
+}
+
+function parseComponents(tags: Map<string, string>): Record<string, number> | null {
+  const keys = ['volume', 'reputation', 'seniority', 'regularity', 'diversity'];
+  const result: Record<string, number> = {};
+  let found = false;
+  for (const k of keys) {
+    const v = tags.get(k);
+    if (v) { result[k] = parseInt(v, 10); found = true; }
+  }
+  return found ? result : null;
 }

@@ -44,7 +44,7 @@ const configSchema = z.object({
   // Nostr — publish scores as NIP-85 kind 30382 events
   NOSTR_PRIVATE_KEY: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   NOSTR_RELAYS: z.string().default(DEFAULT_NOSTR_RELAYS_CSV),
-  NOSTR_PUBLISH_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000), // 6 hours
+  NOSTR_PUBLISH_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000), // 30 min — delta-only (unchanged agents are skipped)
   NOSTR_MIN_SCORE: z.coerce.number().int().min(0).default(30), // only publish nodes with score >= this
   // LND invoice macaroon — needed for /api/deposit (addInvoice + lookupInvoice)
   // Separate from LND_MACAROON_PATH which is readonly. Bake with:
