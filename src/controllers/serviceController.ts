@@ -88,7 +88,7 @@ export class ServiceController {
 
       res.json({
         data: sorted,
-        meta: { total, limit: filters.limit ?? 20, offset: filters.offset ?? 0 },
+        meta: { total: sorted.length, limit: filters.limit ?? 20, offset: filters.offset ?? 0 },
       });
     } catch (err) {
       next(err);
