@@ -516,6 +516,62 @@ export const openapiSpec = {
         },
       },
     },
+    '/services': {
+      get: {
+        summary: 'Discover L402 services by category or keyword',
+        operationId: 'searchServices',
+        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with SatRank trust data (node score, verdict, uptime). Free endpoint — no L402 required. Data sourced from 402index.io, refreshed every 24h.',
+        tags: ['Discovery'],
+        parameters: [
+          { name: 'q', in: 'query', required: false, schema: { type: 'string', maxLength: 100 }, description: 'Fulltext search across name, description, category, and provider' },
+          { name: 'category', in: 'query', required: false, schema: { type: 'string' }, description: 'Filter by normalized category (ai, data, tools, bitcoin, media, social, earn)' },
+          { name: 'minScore', in: 'query', required: false, schema: { type: 'integer', minimum: 0, maximum: 100 }, description: 'Minimum SatRank trust score of the backing Lightning node' },
+          { name: 'minUptime', in: 'query', required: false, schema: { type: 'number', minimum: 0, maximum: 1 }, description: 'Minimum HTTP uptime ratio (0-1). Requires at least 3 health checks.' },
+          { name: 'sort', in: 'query', required: false, schema: { type: 'string', enum: ['score', 'price', 'uptime'] }, description: 'Sort order (default: most-checked first)' },
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 } },
+          { name: 'offset', in: 'query', required: false, schema: { type: 'integer', minimum: 0, default: 0 } },
+        ],
+        responses: {
+          '200': { description: 'Matching services with SatRank enrichment', content: { 'application/json': { schema: { type: 'object', properties: {
+            data: { type: 'array', items: { type: 'object', properties: {
+              name: { type: ['string', 'null'] },
+              description: { type: ['string', 'null'] },
+              category: { type: ['string', 'null'] },
+              provider: { type: ['string', 'null'] },
+              url: { type: 'string' },
+              priceSats: { type: ['integer', 'null'] },
+              httpHealth: { type: ['string', 'null'], enum: ['healthy', 'degraded', 'down', null] },
+              uptimeRatio: { type: ['number', 'null'] },
+              latencyMs: { type: ['integer', 'null'] },
+              node: { type: ['object', 'null'], properties: {
+                publicKeyHash: { type: 'string' },
+                alias: { type: ['string', 'null'] },
+                score: { type: ['integer', 'null'] },
+                verdict: { type: ['string', 'null'], enum: ['SAFE', 'RISKY', 'UNKNOWN', null] },
+              } },
+            } } },
+            meta: { $ref: '#/components/schemas/PaginationMeta' },
+          } } } } },
+          '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
+    '/services/categories': {
+      get: {
+        summary: 'List available service categories',
+        operationId: 'getServiceCategories',
+        description: 'Returns all normalized categories with service count. Free endpoint.',
+        tags: ['Discovery'],
+        responses: {
+          '200': { description: 'Category list', content: { 'application/json': { schema: { type: 'object', properties: {
+            data: { type: 'array', items: { type: 'object', properties: {
+              category: { type: 'string' },
+              count: { type: 'integer' },
+            } } },
+          } } } } },
+        },
+      },
+    },
     '/openapi.json': {
       get: {
         summary: 'OpenAPI specification',

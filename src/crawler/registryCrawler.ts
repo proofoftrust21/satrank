@@ -9,6 +9,37 @@ import { isSafeUrl } from '../utils/ssrf';
 interface IndexService {
   url: string;
   protocol: string;
+  name?: string;
+  description?: string;
+  category?: string;
+  provider?: string;
+}
+
+// Normalize 402index categories (inconsistent: "ai/ml", "AI", "ai/llm", etc.)
+const CATEGORY_MAP: Record<string, string> = {
+  'ai': 'ai',
+  'ai/ml': 'ai',
+  'ai/llm': 'ai',
+  'ai/agents': 'ai',
+  'ai/embeddings': 'ai',
+  'data': 'data',
+  'data/oracle': 'data',
+  'real-time-data': 'data',
+  'crypto/prices': 'data',
+  'tools': 'tools',
+  'tools/directory': 'tools',
+  'bitcoin': 'bitcoin',
+  'lightning': 'bitcoin',
+  'media': 'media',
+  'social': 'social',
+  'earn/cashback': 'earn',
+  'earn/optimization': 'earn',
+};
+
+function normalizeCategory(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase();
+  return CATEGORY_MAP[key] ?? key;
 }
 
 const PAGE_SIZE = 100;
@@ -58,6 +89,13 @@ export class RegistryCrawler {
               // Upsert with status 0 (not health-checked yet, just registered)
               // The health crawler will check it later
               this.serviceEndpointRepo.upsert(agentHash, svc.url, 0, 0);
+              // Store discovery metadata from 402index
+              this.serviceEndpointRepo.updateMetadata(svc.url, {
+                name: svc.name?.trim() || null,
+                description: svc.description?.trim() || null,
+                category: normalizeCategory(svc.category),
+                provider: svc.provider?.trim() || null,
+              });
             }
           } catch (err: unknown) {
             result.errors++;

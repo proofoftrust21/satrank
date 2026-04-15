@@ -382,6 +382,15 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 25, 'decide_log table for linking L402 tokens to decide targets');
   }
 
+  // v26: service discovery metadata on service_endpoints (name, description, category, provider)
+  if (!hasVersion(db, 26)) {
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN name TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN description TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN category TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN provider TEXT DEFAULT NULL'); } catch { /* exists */ }
+    recordVersion(db, 26, 'service discovery metadata on service_endpoints');
+  }
+
   // v24: service_price_sats column on service_endpoints
   if (!hasVersion(db, 24)) {
     try { db.exec('ALTER TABLE service_endpoints ADD COLUMN service_price_sats INTEGER DEFAULT NULL'); } catch { /* exists */ }
@@ -602,6 +611,11 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   },
   25: (db) => {
     db.exec('DROP TABLE IF EXISTS decide_log');
+  },
+  26: (db) => {
+    for (const col of ['name', 'description', 'category', 'provider']) {
+      try { db.exec(`ALTER TABLE service_endpoints DROP COLUMN ${col}`); } catch { /* SQLite < 3.35 */ }
+    }
   },
 };
 
