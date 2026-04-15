@@ -178,11 +178,15 @@ export class DecideService {
       const now = Math.floor(Date.now() / 1000);
       const probeAgeSec = lastProbe ? now - lastProbe.probed_at : Infinity;
 
-      // Re-probe on-demand if the last probe is stale and LND is available.
-      // Escalates through the multi-amount tiers (1k, 10k, 100k, 1M) so the
-      // agent gets a fresh maxRoutableAmount at the scale of their payment,
-      // not just the default 1k. Stops at the first tier that fails.
-      if (probeAgeSec > REPROBE_STALE_SEC && this.lndClient) {
+      // Re-probe on-demand when:
+      // (a) the last probe is stale (>30 min), OR
+      // (b) the agent requests an amountSats higher than the current maxRoutableAmount
+      //     (e.g. first query on a cold node only has 1k data, agent wants 100k).
+      // Both use the agent's pathfindingSourcePubkey so the re-probe tests the
+      // actual route the payment would take (not SatRank's position).
+      const currentMax = this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC);
+      const needsHigherTier = amountSats != null && currentMax !== null && amountSats > currentMax;
+      if ((probeAgeSec > REPROBE_STALE_SEC || needsHigherTier) && this.lndClient) {
         const agent = this.agentRepo.findByHash(targetHash);
         if (agent?.public_key) {
           const tiers = [1_000, 10_000, 100_000, 1_000_000];
