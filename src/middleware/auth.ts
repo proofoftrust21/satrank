@@ -134,7 +134,16 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
     }
   }
 
-  // Path B: L402 payment flow — Aperture sits between nginx and Express.
+  // Path B: Deposit token — nginx routes requests with Authorization: L402 deposit:*
+  // directly to Express (bypassing Aperture). The token was created by /api/deposit
+  // and pre-verified against LND. balanceAuth validates the actual balance.
+  const authHeader = req.headers.authorization ?? '';
+  if (/^L402\s+deposit:/i.test(authHeader)) {
+    next();
+    return;
+  }
+
+  // Path C: L402 payment flow — Aperture sits between nginx and Express.
   // Aperture validates the L402 macaroon+preimage and forwards to Express
   // on loopback. The localhost check confirms the request came through
   // Aperture (port 8082 → port 3000 on 127.0.0.1).
@@ -146,11 +155,10 @@ export function apertureGateAuth(req: Request, _res: Response, next: NextFunctio
     return;
   }
 
-  // Additional defense-in-depth for Path B: if no L402 Authorization
+  // Additional defense-in-depth for Path C: if no L402 Authorization
   // header is present, the request bypassed Aperture (e.g., nginx
   // misconfiguration routing directly to Express on localhost). Block it.
-  const hasL402Auth = (req.headers.authorization ?? '').startsWith('L402 ') ||
-    (req.headers.authorization ?? '').startsWith('LSAT ');
+  const hasL402Auth = authHeader.startsWith('L402 ') || authHeader.startsWith('LSAT ');
   if (!hasL402Auth && config.APERTURE_SHARED_SECRET) {
     next(new PaymentRequiredError());
     return;

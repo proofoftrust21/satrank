@@ -118,25 +118,30 @@ export class AgentController {
   };
 
   /** Builds the leaderboard response from the current DB state. Extracted so
-   *  the startup warm-up can reuse the exact same path the controller uses. */
+   *  the startup warm-up can reuse the exact same path the controller uses.
+   *  Uses batch queries (3 + 1 instead of 5N) to avoid N+1 amplification. */
   buildTopResponse(limit: number, offset: number, sort_by: 'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity'): TopResponse {
     const agents = this.agentService.getTopAgents(limit, offset, sort_by);
     const total = this.agentRepo.count();
 
+    // Batch: compute all deltas and ranks in 4 queries instead of 5N
+    const hashes = agents.map(a => a.publicKeyHash);
+    const deltas = this.trendService.computeDeltasBatch(
+      agents.map(a => ({ hash: a.publicKeyHash, score: a.score })),
+    );
+    const ranks = this.agentRepo.getRanks(hashes);
+
     return {
-      data: agents.map(a => {
-        const delta = this.trendService.computeDeltas(a.publicKeyHash, a.score);
-        return {
-          publicKeyHash: a.publicKeyHash,
-          alias: a.alias,
-          score: a.score,
-          rank: this.agentRepo.getRank(a.publicKeyHash),
-          totalTransactions: a.totalTransactions,
-          source: a.source,
-          components: a.components,
-          delta7d: delta.delta7d,
-        };
-      }),
+      data: agents.map(a => ({
+        publicKeyHash: a.publicKeyHash,
+        alias: a.alias,
+        score: a.score,
+        rank: ranks.get(a.publicKeyHash) ?? null,
+        totalTransactions: a.totalTransactions,
+        source: a.source,
+        components: a.components,
+        delta7d: deltas.get(a.publicKeyHash)?.delta7d ?? null,
+      })),
       meta: { total, limit, offset, sort_by },
     };
   }
@@ -258,6 +263,12 @@ export class AgentController {
       const snapshotMap = this.snapshotRepo.findLatestByAgents(hashes);
       const defaultComponents = { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 };
 
+      // Batch: compute all deltas and ranks in 4 queries instead of 5N
+      const deltas = this.trendService.computeDeltasBatch(
+        agents.map(a => ({ hash: a.public_key_hash, score: a.avg_score })),
+      );
+      const ranks = this.agentRepo.getRanks(hashes);
+
       res.json({
         data: agents.map(a => {
           const snap = snapshotMap.get(a.public_key_hash);
@@ -268,16 +279,15 @@ export class AgentController {
               components = parsed as typeof defaultComponents;
             }
           }
-          const delta = this.trendService.computeDeltas(a.public_key_hash, a.avg_score);
           return {
             publicKeyHash: a.public_key_hash,
             alias: a.alias,
             score: a.avg_score,
-            rank: this.agentRepo.getRank(a.public_key_hash),
+            rank: ranks.get(a.public_key_hash) ?? null,
             totalTransactions: a.total_transactions,
             source: a.source,
             components,
-            delta7d: delta.delta7d,
+            delta7d: deltas.get(a.public_key_hash)?.delta7d ?? null,
           };
         }),
         meta: { total, limit, offset },

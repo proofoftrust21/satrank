@@ -26,7 +26,7 @@ For humans, this manifests as 30 % payment failure rates on first try. For auton
 
 ## The Solution
 
-SatRank is a trust oracle for Lightning Network payments. Before each payment, an agent queries SatRank for a GO / NO-GO decision: one request, one answer, 1 sat effective via L402 (21 sats = 21 requests).
+SatRank is a trust oracle for Lightning Network payments. Before each payment, an agent queries SatRank for a GO / NO-GO decision: one request, one answer, 1 sat via L402 (21 requests) or deposit (up to 10,000 requests).
 
 Under the hood, SatRank runs a full-stack observability pipeline:
 
@@ -75,7 +75,7 @@ flowchart LR
   DVM --> R2
   DVM --> R3
 
-  API -->|L402 21 sats| L402[Aperture L402<br/>paywall]
+  API -->|L402 21 sats or<br/>deposit 21-10k| L402[Aperture L402<br/>paywall]
   L402 --> AGENTS[Autonomous agents]
   API -->|free| AGENTS
   R1 --> CLIENTS[Any Nostr client<br/>nak / nostcat / njump / wallet]
@@ -141,7 +141,7 @@ Five capabilities unique to SatRank in the 2026 NIP-85 / WoT / Lightning landsca
 
 1. **Only NIP-85 provider on the Lightning payment graph.** Every other implementation scores the Nostr social graph. SatRank bridges an entire orthogonal trust domain into NIP-85 without a new kind allocation.
 2. **Proprietary phantom signal.** 61 % of the Lightning graph is unreachable in routing on any given probe cycle, and SatRank's phantom detection is validated against a full bitcoind UTXO set, not an SPV approximation. No free explorer exposes this, and the live value is exposed in real time at `/api/stats`.
-3. **Native L402 paywall with balance system.** 21 sats = 21 requests (1 sat/request effective), token balance tracked via `X-SatRank-Balance` header. Aperture reverse-proxies the gate, Express manages the quota.
+3. **Native L402 paywall with balance system.** 1 sat = 1 request. Standard L402 (21 sats, auto-invoice) or `POST /api/deposit` (21–10,000 sats, single invoice). Token balance tracked via `X-SatRank-Balance` header. Aperture reverse-proxies the gate, Express manages the quota.
 4. **Closed feedback loop.** `decide → pay → report`. Reports are free, weighted by the reporter's own score, and preimage-verified reports get a 2x weight bonus. Usage improves decisions, better decisions attract more usage.
 5. **Survival score.** 7-day forward-looking prediction (stable / at_risk / likely_dead) derived from score trajectory, probe stability, and gossip freshness. No machine learning, deterministic, reproducible from the data in this repo.
 6. **Multi-amount probing.** The probe crawler tests at 4 tiers (1k, 10k, 100k, 1M sats), escalating only for "hot" nodes recently queried via `/decide`. This exposes `maxRoutableAmount` per node so agents can verify capacity before committing to a payment amount. Higher tiers stop at the first failure to avoid wasting probe budget.
@@ -235,12 +235,12 @@ The freemium architecture is limpid and already profitable at the margin:
 |---|---|---|
 | **NIP-85 scores (kind 30382 on 3 relays)** | **free** | Distribution, adoption, composability with other NIP-85 providers |
 | **NIP-05, NIP-90 DVM, `/api/ping`, `/api/agents/top`, `/api/stats`, `/api/health`** | **free** | Discovery, live reachability, public statistics |
-| **All paid endpoints (decide, verdicts, best-route, profile, agent/:hash/*)** | **1 request from L402 balance** (21 sats = 21 requests) | Unified token, `X-SatRank-Balance` header |
+| **All paid endpoints (decide, verdicts, best-route, profile, agent/:hash/*)** | **1 sat = 1 request** (L402 21 sats or deposit 21–10,000) | Unified token, `X-SatRank-Balance` header |
 | **`/api/report`, `/api/attestations`** | **free** (API key for identity) | Closes the feedback loop; reports improve `P_empirical` in future decide responses |
 
 Why it works:
 - **Free NIP-85 scores fund adoption.** Any Nostr client can embed SatRank trust into its UI for free. That drives awareness and kind 10040 declarations.
-- **Paid endpoints fund infrastructure.** 21 sats per token (= 21 requests at 1 sat each) scales linearly with agent traffic. No ads, no VC, no seed round required to operate the oracle.
+- **Paid endpoints fund infrastructure.** 1 sat per request (L402 or deposit up to 10,000 sats) scales linearly with agent traffic. No ads, no VC, no seed round required to operate the oracle.
 - **Free reports fund accuracy.** The feedback loop is the moat. The more agents report, the better `P_empirical` becomes, the more agents use the decide endpoint.
 
 Sats flow in via `/api/decide` (Aperture L402 gate), out to the Hetzner infrastructure. The margin is positive at any non-zero sustained call rate and improves with scale.

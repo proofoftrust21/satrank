@@ -313,4 +313,22 @@ export class AgentRepository {
     `).get(hash) as { rank: number };
     return row.rank;
   }
+
+  /** Batch version of getRank — 1 SQL query instead of 2N.
+   *  Returns rank for each non-stale agent in the input list. */
+  getRanks(hashes: string[]): Map<string, number> {
+    if (hashes.length === 0) return new Map();
+    if (hashes.length > 500) throw new Error('getRanks: array exceeds 500 elements');
+    const placeholders = hashes.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT public_key_hash, (
+        SELECT COUNT(*) + 1 FROM agents WHERE stale = 0 AND avg_score > a.avg_score
+      ) as rank
+      FROM agents a
+      WHERE stale = 0 AND public_key_hash IN (${placeholders})
+    `).all(...hashes) as Array<{ public_key_hash: string; rank: number }>;
+    const result = new Map<string, number>();
+    for (const row of rows) result.set(row.public_key_hash, row.rank);
+    return result;
+  }
 }

@@ -341,6 +341,35 @@ tr.clickable { cursor: pointer; }
 .decide-cost { color: #f7931a; font-weight: 700; font-size: 0.9rem; }
 .decide-personal { color: #8888a0; font-size: 0.85rem; margin-top: 4px; font-style: italic; }
 
+/* Pricing block — dual L402/deposit under hero */
+.pricing-block { max-width: 640px; margin: 0 auto; text-align: center; }
+.pricing-rate { font-size: 1.1rem; font-weight: 700; color: #f7931a; margin-bottom: 12px; }
+.pricing-paths { display: flex; flex-direction: column; gap: 8px; text-align: left; margin-bottom: 10px; }
+.pricing-path {
+  font-size: 0.88rem;
+  color: #c0c0d8;
+  background: #0d0d18;
+  border: 1px solid #1e1e30;
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pricing-tag {
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #f7931a20;
+  color: #f7931a;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tag-deposit { background: #00c85320; color: #00c853; }
+.pricing-note { font-size: 0.8rem; color: #6666a0; }
+
 /* Before/After comparison grid */
 .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
 @media (max-width: 640px) { .compare-grid { grid-template-columns: 1fr; } }

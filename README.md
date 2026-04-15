@@ -2,11 +2,11 @@
 
 **Route reliability for Lightning payments. Built for the agentic economy.**
 
-SatRank is a trust oracle for the Lightning Network. Before each payment, an agent queries SatRank for a GO/NO-GO decision: one request, one answer, 1 sat effective via L402 (21 sats = 21 requests).
+SatRank is a trust oracle for the Lightning Network. Before each payment, an agent queries SatRank for a GO/NO-GO decision: one request, one answer, 1 sat via L402 (21 requests) or deposit (up to 10,000 requests).
 
 - Backed by a full **bitcoind v28.1** node + **LND**, not Neutrino or gossip. Every channel capacity is UTXO-validated.
 - Tracks **~13,900 active Lightning nodes** (schema v25, post-migration), probes them every 30 minutes at multiple amount tiers, publishes trust assertions on Nostr every 6 hours.
-- **61 %** of the Lightning graph is unreachable in routing ("phantom nodes"). The exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
+- **62 %** of the Lightning graph is unreachable in routing ("phantom nodes"). The exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
 - First **NIP-85** provider bridging the Lightning payment graph into the Web of Trust. Every other NIP-85 implementation scores the Nostr social graph. SatRank scores who you can actually pay.
 
 ## Quick Start: consume SatRank trust assertions in 3 steps
@@ -27,7 +27,7 @@ nak req -k 30382 -a 5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707d
 #    them with jq or your favorite Nostr client.
 ```
 
-Prefer HTTP? SatRank also exposes the same data via a free `GET /api/agents/top` endpoint and a paid `POST /api/decide` endpoint gated by L402 (21 sats = 21 requests, 1 sat/request effective).
+Prefer HTTP? SatRank also exposes the same data via a free `GET /api/agents/top` endpoint and a paid `POST /api/decide` endpoint (1 sat/request). Two payment paths: standard L402 (21 sats = 21 requests, auto-invoice) or `POST /api/deposit` (21–10,000 requests in a single invoice).
 
 ## Agent workflow: screen, route, decide
 
@@ -64,7 +64,7 @@ curl -X POST https://satrank.dev/api/decide \
 | Decide | `POST /api/decide` | ~150 ms | 1 request | GO/NO-GO + success rate + pathfinding + fee volatility |
 | **Total** | | **~500 ms** | **3 requests** | **Fully informed decision from 100 candidates** |
 
-**Pricing:** 21 sats = 21 requests via L402 (1 sat/request effective). Each paid endpoint consumes 1 request from the token balance. The `X-SatRank-Balance` header tracks remaining requests. 7 complete workflows per token.
+**Pricing:** 1 sat = 1 request. Two paths: standard L402 (auto-invoice 21 sats for 21 requests, 7 workflows per token) or `POST /api/deposit` (buy 21–10,000 requests in a single invoice). The `X-SatRank-Balance` header tracks remaining requests. Both token types work on all paid endpoints.
 
 **Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in ~250 ms. Best-route narrows to the top 3 by route quality in ~100 ms. Decide on the winner returns GO with rate=0.987, targetFeeStability=0.91, maxRoutableAmount=100000 in ~150 ms. Total: 3 requests, under 1 second.
 
@@ -124,7 +124,7 @@ flowchart LR
   DVM --> R3
 
   API -->|free| Agents
-  API -->|L402 21 sats<br/>via Aperture| L402[Aperture<br/>paywall]
+  API -->|L402 21 sats via Aperture<br/>or deposit 21-10k sats| L402[Aperture<br/>paywall]
   L402 --> Agents[Autonomous agents]
   R1 --> Clients[Any Nostr client<br/>nak / nostcat / njump]
   R2 --> Clients
@@ -135,16 +135,16 @@ flowchart LR
 
 The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP-85 publisher + L402 API + DVM → 3 relays / HTTP clients / autonomous agents.** Every layer is reproducible from the code in this repo.
 
-## Current network snapshot (2026-04-09)
+## Current network snapshot (2026-04-15)
 
 | Metric | Value | Source |
 |---|---|---|
 | Active Lightning nodes indexed | **~13,900** | `/api/stats` `totalAgents` |
 | Stale (not seen 90+ days, excluded from scoring) | **~4,250** | `/api/stats` |
-| Phantom rate (unreachable in routing) | **61 %** (live) | `/api/stats` `phantomRate` |
+| Phantom rate (unreachable in routing) | **62 %** (live) | `/api/stats` `phantomRate` |
 | Verified reachable | **~5,300-5,500** (live) | `/api/stats` `verifiedReachable` |
-| Total channels | **~88,950** (live) | `/api/stats` `totalChannels` |
-| Network capacity (validated) | **~9,630 BTC** (live) | `/api/stats` `networkCapacityBtc` |
+| Total channels | **~88,300** (live) | `/api/stats` `totalChannels` |
+| Network capacity (validated) | **~9,570 BTC** (live) | `/api/stats` `networkCapacityBtc` |
 | Probes executed / 24 h | **~650,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
 | NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
 | Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
@@ -355,7 +355,7 @@ nak event -k 10040 \
 
 SatRank itself publishes a self-declaration kind 10040 from its service key (see `scripts/nostr-publish-10040.ts`) so clients have an on-chain reference example to copy.
 
-**Why `rank` is free (and `/api/decide` is not).** Global scores are the trailer, great for discovery and social integration. The personalized `/api/decide` (pathfinding from YOUR position, survival, P_empirical) is the film: 1 sat/request via L402 (21 sats = 21 requests).
+**Why `rank` is free (and `/api/decide` is not).** Global scores are the trailer, great for discovery and social integration. The personalized `/api/decide` (pathfinding from YOUR position, survival, P_empirical) is the film: 1 sat/request via L402 or deposit.
 
 ### Kind 5900 / 6900: DVM Trust-Check (NIP-90)
 
@@ -469,7 +469,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - **nostr-tools** for NIP-85 publishing, NIP-90 DVM, NIP-01 event signing
 - **zod** for input validation at every API boundary
 - **pino** for structured logging
-- **Aperture / L402** as Lightning paywall for `/api/decide` and scored endpoints
+- **Aperture / L402 + deposit** as Lightning paywall for `/api/decide` and scored endpoints (1 sat/request, up to 10k via deposit)
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only FS, tmpfs, healthchecks
 - **vitest** for 539 unit + integration tests across 42 files, all green on the submission commit
 

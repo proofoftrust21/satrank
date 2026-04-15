@@ -483,6 +483,38 @@ export const openapiSpec = {
         },
       },
     },
+    '/deposit': {
+      post: {
+        summary: 'Buy requests via variable-amount Lightning invoice',
+        operationId: 'deposit',
+        description: 'Two-phase deposit (1 sat = 1 request). Phase 1: send { amount } (21-10,000) to receive a BOLT11 invoice. Phase 2: after payment, send { paymentHash, preimage } to verify and credit the balance. Use the resulting token on all paid endpoints: Authorization: L402 deposit:<preimage>. Rate limited to 3 invoices/min/IP.',
+        tags: ['Payment'],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { oneOf: [
+            { type: 'object', properties: { amount: { type: 'integer', minimum: 21, maximum: 10000, description: 'Sats to deposit (1 sat = 1 request)' } }, required: ['amount'] },
+            { type: 'object', properties: { paymentHash: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Payment hash from the invoice' }, preimage: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Payment preimage (proof of payment)' } }, required: ['paymentHash', 'preimage'] },
+          ] } } },
+        },
+        responses: {
+          '201': { description: 'Deposit verified — balance credited', content: { 'application/json': { schema: { type: 'object', properties: {
+            balance: { type: 'integer', description: 'Total requests available' },
+            paymentHash: { type: 'string' },
+            token: { type: 'string', example: 'L402 deposit:<preimage>', description: 'Use as Authorization header on paid endpoints' },
+          } } } } },
+          '402': { description: 'Phase 1: invoice generated. Phase 2: payment not yet settled.', content: { 'application/json': { schema: { type: 'object', properties: {
+            invoice: { type: 'string', description: 'BOLT11 Lightning invoice (phase 1)' },
+            paymentHash: { type: 'string' },
+            amount: { type: 'integer' },
+            quotaGranted: { type: 'integer', description: '1 sat = 1 request' },
+            expiresIn: { type: 'integer', description: 'Invoice expiry in seconds (600)' },
+          } } } } },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '429': { description: 'Rate limited (3 invoices/min/IP)' },
+          '503': { description: 'Deposit unavailable (invoice macaroon not configured)' },
+        },
+      },
+    },
     '/openapi.json': {
       get: {
         summary: 'OpenAPI specification',
@@ -500,7 +532,7 @@ export const openapiSpec = {
       l402: {
         type: 'http',
         scheme: 'L402',
-        description: 'L402 Lightning payment authentication. Send a request without credentials to receive HTTP 402 with a Lightning invoice (21 sats = 21 requests). Pay the invoice and include the token: Authorization: L402 <macaroon>:<preimage>. Each request decrements your balance (X-SatRank-Balance header).',
+        description: 'L402 Lightning payment authentication (1 sat = 1 request). Two options: (1) Standard L402 — send a request without credentials to receive HTTP 402 with a Lightning invoice for 21 sats (21 requests). Pay and include: Authorization: L402 <macaroon>:<preimage>. (2) Deposit — POST /api/deposit with { amount: N } (21-10,000 sats), pay the invoice, verify, and use: Authorization: L402 deposit:<preimage>. Both token types work on all paid endpoints. X-SatRank-Balance header tracks remaining requests.',
       },
     },
     parameters: {
@@ -1044,7 +1076,7 @@ export const openapiSpec = {
         } } },
       },
       PaymentRequired: {
-        description: 'L402 payment required (21 sats = 21 requests). Pay the Lightning invoice and retry with the L402 token. If the error code is BALANCE_EXHAUSTED, remove the Authorization header and retry to get a new invoice.',
+        description: 'L402 payment required (1 sat = 1 request). Pay the Lightning invoice and retry with the L402 token. If the error code is BALANCE_EXHAUSTED, remove the Authorization header and retry to get a new 21-sat invoice, or use POST /api/deposit to buy 21-10,000 requests at once.',
         headers: {
           'WWW-Authenticate': {
             description: 'L402 challenge containing a macaroon and a Lightning invoice. Format: L402 macaroon="<base64>", invoice="<bolt11>"',

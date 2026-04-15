@@ -46,6 +46,7 @@ import { AttestationController } from './controllers/attestationController';
 import { HealthController } from './controllers/healthController';
 import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
+import { DepositController } from './controllers/depositController';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createReportAuth } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
@@ -119,6 +120,7 @@ export function createApp() {
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
+  const depositController = new DepositController(db);
 
   // Cache warm-up — fills the stats and leaderboard caches before the first
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
@@ -261,7 +263,7 @@ export function createApp() {
   }
   const balanceAuth = createBalanceAuth(db);
   const reportAuth = createReportAuth(db);
-  api.use(createV2Routes(v2Controller, balanceAuth, reportAuth));      // decide, report, profile
+  api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // decide, report, deposit, profile
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)

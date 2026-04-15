@@ -1006,7 +1006,9 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
   <!-- L402 as Signal -->
   <h2>L402 Payment as Data</h2>
   <p>
-    Accessing scored endpoints requires an L402 token (21 sats = 21 requests, 1 sat/request effective).
+    Accessing scored endpoints requires an L402 token (1 sat = 1 request).
+    Two paths: standard L402 (any paid endpoint auto-invoices 21 sats for 21 requests) or
+    <code>POST /api/deposit</code> (buy 21&ndash;10,000 requests in a single invoice).
     This is not just an access control mechanism &mdash; it is a data point.
   </p>
   <p>

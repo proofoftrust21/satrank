@@ -63,8 +63,8 @@ dbbackend: "sqlite"
 ```
 
 **Notes:**
-- `price: 21`: 21 sats per L402 token = 21 requests (1 sat/request effective)
-- Express tracks the balance via `token_balance` table and returns `X-SatRank-Balance` header
+- `price: 21`: 21 sats per standard L402 token = 21 requests (1 sat/request). For bulk, agents use `POST /api/deposit` (21–10,000 sats, bypasses Aperture, generates invoice via LND directly)
+- Express tracks the balance via `token_balance` table and returns `X-SatRank-Balance` header for both L402 and deposit tokens
 - `pathregexp`: covers decide, verdicts, best-route, profile, agent/:hash (and sub-routes). Health/stats/ping/report are free
 - Replace `<LND_DATA_DIR>` with the absolute path to your LND data directory (where `tls.cert` and `data/chain/bitcoin/mainnet/admin.macaroon` live). Pointing Aperture at LND's live files instead of a copy means a cert regeneration on the LND side is picked up by `systemctl restart aperture` without any file juggling.
 - `host: "localhost:10009"` assumes LND is on the same host and listens on the loopback interface (recommended; see the `restlisten=127.0.0.1:10009` convention in `lnd.conf`). If LND is remote, replace with `hostname:port` and add that IP to LND's `tlsextraip`.
@@ -199,6 +199,7 @@ sudo nginx -t && sudo systemctl reload nginx
 - `/api/profile/{id}` → nginx → Aperture → Express (L402, 1 req from balance)
 - `/api/verdicts` → nginx → Aperture → Express (L402, 1 request from balance)
 - `/api/best-route` → nginx → Aperture → Express (L402, 1 request from balance)
+- `/api/deposit` → nginx → Express direct (free endpoint, rate-limited 3/min/IP, generates LND invoice directly)
 - `/api/report`, `/api/attestations` → nginx → Express direct (free, X-API-Key required)
 - `/api/health`, `/api/stats`, `/api/ping/{pubkey}`, `/api/agents/top`, `/api/agents/movers`, `/api/agents/search`, `/api/docs`, `/api/openapi.json` → nginx → Express direct (free, no auth)
 - `/`, static assets, `/methodology.html` → nginx → Express static (free)

@@ -351,6 +351,31 @@ describe('Probe verdict integration', () => {
     expect(verdict.verdict).toBe('RISKY');
   });
 
+  it('does not flag unreachable when gossip is fresh and score is high', async () => {
+    const agent = makeAgent({
+      public_key_hash: sha256('fresh-gossip-unreachable'),
+      total_transactions: 500,
+      capacity_sats: 10_000_000_000,
+      last_seen: NOW - 3600, // 1 hour ago — gossip is fresh
+    });
+    agentRepo.insert(agent);
+
+    probeRepo.insert({
+      target_hash: agent.public_key_hash,
+      probed_at: NOW,
+      reachable: 0,
+      latency_ms: null,
+      hops: null,
+      estimated_fee_msat: null,
+      failure_reason: 'no_route',
+    });
+
+    const verdict = await verdictService.getVerdict(agent.public_key_hash);
+    // Fresh gossip + high score = positional probe failure, not dead node
+    expect(verdict.flags).not.toContain('unreachable');
+    expect(verdict.verdict).not.toBe('RISKY');
+  });
+
   it('does not flag reachable nodes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('reachable-verdict'), total_transactions: 500, capacity_sats: 10_000_000_000 });
     agentRepo.insert(agent);
@@ -495,6 +520,45 @@ describe('Personalized pathfinding', () => {
     expect(result.pathfinding!.hops).toBeNull();
     expect(result.pathfinding!.estimatedFeeMsat).toBeNull();
     expect(result.flags).toContain('unreachable_from_caller');
+  });
+
+  it('live pathfinding overrides stale unreachable probe', async () => {
+    const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
+    const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
+    agentRepo.insert(caller);
+    agentRepo.insert(target);
+
+    // Stale probe says unreachable
+    probeRepo.insert({
+      target_hash: target.public_key_hash,
+      probed_at: NOW - 3600, // 1 hour ago — within PROBE_FRESHNESS_TTL
+      reachable: 0,
+      latency_ms: null,
+      hops: null,
+      estimated_fee_msat: null,
+      failure_reason: 'no_route',
+    });
+
+    // Live pathfinding says reachable (node came back online)
+    const mockClient = makeMockLndClient({
+      routes: [{
+        total_time_lock: 100, total_fees: '0', total_fees_msat: '0',
+        total_amt: '1000', total_amt_msat: '1000000',
+        hops: [
+          { chan_id: '1', chan_capacity: '1000000', amt_to_forward: '1000', fee: '0', fee_msat: '0', pub_key: TARGET_PUBKEY },
+        ],
+      }],
+    });
+
+    const verdictService = buildVerdictService(mockClient);
+    const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
+
+    // Live overrides stale: unreachable flag must be removed
+    expect(result.pathfinding).not.toBeNull();
+    expect(result.pathfinding!.reachable).toBe(true);
+    expect(result.flags).not.toContain('unreachable');
+    // High-score node with live route should be SAFE, not RISKY
+    expect(result.verdict).not.toBe('RISKY');
   });
 
   it('returns null pathfinding when caller has no Lightning pubkey', async () => {

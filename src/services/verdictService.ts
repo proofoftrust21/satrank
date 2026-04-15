@@ -70,12 +70,47 @@ export class VerdictService {
     if (fraudCount > 0) flags.push('fraud_reported');
     if (disputeCount > 0) flags.push('dispute_reported');
 
-    // Check probe reachability — unreachable node is a risk signal (fresh probes only)
+    // Check probe reachability — unreachable node is a risk signal (fresh probes only).
+    // Guard against false positives: a node with fresh gossip (< 24h) and a strong
+    // score (>= SAFE threshold) is still alive on the network — the probe failure
+    // is positional (no route from SatRank), not terminal. Without this guard,
+    // /api/verdicts (which has no live pathfinding) marks these nodes RISKY while
+    // /api/decide (which has live pathfinding) correctly marks them SAFE.
     if (this.probeRepo) {
       const probe = this.probeRepo.findLatest(publicKeyHash);
       if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
-        flags.push('unreachable');
+        const gossipFresh = (now - agent.last_seen) < DAY;
+        if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) {
+          flags.push('unreachable');
+        }
       }
+    }
+
+    // Personalized pathfinding — computed BEFORE verdict so live results
+    // can override stale probe data. A node the cached probe marks as
+    // unreachable may have come back online since the last probe cycle.
+    // Source priority: pathfindingSourcePubkey (walletProvider/callerNodePubkey) > caller's own LN pubkey.
+    let pathfinding: PathfindingResult | null = null;
+    if (this.lndClient) {
+      const targetLnPubkey = agent.public_key ?? null;
+      const sourcePubkey = pathfindingSourcePubkey
+        ?? this.agentRepo.findByHash(callerPubkey ?? '')?.public_key
+        ?? null;
+
+      if (sourcePubkey && targetLnPubkey) {
+        const cacheCallerHash = callerPubkey ?? sourcePubkey;
+        pathfinding = await this.computePathfinding(sourcePubkey, targetLnPubkey, cacheCallerHash, publicKeyHash);
+        if (pathfinding && !pathfinding.reachable) {
+          flags.push('unreachable_from_caller');
+        }
+      }
+    }
+
+    // Live pathfinding overrides stale probe: if queryRoutes just confirmed
+    // the node is reachable, the cached probe is outdated — drop the flag.
+    if (pathfinding?.reachable) {
+      const idx = flags.indexOf('unreachable');
+      if (idx !== -1) flags.splice(idx, 1);
     }
 
     // Determine verdict
@@ -111,24 +146,6 @@ export class VerdictService {
     const riskProfile = this.riskService.classifyAgent(
       agent, delta, { regularity: scoreResult.components.regularity },
     );
-
-    // Personalized pathfinding — real-time route query from source to target.
-    // Source priority: pathfindingSourcePubkey (walletProvider/callerNodePubkey) > caller's own LN pubkey.
-    let pathfinding: PathfindingResult | null = null;
-    if (this.lndClient) {
-      const targetLnPubkey = agent.public_key ?? null;
-      const sourcePubkey = pathfindingSourcePubkey
-        ?? this.agentRepo.findByHash(callerPubkey ?? '')?.public_key
-        ?? null;
-
-      if (sourcePubkey && targetLnPubkey) {
-        const cacheCallerHash = callerPubkey ?? sourcePubkey;
-        pathfinding = await this.computePathfinding(sourcePubkey, targetLnPubkey, cacheCallerHash, publicKeyHash);
-        if (pathfinding && !pathfinding.reachable) {
-          flags.push('unreachable_from_caller');
-        }
-      }
-    }
 
     // Build human-readable reason
     const reason = this.buildReason(agent, scoreResult.total, delta.delta7d, ageDays, flags);

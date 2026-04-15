@@ -80,7 +80,15 @@ export function createBalanceAuth(db: Database.Database) {
       return;
     }
 
-    // Token not in DB — first use, create with remaining = quota - 1 (this request counts)
+    // Deposit tokens must be pre-registered via POST /api/deposit verification.
+    // Don't auto-create — prevents free-riding with fake deposit preimages.
+    if (/^L402\s+deposit:/i.test(authHeader)) {
+      res.setHeader('X-SatRank-Balance', '0');
+      next(new BalanceExhaustedError(0, 0));
+      return;
+    }
+
+    // Aperture token — first use, create with remaining = quota - 1 (this request counts)
     stmtInsert.run(paymentHash, TOKEN_QUOTA - 1, now);
     res.setHeader('X-SatRank-Balance', String(TOKEN_QUOTA - 1));
     next();

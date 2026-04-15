@@ -39,6 +39,36 @@ export class TrendService {
     };
   }
 
+  /** Batch version of computeDeltas — 3 SQL queries instead of 3N.
+   *  Used by leaderboard and search to avoid N+1 query amplification. */
+  computeDeltasBatch(agents: Array<{ hash: string; score: number }>): Map<string, ScoreDelta> {
+    const now = Math.floor(Date.now() / 1000);
+    const hashes = agents.map(a => a.hash);
+
+    const scores24h = this.snapshotRepo.findScoresAtForAgents(hashes, now - DAY);
+    const scores7d = this.snapshotRepo.findScoresAtForAgents(hashes, now - 7 * DAY);
+    const scores30d = this.snapshotRepo.findScoresAtForAgents(hashes, now - 30 * DAY);
+
+    const result = new Map<string, ScoreDelta>();
+    for (const agent of agents) {
+      const s24h = scores24h.get(agent.hash);
+      const s7d = scores7d.get(agent.hash);
+      const s30d = scores30d.get(agent.hash);
+
+      const delta24h = s24h !== undefined ? agent.score - s24h : null;
+      const delta7d = s7d !== undefined ? agent.score - s7d : null;
+      const delta30d = s30d !== undefined ? agent.score - s30d : null;
+
+      result.set(agent.hash, {
+        delta24h,
+        delta7d,
+        delta30d,
+        trend: this.deriveTrend(delta7d),
+      });
+    }
+    return result;
+  }
+
   computeAlerts(agentHash: string, currentScore: number, delta: ScoreDelta): AgentAlert[] {
     const alerts: AgentAlert[] = [];
     const agent = this.agentRepo.findByHash(agentHash);

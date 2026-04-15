@@ -422,7 +422,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const riskProfile = riskService.classifyAgent(agent, delta, { regularity: scoreResult.components.regularity });
         const evidence = agentService.buildEvidence(agent);
         const { computeBaseFlags } = await import('../utils/flags');
-        const { PROBE_FRESHNESS_TTL } = await import('../config/scoring');
+        const { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } = await import('../config/scoring');
+        const { DAY } = await import('../utils/constants');
         const now = Math.floor(Date.now() / 1000);
         const flags = computeBaseFlags(agent, delta, now);
         const fraudCount = attestationRepo.countByCategoryForSubject(id, ['fraud']);
@@ -430,7 +431,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (fraudCount > 0) flags.push('fraud_reported');
         if (disputeCount > 0) flags.push('dispute_reported');
         const probe = probeRepo.findLatest(id);
-        if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) flags.push('unreachable');
+        if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
+          const gossipFresh = (now - agent.last_seen) < DAY;
+          if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) flags.push('unreachable');
+        }
         const profile = {
           agent: { publicKeyHash: agent.public_key_hash, alias: agent.alias, publicKey: agent.public_key, firstSeen: agent.first_seen, lastSeen: agent.last_seen, source: agent.source },
           score: { total: scoreResult.total, components: scoreResult.components, confidence: scoreResult.confidence, rank },

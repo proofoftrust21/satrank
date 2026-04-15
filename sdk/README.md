@@ -66,7 +66,7 @@ const results = await client.searchAgents('ACINQ');
 
 ### L402 Authentication
 
-Scored endpoints require L402 payment (21 sats = 21 requests). Pass the token in headers:
+Scored endpoints require L402 payment (1 sat = 1 request). Two options: standard L402 (21 sats = 21 requests, auto-invoice) or `POST /api/deposit` (21–10,000 requests in one invoice). Pass the token in headers:
 
 ```typescript
 const client = new SatRankClient('https://satrank.dev', {
@@ -250,7 +250,7 @@ if (decision.go) {
 // - Best route found in ~100ms, 1 request
 // - 1 decision in ~150ms, 1 request
 // - Total: 3 requests from L402 balance, ~500ms
-// - Pricing: 21 sats = 21 requests (7 complete workflows)
+// - Pricing: 1 sat = 1 request (L402: 21 sats/21 reqs, or deposit: up to 10,000)
 ```
 
 ## License

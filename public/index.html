@@ -78,7 +78,20 @@
   "latencyMs": 110
 }</pre>
     </div>
-    <p class="decide-cost">1 sat/request (21 sats = 21 requests) &middot; header <code>X-SatRank-Balance</code> tracks remaining</p>
+    <div class="pricing-block">
+      <div class="pricing-rate">1 sat = 1 request</div>
+      <div class="pricing-paths">
+        <div class="pricing-path">
+          <span class="pricing-tag">L402</span>
+          Hit any paid endpoint &mdash; auto-invoice 21 sats, pay, get 21 requests.
+        </div>
+        <div class="pricing-path">
+          <span class="pricing-tag tag-deposit">Deposit</span>
+          <code>POST /api/deposit</code> &mdash; buy 21 to 10,000 requests in one invoice.
+        </div>
+      </div>
+      <div class="pricing-note">Header <code>X-SatRank-Balance</code> tracks remaining &middot; both tokens work on all paid endpoints</div>
+    </div>
   </div>
 
   <!-- NIP-85 on Nostr — right after hero for WoT-a-thon judges -->
@@ -281,7 +294,7 @@
   <div class="section api-hero">
     <h2>API Reference</h2>
     <p class="section-desc">
-      20 endpoints. 21 sats = 21 requests. Free endpoints: ping, search, leaderboard, stats, report.
+      1 sat = 1 request (L402 or deposit). Free endpoints: ping, search, leaderboard, stats, report, deposit.
       <a href="/api/docs" style="color:#f7931a">Interactive API explorer (Swagger UI) &rarr;</a>
     </p>
     <ul class="endpoints endpoints-hero">
@@ -313,6 +326,12 @@
         <span class="method method-get">GET</span>
         <span class="endpoint-path">/api/ping/:pubkey</span>
         <span class="endpoint-desc">Live reachability check</span>
+        <span class="endpoint-cost free">free</span>
+      </li>
+      <li>
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/deposit</span>
+        <span class="endpoint-desc">Buy 21&ndash;10,000 requests &mdash; single invoice, auth via <code>L402 deposit:&lt;preimage&gt;</code></span>
         <span class="endpoint-cost free">free</span>
       </li>
     </ul>

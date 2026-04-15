@@ -20,9 +20,9 @@ import { agentIdentifierSchema, decideSchema, reportSchema, bestRouteSchema } fr
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 import { normalizeIdentifier } from '../utils/identifier';
-import { SEVEN_DAYS_SEC } from '../utils/constants';
+import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
-import { PROBE_FRESHNESS_TTL } from '../config/scoring';
+import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import { WALLET_PROVIDERS } from '../config/walletProviders';
 
 export class V2Controller {
@@ -282,7 +282,11 @@ export class V2Controller {
       if (this.probeRepo) {
         const probe = this.probeRepo.findLatest(hash);
         if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
-          flags.push('unreachable');
+          // Same guard as verdictService: fresh gossip + high score = positional failure, not dead node
+          const gossipFresh = (now - agent.last_seen) < DAY;
+          if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) {
+            flags.push('unreachable');
+          }
         }
       }
 
