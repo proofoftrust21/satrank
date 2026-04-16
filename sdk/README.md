@@ -113,18 +113,40 @@ if (evidence.reputation) {
 
 ### Error Handling
 
+The SDK throws typed subclasses of `SatRankError`. Agents can dispatch on error type instead of inspecting `code` or `message` strings.
+
 ```typescript
-import { SatRankClient, SatRankError } from '@satrank/sdk';
+import {
+  SatRankClient,
+  SatRankError,          // base class — catches everything
+  BalanceExhaustedError, // 402 — token used up, remove Authorization and retry for a new invoice
+  PaymentPendingError,   // 402 — deposit invoice not yet settled, retry after paying
+  DuplicateReportError,  // 409 — report/attestation already submitted within dedup window (1h)
+  RateLimitedError,      // 429 — too many requests from this IP
+  TimeoutError,          // 504 / local abort — request exceeded the client timeout
+  NetworkError,          // no HTTP response (DNS, connection refused, etc.)
+  ServiceUnavailableError, // 503 — feature disabled (e.g. deposit macaroon missing)
+} from '@satrank/sdk';
 
 try {
-  const score = await client.getScore(hash);
+  const result = await client.transact(target, caller, payFn, { walletProvider: 'phoenix' });
 } catch (err) {
-  if (err instanceof SatRankError) {
-    console.log(err.statusCode); // 402, 404, etc.
-    console.log(err.code);       // 'PAYMENT_REQUIRED', 'NOT_FOUND', etc.
+  if (err instanceof BalanceExhaustedError) {
+    // Buy more requests via /api/deposit or remove the Authorization header for a new 21-sat invoice
+  } else if (err instanceof DuplicateReportError) {
+    // Already reported this target within the last hour — treat as success
+  } else if (err instanceof RateLimitedError || err instanceof TimeoutError) {
+    // Retryable — back off and retry
+    if (err.isRetryable()) await backoff();
+  } else if (err instanceof SatRankError) {
+    console.log(err.statusCode, err.code, err.message);
   }
 }
 ```
+
+All SatRankError instances have `.isRetryable()` (true for 429/503/504/network/timeout) and `.isClientError()` (true for 4xx input issues).
+
+Default timeout is 30 seconds — enough to cover `/api/decide` worst case with on-demand re-probe across all probe tiers. Override via `new SatRankClient(url, { timeout: 60_000 })`.
 
 ## transact(): Decide, Pay, Report in One Call
 

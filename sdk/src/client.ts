@@ -31,6 +31,9 @@ import type {
   WalletProvider,
 } from './types';
 
+/** Base error class — keep this as the catchable type for backwards compatibility.
+ *  Specific subclasses below allow agents to handle errors by type, without
+ *  string-matching on code or message. */
 export class SatRankError extends Error {
   constructor(
     message: string,
@@ -40,10 +43,52 @@ export class SatRankError extends Error {
     super(message);
     this.name = 'SatRankError';
   }
+  /** Whether retrying the request is likely to succeed. */
+  isRetryable(): boolean {
+    return this.statusCode === 429 || this.statusCode === 503 || this.statusCode === 504 || this.code === 'NETWORK_ERROR' || this.code === 'TIMEOUT';
+  }
+  /** Whether the error is client-side (4xx, non-retryable input issue). */
+  isClientError(): boolean { return this.statusCode >= 400 && this.statusCode < 500 && !this.isRetryable(); }
+}
+
+export class ValidationSatRankError extends SatRankError { constructor(message: string) { super(message, 400, 'VALIDATION_ERROR'); this.name = 'ValidationSatRankError'; } }
+export class UnauthorizedError extends SatRankError { constructor(message: string) { super(message, 401, 'UNAUTHORIZED'); this.name = 'UnauthorizedError'; } }
+export class PaymentRequiredError extends SatRankError { constructor(message: string, code = 'PAYMENT_REQUIRED') { super(message, 402, code); this.name = 'PaymentRequiredError'; } }
+export class BalanceExhaustedError extends PaymentRequiredError { constructor(message: string) { super(message, 'BALANCE_EXHAUSTED'); this.name = 'BalanceExhaustedError'; } }
+export class PaymentPendingError extends PaymentRequiredError { constructor(message: string) { super(message, 'PAYMENT_PENDING'); this.name = 'PaymentPendingError'; } }
+export class NotFoundSatRankError extends SatRankError { constructor(message: string) { super(message, 404, 'NOT_FOUND'); this.name = 'NotFoundSatRankError'; } }
+/** 409 — report/attestation already submitted within the dedup window (1h for reports). */
+export class DuplicateReportError extends SatRankError { constructor(message: string) { super(message, 409, 'DUPLICATE_REPORT'); this.name = 'DuplicateReportError'; } }
+export class RateLimitedError extends SatRankError { constructor(message: string) { super(message, 429, 'RATE_LIMITED'); this.name = 'RateLimitedError'; } }
+export class ServiceUnavailableError extends SatRankError { constructor(message: string) { super(message, 503, 'SERVICE_UNAVAILABLE'); this.name = 'ServiceUnavailableError'; } }
+export class TimeoutError extends SatRankError { constructor(message = 'Request timeout') { super(message, 504, 'TIMEOUT'); this.name = 'TimeoutError'; } }
+export class NetworkError extends SatRankError { constructor(message: string) { super(message, 0, 'NETWORK_ERROR'); this.name = 'NetworkError'; } }
+
+/** Maps an HTTP response (status + body.error) to the correct SatRankError subclass.
+ *  Agents can `catch (e)` and use `instanceof SpecificError` to dispatch on error type. */
+function errorFromResponse(status: number, code: string | undefined, message: string, path: string): SatRankError {
+  const msg = message ?? `HTTP ${status}`;
+  if (status === 400) return new ValidationSatRankError(msg);
+  if (status === 401) return new UnauthorizedError(msg);
+  if (status === 402) {
+    if (code === 'BALANCE_EXHAUSTED') return new BalanceExhaustedError(msg);
+    if (code === 'PAYMENT_PENDING') return new PaymentPendingError(msg);
+    return new PaymentRequiredError(msg);
+  }
+  if (status === 404) return new NotFoundSatRankError(msg);
+  if (status === 409) {
+    // /api/report and /api/attestations both return CONFLICT on duplicate.
+    // Both are caught under DuplicateReportError — agents can inspect path/message for finer detail.
+    return new DuplicateReportError(msg);
+  }
+  if (status === 429) return new RateLimitedError(msg);
+  if (status === 503) return new ServiceUnavailableError(msg);
+  if (status === 504) return new TimeoutError(msg);
+  return new SatRankError(msg, status, code ?? 'UNKNOWN');
 }
 
 export interface SatRankClientOptions {
-  /** Timeout in milliseconds (default 10000) */
+  /** Timeout in milliseconds (default 30000 — covers decide re-probe worst case). */
   timeout?: number;
   /** Custom headers added to every request */
   headers?: Record<string, string>;
@@ -64,7 +109,7 @@ export class SatRankClient {
   constructor(baseUrl: string, options: SatRankClientOptions = {}) {
     // Remove trailing slash
     this.baseUrl = baseUrl.replace(/\/+$/, '');
-    this.timeout = options.timeout ?? 10000;
+    this.timeout = options.timeout ?? 30000;
     this.headers = options.headers ?? {};
   }
 
@@ -411,24 +456,14 @@ export class SatRankClient {
 
       if (!response.ok) {
         const errBody = body as { error?: { code: string; message: string } };
-        throw new SatRankError(
-          errBody.error?.message ?? `HTTP ${response.status}`,
-          response.status,
-          errBody.error?.code ?? 'UNKNOWN',
-        );
+        throw errorFromResponse(response.status, errBody.error?.code, errBody.error?.message ?? `HTTP ${response.status}`, path);
       }
 
       return body;
     } catch (err) {
       if (err instanceof SatRankError) throw err;
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new SatRankError('Request timeout', 0, 'TIMEOUT');
-      }
-      throw new SatRankError(
-        err instanceof Error ? err.message : String(err),
-        0,
-        'NETWORK_ERROR',
-      );
+      if (err instanceof Error && err.name === 'AbortError') throw new TimeoutError();
+      throw new NetworkError(err instanceof Error ? err.message : String(err));
     } finally {
       clearTimeout(timer);
     }
@@ -460,24 +495,14 @@ export class SatRankClient {
 
       if (!response.ok) {
         const errBody = responseBody as { error?: { code: string; message: string } };
-        throw new SatRankError(
-          errBody.error?.message ?? `HTTP ${response.status}`,
-          response.status,
-          errBody.error?.code ?? 'UNKNOWN',
-        );
+        throw errorFromResponse(response.status, errBody.error?.code, errBody.error?.message ?? `HTTP ${response.status}`, path);
       }
 
       return responseBody;
     } catch (err) {
       if (err instanceof SatRankError) throw err;
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new SatRankError('Request timeout', 0, 'TIMEOUT');
-      }
-      throw new SatRankError(
-        err instanceof Error ? err.message : String(err),
-        0,
-        'NETWORK_ERROR',
-      );
+      if (err instanceof Error && err.name === 'AbortError') throw new TimeoutError();
+      throw new NetworkError(err instanceof Error ? err.message : String(err));
     } finally {
       clearTimeout(timer);
     }

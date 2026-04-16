@@ -1,5 +1,20 @@
 // @satrank/sdk — Client SDK for the SatRank API
-export { SatRankClient, SatRankError } from './client';
+export {
+  SatRankClient,
+  SatRankError,
+  // Typed error subclasses — agents can dispatch on type instead of string-matching
+  ValidationSatRankError,
+  UnauthorizedError,
+  PaymentRequiredError,
+  BalanceExhaustedError,
+  PaymentPendingError,
+  NotFoundSatRankError,
+  DuplicateReportError,
+  RateLimitedError,
+  ServiceUnavailableError,
+  TimeoutError,
+  NetworkError,
+} from './client';
 export type { SatRankClientOptions, NostrScoreEvent, WatchlistChange, WatchlistResponse } from './client';
 export type {
   AgentScoreResponse,
