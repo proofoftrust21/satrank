@@ -25,7 +25,10 @@ services:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>r.json()).then(j=>{process.exit(j.data.status==='ok'?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
-      start_period: 10s
+      # 120s covers the cache warmup cold-start on a 5.8 GB DB (~75s observed).
+      # The warmup runs synchronously before listen() so health only becomes
+      # queryable once stats cache is populated.
+      start_period: 120s
       retries: 3
     stop_grace_period: 30s
     read_only: true
@@ -39,7 +42,9 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 512M
+          # 1024M to cover memoryCache + warmup peak (observed ~200 MB steady,
+          # ~450 MB peak during cold stats rebuild). Prior 512M caused OOM kills.
+          memory: 1024M
 
   crawler:
     build:
