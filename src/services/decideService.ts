@@ -408,7 +408,9 @@ export class DecideService {
       const latencyMs = Date.now() - start;
       const httpCode = resp.status;
 
-      this.serviceEndpointRepo!.upsert(agentHash, url, httpCode, latencyMs);
+      // ad_hoc: URL→agent binding is asserted by the caller, not verified by crawler.
+      // Does NOT upgrade an existing '402index' or 'self_registered' entry.
+      this.serviceEndpointRepo!.upsert(agentHash, url, httpCode, latencyMs, 'ad_hoc');
       const updated = this.serviceEndpointRepo!.findByUrl(url);
       const uptimeRatio = updated && updated.check_count >= 3
         ? Math.round((updated.success_count / updated.check_count) * 1000) / 1000
@@ -418,7 +420,7 @@ export class DecideService {
       const ep = this.serviceEndpointRepo!.findByUrl(url);
       return { url, status: classifyHttp(httpCode), httpCode, latencyMs, uptimeRatio, lastCheckedAt: Math.floor(Date.now() / 1000), servicePriceSats: ep?.service_price_sats ?? null };
     } catch {
-      this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0);
+      this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0, 'ad_hoc');
 
       return { url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: Math.floor(Date.now() / 1000), servicePriceSats: null };
     }

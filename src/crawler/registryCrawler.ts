@@ -97,7 +97,7 @@ export class RegistryCrawler {
             const agentHash = await this.discoverNodeFromUrl(svc.url);
             if (agentHash) {
               result.discovered++;
-              this.serviceEndpointRepo.upsert(agentHash, svc.url, 0, 0);
+              this.serviceEndpointRepo.upsert(agentHash, svc.url, 0, 0, '402index');
               this.serviceEndpointRepo.updateMetadata(svc.url, meta);
             }
           } catch (err: unknown) {
@@ -146,7 +146,7 @@ export class RegistryCrawler {
     if (!isSafeUrl(serviceUrl)) return null;
     const agentHash = await this.discoverNodeFromUrl(serviceUrl);
     if (!agentHash) return null;
-    this.serviceEndpointRepo.upsert(agentHash, serviceUrl, 0, 0);
+    this.serviceEndpointRepo.upsert(agentHash, serviceUrl, 0, 0, 'self_registered');
 
     const updated: string[] = [];
     if (meta) {

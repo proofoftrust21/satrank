@@ -205,6 +205,9 @@ export interface NetworkStats {
   avgScore: number;
   totalVolumeBuckets: Record<AmountBucket, number>;
   trends: NetworkTrends;
+  /** Distribution of service_endpoints entries per source (trust classification).
+   *  402index = crawler-verified, self_registered = operator-submitted, ad_hoc = observed via /api/decide. */
+  serviceSources: { '402index': number; 'self_registered': number; 'ad_hoc': number };
 }
 
 // Temporal delta types

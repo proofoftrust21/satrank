@@ -154,9 +154,11 @@ export class V2Controller {
       }
 
       const serviceUrls = parsed.data.serviceUrls;
+      // Minimum checks before trusting HTTP health as a real signal.
+      // Aligns with /api/services uptimeRatio threshold — 1-2 checks are noise.
+      const MIN_HEALTH_CHECKS = 3;
 
-      // Filter to reachable, enrich with score + verdict, sort by composite rank
-      let anyServiceData = !!(serviceUrls && Object.keys(serviceUrls).length > 0);
+      // Filter to reachable, enrich with score + verdict
       const allReachable = pathResults
         .filter(r => r.pathfinding?.reachable && r.agent)
         .map(r => {
@@ -173,15 +175,17 @@ export class V2Controller {
           // Trust score (0-100)
           const trust = scoreResult.total;
 
-          // HTTP health (0-100) from service_endpoints
-          let httpHealth = 50; // neutral default
+          // HTTP health: only use when we have ≥3 checks on a trusted-source endpoint.
+          // findByAgent already filters out ad_hoc entries (untrusted URL→agent binding).
+          let httpHealth = 50;
+          let hasHealth = false;
           const url = serviceUrls?.[r.hash];
           const endpoint = url
             ? this.serviceEndpointRepo?.findByUrl(url)
-            : this.serviceEndpointRepo?.findByAgent(r.hash)?.[0]; // auto-lookup from registry
-          if (endpoint && endpoint.check_count >= 1) {
+            : this.serviceEndpointRepo?.findByAgent(r.hash)?.[0];
+          if (endpoint && endpoint.check_count >= MIN_HEALTH_CHECKS) {
             httpHealth = Math.round((endpoint.success_count / endpoint.check_count) * 100);
-            anyServiceData = true; // registry auto-lookup found data → use 3D ranking
+            hasHealth = true;
           }
 
           return {
@@ -193,16 +197,18 @@ export class V2Controller {
             _routeQuality: routeQuality,
             _trust: trust,
             _httpHealth: httpHealth,
-            _hasHealth: !!(endpoint && endpoint.check_count >= 1),
+            _hasHealth: hasHealth,
           };
         });
 
-      // Composite rank: 3D when ANY target has service data (request or registry)
+      // Per-target composite: 3D (40/30/30) when THIS target has trusted health data,
+      // 2D (50/50) otherwise. Avoids penalizing nodes without HTTP endpoints just
+      // because another target in the same batch had one sample.
       const ranked = allReachable
         .map(r => {
-          const rankScore = anyServiceData
+          const rankScore = r._hasHealth
             ? r._routeQuality * 0.40 + r._trust * 0.30 + r._httpHealth * 0.30
-            : r._routeQuality * 0.50 + r._trust * 0.50; // graceful degradation
+            : r._routeQuality * 0.50 + r._trust * 0.50;
           return { ...r, _rankScore: rankScore };
         })
         .sort((a, b) => b._rankScore - a._rankScore);

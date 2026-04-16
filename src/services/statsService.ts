@@ -5,6 +5,7 @@ import type { TransactionRepository } from '../repositories/transactionRepositor
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
+import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { TrendService } from './trendService';
 import type { HealthResponse, NetworkStats } from '../types';
 import * as memoryCache from '../cache/memoryCache';
@@ -19,7 +20,7 @@ const NETWORK_STATS_CACHE_KEY = 'stats:network';
 const NETWORK_STATS_TTL_MS = 5 * 60_000;
 
 // Must match the latest migration version in migrations.ts
-const EXPECTED_SCHEMA_VERSION = 26;
+const EXPECTED_SCHEMA_VERSION = 27;
 
 export class StatsService {
   constructor(
@@ -30,6 +31,7 @@ export class StatsService {
     private db: Database.Database,
     private trendService: TrendService,
     private probeRepo?: ProbeRepository,
+    private serviceEndpointRepo?: ServiceEndpointRepository,
   ) {}
 
   getHealth(): HealthResponse {
@@ -92,6 +94,7 @@ export class StatsService {
           large: buckets['large'] ?? 0,
         },
         trends: this.trendService.getNetworkTrends(),
+        serviceSources: this.serviceEndpointRepo?.countBySource() ?? { '402index': 0, 'self_registered': 0, 'ad_hoc': 0 },
       };
     });
   }

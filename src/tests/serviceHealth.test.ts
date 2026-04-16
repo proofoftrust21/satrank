@@ -47,11 +47,15 @@ describe('ServiceEndpointRepository', () => {
     expect(entry!.success_count).toBe(0);
   });
 
-  it('findByAgent returns all endpoints for an agent', () => {
+  it('findByAgent returns only trusted-source endpoints (excludes ad_hoc)', () => {
+    // ad_hoc is the default source — filtered out of findByAgent (untrusted URL↔agent binding)
     repo.upsert('agentA', 'https://a1.example.com', 200, 10);
     repo.upsert('agentA', 'https://a2.example.com', 200, 20);
+    // 402index is trusted — visible
+    repo.upsert('agentA', 'https://trusted.example.com', 200, 10, '402index');
     const endpoints = repo.findByAgent('agentA');
-    expect(endpoints.length).toBe(2);
+    expect(endpoints.length).toBe(1);
+    expect(endpoints[0].url).toBe('https://trusted.example.com');
   });
 
   it('UNIQUE(url) prevents duplicates but updates agent_hash', () => {

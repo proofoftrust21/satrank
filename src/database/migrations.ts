@@ -382,6 +382,9 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 25, 'decide_log table for linking L402 tokens to decide targets');
   }
 
+  // v27: source column on service_endpoints for trust classification
+  //   '402index' = crawler-verified from the public 402index registry
+  //   'self_registered' = operator submitted via POST /api/services/register (URL validated)
   // v26: service discovery metadata on service_endpoints (name, description, category, provider)
   if (!hasVersion(db, 26)) {
     try { db.exec('ALTER TABLE service_endpoints ADD COLUMN name TEXT DEFAULT NULL'); } catch { /* exists */ }
@@ -475,6 +478,28 @@ export function runMigrations(db: Database.Database): void {
   if (!hasVersion(db, 17)) {
     try { db.exec('ALTER TABLE agents ADD COLUMN disabled_channels INTEGER NOT NULL DEFAULT 0'); } catch { /* column already exists */ }
     recordVersion(db, 17, 'disabled_channels column on agents for probe failure classification');
+  }
+
+  // v27: source column on service_endpoints for trust classification.
+  // Runs LAST (after v22 creates service_endpoints and v26 adds metadata columns)
+  // because the other migrations appear in reverse order in this file and would
+  // otherwise fire the ALTER before CREATE TABLE on a fresh DB.
+  //   '402index' = crawler-verified from the public 402index registry
+  //   'self_registered' = operator submitted via POST /api/services/register
+  //   'ad_hoc' = observed from /api/decide serviceUrl (URL not verified to belong to agent)
+  // Only '402index' and 'self_registered' sources influence the 3D ranking composite.
+  if (!hasVersion(db, 27)) {
+    try { db.exec("ALTER TABLE service_endpoints ADD COLUMN source TEXT NOT NULL DEFAULT 'ad_hoc'"); } catch { /* exists or no table yet */ }
+    // Backfill heuristic: entries with crawler-populated metadata (name field) came from 402index.
+    // Entries without name came from ad-hoc decide calls. self_registered is new (post-v26) so backfill skips it.
+    try {
+      const updated = db.prepare("UPDATE service_endpoints SET source = '402index' WHERE name IS NOT NULL AND source = 'ad_hoc'").run();
+      if (updated.changes > 0) {
+        process.stderr.write(`Backfill: reclassified ${updated.changes} service_endpoints to source='402index' based on crawler metadata\n`);
+      }
+    } catch { /* fresh DB without data */ }
+    try { db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_source ON service_endpoints(source)'); } catch { /* no table yet */ }
+    recordVersion(db, 27, 'source column on service_endpoints (402index/self_registered/ad_hoc)');
   }
 
   logger.info('Migrations executed successfully');
@@ -616,6 +641,10 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
     for (const col of ['name', 'description', 'category', 'provider']) {
       try { db.exec(`ALTER TABLE service_endpoints DROP COLUMN ${col}`); } catch { /* SQLite < 3.35 */ }
     }
+  },
+  27: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_service_endpoints_source');
+    try { db.exec('ALTER TABLE service_endpoints DROP COLUMN source'); } catch { /* SQLite < 3.35 */ }
   },
 };
 
