@@ -136,6 +136,25 @@ export class RegistryCrawler {
     return data.services ?? [];
   }
 
+  /** Public wrapper for ad-hoc submission via /api/services/register.
+   *  Returns { agentHash, priceSats } if the URL is a valid L402 endpoint, null otherwise. */
+  async registerSelfSubmitted(serviceUrl: string, meta?: { name?: string; description?: string; category?: string; provider?: string }): Promise<{ agentHash: string; priceSats: number | null } | null> {
+    if (!isSafeUrl(serviceUrl)) return null;
+    const agentHash = await this.discoverNodeFromUrl(serviceUrl);
+    if (!agentHash) return null;
+    this.serviceEndpointRepo.upsert(agentHash, serviceUrl, 0, 0);
+    if (meta) {
+      this.serviceEndpointRepo.updateMetadata(serviceUrl, {
+        name: meta.name?.trim() || null,
+        description: meta.description?.trim() || null,
+        category: meta.category ? normalizeCategory(meta.category) : null,
+        provider: meta.provider?.trim() || null,
+      });
+    }
+    const ep = this.serviceEndpointRepo.findByUrl(serviceUrl);
+    return { agentHash, priceSats: ep?.service_price_sats ?? null };
+  }
+
   /** GET the service URL, expect a 402 with WWW-Authenticate header containing a BOLT11 invoice.
    *  Decode the invoice to extract the payee node pubkey. Return SHA256(pubkey) as agent_hash. */
   private async discoverNodeFromUrl(serviceUrl: string): Promise<string | null> {

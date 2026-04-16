@@ -8,6 +8,7 @@ import type { ProbeRepository } from '../repositories/probeRepository';
 import type { TrendService } from './trendService';
 import type { HealthResponse, NetworkStats } from '../types';
 import * as memoryCache from '../cache/memoryCache';
+import { featureFlags } from '../config';
 
 const startTime = Date.now();
 
@@ -60,6 +61,7 @@ export class StatsService {
       schemaVersion,
       expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
       dbStatus,
+      features: featureFlags,
     };
   }
 

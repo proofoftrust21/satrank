@@ -103,6 +103,83 @@ export class ServiceController {
       next(err);
     }
   };
+
+  /** Picks 3 best providers for a category/keyword: bestQuality, bestValue, cheapest.
+   *  All three filter to SAFE nodes (score ≥ 47). */
+  best = (req: Request, res: Response, next: NextFunction): void => {
+    try {
+      const parsed = serviceSearchSchema.safeParse(req.query);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.query));
+
+      // Pull all matching services (cap at 100 candidates to keep ranking O(n))
+      const { services } = this.serviceEndpointRepo.findServices({
+        q: parsed.data.q,
+        category: parsed.data.category,
+        limit: 100,
+        offset: 0,
+      });
+
+      // Enrich + filter to SAFE nodes with valid price
+      const enriched = services
+        .map(svc => {
+          const agent = svc.agent_hash ? this.agentRepo.findByHash(svc.agent_hash) : null;
+          const scoreResult = svc.agent_hash ? this.scoringService.getScore(svc.agent_hash) : null;
+          const score = scoreResult?.total ?? 0;
+          const uptimeRatio = svc.check_count >= 3 ? svc.success_count / svc.check_count : 0;
+          const price = svc.service_price_sats ?? 0;
+          return { svc, agent, score, uptimeRatio, price };
+        })
+        .filter(s => s.score >= VERDICT_SAFE_THRESHOLD && s.uptimeRatio > 0 && s.price > 0);
+
+      if (enriched.length === 0) {
+        res.json({
+          data: { bestQuality: null, bestValue: null, cheapest: null },
+          meta: { candidates: 0, message: 'No SAFE services with positive uptime and price found' },
+        });
+        return;
+      }
+
+      // bestQuality = max(score × uptime), price ignored
+      const bestQuality = enriched.reduce((best, s) =>
+        (s.score * s.uptimeRatio) > (best.score * best.uptimeRatio) ? s : best,
+      );
+
+      // bestValue = max((score × uptime) / sqrt(price)) — sqrt softens price impact
+      const bestValue = enriched.reduce((best, s) => {
+        const sValue = (s.score * s.uptimeRatio) / Math.sqrt(s.price);
+        const bValue = (best.score * best.uptimeRatio) / Math.sqrt(best.price);
+        return sValue > bValue ? s : best;
+      });
+
+      // cheapest = min(price) among SAFE
+      const cheapest = enriched.reduce((min, s) => s.price < min.price ? s : min);
+
+      const format = (e: typeof enriched[number]) => ({
+        name: e.svc.name,
+        category: e.svc.category,
+        provider: e.svc.provider,
+        url: e.svc.url,
+        priceSats: e.price,
+        uptimeRatio: Math.round(e.uptimeRatio * 1000) / 1000,
+        node: e.agent ? {
+          publicKeyHash: e.agent.public_key_hash,
+          alias: e.agent.alias,
+          score: e.score,
+        } : null,
+      });
+
+      res.json({
+        data: {
+          bestQuality: format(bestQuality),
+          bestValue: format(bestValue),
+          cheapest: format(cheapest),
+        },
+        meta: { candidates: enriched.length, formula: 'bestValue = (score × uptime) / sqrt(priceSats)' },
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
 }
 
 function classifyStatus(status: number): 'healthy' | 'degraded' | 'down' {

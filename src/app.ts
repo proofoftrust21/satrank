@@ -48,7 +48,9 @@ import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
 import { DepositController } from './controllers/depositController';
 import { ServiceController } from './controllers/serviceController';
+import { ServiceRegisterController } from './controllers/serviceRegisterController';
 import { WatchlistController } from './controllers/watchlistController';
+import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createReportAuth } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
@@ -125,6 +127,13 @@ export function createApp() {
   const depositController = new DepositController(db);
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, scoringService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
+
+  // Self-registration — uses LND BOLT11 decoder if available
+  const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq
+    ? (invoice: string) => lndClient.decodePayReq!(invoice).then(r => r ? { destination: r.destination, num_satoshis: undefined } : null)
+    : undefined;
+  const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11) : null;
+  const serviceRegisterController = new ServiceRegisterController(registryCrawler);
 
   // Cache warm-up — fills the stats and leaderboard caches before the first
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
@@ -279,7 +288,9 @@ export function createApp() {
     message: { error: { code: 'RATE_LIMITED', message: 'Too many discovery requests, please try again later' } },
   });
   api.get('/services', discoveryRateLimit, serviceController.search);
+  api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
+  api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {

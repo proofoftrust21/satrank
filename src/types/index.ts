@@ -183,6 +183,13 @@ export interface HealthResponse {
   schemaVersion: number;
   expectedSchemaVersion: number;
   dbStatus: 'ok' | 'error';
+  /** Optional features that may be silently disabled if env vars are missing. */
+  features?: {
+    depositInvoiceGeneration: boolean;
+    nostrPublishing: boolean;
+    pathfindingProbe: boolean;
+    nodeChannelHint: boolean;
+  };
 }
 
 export interface NetworkStats {

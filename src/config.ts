@@ -103,4 +103,38 @@ for (const field of ['API_KEY', 'APERTURE_SHARED_SECRET'] as const) {
   }
 }
 
+// Warn loudly when optional features are silently disabled in production.
+// These are not fatal (the rest of the API still works) but the operator MUST
+// know that a feature is degraded so they don't ship a half-broken product.
+if (parsed.data.NODE_ENV === 'production') {
+  const degradedFeatures: string[] = [];
+  if (!parsed.data.LND_INVOICE_MACAROON_PATH) {
+    degradedFeatures.push('POST /api/deposit invoice generation (set LND_INVOICE_MACAROON_PATH)');
+  }
+  if (!parsed.data.NOSTR_PRIVATE_KEY) {
+    degradedFeatures.push('NIP-85 Nostr publishing (set NOSTR_PRIVATE_KEY)');
+  }
+  if (!parsed.data.NODE_PUBKEY) {
+    degradedFeatures.push('X-SatRank-Tip header (set NODE_PUBKEY)');
+  }
+  if (degradedFeatures.length > 0) {
+    process.stderr.write('\n');
+    process.stderr.write('═══════════════════════════════════════════════════════════════════\n');
+    process.stderr.write('⚠  DEGRADED FEATURES IN PRODUCTION ⚠\n');
+    process.stderr.write('═══════════════════════════════════════════════════════════════════\n');
+    for (const f of degradedFeatures) {
+      process.stderr.write(`  • ${f}\n`);
+    }
+    process.stderr.write('═══════════════════════════════════════════════════════════════════\n\n');
+  }
+}
+
 export const config = parsed.data;
+/** Map of optional features → whether they are configured and usable.
+ *  Exposed via /api/health so operators can detect silent degradation. */
+export const featureFlags = {
+  depositInvoiceGeneration: !!parsed.data.LND_INVOICE_MACAROON_PATH,
+  nostrPublishing: !!parsed.data.NOSTR_PRIVATE_KEY,
+  pathfindingProbe: !!parsed.data.LND_MACAROON_PATH,
+  nodeChannelHint: !!parsed.data.NODE_PUBKEY,
+} as const;

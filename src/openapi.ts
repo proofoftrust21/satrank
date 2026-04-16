@@ -588,6 +588,62 @@ export const openapiSpec = {
         },
       },
     },
+    '/services/register': {
+      post: {
+        summary: 'Self-register an L402 service',
+        operationId: 'registerService',
+        description: 'Service operators can submit their L402 endpoint URL. SatRank validates by GET-ing the URL and parsing the WWW-Authenticate header. Must return HTTP 402 with a valid BOLT11 invoice. Free, rate-limited (10/min/IP).',
+        tags: ['Discovery'],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: {
+            url: { type: 'string', format: 'uri', maxLength: 500 },
+            name: { type: 'string', maxLength: 100 },
+            description: { type: 'string', maxLength: 500 },
+            category: { type: 'string', maxLength: 50 },
+            provider: { type: 'string', maxLength: 100 },
+          } } } },
+        },
+        responses: {
+          '201': { description: 'Service registered', content: { 'application/json': { schema: { type: 'object', properties: {
+            data: { type: 'object', properties: {
+              url: { type: 'string' },
+              registered: { type: 'boolean' },
+              agentHash: { type: 'string' },
+              priceSats: { type: ['integer', 'null'] },
+              message: { type: 'string' },
+            } },
+          } } } } },
+          '400': { description: 'URL is not a valid L402 endpoint' },
+          '503': { description: 'Self-registration unavailable (LND BOLT11 decoder not configured)' },
+        },
+      },
+    },
+    '/services/best': {
+      get: {
+        summary: 'Best provider picks for a category or keyword',
+        operationId: 'bestServices',
+        description: 'Returns 3 picks for the category/keyword: bestQuality (max score×uptime), bestValue (max score×uptime / sqrt(price)), cheapest (min price among SAFE). Filters to SAFE nodes (score ≥ 47) with positive uptime and price. Free endpoint.',
+        tags: ['Discovery'],
+        parameters: [
+          { name: 'q', in: 'query', required: false, schema: { type: 'string', maxLength: 100 }, description: 'Fulltext keyword (matches name/description/category/provider)' },
+          { name: 'category', in: 'query', required: false, schema: { type: 'string' }, description: 'Filter by normalized category' },
+        ],
+        responses: {
+          '200': { description: '3 picks (or null when no SAFE service matches)', content: { 'application/json': { schema: { type: 'object', properties: {
+            data: { type: 'object', properties: {
+              bestQuality: { type: ['object', 'null'] },
+              bestValue: { type: ['object', 'null'] },
+              cheapest: { type: ['object', 'null'] },
+            } },
+            meta: { type: 'object', properties: {
+              candidates: { type: 'integer' },
+              formula: { type: 'string' },
+            } },
+          } } } } },
+        },
+      },
+    },
     '/services/categories': {
       get: {
         summary: 'List available service categories',
