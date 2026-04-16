@@ -64,21 +64,23 @@ export class DepositController {
    *  Phase 2: { paymentHash: "...", preimage: "..." } → verifies payment, creates balance */
   deposit = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      if (!invoiceMacaroonHex) {
-        res.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE', message: 'Deposit not available — invoice macaroon not configured' } });
-        return;
-      }
-
       const body = req.body as Record<string, unknown>;
 
       // Phase 2: verify payment and create balance
+      // verifyDeposit only needs the macaroon if it has to call LND lookupInvoice
+      // (i.e. when the payment_hash is not yet in the local token_balance table).
+      // Already-redeemed tokens can be verified without LND access.
       if (body.paymentHash && body.preimage) {
         await this.verifyDeposit(req, res);
         return;
       }
 
-      // Phase 1: create invoice
+      // Phase 1: create invoice — always needs LND
       if (body.amount) {
+        if (!invoiceMacaroonHex) {
+          res.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE', message: 'Deposit invoice generation unavailable — LND_INVOICE_MACAROON_PATH not configured' } });
+          return;
+        }
         await this.createInvoice(req, res);
         return;
       }
@@ -155,6 +157,16 @@ export class DepositController {
         paymentHash: body.paymentHash,
         alreadyRedeemed: true,
         instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+      });
+      return;
+    }
+
+    // Beyond this point we need LND. If macaroon is missing, the paymentHash is
+    // unknown to SatRank and we can't verify it.
+    if (!invoiceMacaroonHex) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'paymentHash not found in SatRank balance table. The deposit was either never created here or is awaiting verification (LND lookup unavailable).' },
+        paymentHash: body.paymentHash,
       });
       return;
     }
