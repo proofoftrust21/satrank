@@ -480,6 +480,18 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 17, 'disabled_channels column on agents for probe failure classification');
   }
 
+  // v28: composite index on score_snapshots for watchlist and history queries.
+  // findChangedSince uses WHERE agent_hash IN (...) AND computed_at > ? with
+  // a ROW_NUMBER() PARTITION BY agent_hash ORDER BY computed_at DESC.
+  // Without this index, SQLite falls back to a full partition scan per agent.
+  // With (agent_hash, computed_at DESC), the window function reads 1-2 rows per target.
+  if (!hasVersion(db, 28)) {
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_snapshots_agent_time ON score_snapshots(agent_hash, computed_at DESC)');
+    } catch { /* table may not exist in edge cases */ }
+    recordVersion(db, 28, 'composite index (agent_hash, computed_at DESC) on score_snapshots');
+  }
+
   // v27: source column on service_endpoints for trust classification.
   // Runs LAST (after v22 creates service_endpoints and v26 adds metadata columns)
   // because the other migrations appear in reverse order in this file and would
@@ -645,6 +657,9 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   27: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_service_endpoints_source');
     try { db.exec('ALTER TABLE service_endpoints DROP COLUMN source'); } catch { /* SQLite < 3.35 */ }
+  },
+  28: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_snapshots_agent_time');
   },
 };
 

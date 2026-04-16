@@ -85,6 +85,13 @@ export interface LndClientOptions {
   timeoutMs: number;
 }
 
+// Global semaphore on queryRoutes: LND can handle ~30/s, we cap at 10 concurrent
+// to prevent cascades when /api/decide, /api/best-route, and the probe crawler
+// all hit at once. Excess requests queue (caller pays the latency, not LND).
+import { Semaphore } from '../utils/semaphore';
+import { lndInflight, lndQueryRoutesDuration } from '../middleware/metrics';
+const queryRoutesSemaphore = new Semaphore(10);
+
 export class HttpLndGraphClient implements LndGraphClient {
   private restUrl: string;
   private macaroonHex: string;
@@ -133,11 +140,22 @@ export class HttpLndGraphClient implements LndGraphClient {
     if (sanitizedAmount <= 0 || sanitizedAmount > 10_000_000) {
       throw new Error(`Invalid amountSats: ${amountSats}`);
     }
+    const path = sourcePubKey
+      ? `/v1/graph/routes/${pubkey}/${sanitizedAmount}?source_pub_key=${sourcePubKey}`
+      : `/v1/graph/routes/${pubkey}/${sanitizedAmount}`;
+
+    // Queue behind the global semaphore to cap LND concurrency at 10.
+    const start = Date.now();
     try {
-      const path = sourcePubKey
-        ? `/v1/graph/routes/${pubkey}/${sanitizedAmount}?source_pub_key=${sourcePubKey}`
-        : `/v1/graph/routes/${pubkey}/${sanitizedAmount}`;
-      return await this.request<LndQueryRoutesResponse>(path);
+      return await queryRoutesSemaphore.run(async () => {
+        lndInflight.set(queryRoutesSemaphore.inFlight);
+        try {
+          return await this.request<LndQueryRoutesResponse>(path);
+        } finally {
+          lndQueryRoutesDuration.observe((Date.now() - start) / 1000);
+          lndInflight.set(queryRoutesSemaphore.inFlight);
+        }
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('unable to find a path') || msg.includes('FAILURE_REASON')) {

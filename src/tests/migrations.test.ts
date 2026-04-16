@@ -49,8 +49,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(27);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]);
+    expect(versions.length).toBe(28);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -66,7 +66,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(27);
+    expect(versions.length).toBe(28);
   });
 
   it('does not re-apply existing migrations on second run', () => {

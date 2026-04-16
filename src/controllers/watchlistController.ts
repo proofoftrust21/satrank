@@ -1,5 +1,6 @@
 // Watchlist controller — poll for verdict changes on a set of targets
 // Free endpoint. Agents use this as a fallback when Nostr subscription is not available.
+import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import type { AgentRepository } from '../repositories/agentRepository';
@@ -8,9 +9,14 @@ import type { ScoringService } from '../services/scoringService';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
+import { cache } from '../cache/cacheProvider';
 
 const VERDICT_UNKNOWN_THRESHOLD = 30;
 const MAX_TARGETS = 50;
+/** since is bucketed to 5-min precision for cache efficiency.
+ *  An agent polling every minute hits the same bucket up to 5 times. */
+const SINCE_BUCKET_SEC = 300;
+const WATCHLIST_CACHE_TTL_MS = 60_000;
 
 const watchlistSchema = z.object({
   targets: z.string().min(1, 'targets is required'),
@@ -39,25 +45,32 @@ export class WatchlistController {
 
       const since = parsed.data.since ?? 0;
 
-      // Find snapshots that changed since the given timestamp
-      const snapshots = this.snapshotRepo.findChangedSince(hashes, since);
+      // Cache key: hashes (sorted for stability) + since bucket of 5 min.
+      // Two polls with since=1776327000 and since=1776327200 share the cache
+      // (both bucket to floor(.../300) = 5921090). This collapses N polling
+      // agents on the same target list into a single DB query per bucket.
+      const sortedHashes = [...hashes].sort();
+      const sinceBucket = Math.floor(since / SINCE_BUCKET_SEC);
+      const cacheKey = `watchlist:${crypto.createHash('sha256').update(sortedHashes.join(',')).digest('hex').slice(0, 16)}:${sinceBucket}`;
 
-      const changes = snapshots.map(snap => {
-        const score = snap.score;
-        const verdict = score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' as const
-          : score >= VERDICT_UNKNOWN_THRESHOLD ? 'UNKNOWN' as const : 'RISKY' as const;
-        const agent = this.agentRepo.findByHash(snap.agent_hash);
-        const components = safeParseJson(snap.components);
-
-        return {
-          publicKeyHash: snap.agent_hash,
-          alias: agent?.alias ?? null,
-          score,
-          previousScore: snap.previous_score ?? null,
-          verdict,
-          components,
-          changedAt: snap.computed_at,
-        };
+      const changes = cache.getOrCompute(cacheKey, WATCHLIST_CACHE_TTL_MS, () => {
+        const snapshots = this.snapshotRepo.findChangedSince(hashes, since);
+        return snapshots.map(snap => {
+          const score = snap.score;
+          const verdict = score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' as const
+            : score >= VERDICT_UNKNOWN_THRESHOLD ? 'UNKNOWN' as const : 'RISKY' as const;
+          const agent = this.agentRepo.findByHash(snap.agent_hash);
+          const components = safeParseJson(snap.components);
+          return {
+            publicKeyHash: snap.agent_hash,
+            alias: agent?.alias ?? null,
+            score,
+            previousScore: snap.previous_score ?? null,
+            verdict,
+            components,
+            changedAt: snap.computed_at,
+          };
+        });
       });
 
       res.json({

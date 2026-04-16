@@ -56,6 +56,40 @@ export const crawlDuration = new client.Histogram({
   registers: [metricsRegistry],
 });
 
+// --- Saturation indicators (for 100x scale preparation) ---
+
+/** Cache hit/miss — saturation indicator for memory cache */
+export const cacheEvents = new client.Counter({
+  name: 'satrank_cache_events_total',
+  help: 'Cache operations — hit/miss/evict per namespace',
+  labelNames: ['namespace', 'event'] as const,
+  registers: [metricsRegistry],
+});
+
+/** LND queryRoutes concurrency — high values predict LND saturation */
+export const lndInflight = new client.Gauge({
+  name: 'satrank_lnd_inflight',
+  help: 'Concurrent LND queryRoutes in flight (capped globally)',
+  registers: [metricsRegistry],
+});
+
+/** LND queryRoutes duration */
+export const lndQueryRoutesDuration = new client.Histogram({
+  name: 'satrank_lnd_queryroutes_duration_seconds',
+  help: 'LND queryRoutes call duration',
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  registers: [metricsRegistry],
+});
+
+/** Repository query duration — detect SQL regressions */
+export const dbQueryDuration = new client.Histogram({
+  name: 'satrank_db_query_duration_seconds',
+  help: 'SQLite query duration per repository method',
+  labelNames: ['repo', 'method'] as const,
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2.5],
+  registers: [metricsRegistry],
+});
+
 // --- HTTP metrics middleware ---
 
 function normalizeRoute(req: Request): string {

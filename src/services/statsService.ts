@@ -20,7 +20,7 @@ const NETWORK_STATS_CACHE_KEY = 'stats:network';
 const NETWORK_STATS_TTL_MS = 5 * 60_000;
 
 // Must match the latest migration version in migrations.ts
-const EXPECTED_SCHEMA_VERSION = 27;
+const EXPECTED_SCHEMA_VERSION = 28;
 
 export class StatsService {
   constructor(
@@ -35,36 +35,37 @@ export class StatsService {
   ) {}
 
   getHealth(): HealthResponse {
-    let dbStatus: 'ok' | 'error' = 'error';
-    let schemaVersion = 0;
+    // Cached for 3s — under load, /health is polled constantly by healthcheck
+    // agents and monitoring. The heavy COUNT(*) on snapshots doesn't need to
+    // run per request. Stale-while-revalidate: response is always instant.
+    return memoryCache.getOrCompute<HealthResponse>('health:snapshot', 3_000, () => {
+      let dbStatus: 'ok' | 'error' = 'error';
+      let schemaVersion = 0;
 
-    try {
-      // Real DB liveness check
-      this.db.prepare('SELECT 1').get();
-      dbStatus = 'ok';
+      try {
+        this.db.prepare('SELECT 1').get();
+        dbStatus = 'ok';
+        const row = this.db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number | null } | undefined;
+        schemaVersion = row?.v ?? 0;
+      } catch {
+        dbStatus = 'error';
+      }
 
-      // Latest schema version
-      const row = this.db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number | null } | undefined;
-      schemaVersion = row?.v ?? 0;
-    } catch {
-      dbStatus = 'error';
-    }
+      const status: 'ok' | 'error' = dbStatus === 'ok' && schemaVersion === EXPECTED_SCHEMA_VERSION ? 'ok' : 'error';
 
-    const status: 'ok' | 'error' = dbStatus === 'ok' && schemaVersion === EXPECTED_SCHEMA_VERSION ? 'ok' : 'error';
-
-    // agentsIndexed reflects active (non-stale) agents; fossils are tracked separately.
-    return {
-      status,
-      agentsIndexed: dbStatus === 'ok' ? this.agentRepo.count() : 0,
-      staleAgents: dbStatus === 'ok' ? this.agentRepo.countStale() : 0,
-      totalTransactions: dbStatus === 'ok' ? this.txRepo.totalCount() : 0,
-      lastUpdate: dbStatus === 'ok' ? this.snapshotRepo.getLastUpdateTime() : 0,
-      uptime: Math.floor((Date.now() - startTime) / 1000),
-      schemaVersion,
-      expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
-      dbStatus,
-      features: featureFlags,
-    };
+      return {
+        status,
+        agentsIndexed: dbStatus === 'ok' ? this.agentRepo.count() : 0,
+        staleAgents: dbStatus === 'ok' ? this.agentRepo.countStale() : 0,
+        totalTransactions: dbStatus === 'ok' ? this.txRepo.totalCount() : 0,
+        lastUpdate: dbStatus === 'ok' ? this.snapshotRepo.getLastUpdateTime() : 0,
+        uptime: Math.floor((Date.now() - startTime) / 1000),
+        schemaVersion,
+        expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
+        dbStatus,
+        features: featureFlags,
+      };
+    });
   }
 
   getNetworkStats(): NetworkStats {

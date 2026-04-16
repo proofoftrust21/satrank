@@ -9,6 +9,7 @@
 // cache keys (e.g. per-query variants of /agents/top?sort_by=X).
 
 import { logger } from '../logger';
+import { cacheEvents } from '../middleware/metrics';
 
 interface CacheEntry<T> {
   data: T;
@@ -18,6 +19,12 @@ interface CacheEntry<T> {
 
 const MAX_ENTRIES = 500;
 const store = new Map<string, CacheEntry<unknown>>();
+
+/** Namespace prefix from the cache key (everything before the first ':'). */
+function ns(key: string): string {
+  const i = key.indexOf(':');
+  return i === -1 ? key : key.slice(0, i);
+}
 /** Keys currently being refreshed in the background. Prevents thundering herd. */
 const refreshing = new Set<string>();
 
@@ -28,12 +35,14 @@ export const DEFAULT_TTL_MS = 30_000;
  *  Does NOT consider stale entries — use getOrCompute for SWR semantics. */
 export function get<T>(key: string): T | null {
   const entry = store.get(key);
-  if (!entry) return null;
+  if (!entry) { cacheEvents.inc({ namespace: ns(key), event: 'miss' }); return null; }
   if (Date.now() > entry.expiry) {
     store.delete(key);
+    cacheEvents.inc({ namespace: ns(key), event: 'miss' });
     return null;
   }
   entry.lastAccess = Date.now();
+  cacheEvents.inc({ namespace: ns(key), event: 'hit' });
   return entry.data as T;
 }
 
@@ -96,6 +105,43 @@ export function getOrCompute<T>(key: string, ttlMs: number, compute: () => T): T
 
   // Cold miss — no data at all, have to compute synchronously
   const fresh = compute();
+  store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+  evictIfNeeded();
+  return fresh;
+}
+
+/** Async variant of getOrCompute — for queries that return Promise. */
+export async function getOrComputeAsync<T>(key: string, ttlMs: number, compute: () => Promise<T>): Promise<T> {
+  const entry = store.get(key);
+  const now = Date.now();
+
+  if (entry && now <= entry.expiry) {
+    entry.lastAccess = now;
+    cacheEvents.inc({ namespace: ns(key), event: 'hit' });
+    return entry.data as T;
+  }
+
+  if (entry) {
+    // Stale — return immediately, refresh in background
+    cacheEvents.inc({ namespace: ns(key), event: 'stale_hit' });
+    if (!refreshing.has(key)) {
+      refreshing.add(key);
+      compute()
+        .then(fresh => {
+          store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+          evictIfNeeded();
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn({ key, error: msg }, 'Async cache background refresh failed');
+        })
+        .finally(() => refreshing.delete(key));
+    }
+    return entry.data as T;
+  }
+
+  cacheEvents.inc({ namespace: ns(key), event: 'miss' });
+  const fresh = await compute();
   store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
   evictIfNeeded();
   return fresh;
