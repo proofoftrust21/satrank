@@ -9,6 +9,7 @@ data/
 *.pem
 *.key
 *.macaroon
+build-info.json
 
 # Local development tooling — not meant to ship in the public repo
 .claude/

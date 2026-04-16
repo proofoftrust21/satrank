@@ -501,13 +501,21 @@ export class SatRankClient {
         signal: controller.signal,
       });
 
-      const responseBody = await response.json() as T & { error?: { code: string; message: string } };
+      const responseBody = await response.json() as T & { error?: { code: string; message: string }; invoice?: string };
 
       // Track remaining balance from response header
       const balanceHeader = response.headers.get('x-satrank-balance');
       if (balanceHeader !== null) this.lastBalance = parseInt(balanceHeader, 10);
 
       if (!response.ok) {
+        // L402 invoice issuance: /api/deposit phase 1 returns HTTP 402 with an
+        // `invoice` body (not an `error` body). Per L402 semantics "here is your
+        // invoice" is a functional success, so treat it as such rather than
+        // throwing PaymentRequiredError and losing the invoice.
+        const maybeInvoice = responseBody as { error?: unknown; invoice?: unknown };
+        if (response.status === 402 && !maybeInvoice.error && typeof maybeInvoice.invoice === 'string') {
+          return responseBody;
+        }
         const errBody = responseBody as { error?: { code: string; message: string } };
         throw errorFromResponse(response.status, errBody.error?.code, errBody.error?.message ?? `HTTP ${response.status}`, path);
       }

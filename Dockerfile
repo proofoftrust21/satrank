@@ -8,6 +8,9 @@ RUN npm ci --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src/ ./src/
+# build-info.json is written by `make deploy` pre-rsync; in local dev it may
+# be missing. The trailing * keeps the COPY optional (no glob match = no-op).
+COPY build-info.jso[n] ./
 RUN npm run build
 
 # Stage 2 — Install production deps with native modules (better-sqlite3)
@@ -36,6 +39,8 @@ COPY --from=builder --chown=satrank:satrank /app/dist ./dist
 COPY --from=deps    --chown=satrank:satrank /app/node_modules ./node_modules
 COPY --chown=satrank:satrank package.json ./
 COPY --chown=satrank:satrank public/ ./public/
+# build-info.json (optional): populated at deploy time by `make deploy`.
+COPY --chown=satrank:satrank build-info.jso[n] ./
 
 RUN mkdir -p /app/data && chown satrank:satrank /app/data
 

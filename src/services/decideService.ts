@@ -172,6 +172,7 @@ export class DecideService {
     amountSats?: number,
     pathfindingSourcePubkey?: string,
     serviceUrl?: string,
+    sourceProvider?: import('../types').WalletProvider,
   ): Promise<DecideResponse> {
     const startMs = Date.now();
 
@@ -321,9 +322,16 @@ export class DecideService {
     const feeStabilityRaw = this.scoringService.computeFeeStability(targetHash);
     const targetFeeStability = feeStabilityRaw === 50 ? null : Math.round(feeStabilityRaw) / 100;
 
-    // Tag pathfinding result with the source node used
+    // Tag pathfinding result with the source node used and the wallet provider
+    // label when one was supplied. sim #6 #4: sourceProvider was undefined in
+    // responses because it was never written here; agents consuming the decide
+    // response had no way to confirm which provider hub was used.
     const pathfinding = verdictResult.pathfinding
-      ? { ...verdictResult.pathfinding, sourceNode: pathfindingSourcePubkey ?? 'satrank' }
+      ? {
+          ...verdictResult.pathfinding,
+          sourceNode: pathfindingSourcePubkey ?? 'satrank',
+          ...(sourceProvider ? { sourceProvider } : {}),
+        }
       : null;
 
     const latencyMs = Date.now() - startMs;

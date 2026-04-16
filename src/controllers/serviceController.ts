@@ -126,7 +126,13 @@ export class ServiceController {
         offset: 0,
       });
 
-      // Enrich + filter to SAFE nodes with valid price + optional minUptime floor
+      // Enrich + filter to SAFE nodes with valid price + optional minUptime floor.
+      // Sim #6 finding: the prior filter ignored last_http_status, so a service
+      // returning 404 on every probe could still win bestQuality just because
+      // its uptime was >20%. We now classify the last HTTP status (healthy /
+      // unknown / degraded / down) and prefer healthy|unknown. Degraded
+      // services are only kept as a fallback pool and are tagged with a
+      // DEGRADED_HTTP warning so agents can gate on warnings.length === 0.
       const minUptime = parsed.data.minUptime ?? 0;
       const enriched = services
         .map(svc => {
@@ -135,45 +141,56 @@ export class ServiceController {
           const score = scoreResult?.total ?? 0;
           const uptimeRatio = svc.check_count >= 3 ? svc.success_count / svc.check_count : 0;
           const price = svc.service_price_sats ?? 0;
-          return { svc, agent, score, uptimeRatio, price };
+          const httpHealth = svc.last_http_status !== null && svc.last_http_status > 0
+            ? classifyStatus(svc.last_http_status)
+            : 'unknown' as const;
+          return { svc, agent, score, uptimeRatio, price, httpHealth };
         })
         .filter(s =>
           s.score >= VERDICT_SAFE_THRESHOLD &&
           s.uptimeRatio > 0 &&
           s.price > 0 &&
-          s.uptimeRatio >= minUptime,
+          s.uptimeRatio >= minUptime &&
+          s.httpHealth !== 'down',
         );
 
-      if (enriched.length === 0) {
+      // Prefer healthy|unknown. Fall back to degraded only if the healthy pool is empty.
+      const healthyPool = enriched.filter(s => s.httpHealth === 'healthy' || s.httpHealth === 'unknown');
+      const pool = healthyPool.length > 0 ? healthyPool : enriched;
+      const usedDegradedFallback = healthyPool.length === 0 && enriched.length > 0;
+
+      if (pool.length === 0) {
         res.json({
           data: { bestQuality: null, bestValue: null, cheapest: null },
-          meta: { candidates: 0, message: 'No SAFE services with positive uptime and price found' },
+          meta: { candidates: 0, message: 'No SAFE services with healthy HTTP, positive uptime and price found' },
         });
         return;
       }
 
       // bestQuality = max(score × uptime), price ignored
-      const bestQuality = enriched.reduce((best, s) =>
+      const bestQuality = pool.reduce((best, s) =>
         (s.score * s.uptimeRatio) > (best.score * best.uptimeRatio) ? s : best,
       );
 
       // bestValue = max((score × uptime) / sqrt(price)) — sqrt softens price impact
-      const bestValue = enriched.reduce((best, s) => {
+      const bestValue = pool.reduce((best, s) => {
         const sValue = (s.score * s.uptimeRatio) / Math.sqrt(s.price);
         const bValue = (best.score * best.uptimeRatio) / Math.sqrt(best.price);
         return sValue > bValue ? s : best;
       });
 
-      // cheapest = min(price) among SAFE
-      const cheapest = enriched.reduce((min, s) => s.price < min.price ? s : min);
+      // cheapest = min(price) among pool
+      const cheapest = pool.reduce((min, s) => s.price < min.price ? s : min);
 
-      // Sim #5 #8: even the "best" of a thin candidate pool can have poor uptime;
-      // surface structured warnings so agents can gate on warnings.length === 0
-      // instead of re-deriving the threshold client-side.
+      // Sim #5 #8 / #6 #3: even the "best" of a thin candidate pool can have
+      // poor uptime or degraded HTTP; surface structured warnings so agents
+      // can gate on warnings.length === 0 instead of re-deriving thresholds
+      // client-side.
       const LOW_UPTIME_THRESHOLD = 0.20;
-      const format = (e: typeof enriched[number]) => {
+      const format = (e: typeof pool[number]) => {
         const warnings: string[] = [];
         if (e.uptimeRatio < LOW_UPTIME_THRESHOLD) warnings.push('LOW_UPTIME');
+        if (e.httpHealth === 'degraded') warnings.push('DEGRADED_HTTP');
         return {
           name: e.svc.name,
           category: e.svc.category,
@@ -181,6 +198,7 @@ export class ServiceController {
           url: e.svc.url,
           priceSats: e.price,
           uptimeRatio: Math.round(e.uptimeRatio * 1000) / 1000,
+          httpHealth: e.httpHealth,
           node: e.agent ? {
             publicKeyHash: e.agent.public_key_hash,
             alias: e.agent.alias,
@@ -196,7 +214,12 @@ export class ServiceController {
           bestValue: format(bestValue),
           cheapest: format(cheapest),
         },
-        meta: { candidates: enriched.length, formula: 'bestValue = (score × uptime) / sqrt(priceSats)' },
+        meta: {
+          candidates: pool.length,
+          healthyCandidates: healthyPool.length,
+          usedDegradedFallback,
+          formula: 'bestValue = (score × uptime) / sqrt(priceSats)',
+        },
       });
     } catch (err) {
       next(err);

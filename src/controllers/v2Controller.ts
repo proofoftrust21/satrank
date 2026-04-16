@@ -38,6 +38,7 @@ import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import { WALLET_PROVIDERS } from '../config/walletProviders';
 import { verdictTotal } from '../middleware/metrics';
 import { logTokenQuery } from '../utils/tokenQueryLog';
+import type { WalletProvider, PathfindingResult } from '../types';
 
 export class V2Controller {
   constructor(
@@ -80,6 +81,7 @@ export class V2Controller {
         parsed.data.amountSats,
         pathfindingSourcePubkey,
         parsed.data.serviceUrl,
+        parsed.data.walletProvider as WalletProvider | undefined,
       );
 
       // Log this target query for /api/report auth. See utils/tokenQueryLog.ts
@@ -161,7 +163,18 @@ export class V2Controller {
           batch.map(async (t) => {
             if (!t.pubkey || !t.agent) return { ...t, pathfinding: null };
             const pf = await this.verdictService!.computePathfinding(callerLnPubkey, t.pubkey, caller.hash, t.hash);
-            return { ...t, pathfinding: pf };
+            // sim #6 #4: tag the source used so agents don't have to guess
+            // which hub the pathfinding ran from.
+            const tagged: PathfindingResult | null = pf
+              ? {
+                  ...pf,
+                  sourceNode: callerLnPubkey,
+                  ...(parsed.data.walletProvider
+                    ? { sourceProvider: parsed.data.walletProvider as WalletProvider }
+                    : {}),
+                }
+              : null;
+            return { ...t, pathfinding: tagged };
           }),
         );
         pathResults.push(...batchResults);

@@ -55,6 +55,15 @@ docker-down:
 deploy:
 	@test -n "$(SATRANK_HOST)" || (echo "ERROR: set SATRANK_HOST=user@host (ex: root@your.server)" && exit 1)
 	@test -n "$(REMOTE_DIR)"   || (echo "ERROR: set REMOTE_DIR=/path/to/satrank (ex: /opt/satrank)" && exit 1)
+	@# Stamp build-info.json with the current commit + UTC timestamp + package
+	@# version so /api/version reports real values after deploy. The file is
+	@# gitignored (volatile per deploy) and rsynced into the container so it
+	@# reaches both the builder stage and the runtime stage.
+	@printf '{"commit":"%s","buildDate":"%s","version":"%s"}\n' \
+	  "$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" \
+	  "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	  "$$(node -p "require('./package.json').version" 2>/dev/null || echo 0.0.0)" \
+	  > build-info.json
 	rsync -avz \
 	  --exclude node_modules \
 	  --exclude dist \

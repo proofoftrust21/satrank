@@ -368,9 +368,12 @@ export interface PathfindingResult {
   estimatedFeeMsat: number | null;
   alternatives: number;
   latencyMs: number;
+  /** Pathfinding engine used. Always 'lnd_queryroutes' today. */
   source: 'lnd_queryroutes';
-  /** The node used as pathfinding source. 'provider:<name>' for walletProvider, pubkey for callerNodePubkey, 'satrank' for default. */
+  /** Node (raw pubkey) used as pathfinding origin, or 'satrank' for default position. */
   sourceNode?: string;
+  /** Wallet provider label when walletProvider= was supplied. Undefined otherwise. */
+  sourceProvider?: WalletProvider;
 }
 
 export interface VerdictResponse {
