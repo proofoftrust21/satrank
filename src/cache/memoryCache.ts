@@ -27,6 +27,23 @@ function ns(key: string): string {
 }
 /** Keys currently being refreshed in the background. Prevents thundering herd. */
 const refreshing = new Set<string>();
+/** Last successful compute per key (ms since epoch). Used for staleness monitoring —
+ *  when a background refresh fails repeatedly, entries keep serving stale data.
+ *  Exposed via /api/health.cacheFreshness so operators detect silent staleness. */
+const lastFreshAt = new Map<string, number>();
+/** Consecutive refresh failures per key. Incremented on catch, reset on success. */
+const refreshFailures = new Map<string, number>();
+
+/** Staleness report for observability. Returns age (sec) and failure count per key.
+ *  Used by /api/health to surface cache degradation. */
+export function getFreshnessReport(): Array<{ key: string; ageSec: number; consecutiveFailures: number }> {
+  const now = Date.now();
+  return [...lastFreshAt.entries()].map(([key, ts]) => ({
+    key,
+    ageSec: Math.round((now - ts) / 1000),
+    consecutiveFailures: refreshFailures.get(key) ?? 0,
+  }));
+}
 
 /** Default TTL in milliseconds if none is supplied. */
 export const DEFAULT_TTL_MS = 30_000;
@@ -91,10 +108,14 @@ export function getOrCompute<T>(key: string, ttlMs: number, compute: () => T): T
         try {
           const fresh = compute();
           store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+          lastFreshAt.set(key, Date.now());
+          refreshFailures.delete(key);
           evictIfNeeded();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          logger.warn({ key, error: msg }, 'Cache background refresh failed — keeping stale entry');
+          const failures = (refreshFailures.get(key) ?? 0) + 1;
+          refreshFailures.set(key, failures);
+          logger.warn({ key, error: msg, consecutiveFailures: failures }, 'Cache background refresh failed — keeping stale entry');
         } finally {
           refreshing.delete(key);
         }
@@ -106,6 +127,8 @@ export function getOrCompute<T>(key: string, ttlMs: number, compute: () => T): T
   // Cold miss — no data at all, have to compute synchronously
   const fresh = compute();
   store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+  lastFreshAt.set(key, Date.now());
+  refreshFailures.delete(key);
   evictIfNeeded();
   return fresh;
 }
@@ -129,11 +152,15 @@ export async function getOrComputeAsync<T>(key: string, ttlMs: number, compute: 
       compute()
         .then(fresh => {
           store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+          lastFreshAt.set(key, Date.now());
+          refreshFailures.delete(key);
           evictIfNeeded();
         })
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
-          logger.warn({ key, error: msg }, 'Async cache background refresh failed');
+          const failures = (refreshFailures.get(key) ?? 0) + 1;
+          refreshFailures.set(key, failures);
+          logger.warn({ key, error: msg, consecutiveFailures: failures }, 'Async cache background refresh failed');
         })
         .finally(() => refreshing.delete(key));
     }
@@ -143,6 +170,8 @@ export async function getOrComputeAsync<T>(key: string, ttlMs: number, compute: 
   cacheEvents.inc({ namespace: ns(key), event: 'miss' });
   const fresh = await compute();
   store.set(key, { data: fresh, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+  lastFreshAt.set(key, Date.now());
+  refreshFailures.delete(key);
   evictIfNeeded();
   return fresh;
 }

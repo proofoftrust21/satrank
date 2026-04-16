@@ -9,7 +9,16 @@ import type { ServiceEndpointRepository } from '../repositories/serviceEndpointR
 import type { TrendService } from './trendService';
 import type { HealthResponse, NetworkStats } from '../types';
 import * as memoryCache from '../cache/memoryCache';
+import { getFreshnessReport } from '../cache/memoryCache';
 import { featureFlags } from '../config';
+
+/** Critical caches monitored for staleness. Each entry expects a fresh refresh
+ *  every TTL — if ageSec exceeds TTL×3, something is wrong (refresh failing). */
+const CRITICAL_CACHES: Array<{ keyPrefix: string; expectedTtlSec: number }> = [
+  { keyPrefix: 'stats:network', expectedTtlSec: 300 },   // 5 min TTL
+  { keyPrefix: 'agents:top', expectedTtlSec: 300 },      // 5 min TTL
+  { keyPrefix: 'health:snapshot', expectedTtlSec: 3 },   // 3 sec TTL
+];
 
 const startTime = Date.now();
 
@@ -53,8 +62,22 @@ export class StatsService {
 
       const status: 'ok' | 'error' = dbStatus === 'ok' && schemaVersion === EXPECTED_SCHEMA_VERSION ? 'ok' : 'error';
 
+      // Cache freshness: flag any critical cache that's > 3x its TTL old or failing repeatedly
+      const freshness = getFreshnessReport();
+      const critical: Array<{ key: string; ageSec: number; consecutiveFailures: number }> = [];
+      for (const { keyPrefix, expectedTtlSec } of CRITICAL_CACHES) {
+        const matches = freshness.filter(f => f.key.startsWith(keyPrefix));
+        for (const m of matches) {
+          if (m.ageSec > expectedTtlSec * 3 || m.consecutiveFailures >= 3) {
+            critical.push(m);
+          }
+        }
+      }
+      const cacheHealth = { degraded: critical.length > 0, critical };
+      const finalStatus: 'ok' | 'error' = status === 'ok' && !cacheHealth.degraded ? 'ok' : status;
+
       return {
-        status,
+        status: finalStatus,
         agentsIndexed: dbStatus === 'ok' ? this.agentRepo.count() : 0,
         staleAgents: dbStatus === 'ok' ? this.agentRepo.countStale() : 0,
         totalTransactions: dbStatus === 'ok' ? this.txRepo.totalCount() : 0,
@@ -64,6 +87,7 @@ export class StatsService {
         expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
         dbStatus,
         features: featureFlags,
+        cacheHealth,
       };
     });
   }

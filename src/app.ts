@@ -232,19 +232,30 @@ export function createApp() {
   app.use(express.static(publicDir));
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: publicDir }));
 
-  // Prometheus metrics endpoint — restricted to localhost/internal
+  // Prometheus metrics endpoint — localhost OR X-API-Key auth.
+  // Localhost access (docker network, Prometheus sidecar, SSH tunnel): no auth.
+  // External access: requires same API_KEY as write endpoints to prevent metric leakage.
   app.get('/metrics', (req, res, next) => {
     const ip = req.ip ?? req.socket.remoteAddress ?? '';
-    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
-      next();
-    } else {
-      res.status(403).end('Forbidden');
-    }
+    const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+    if (isLocalhost) return next();
+    // External: require API key
+    const apiKey = req.headers['x-api-key'] as string | undefined;
+    if (apiKey && config.API_KEY && apiKey === config.API_KEY) return next();
+    res.status(403).end('Forbidden — use localhost or X-API-Key');
   }, async (_req, res) => {
     try {
       const stats = statsService.getNetworkStats();
       agentsTotal.set(stats.totalAgents);
       channelsTotal.set(stats.totalChannels);
+
+      // Refresh cache freshness gauges at scrape time
+      const { getFreshnessReport } = await import('./cache/memoryCache');
+      const { cacheAgeSeconds, cacheRefreshFailures } = await import('./middleware/metrics');
+      for (const r of getFreshnessReport()) {
+        cacheAgeSeconds.set({ key: r.key }, r.ageSec);
+        cacheRefreshFailures.set({ key: r.key }, r.consecutiveFailures);
+      }
 
       res.setHeader('Content-Type', metricsRegistry.contentType);
       res.end(await metricsRegistry.metrics());

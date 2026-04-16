@@ -81,6 +81,23 @@ export const lndQueryRoutesDuration = new client.Histogram({
   registers: [metricsRegistry],
 });
 
+/** Cache freshness — age in seconds since last successful compute per key.
+ *  High values indicate a background refresh that keeps failing → stale data served silently. */
+export const cacheAgeSeconds = new client.Gauge({
+  name: 'satrank_cache_age_seconds',
+  help: 'Age of cache entry since last successful compute (seconds)',
+  labelNames: ['key'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Count of consecutive refresh failures per key. Alarm when > 3. */
+export const cacheRefreshFailures = new client.Gauge({
+  name: 'satrank_cache_refresh_failures',
+  help: 'Consecutive background refresh failures per cache key',
+  labelNames: ['key'] as const,
+  registers: [metricsRegistry],
+});
+
 /** Repository query duration — detect SQL regressions */
 export const dbQueryDuration = new client.Histogram({
   name: 'satrank_db_query_duration_seconds',

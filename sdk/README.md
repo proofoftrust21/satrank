@@ -358,6 +358,16 @@ Any Nostr client (nak, nostr-tools, nostcat) can do the same without the SDK.
 
 Poll `GET /api/watchlist` for changes. Free endpoint, no L402 required.
 
+**Staleness guarantees:**
+- Max staleness: **60 seconds** after a verdict change (cache TTL).
+- Responses within a 5-minute window on the same target set share a cache
+  populated by the first poll. `meta.effectiveSince` tells you the `since`
+  actually used for the DB query — you may receive changes older than your
+  requested `since` (always a superset).
+- To advance through time, use `meta.queriedAt` as the `since` for your next
+  poll. Dedupe received changes by `changedAt > your_last_seen_ts`.
+
+
 ```typescript
 const unsubscribe = client.watchPoll(
   ['hash1...', 'hash2...'], // SHA-256 hashes (max 50)

@@ -190,6 +190,13 @@ export interface HealthResponse {
     pathfindingProbe: boolean;
     nodeChannelHint: boolean;
   };
+  /** Cache health summary for critical caches.
+   *  degraded = any critical cache has ageSec > its TTL × 3 OR consecutiveFailures ≥ 3.
+   *  This flags silent staleness (background refresh failing) that would otherwise be invisible. */
+  cacheHealth?: {
+    degraded: boolean;
+    critical: Array<{ key: string; ageSec: number; consecutiveFailures: number }>;
+  };
 }
 
 export interface NetworkStats {

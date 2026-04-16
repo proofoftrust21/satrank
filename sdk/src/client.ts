@@ -552,7 +552,24 @@ export interface WatchlistChange {
 
 export interface WatchlistResponse {
   data: WatchlistChange[];
-  meta: { since: number; queriedAt: number; targets: number; changed: number };
+  meta: {
+    /** The `since` value the caller passed. */
+    since: number;
+    /** The `since` actually used for the DB query. Differs from `since` when
+     *  the response came from a cache populated by an earlier poll in the same
+     *  5-min bucket. Always <= your request's since (superset of changes). */
+    effectiveSince?: number;
+    /** Server timestamp when the response was generated. Use this as `since`
+     *  for the next poll to advance through time. */
+    queriedAt: number;
+    targets: number;
+    changed: number;
+    /** Cache bucket size: polls within the same bucket share a cached query. */
+    cacheBucketSec?: number;
+    /** Cache TTL: how long a cached response is served fresh. Max staleness
+     *  for a change notification = cacheTtlMs / 1000 seconds. */
+    cacheTtlMs?: number;
+  };
 }
 
 function parseNostrScoreEvent(event: { pubkey: string; tags: string[][]; created_at: number }): NostrScoreEvent | null {

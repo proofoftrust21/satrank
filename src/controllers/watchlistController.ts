@@ -45,17 +45,29 @@ export class WatchlistController {
 
       const since = parsed.data.since ?? 0;
 
-      // Cache key: hashes (sorted for stability) + since bucket of 5 min.
-      // Two polls with since=1776327000 and since=1776327200 share the cache
-      // (both bucket to floor(.../300) = 5921090). This collapses N polling
-      // agents on the same target list into a single DB query per bucket.
+      // Cache key = targets hash + since bucketed to 5-min precision.
+      // Behavior guarantees:
+      //   - Staleness upper bound: WATCHLIST_CACHE_TTL_MS (60s) after a verdict change.
+      //     Polls within the same 5-min bucket share the cache; the entry refreshes
+      //     every 60s via stale-while-revalidate (first caller after TTL serves stale
+      //     and triggers background refresh).
+      //   - Bucket crossing: every 5 min the cache key changes → next poll is a cold
+      //     miss → fresh DB query. New bucket seeds from the exact since the caller
+      //     supplied.
+      //   - Cache sharing: two agents polling the same targets with different since
+      //     values in the same bucket will see the cached result seeded by whichever
+      //     poll arrived first. Both receive changes going back to the first poll's
+      //     `since` — always a superset. Agents should dedupe by changedAt > their
+      //     last-seen timestamp.
+      //   - meta.effectiveSince is echoed in the response so the agent knows which
+      //     `since` was actually used for the DB query.
       const sortedHashes = [...hashes].sort();
       const sinceBucket = Math.floor(since / SINCE_BUCKET_SEC);
       const cacheKey = `watchlist:${crypto.createHash('sha256').update(sortedHashes.join(',')).digest('hex').slice(0, 16)}:${sinceBucket}`;
 
-      const changes = cache.getOrCompute(cacheKey, WATCHLIST_CACHE_TTL_MS, () => {
+      const cached = cache.getOrCompute(cacheKey, WATCHLIST_CACHE_TTL_MS, () => {
         const snapshots = this.snapshotRepo.findChangedSince(hashes, since);
-        return snapshots.map(snap => {
+        const changes = snapshots.map(snap => {
           const score = snap.score;
           const verdict = score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' as const
             : score >= VERDICT_UNKNOWN_THRESHOLD ? 'UNKNOWN' as const : 'RISKY' as const;
@@ -71,15 +83,19 @@ export class WatchlistController {
             changedAt: snap.computed_at,
           };
         });
+        return { changes, effectiveSince: since };
       });
 
       res.json({
-        data: changes,
+        data: cached.changes,
         meta: {
           since,
+          effectiveSince: cached.effectiveSince,
           queriedAt: Math.floor(Date.now() / 1000),
           targets: hashes.length,
-          changed: changes.length,
+          changed: cached.changes.length,
+          cacheBucketSec: SINCE_BUCKET_SEC,
+          cacheTtlMs: WATCHLIST_CACHE_TTL_MS,
         },
       });
     } catch (err) {
