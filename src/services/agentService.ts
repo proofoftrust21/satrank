@@ -126,7 +126,9 @@ export class AgentService {
 
   private buildProbeData(agentHash: string): ProbeData | null {
     if (!this.probeRepo) return null;
-    const latest = this.probeRepo.findLatest(agentHash);
+    // tier-1k for display reachability — consistent with scoring & verdict.
+    // Fall back to any latest probe for timestamps if no tier-1k data.
+    const latest = this.probeRepo.findLatestAtTier(agentHash, 1000) ?? this.probeRepo.findLatest(agentHash);
     if (!latest) return null;
     return {
       reachable: latest.reachable === 1,

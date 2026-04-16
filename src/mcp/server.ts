@@ -430,7 +430,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const disputeCount = attestationRepo.countByCategoryForSubject(id, ['dispute']);
         if (fraudCount > 0) flags.push('fraud_reported');
         if (disputeCount > 0) flags.push('dispute_reported');
-        const probe = probeRepo.findLatest(id);
+        // tier-1k probe only (higher-tier failures are liquidity, not unreachability)
+        const probe = probeRepo.findLatestAtTier(id, 1000);
         if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
           const gossipFresh = (now - agent.last_seen) < DAY;
           if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) flags.push('unreachable');

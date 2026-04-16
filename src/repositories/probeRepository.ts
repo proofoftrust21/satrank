@@ -40,11 +40,34 @@ export class ProbeRepository {
     return row?.max_amount ?? null;
   }
 
-  /** Find the most recent probe result for an agent */
+  /** Find the most recent probe result for an agent (any tier) */
   findLatest(targetHash: string): ProbeResult | undefined {
     return this.db.prepare(
       'SELECT * FROM probe_results WHERE target_hash = ? ORDER BY probed_at DESC LIMIT 1'
     ).get(targetHash) as ProbeResult | undefined;
+  }
+
+  /** Latest probe at a specific tier (default: base 1k). Used for reachability
+   *  decisions — a failed high-tier probe doesn't mean the node is unreachable. */
+  findLatestAtTier(targetHash: string, tier: number = 1000): ProbeResult | undefined {
+    return this.db.prepare(
+      'SELECT * FROM probe_results WHERE target_hash = ? AND probe_amount_sats = ? ORDER BY probed_at DESC LIMIT 1'
+    ).get(targetHash, tier) as ProbeResult | undefined;
+  }
+
+  /** Per-tier success rates in a window. Used by the multi-tier penalty signal.
+   *  Returns { tier_sats: { success: N, total: M } } for tiers that have data. */
+  computeTierSuccessRates(targetHash: string, windowSec: number): Map<number, { success: number; total: number }> {
+    const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+    const rows = this.db.prepare(`
+      SELECT probe_amount_sats, SUM(CASE WHEN reachable = 1 THEN 1 ELSE 0 END) AS success, COUNT(*) AS total
+      FROM probe_results
+      WHERE target_hash = ? AND probed_at >= ? AND probe_amount_sats IS NOT NULL
+      GROUP BY probe_amount_sats
+    `).all(targetHash, cutoff) as Array<{ probe_amount_sats: number; success: number; total: number }>;
+    const result = new Map<number, { success: number; total: number }>();
+    for (const r of rows) result.set(r.probe_amount_sats, { success: r.success, total: r.total });
+    return result;
   }
 
   /** Find all probe results for an agent, most recent first */

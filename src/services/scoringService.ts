@@ -177,41 +177,61 @@ export class ScoringService {
       total = Math.min(100, Math.round(total * lnplusMult));
     }
 
-    // Probe-based unreachability penalty — graduated by failure cause.
-    // A flat ×0.85 treated all unreachable nodes identically. But there are
-    // three distinct failure modes with very different trust implications:
+    // Probe-based penalty — two regimes:
     //
-    //   Dead (gossip >30d stale + unreachable): channels are advertised but
-    //     the operator abandoned the node. Strong penalty.
-    //   Zombie (gossip 7-30d stale + unreachable): node may be offline or
-    //     poorly maintained. Moderate penalty.
-    //   Liquidity (gossip fresh + unreachable): node is alive (recent gossip
-    //     updates) but queryRoutes finds no path from our position. Often
-    //     single-channel nodes or capacity-constrained routes. Mild penalty.
+    // Regime 1: base tier (1k sats) UNREACHABLE → existing graduated classification
+    //   Dead (gossip >30d stale): 0.65
+    //   Zombie (gossip 7-30d OR 30%+ disabled): 0.80
+    //   Liquidity (gossip fresh, no route): 0.90
     //
-    // This uses agent.last_seen (gossip freshness) already in DB — zero
-    // additional API calls.
+    // Regime 2: base tier REACHABLE → multi-tier liquidity signal (stable)
+    //   signal = Σ(success_rate_tier × weight_tier) / Σ(weight_tier for PROBED tiers)
+    //   weights: 1k=0.4, 10k=0.3, 100k=0.2, 1M=0.1
+    //   probeMult = max(0.65, signal)
+    //
+    // This fixes the oscillation bug: before, findLatest() could return a high-tier
+    // failure (1M sats = legitimate liquidity limit) which applied the full 0.90
+    // penalty, causing scores to swing 9 points based on which tier was probed last.
+    // Now the signal aggregates all recent probes by tier, weighted by agent-facing
+    // importance (smaller payments matter more).
     if (this.probeRepo) {
-      const probe = this.probeRepo.findLatest(agentHash);
-      if (probe && (now - probe.probed_at) < PROBE_FRESHNESS_TTL && probe.reachable === 0) {
-        const gossipAgeSec = now - agent.last_seen;
-        const THIRTY_DAYS = 30 * 86400;
-        const SEVEN_DAYS = 7 * 86400;
-        const channels = agent.total_transactions || 1;
-        const disabledRatio = (agent.disabled_channels ?? 0) > 0
-          ? (agent.disabled_channels ?? 0) / channels
-          : 0;
-        let probeMult: number;
-        if (disabledRatio >= 0.8) {
-          probeMult = 0.65; // dead: 80%+ channels disabled in gossip
-        } else if (gossipAgeSec > THIRTY_DAYS) {
-          probeMult = 0.70; // dead: gossip stale 30d+ AND unreachable
-        } else if (gossipAgeSec > SEVEN_DAYS || disabledRatio >= 0.3) {
-          probeMult = 0.80; // zombie: gossip stale 7-30d or 30%+ disabled
+      const baseProbe = this.probeRepo.findLatestAtTier(agentHash, 1000);
+      if (baseProbe && (now - baseProbe.probed_at) < PROBE_FRESHNESS_TTL) {
+        if (baseProbe.reachable === 0) {
+          // Regime 1 — base tier unreachable: existing dead/zombie/liquidity classification
+          const gossipAgeSec = now - agent.last_seen;
+          const THIRTY_DAYS = 30 * 86400;
+          const SEVEN_DAYS = 7 * 86400;
+          const channels = agent.total_transactions || 1;
+          const disabledRatio = (agent.disabled_channels ?? 0) > 0
+            ? (agent.disabled_channels ?? 0) / channels
+            : 0;
+          let probeMult: number;
+          if (disabledRatio >= 0.8) probeMult = 0.65;
+          else if (gossipAgeSec > THIRTY_DAYS) probeMult = 0.70;
+          else if (gossipAgeSec > SEVEN_DAYS || disabledRatio >= 0.3) probeMult = 0.80;
+          else probeMult = 0.90;
+          total = Math.max(0, Math.round(total * probeMult));
         } else {
-          probeMult = 0.90; // liquidity: gossip fresh, channels active, just no route from us
+          // Regime 2 — base tier reachable: multi-tier liquidity signal
+          const SEVEN_DAYS_SEC = 7 * 86400;
+          const TIER_WEIGHTS = new Map<number, number>([[1000, 0.4], [10_000, 0.3], [100_000, 0.2], [1_000_000, 0.1]]);
+          const rates = this.probeRepo.computeTierSuccessRates(agentHash, SEVEN_DAYS_SEC);
+          let weightedSum = 0;
+          let weightTotal = 0;
+          for (const [tier, weight] of TIER_WEIGHTS) {
+            const stats = rates.get(tier);
+            if (stats && stats.total > 0) {
+              weightedSum += (stats.success / stats.total) * weight;
+              weightTotal += weight;
+            }
+          }
+          if (weightTotal > 0) {
+            const signal = weightedSum / weightTotal;
+            const probeMult = Math.max(0.65, signal);
+            if (probeMult < 1.0) total = Math.max(0, Math.round(total * probeMult));
+          }
         }
-        total = Math.max(0, Math.round(total * probeMult));
       }
     }
 

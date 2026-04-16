@@ -300,7 +300,8 @@ export class V2Controller {
       if (fraudCount > 0) flags.push('fraud_reported');
       if (disputeCount > 0) flags.push('dispute_reported');
       if (this.probeRepo) {
-        const probe = this.probeRepo.findLatest(hash);
+        // tier-1k probe only — higher tiers surface via maxRoutableAmount
+        const probe = this.probeRepo.findLatestAtTier(hash, 1000);
         if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
           // Same guard as verdictService: fresh gossip + high score = positional failure, not dead node
           const gossipFresh = (now - agent.last_seen) < DAY;

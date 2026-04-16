@@ -417,7 +417,8 @@ export class SatRankDvm {
     if (agent && agent.avg_score > 0) {
       // Known node — return score from index
       const scoreResult = this.scoringService.getScore(hash);
-      const probe = this.probeRepo.findLatest(hash);
+      // tier-1k for base reachability (higher tiers surface via other fields)
+      const probe = this.probeRepo.findLatestAtTier(hash, 1000);
       const reachable = probe ? probe.reachable === 1 : null;
       const verdict = scoreResult.total >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : scoreResult.total >= 30 ? 'UNKNOWN' : 'RISKY';
 

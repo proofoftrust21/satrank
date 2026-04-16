@@ -77,7 +77,10 @@ export class VerdictService {
     // /api/verdicts (which has no live pathfinding) marks these nodes RISKY while
     // /api/decide (which has live pathfinding) correctly marks them SAFE.
     if (this.probeRepo) {
-      const probe = this.probeRepo.findLatest(publicKeyHash);
+      // Use tier-1k probe for "unreachable" flag. A high-tier (1M) failure is a
+      // liquidity signal (exposed via maxRoutableAmount), not an unreachability
+      // signal. Only tier-1k failure means "can't route even a trivial amount".
+      const probe = this.probeRepo.findLatestAtTier(publicKeyHash, 1000);
       if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
         const gossipFresh = (now - agent.last_seen) < DAY;
         if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) {
