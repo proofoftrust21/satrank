@@ -9,6 +9,7 @@ import type { TrendService } from './trendService';
 import type { AgentScoreResponse, ScoreEvidence, ScoreComponents, Agent, ProbeData } from '../types';
 import { NotFoundError } from '../errors';
 import { computePopularityBonus } from '../utils/scoring';
+import { confidenceToNumber } from '../utils/confidence';
 import { logger } from '../logger';
 
 export type SortByField = 'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity';
@@ -57,7 +58,7 @@ export class AgentService {
       score: {
         total: scoreResult.total,
         components: scoreResult.components,
-        confidence: scoreResult.confidence,
+        confidence: confidenceToNumber(scoreResult.confidence),
         computedAt: scoreResult.computedAt,
       },
       stats: {

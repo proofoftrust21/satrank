@@ -5,7 +5,7 @@ import type { AttestationRepository } from '../repositories/attestationRepositor
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { Attestation, CreateAttestationInput } from '../types';
-import { NotFoundError, ValidationError, ConflictError } from '../errors';
+import { NotFoundError, ValidationError, DuplicateReportError } from '../errors';
 
 export class AttestationService {
   constructor(
@@ -75,7 +75,7 @@ export class AttestationService {
         this.attestationRepo.insert(attestation);
       } catch (err: unknown) {
         if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
-          throw new ConflictError('Attestation already submitted for this transaction by this attester');
+          throw new DuplicateReportError('Attestation already submitted for this transaction by this attester');
         }
         throw err;
       }

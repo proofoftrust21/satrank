@@ -10,6 +10,25 @@ Zero dependencies. Uses native `fetch()` (Node.js 18+).
 npm install @satrank/sdk
 ```
 
+## Agent identity: pubkey, hash, normalization
+
+SatRank identifies agents by `public_key_hash`: a 64-char lowercase hex SHA-256 of the Lightning pubkey **treated as an ASCII string** (not its raw bytes).
+
+```typescript
+import { createHash } from 'node:crypto';
+
+// 66-char hex LN pubkey
+const pubkey = '03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f';
+
+// Hash — hash the hex string itself, NOT Buffer.from(pubkey, 'hex')
+const hash = createHash('sha256').update(pubkey).digest('hex');
+// => 64-char SHA-256 hex, e.g. '2fc0...'
+```
+
+Endpoints that accept an agent identifier (`/api/score/:hash`, `/api/profile/:id`, `/api/report`, `/api/decide`'s `target`/`caller`) expect the hash form. The SDK's `transact()`, `decide()`, and `report()` helpers accept either the hex pubkey or the hash — they hash the pubkey client-side using the rule above.
+
+If you compute hashes yourself and see `NOT_FOUND { details: { resource: 'Agent (...)' } }` despite the node being indexed, double-check you hashed the pubkey-as-string and not its raw bytes.
+
 ## Quick Start
 
 ```typescript
@@ -20,7 +39,7 @@ const client = new SatRankClient('https://satrank.dev');
 // Get an agent's trust score with full evidence
 const score = await client.getScore('a1b2c3...64-char-sha256-hash');
 console.log(score.score.total);        // 0-100
-console.log(score.score.confidence);   // 'very_low' | 'low' | 'medium' | 'high' | 'very_high'
+console.log(score.score.confidence);   // number between 0 and 1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high)
 console.log(score.evidence.reputation); // LN+ ratings, centrality ranks
 
 // Leaderboard

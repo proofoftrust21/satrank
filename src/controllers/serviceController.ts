@@ -167,19 +167,28 @@ export class ServiceController {
       // cheapest = min(price) among SAFE
       const cheapest = enriched.reduce((min, s) => s.price < min.price ? s : min);
 
-      const format = (e: typeof enriched[number]) => ({
-        name: e.svc.name,
-        category: e.svc.category,
-        provider: e.svc.provider,
-        url: e.svc.url,
-        priceSats: e.price,
-        uptimeRatio: Math.round(e.uptimeRatio * 1000) / 1000,
-        node: e.agent ? {
-          publicKeyHash: e.agent.public_key_hash,
-          alias: e.agent.alias,
-          score: e.score,
-        } : null,
-      });
+      // Sim #5 #8: even the "best" of a thin candidate pool can have poor uptime;
+      // surface structured warnings so agents can gate on warnings.length === 0
+      // instead of re-deriving the threshold client-side.
+      const LOW_UPTIME_THRESHOLD = 0.20;
+      const format = (e: typeof enriched[number]) => {
+        const warnings: string[] = [];
+        if (e.uptimeRatio < LOW_UPTIME_THRESHOLD) warnings.push('LOW_UPTIME');
+        return {
+          name: e.svc.name,
+          category: e.svc.category,
+          provider: e.svc.provider,
+          url: e.svc.url,
+          priceSats: e.price,
+          uptimeRatio: Math.round(e.uptimeRatio * 1000) / 1000,
+          node: e.agent ? {
+            publicKeyHash: e.agent.public_key_hash,
+            alias: e.agent.alias,
+            score: e.score,
+          } : null,
+          warnings,
+        };
+      };
 
       res.json({
         data: {

@@ -8,6 +8,7 @@ import type { ScoringService } from './scoringService';
 import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { VerdictResponse, VerdictFlag, Verdict, ConfidenceLevel, PersonalTrust, PathfindingResult } from '../types';
+import type { ScoreResult } from './scoringService';
 import { DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
@@ -46,6 +47,10 @@ export class VerdictService {
     // `source` tags the call path for the verdictTotal counter. Defaults to
     // 'unknown' so test cases and legacy callers don't need to thread it.
     source: string = 'unknown',
+    // Sim #5: callers that already ran getScore() pass it here to eliminate
+    // in-request score drift. If the SCORE_CACHE_TTL boundary fell between
+    // two getScore() calls, /decide and /profile could see a ±1 spread.
+    precomputedScore?: ScoreResult,
   ): Promise<VerdictResponse> {
     const agent = this.agentRepo.findByHash(publicKeyHash);
     if (!agent) {
@@ -64,7 +69,7 @@ export class VerdictService {
     // Increment query count — demand signal
     this.agentRepo.incrementQueryCount(publicKeyHash);
 
-    const scoreResult = this.scoringService.getScore(publicKeyHash);
+    const scoreResult = precomputedScore ?? this.scoringService.getScore(publicKeyHash);
     const delta = this.trendService.computeDeltas(publicKeyHash, scoreResult.total);
 
     const now = Math.floor(Date.now() / 1000);

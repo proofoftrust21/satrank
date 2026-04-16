@@ -13,6 +13,7 @@ const GENERIC_MESSAGES: Record<string, string> = {
   NOT_FOUND: 'Resource not found',
   VALIDATION_ERROR: 'Invalid request',
   CONFLICT: 'Conflict',
+  DUPLICATE_REPORT: 'Duplicate report',
   UNAUTHORIZED: 'Unauthorized',
   PAYMENT_REQUIRED: 'Payment required',
   MALFORMED_REQUEST: 'Malformed request body',
@@ -70,6 +71,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
       error: {
         code: err.code,
         message,
+        ...(err.details ? { details: err.details } : {}),
       },
       requestId: req.requestId,
     });

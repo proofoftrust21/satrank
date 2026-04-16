@@ -31,6 +31,7 @@ import { agentIdentifierSchema, decideSchema, reportSchema, bestRouteSchema } fr
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
+import { confidenceToNumber } from '../utils/confidence';
 import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
@@ -396,7 +397,7 @@ export class V2Controller {
           score: {
             total: scoreResult.total,
             components: scoreResult.components,
-            confidence: scoreResult.confidence,
+            confidence: confidenceToNumber(scoreResult.confidence),
             rank,
           },
           reports: {

@@ -335,6 +335,7 @@ describe('POST /api/report', () => {
       })
       .set('Content-Type', 'application/json');
     expect(res2.status).toBe(409);
+    expect(res2.body.error.code).toBe('DUPLICATE_REPORT');
   });
 
   it('rejects report for unknown target', async () => {
@@ -348,6 +349,8 @@ describe('POST /api/report', () => {
       .set('Content-Type', 'application/json');
 
     expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+    expect(res.body.error.details?.resource).toBe('Agent (target)');
   });
 
   it('validates outcome enum', async () => {

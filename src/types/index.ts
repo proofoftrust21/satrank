@@ -154,7 +154,9 @@ export interface AgentScoreResponse {
   score: {
     total: number;
     components: ScoreComponents;
-    confidence: ConfidenceLevel;
+    /** Confidence 0-1 (sigmoid-derived). Uniform across /decide, /profile,
+     *  /verdicts — sim #5 found the shape diverged between endpoints. */
+    confidence: number;
     computedAt: number;
   };
   stats: {
@@ -455,7 +457,7 @@ export interface DecideResponse {
     components: ScoreComponents;
   };
   basis: 'proxy' | 'empirical';
-  confidence: ConfidenceLevel;
+  confidence: number;
   verdict: Verdict;
   flags: VerdictFlag[];
   pathfinding: PathfindingResult | null;
@@ -521,7 +523,7 @@ export interface ProfileResponse {
   score: {
     total: number;
     components: ScoreComponents;
-    confidence: ConfidenceLevel;
+    confidence: number;
     rank: number | null;
   };
   reports: {

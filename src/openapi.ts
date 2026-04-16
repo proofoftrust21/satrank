@@ -292,7 +292,7 @@ export const openapiSpec = {
           },
           '400': { $ref: '#/components/responses/ValidationError' },
           '401': { $ref: '#/components/responses/Unauthorized' },
-          '409': { description: 'Duplicate attestation', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '409': { description: 'Duplicate attestation (error.code = DUPLICATE_REPORT)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },
       },
     },
@@ -330,6 +330,23 @@ export const openapiSpec = {
             content: { 'application/json': { schema: {
               type: 'object',
               properties: { data: { $ref: '#/components/schemas/NetworkStats' } },
+            } } },
+          },
+        },
+      },
+    },
+    '/stats/reports': {
+      get: {
+        summary: 'Report adoption dashboard (30-day)',
+        operationId: 'getReportStats',
+        description: 'Public 30-day report-adoption dashboard. Weekly buckets + cumulative progress vs targetN (200). The `bonus.*` block (payouts, distinct recipients, enabled flag) is only returned with a valid X-API-Key; unauthenticated callers get the summary + weekly fields only. Cached 5 minutes server-side.',
+        tags: ['System'],
+        responses: {
+          '200': {
+            description: 'Report stats',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              properties: { data: { $ref: '#/components/schemas/ReportStatsResponse' } },
             } } },
           },
         },
@@ -426,7 +443,7 @@ export const openapiSpec = {
           },
           '400': { $ref: '#/components/responses/ValidationError' },
           '404': { $ref: '#/components/responses/NotFound' },
-          '409': { description: 'Duplicate report (same reporter+target within 1 hour)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '409': { description: 'Duplicate report — same reporter+target within 1 hour (error.code = DUPLICATE_REPORT)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },
       },
     },
@@ -717,6 +734,11 @@ export const openapiSpec = {
             properties: {
               code: { type: 'string' },
               message: { type: 'string' },
+              details: {
+                type: 'object',
+                description: 'Optional structured context. For NOT_FOUND, includes `resource` naming the missing entity (e.g. "Agent (reporter)", "Transaction").',
+                additionalProperties: { type: 'string' },
+              },
             },
             required: ['code', 'message'],
           },
@@ -751,7 +773,7 @@ export const openapiSpec = {
             properties: {
               total: { type: 'integer', minimum: 0, maximum: 100 },
               components: { $ref: '#/components/schemas/ScoreComponents' },
-              confidence: { type: 'string', enum: ['very_low', 'low', 'medium', 'high', 'very_high'] },
+              confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
               computedAt: { type: 'integer' },
             },
           },
@@ -1064,6 +1086,51 @@ export const openapiSpec = {
           trends: { $ref: '#/components/schemas/NetworkTrends' },
         },
       },
+      ReportStatsResponse: {
+        type: 'object',
+        description: '30-day report-adoption dashboard. `bonus.*` is gated behind X-API-Key.',
+        properties: {
+          window: {
+            type: 'object',
+            properties: {
+              sinceDays: { type: 'integer', description: 'Rolling window length (always 30)' },
+              generatedAt: { type: 'integer', description: 'Unix epoch seconds when the cache was computed' },
+            },
+          },
+          summary: {
+            type: 'object',
+            properties: {
+              totalSubmitted: { type: 'integer', description: 'Reports submitted in the window' },
+              totalVerified: { type: 'integer', description: 'Reports with verified=1 (payment hash matched an on-chain/LN payment)' },
+              distinctReporters: { type: 'integer', description: 'Unique reporter npubs / keys in the window' },
+              targetN: { type: 'integer', description: 'Target report count — 200 by default' },
+              progressPct: { type: 'number', minimum: 0, maximum: 100, description: 'totalSubmitted / targetN, capped at 100, 1-decimal precision' },
+            },
+          },
+          weekly: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                weekStart: { type: 'string', description: 'YYYY-MM-DD of the earliest report in the week (UTC)' },
+                submitted: { type: 'integer' },
+                verified: { type: 'integer' },
+                distinctReporters: { type: 'integer' },
+              },
+            },
+          },
+          bonus: {
+            type: 'object',
+            description: 'Tier-2 economic-incentive payout counters. Only returned when X-API-Key is valid.',
+            properties: {
+              enabled: { type: 'boolean', description: 'Whether REPORT_BONUS_ENABLED env flag is on' },
+              totalBonusesGranted: { type: 'integer' },
+              totalSatsPaid: { type: 'integer' },
+              distinctRecipients: { type: 'integer' },
+            },
+          },
+        },
+      },
       VersionResponse: {
         type: 'object',
         properties: {
@@ -1102,7 +1169,7 @@ export const openapiSpec = {
             },
           },
           basis: { type: 'string', enum: ['proxy', 'empirical'], description: 'proxy = <10 reports (using trust score), empirical = >=10 reports' },
-          confidence: { type: 'string', enum: ['very_low', 'low', 'medium', 'high', 'very_high'] },
+          confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
           verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
           flags: { type: 'array', items: { type: 'string' } },
           pathfinding: { oneOf: [{ $ref: '#/components/schemas/PathfindingResult' }, { type: 'null' }] },
@@ -1175,7 +1242,7 @@ export const openapiSpec = {
           score: { type: 'object', properties: {
             total: { type: 'integer' },
             components: { $ref: '#/components/schemas/ScoreComponents' },
-            confidence: { type: 'string' },
+            confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
             rank: { type: ['integer', 'null'], description: '1-based rank among all agents by score' },
           } },
           reports: { type: 'object', properties: {

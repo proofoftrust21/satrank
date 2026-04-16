@@ -424,6 +424,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { computeBaseFlags } = await import('../utils/flags');
         const { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } = await import('../config/scoring');
         const { DAY } = await import('../utils/constants');
+        const { confidenceToNumber } = await import('../utils/confidence');
         const now = Math.floor(Date.now() / 1000);
         const flags = computeBaseFlags(agent, delta, now);
         const fraudCount = attestationRepo.countByCategoryForSubject(id, ['fraud']);
@@ -438,7 +439,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const profile = {
           agent: { publicKeyHash: agent.public_key_hash, alias: agent.alias, publicKey: agent.public_key, firstSeen: agent.first_seen, lastSeen: agent.last_seen, source: agent.source },
-          score: { total: scoreResult.total, components: scoreResult.components, confidence: scoreResult.confidence, rank },
+          score: { total: scoreResult.total, components: scoreResult.components, confidence: confidenceToNumber(scoreResult.confidence), rank },
           reports: { total: reports.total, successes: reports.successes, failures: reports.failures, timeouts: reports.timeouts, successRate: Math.round(successRate * 1000) / 1000 },
           probeUptime: probeUptime !== null ? Math.round(probeUptime * 1000) / 1000 : null,
           delta, riskProfile, evidence, flags,

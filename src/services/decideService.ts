@@ -12,6 +12,7 @@ import type { VerdictService } from './verdictService';
 import type { SurvivalService } from './survivalService';
 import type { DecideResponse, ServiceHealth, VerdictFlag, Verdict, ConfidenceLevel, PathfindingResult } from '../types';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
+import { confidenceToNumber } from '../utils/confidence';
 import { logger } from '../logger';
 const EMPIRICAL_THRESHOLD = 10; // min data points before using empirical basis
 
@@ -177,11 +178,15 @@ export class DecideService {
     // Mark as hot node for priority probing
     this.agentRepo.touchLastQueried(targetHash);
 
+    // Single getScore() per request. Sim #5 found ±1 drift when the cache
+    // TTL boundary fell between two getScore() calls; /decide and /profile
+    // could return slightly different totals. Thread the same result through.
+    const scoreResult = this.scoringService.getScore(targetHash);
+
     // Get the full verdict (reuses pathfinding, personal trust, flags, risk profile)
-    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash, pathfindingSourcePubkey, 'decide');
+    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash, pathfindingSourcePubkey, 'decide', scoreResult);
 
     // P_trust — sigmoid of the trust score, centered at 50
-    const scoreResult = this.scoringService.getScore(targetHash);
     const pTrust = sigmoid(scoreResult.total);
 
     // P_routable — is there a Lightning route from caller to target?
@@ -338,7 +343,7 @@ export class DecideService {
         components: scoreResult.components,
       },
       basis,
-      confidence: scoreResult.confidence,
+      confidence: confidenceToNumber(scoreResult.confidence),
       verdict: verdictResult.verdict,
       flags: verdictResult.flags,
       pathfinding,

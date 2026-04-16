@@ -8,7 +8,7 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { ScoringService } from './scoringService';
 import type { Attestation, ReportRequest, ReportResponse, ReportOutcome, AttestationCategory } from '../types';
-import { NotFoundError, ValidationError, ConflictError } from '../errors';
+import { NotFoundError, ValidationError, DuplicateReportError } from '../errors';
 import { logger } from '../logger';
 import { reportSubmittedTotal } from '../middleware/metrics';
 
@@ -112,7 +112,7 @@ export class ReportService {
         input.reporter, input.target, now - REPORT_DEDUP_WINDOW_SEC,
       );
       if (recent) {
-        throw new ConflictError('Report already submitted for this target within the last hour');
+        throw new DuplicateReportError('Report already submitted for this target within the last hour');
       }
 
       // Ensure synthetic transaction exists (required by FK constraint)

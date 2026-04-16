@@ -185,12 +185,13 @@ describe('Contract tests — responses match OpenAPI spec', () => {
     assertShape(data.score, {
       total: 'number',
       components: 'object',
-      confidence: 'string',
+      confidence: 'number',
       computedAt: 'number',
     });
     expect(data.score.total).toBeGreaterThanOrEqual(0);
     expect(data.score.total).toBeLessThanOrEqual(100);
-    expect(['very_low', 'low', 'medium', 'high', 'very_high']).toContain(data.score.confidence);
+    expect(data.score.confidence).toBeGreaterThanOrEqual(0);
+    expect(data.score.confidence).toBeLessThanOrEqual(1);
 
     // components
     assertShape(data.score.components, {

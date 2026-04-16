@@ -14,7 +14,7 @@
 
 ### 1.2 Tier 1 — Reporter badge (live, no economic surface)
 - `/api/profile/:id` → `reporterStats: { badge, submitted30d, verified30d, breakdown, trustedThreshold }`.
-- Badge ladder: `reporter` (1+), `trusted_reporter` (10+ verified), `top_reporter` (50+).
+- Badge ladder (matches `src/controllers/v2Controller.ts`): `reporter` (1+ submitted), `active_reporter` (5+ submitted), `trusted_reporter` (20+ verified reports). Threshold for `trusted_reporter` is `TRUSTED_REPORTER_THRESHOLD = 20` in code.
 - No payout, no gaming surface.
 
 ### 1.3 Tier 2 — Economic bonus (code complete, flag OFF)

@@ -415,6 +415,27 @@ export function createApp() {
  *  After this runs once, getOrCompute will serve everything instantly and refresh in
  *  the background. All calls are wrapped so a warm-up failure never blocks startup. */
 function warmUpCaches(statsService: StatsService, agentController: AgentController, trendService: TrendService): void {
+  runWarmUp(statsService, agentController, trendService, /* initial= */ true);
+
+  // Sim #5 #11: SWR only refreshes on demand — if no traffic hits /api/stats for
+  // longer than the TTL, the freshness gauge reports huge staleness (observed
+  // 6366s) even though the data would rebuild cheaply. A periodic refresh
+  // inside the TTL window keeps the cache warm regardless of traffic.
+  const REFRESH_INTERVAL_MS = 4 * 60_000; // just inside the 5-min TTL
+  const timer = setInterval(
+    () => runWarmUp(statsService, agentController, trendService, false),
+    REFRESH_INTERVAL_MS,
+  );
+  // Don't block process exit for tests / graceful shutdown.
+  timer.unref();
+}
+
+function runWarmUp(
+  statsService: StatsService,
+  agentController: AgentController,
+  trendService: TrendService,
+  initial: boolean,
+): void {
   const start = Date.now();
   try {
     statsService.getNetworkStats();
@@ -423,8 +444,6 @@ function warmUpCaches(statsService: StatsService, agentController: AgentControll
     logger.warn({ error: msg }, 'Cache warm-up: getNetworkStats failed');
   }
 
-  // Prime leaderboard variants that agents commonly request.
-  // The getOrCompute wrapper re-uses these exact cache keys.
   for (const limit of [5, 10, 20]) {
     try {
       const response = agentController.buildTopResponse(limit, 0, 'score');
@@ -435,7 +454,6 @@ function warmUpCaches(statsService: StatsService, agentController: AgentControll
     }
   }
 
-  // Prime movers cache
   try {
     const { up, down } = trendService.getTopMovers(5);
     cacheSet('agents:movers', { data: { gainers: up, losers: down } }, 5 * 60_000);
@@ -444,5 +462,9 @@ function warmUpCaches(statsService: StatsService, agentController: AgentControll
     logger.warn({ error: msg }, 'Cache warm-up: getTopMovers failed');
   }
 
-  logger.info({ durationMs: Date.now() - start }, 'Cache warm-up complete');
+  if (initial) {
+    logger.info({ durationMs: Date.now() - start }, 'Cache warm-up complete');
+  } else {
+    logger.debug({ durationMs: Date.now() - start }, 'Cache periodic refresh complete');
+  }
 }
