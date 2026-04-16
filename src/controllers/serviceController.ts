@@ -119,7 +119,8 @@ export class ServiceController {
         offset: 0,
       });
 
-      // Enrich + filter to SAFE nodes with valid price
+      // Enrich + filter to SAFE nodes with valid price + optional minUptime floor
+      const minUptime = parsed.data.minUptime ?? 0;
       const enriched = services
         .map(svc => {
           const agent = svc.agent_hash ? this.agentRepo.findByHash(svc.agent_hash) : null;
@@ -129,7 +130,12 @@ export class ServiceController {
           const price = svc.service_price_sats ?? 0;
           return { svc, agent, score, uptimeRatio, price };
         })
-        .filter(s => s.score >= VERDICT_SAFE_THRESHOLD && s.uptimeRatio > 0 && s.price > 0);
+        .filter(s =>
+          s.score >= VERDICT_SAFE_THRESHOLD &&
+          s.uptimeRatio > 0 &&
+          s.price > 0 &&
+          s.uptimeRatio >= minUptime,
+        );
 
       if (enriched.length === 0) {
         res.json({

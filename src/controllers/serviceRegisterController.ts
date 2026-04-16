@@ -48,7 +48,10 @@ export class ServiceRegisterController {
           registered: true,
           agentHash: result.agentHash,
           priceSats: result.priceSats,
-          message: 'Service registered. Health checks will run periodically. Visible at GET /api/services within 30 minutes.',
+          fieldsUpdated: result.fieldsUpdated,
+          message: result.fieldsUpdated.length === 0
+            ? 'Service already has metadata from 402index — self-register fields ignored (no-overwrite policy).'
+            : `Service registered. Fields added: ${result.fieldsUpdated.join(', ')}. Visible at GET /api/services within 30 minutes.`,
         },
       });
     } catch (err) {

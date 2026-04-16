@@ -137,22 +137,36 @@ export class RegistryCrawler {
   }
 
   /** Public wrapper for ad-hoc submission via /api/services/register.
-   *  Returns { agentHash, priceSats } if the URL is a valid L402 endpoint, null otherwise. */
-  async registerSelfSubmitted(serviceUrl: string, meta?: { name?: string; description?: string; category?: string; provider?: string }): Promise<{ agentHash: string; priceSats: number | null } | null> {
+   *  Returns { agentHash, priceSats, fieldsUpdated } if valid L402 endpoint, null otherwise.
+   *
+   *  Anti-vandalism: self-register only fills EMPTY metadata fields. Existing data
+   *  from 402index (the trusted crawler source) is never overwritten. This prevents
+   *  a random submitter from renaming "Weather Intel: Forecast" to "test". */
+  async registerSelfSubmitted(serviceUrl: string, meta?: { name?: string; description?: string; category?: string; provider?: string }): Promise<{ agentHash: string; priceSats: number | null; fieldsUpdated: string[] } | null> {
     if (!isSafeUrl(serviceUrl)) return null;
     const agentHash = await this.discoverNodeFromUrl(serviceUrl);
     if (!agentHash) return null;
     this.serviceEndpointRepo.upsert(agentHash, serviceUrl, 0, 0);
+
+    const updated: string[] = [];
     if (meta) {
-      this.serviceEndpointRepo.updateMetadata(serviceUrl, {
-        name: meta.name?.trim() || null,
-        description: meta.description?.trim() || null,
-        category: meta.category ? normalizeCategory(meta.category) : null,
-        provider: meta.provider?.trim() || null,
-      });
+      const existing = this.serviceEndpointRepo.findByUrl(serviceUrl);
+      // Only fill fields that are currently null — never overwrite trusted crawler data
+      const patch = {
+        name: existing?.name ?? (meta.name?.trim() || null),
+        description: existing?.description ?? (meta.description?.trim() || null),
+        category: existing?.category ?? (meta.category ? normalizeCategory(meta.category) : null),
+        provider: existing?.provider ?? (meta.provider?.trim() || null),
+      };
+      // Track which fields actually changed
+      if (!existing?.name && patch.name) updated.push('name');
+      if (!existing?.description && patch.description) updated.push('description');
+      if (!existing?.category && patch.category) updated.push('category');
+      if (!existing?.provider && patch.provider) updated.push('provider');
+      this.serviceEndpointRepo.updateMetadata(serviceUrl, patch);
     }
     const ep = this.serviceEndpointRepo.findByUrl(serviceUrl);
-    return { agentHash, priceSats: ep?.service_price_sats ?? null };
+    return { agentHash, priceSats: ep?.service_price_sats ?? null, fieldsUpdated: updated };
   }
 
   /** GET the service URL, expect a 402 with WWW-Authenticate header containing a BOLT11 invoice.

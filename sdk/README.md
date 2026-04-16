@@ -296,7 +296,9 @@ import { SatRankClient } from '@satrank/sdk';
 
 const client = new SatRankClient('https://satrank.dev');
 
-// Subscribe to score changes for specific Lightning nodes
+// Subscribe to score changes for specific Lightning nodes.
+// By default, only events created AFTER subscription are delivered
+// (the Nostr filter includes `since: now` to skip historical events).
 const unsubscribe = client.watchNostr(
   [
     '03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f', // ACINQ
@@ -306,7 +308,14 @@ const unsubscribe = client.watchNostr(
     console.log(`${event.alias}: score=${event.score} verdict=${event.verdict} reachable=${event.reachable}`);
     // event.components = { volume: 100, reputation: 75, ... }
   },
+  { includeHistory: false }, // default
 );
+
+// To also receive historical events (useful for backfill):
+const unsubAll = client.watchNostr(targets, onEvent, { includeHistory: true });
+
+// Or start from a specific timestamp:
+const unsubSince = client.watchNostr(targets, onEvent, { since: 1776000000 });
 
 // Later: stop watching
 unsubscribe();

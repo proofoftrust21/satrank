@@ -260,9 +260,16 @@ export class SatRankClient {
 
     const payment = await payFn();
 
+    // The server's decide_log stores the target HASH (SHA256 of pubkey when
+    // input was a pubkey). The report auth matches strings literally, so we
+    // must pass the same canonical form to /api/report. Normalize 66-char
+    // Lightning pubkeys to SHA256 hashes before reporting.
+    const reportTarget = await normalizeTargetForReport(target);
+    const reportCaller = await normalizeTargetForReport(caller);
+
     const report = await this.report({
-      target,
-      reporter: caller,
+      target: reportTarget,
+      reporter: reportCaller,
       outcome: payment.success ? 'success' : 'failure',
       preimage: payment.preimage,
       paymentHash: payment.paymentHash,
@@ -318,24 +325,34 @@ export class SatRankClient {
    * This is the recommended real-time monitoring method. SatRank publishes
    * delta-only events every 30 minutes to 3 public relays.
    *
+   * By default, only events created AFTER subscription are delivered
+   * (since = now). Pass `includeHistory: true` to receive all historical
+   * events, or `since: <timestamp>` to start from a specific point in time.
+   *
    * @param targets Lightning pubkeys (02/03 prefix, 66 chars) to watch
    * @param onEvent Called for each score change event with parsed tags
-   * @param relays Override default relays (default: relay.damus.io, nos.lol, relay.primal.net)
+   * @param options.relays Override default relays
+   * @param options.since Unix timestamp — only events after this (default: now)
+   * @param options.includeHistory If true, receive all historical events (overrides `since`)
    * @returns Unsubscribe function that closes all relay connections
    */
   watchNostr(
     targets: string[],
     onEvent: (event: NostrScoreEvent) => void,
-    relays: string[] = SATRANK_RELAYS,
+    options?: { relays?: string[]; since?: number; includeHistory?: boolean },
   ): () => void {
+    const relays = options?.relays ?? SATRANK_RELAYS;
     const sockets: WebSocket[] = [];
     const subId = `satrank-${Date.now().toString(36)}`;
 
-    const filter = {
+    const filter: { kinds: number[]; authors: string[]; '#d': string[]; since?: number } = {
       kinds: [30382],
       authors: [SATRANK_NOSTR_PUBKEY],
       '#d': targets,
     };
+    if (!options?.includeHistory) {
+      filter.since = options?.since ?? Math.floor(Date.now() / 1000);
+    }
 
     for (const relay of relays) {
       try {
@@ -465,6 +482,22 @@ export class SatRankClient {
       clearTimeout(timer);
     }
   }
+}
+
+// --- Identifier normalization ---
+
+/** If input is a 66-char Lightning pubkey (02/03 prefix), return SHA256 hex.
+ *  Otherwise return the input unchanged. Uses Web Crypto (Node 22+, browsers). */
+async function normalizeTargetForReport(input: string): Promise<string> {
+  if (input.length === 66 && /^(02|03)/.test(input)) {
+    const bytes = new Uint8Array(input.length / 2);
+    for (let i = 0; i < input.length; i += 2) {
+      bytes[i / 2] = parseInt(input.substring(i, i + 2), 16);
+    }
+    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return input;
 }
 
 // --- Nostr constants and helpers ---

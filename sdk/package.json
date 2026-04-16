@@ -1,6 +1,6 @@
 {
   "name": "@satrank/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Client SDK for the SatRank API — trust scores for AI agents on Bitcoin Lightning",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
