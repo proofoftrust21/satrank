@@ -486,15 +486,14 @@ export class SatRankClient {
 
 // --- Identifier normalization ---
 
-/** If input is a 66-char Lightning pubkey (02/03 prefix), return SHA256 hex.
- *  Otherwise return the input unchanged. Uses Web Crypto (Node 22+, browsers). */
+/** If input is a 66-char Lightning pubkey (02/03 prefix), return SHA256 hex
+ *  of the UTF-8 string representation (matches server's sha256(pubkey) convention,
+ *  NOT the hash of the hex-decoded bytes). Otherwise return input unchanged.
+ *  Uses Web Crypto (Node 22+, browsers). */
 async function normalizeTargetForReport(input: string): Promise<string> {
   if (input.length === 66 && /^(02|03)/.test(input)) {
-    const bytes = new Uint8Array(input.length / 2);
-    for (let i = 0; i < input.length; i += 2) {
-      bytes[i / 2] = parseInt(input.substring(i, i + 2), 16);
-    }
-    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    const utf8 = new TextEncoder().encode(input);
+    const hash = await crypto.subtle.digest('SHA-256', utf8);
     return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
   }
   return input;
