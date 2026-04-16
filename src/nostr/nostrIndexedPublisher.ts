@@ -24,6 +24,12 @@ import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { Agent } from '../types';
 import { logger } from '../logger';
 import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
+import {
+  nostrPublishTotal,
+  nostrRelayAckTotal,
+  nostrPublishDuration,
+  nostrLastPublishTimestamp,
+} from '../middleware/metrics';
 
 const KIND_TRUSTED_ASSERTION = 30382;
 
@@ -200,7 +206,16 @@ export class NostrIndexedPublisher {
       if (this.allowSharedLnpk && mapping.nostr_pubkeys.length > 5) { dropped.shared_ln_pk++; continue; }
 
       let components = { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 };
-      try { components = JSON.parse(snap.components); } catch { /* keep defaults */ }
+      try {
+        components = JSON.parse(snap.components);
+      } catch (err: unknown) {
+        // Bad JSON in score_snapshots.components means we'd publish a Nostr
+        // event with all-zero components — technically a trust downgrade.
+        // Log so the source row can be inspected and the event skipped
+        // next cycle once the snapshot is regenerated.
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ lnPubkey: mapping.ln_pubkey.slice(0, 12), error: msg }, 'Failed to parse components — publishing with default zeros');
+      }
 
       for (const nostrPubkey of mapping.nostr_pubkeys) {
         candidates.push({
@@ -315,9 +330,12 @@ export class NostrIndexedPublisher {
                   setTimeout(() => reject(new Error('publish timeout')), PUBLISH_TIMEOUT_MS),
                 ),
               ]);
+              nostrRelayAckTotal.inc({ relay: url, result: 'success' });
               return { url, ok: true };
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err);
+              const ackResult = msg.includes('timeout') ? 'timeout' : 'error';
+              nostrRelayAckTotal.inc({ relay: url, result: ackResult });
               return { url, ok: false, error: msg };
             }
           }),
@@ -329,8 +347,10 @@ export class NostrIndexedPublisher {
 
         if (okCount > 0) {
           published++;
+          nostrPublishTotal.inc({ stream: 'B', result: 'published' });
         } else {
           errors++;
+          nostrPublishTotal.inc({ stream: 'B', result: 'error' });
           if (errors <= 5) {
             logger.warn(
               { dTag: ev.tags.find((t) => t[0] === 'd')?.[1]?.slice(0, 16) },
@@ -355,6 +375,7 @@ export class NostrIndexedPublisher {
         }
       } catch (err: unknown) {
         errors++;
+        nostrPublishTotal.inc({ stream: 'B', result: 'error' });
         if (errors <= 5) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.warn({ error: msg }, 'Failed to sign/publish Nostr indexed event');
@@ -366,6 +387,15 @@ export class NostrIndexedPublisher {
     for (const { relay, url } of connections) {
       try { relay.close(); } catch { logger.warn({ relay: url }, 'Failed to close relay connection'); }
     }
+
+    // dropped = agents filtered out by custodial/score/mapping rules upstream;
+    // track so a sudden drop-to-zero (filter bug) or drop-to-total (mapping
+    // file corruption) is visible. `dropped` is a breakdown by reason, we
+    // sum to a single counter increment here.
+    const droppedTotal = Object.values(dropped).reduce((a, b) => a + b, 0);
+    if (droppedTotal > 0) nostrPublishTotal.inc({ stream: 'B', result: 'skipped' }, droppedTotal);
+    nostrPublishDuration.observe({ stream: 'B' }, (Date.now() - cycleStartMs) / 1000);
+    if (published > 0) nostrLastPublishTimestamp.set({ stream: 'B' }, Math.floor(Date.now() / 1000));
 
     logger.info(
       { published, errors, dropped, relays: connections.length },

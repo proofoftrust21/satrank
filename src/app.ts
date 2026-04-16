@@ -12,7 +12,7 @@ import { runMigrations } from './database/migrations';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
-import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal } from './middleware/metrics';
+import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal, rateLimitHits } from './middleware/metrics';
 
 // Repositories
 import { AgentRepository } from './repositories/agentRepository';
@@ -31,6 +31,9 @@ import { VerdictService } from './services/verdictService';
 import { RiskService } from './services/riskService';
 import { DecideService } from './services/decideService';
 import { ReportService } from './services/reportService';
+import { ReportBonusService } from './services/reportBonusService';
+import { ReportBonusRepository } from './repositories/reportBonusRepository';
+import { NpubAgeCache } from './nostr/npubAgeCache';
 import { SurvivalService } from './services/survivalService';
 import { ChannelFlowService } from './services/channelFlowService';
 import { FeeVolatilityService } from './services/feeVolatilityService';
@@ -50,9 +53,10 @@ import { DepositController } from './controllers/depositController';
 import { ServiceController } from './controllers/serviceController';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
 import { WatchlistController } from './controllers/watchlistController';
+import { ReportStatsController } from './controllers/reportStatsController';
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
-import { createReportAuth } from './middleware/auth';
+import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 
 // Routes
@@ -90,7 +94,6 @@ export function createApp() {
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const serviceEndpointRepo = new ServiceEndpointRepository(db);
-  const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService, probeRepo, serviceEndpointRepo);
   const riskService = new RiskService();
 
   // LND graph client — shared between auto-indexation, pathfinding, and verdict
@@ -99,6 +102,15 @@ export function createApp() {
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
   });
+
+  // statsService needs lndClient for the /api/health LND reachability check;
+  // pass only when the client is actually configured so a missing macaroon
+  // leaves lndStatus = 'disabled' rather than 'unknown' forever.
+  const statsService = new StatsService(
+    agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService,
+    probeRepo, serviceEndpointRepo,
+    lndClient.isConfigured() ? lndClient : undefined,
+  );
 
   const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
   const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
@@ -119,14 +131,36 @@ export function createApp() {
   });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService);
+  // Tier 2 report bonus — gated by REPORT_BONUS_ENABLED env (off by default).
+  // Constructing the service has no side effects when disabled; the guard
+  // watcher is only started when the flag is true at boot.
+  const reportBonusRepo = new ReportBonusRepository(db);
+  const npubAgeCachePath = path.join(path.dirname(config.DB_PATH), 'nostr-pubkey-ages.json');
+  const npubAgeCache = new NpubAgeCache(npubAgeCachePath);
+  npubAgeCache.reload();
+  // Hourly reload so Stream B file updates propagate without process restart (audit M5).
+  npubAgeCache.startAutoReload();
+  const reportBonusService = new ReportBonusService(db, reportBonusRepo, scoringService, npubAgeCache, {
+    enabledFromEnv: config.REPORT_BONUS_ENABLED,
+    threshold: config.REPORT_BONUS_THRESHOLD,
+    dailyCap: config.REPORT_BONUS_DAILY_CAP,
+    satsPerBonus: config.REPORT_BONUS_SATS,
+    minReporterScore: config.REPORT_BONUS_MIN_REPORTER_SCORE,
+    minNpubAgeDays: config.REPORT_BONUS_MIN_NPUB_AGE_DAYS,
+    rollbackRatio: config.REPORT_BONUS_ROLLBACK_RATIO,
+    guardIntervalMs: config.REPORT_BONUS_GUARD_INTERVAL_MS,
+  });
+  reportBonusService.startGuard();
+
+  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService, db);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
-  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db);
+  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, scoringService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
+  const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
 
   // Self-registration — uses LND BOLT11 decoder if available
   const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq
@@ -171,7 +205,22 @@ export function createApp() {
     },
   }));
   app.use(cors({ origin: config.CORS_ORIGIN }));
-  app.use(express.json({ limit: '10kb' }));
+  // express.json() parses the body into req.body but does NOT expose the raw
+  // bytes. NIP-98 signatures bind to sha256(rawBody) so we capture via the
+  // `verify` hook. Without this, the NIP-98 payload tag check was silently
+  // bypassed on every request (audit C1) and an attacker could reuse one
+  // signed envelope with arbitrary bodies.
+  app.use(express.json({
+    limit: '10kb',
+    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+      // `buf` is the raw bytes; we copy to isolate from any downstream
+      // middleware that may mutate the buffer. Only present when a body
+      // was actually sent; GET/HEAD/empty-POST leave it undefined.
+      if (buf && buf.length > 0) {
+        req.rawBody = Buffer.from(buf);
+      }
+    },
+  }));
 
   // X-API-Version header on all responses
   app.use((_req, res, next) => {
@@ -235,13 +284,29 @@ export function createApp() {
   // Prometheus metrics endpoint — localhost OR X-API-Key auth.
   // Localhost access (docker network, Prometheus sidecar, SSH tunnel): no auth.
   // External access: requires same API_KEY as write endpoints to prevent metric leakage.
-  app.get('/metrics', (req, res, next) => {
+  // Dedicated rate limiter — `/metrics` is mounted before the /api rate
+  // limiter. Without a limiter here, the API_KEY comparison is brute-forceable
+  // at wire speed (audit H6).
+  const metricsRateLimit = rateLimit({
+    windowMs: 60_000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    message: 'Too many metrics requests',
+    handler: (req, res, _next, options) => {
+      rateLimitHits.inc({ limiter: 'metrics' });
+      res.status(options.statusCode).end('Too many metrics requests');
+    },
+  });
+  app.get('/metrics', metricsRateLimit, (req, res, next) => {
     const ip = req.ip ?? req.socket.remoteAddress ?? '';
     const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
     if (isLocalhost) return next();
-    // External: require API key
+    // External: require API key — constant-time compare to avoid timing leak
+    // that would let an attacker brute-force the key one byte at a time.
     const apiKey = req.headers['x-api-key'] as string | undefined;
-    if (apiKey && config.API_KEY && apiKey === config.API_KEY) return next();
+    if (safeEqual(apiKey, config.API_KEY)) return next();
     res.status(403).end('Forbidden — use localhost or X-API-Key');
   }, async (_req, res) => {
     try {
@@ -259,7 +324,11 @@ export function createApp() {
 
       res.setHeader('Content-Type', metricsRegistry.contentType);
       res.end(await metricsRegistry.metrics());
-    } catch {
+    } catch (err: unknown) {
+      // Without a log here, a Prometheus scrape failure is invisible — the
+      // target just goes DOWN with no diagnostic in the app logs.
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ error: msg }, 'Metrics scrape failed');
       res.status(500).end('Internal Server Error');
     }
   });
@@ -272,6 +341,13 @@ export function createApp() {
     legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
     message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
+    // handler fires AFTER the limiter has decided to reject. Counting here
+    // gives us a per-limiter 429 count that HTTP status metrics can't
+    // distinguish (global vs discovery vs deposit all emit 429).
+    handler: (req, res, _next, options) => {
+      rateLimitHits.inc({ limiter: 'global' });
+      res.status(options.statusCode).json(options.message);
+    },
   });
 
   // API routes — single namespace /api/
@@ -297,12 +373,18 @@ export function createApp() {
     windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
     message: { error: { code: 'RATE_LIMITED', message: 'Too many discovery requests, please try again later' } },
+    handler: (req, res, _next, options) => {
+      rateLimitHits.inc({ limiter: 'discovery' });
+      res.status(options.statusCode).json(options.message);
+    },
   });
   api.get('/services', discoveryRateLimit, serviceController.search);
   api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
+  // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
+  api.get('/stats/reports', discoveryRateLimit, reportStatsController.getStats);
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');

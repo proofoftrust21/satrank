@@ -528,5 +528,10 @@ export interface PaymentResult {
 export interface TransactResult {
   paid: boolean;
   decision: DecideResponse;
-  report?: ReportResponse;
+  /** Populated when the report submission succeeded. `null` when the report
+   *  step failed (auth / rate-limit / duplicate); `undefined` when `go=false`
+   *  and no payment attempt was made, so there is nothing to report. The
+   *  SDK intentionally does not throw on report failures — the caller's
+   *  payment outcome must not be invalidated by a reporting-side issue. */
+  report?: ReportResponse | null;
 }

@@ -1,0 +1,15 @@
+{
+  "name": "satrrank",
+  "version": "0.0.1",
+  "description": "Namespace placeholder. Install @satrank/sdk instead — https://www.npmjs.com/package/@satrank/sdk",
+  "main": "index.js",
+  "files": ["index.js", "README.md"],
+  "homepage": "https://satrank.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/satrank/sdk"
+  },
+  "keywords": ["deprecated", "satrank", "placeholder"],
+  "license": "MIT",
+  "deprecated": "This package is a namespace placeholder. Install @satrank/sdk instead."
+}

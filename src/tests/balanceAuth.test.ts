@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import express from 'express';
@@ -32,7 +33,8 @@ describe('balanceAuth middleware', () => {
     return new Promise((resolve) => {
       const req = { headers: { authorization: authHeader } } as express.Request;
       let capturedBalance: string | null = null;
-      const res = {
+      const emitter = new EventEmitter();
+      const res = Object.assign(emitter, {
         setHeader: (name: string, value: string) => {
           if (name === 'X-SatRank-Balance') capturedBalance = value;
         },
@@ -41,7 +43,7 @@ describe('balanceAuth middleware', () => {
             resolve({ status: code, balance: capturedBalance, errorCode: body.error?.code });
           },
         }),
-      } as unknown as express.Response;
+      }) as unknown as express.Response;
       const next = ((err?: unknown) => {
         if (err && typeof err === 'object' && 'statusCode' in err) {
           const appErr = err as { statusCode: number; code: string };
@@ -129,6 +131,121 @@ describe('balanceAuth middleware', () => {
     // Actually let me re-check: first call creates with 20, second decrements to 19
     const r4 = await callMiddleware(makeL402Header(preimage2));
     expect(r4.balance).toBe('19');
+  });
+
+  // Refund behaviour — sim #5 finding #1. Client input errors (400/413)
+  // should NOT drain the token; other statuses keep the decrement.
+  function callAndEmitFinish(authHeader: string, finishStatus: number): Promise<{ balance: string | null }> {
+    return new Promise((resolve) => {
+      const emitter = new EventEmitter() as unknown as express.Response;
+      let capturedBalance: string | null = null;
+      const res = Object.assign(emitter, {
+        statusCode: finishStatus,
+        setHeader: (name: string, value: string) => {
+          if (name === 'X-SatRank-Balance') capturedBalance = value;
+        },
+      }) as unknown as express.Response;
+      const req = { headers: { authorization: authHeader } } as express.Request;
+      const next = (() => {
+        // Simulate Express flushing the response after the middleware chain runs
+        (res as unknown as EventEmitter).emit('finish');
+        resolve({ balance: capturedBalance });
+      }) as express.NextFunction;
+      balanceAuth(req, res, next);
+    });
+  }
+
+  it('refunds the decrement on 400 VALIDATION_ERROR', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    // First call — creates with 20
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+
+    // Second call ends with 400 — should be refunded
+    await callAndEmitFinish(makeL402Header(preimage), 400);
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(ph) as { remaining: number };
+    expect(row.remaining).toBe(20); // Still 20 because the 400 was refunded
+  });
+
+  it('refunds the decrement on 413 PAYLOAD_TOO_LARGE', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+    await callAndEmitFinish(makeL402Header(preimage), 413);
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(ph) as { remaining: number };
+    expect(row.remaining).toBe(20);
+  });
+
+  it('does NOT refund on 200 OK (normal request)', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(ph) as { remaining: number };
+    expect(row.remaining).toBe(19); // Decremented twice
+  });
+
+  it('does NOT refund on 404 NOT_FOUND — server did a real lookup', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+    await callAndEmitFinish(makeL402Header(preimage), 404);
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(ph) as { remaining: number };
+    expect(row.remaining).toBe(19);
+  });
+
+  it('does NOT refund on 409 CONFLICT — server did real business logic', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+    await callAndEmitFinish(makeL402Header(preimage), 409);
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(ph) as { remaining: number };
+    expect(row.remaining).toBe(19);
+  });
+
+  it('does NOT refund on 500 INTERNAL_ERROR — would be abuse vector', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+    await callAndEmitFinish(makeL402Header(preimage), 500);
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(ph) as { remaining: number };
+    expect(row.remaining).toBe(19);
+  });
+
+  it('refund is idempotent — multiple finish emits do not double-credit', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    // Step 1: create token (remaining=20, no decrement on first use)
+    await callAndEmitFinish(makeL402Header(preimage), 200);
+
+    // Step 2: decrement to 19, then emit 'finish' twice with a refundable status
+    const emitter = new EventEmitter();
+    const res = Object.assign(emitter, {
+      statusCode: 400,
+      setHeader: () => {},
+    }) as unknown as express.Response;
+    const req = { headers: { authorization: makeL402Header(preimage) } } as express.Request;
+    await new Promise<void>((resolve) => balanceAuth(req, res, () => resolve()));
+
+    (res as unknown as EventEmitter).emit('finish');
+    (res as unknown as EventEmitter).emit('finish');
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(ph) as { remaining: number };
+    // 20 (created) -1 (decrement) +1 (refund once) = 20. A double-refund would give 21.
+    expect(row.remaining).toBe(20);
   });
 
   it('handles concurrent requests atomically', async () => {

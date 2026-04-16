@@ -66,6 +66,11 @@ deploy:
 	  --exclude aperture.yaml \
 	  --exclude '.claude' \
 	  . $(SATRANK_HOST):$(REMOTE_DIR)/
+	# Audit M9: rsync preserves the local operator's UID by default, which
+	# mapped to UNKNOWN:staff on the server (no user with UID 501 exists).
+	# Force root:root ownership post-sync so the deploy never leaves files
+	# that another user with a matching UID could later modify.
+	ssh $(SATRANK_HOST) "chown -R root:root $(REMOTE_DIR) && chmod 600 $(REMOTE_DIR)/.env.production 2>/dev/null || true"
 
 # Cleanup
 clean:

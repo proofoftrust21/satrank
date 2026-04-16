@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { config } from '../config';
 import { logger } from '../logger';
 import { crawlDuration } from '../middleware/metrics';
+import { startCrawlerMetricsServer } from './metricsServer';
 import { getDatabase, closeDatabase } from '../database/connection';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
@@ -399,6 +400,11 @@ async function main(): Promise<void> {
     const timerHeartbeat = setInterval(touchHeartbeat, HEARTBEAT_INTERVAL_MS);
     logger.info({ path: HEARTBEAT_PATH, intervalMs: HEARTBEAT_INTERVAL_MS }, 'Liveness heartbeat started');
 
+    // /metrics endpoint for Prometheus. Bound on the docker network so the
+    // host can reach it via the published port; auth is localhost OR X-API-Key.
+    // Cron-only: one-shot mode exits on completion and shouldn't hold a socket.
+    const metricsServer = startCrawlerMetricsServer({ port: config.CRAWLER_METRICS_PORT });
+
     // Nostr publisher — init before runFullCrawl so it publishes right after bulk scoring
     let nostrPublishFn: (() => Promise<void>) | undefined;
     let timerNostr: ReturnType<typeof setInterval> | null = null;
@@ -616,6 +622,7 @@ async function main(): Promise<void> {
       if (timerZapMining) clearInterval(timerZapMining);
       clearInterval(timerStaleSweep);
       clearInterval(timerRetention);
+      metricsServer.close();
       closeDatabase();
       process.exit(0);
     }

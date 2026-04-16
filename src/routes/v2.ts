@@ -5,6 +5,7 @@ import type { RequestHandler } from 'express';
 import type { V2Controller } from '../controllers/v2Controller';
 import type { DepositController } from '../controllers/depositController';
 import { apiKeyAuth, apertureGateAuth } from '../middleware/auth';
+import { rateLimitHits } from '../middleware/metrics';
 
 const reportRateLimit = rateLimit({
   windowMs: 60_000,
@@ -13,6 +14,10 @@ const reportRateLimit = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => req.ip ?? '0.0.0.0',
   message: { error: { code: 'RATE_LIMITED', message: 'Too many reports, please try again later' } },
+  handler: (req, res, _next, options) => {
+    rateLimitHits.inc({ limiter: 'report' });
+    res.status(options.statusCode).json(options.message);
+  },
 });
 
 // Deposit: 3 invoices per IP per minute (prevents invoice spam)
@@ -23,6 +28,10 @@ const depositRateLimit = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => req.ip ?? '0.0.0.0',
   message: { error: { code: 'RATE_LIMITED', message: 'Too many deposit requests, please try again later' } },
+  handler: (req, res, _next, options) => {
+    rateLimitHits.inc({ limiter: 'deposit' });
+    res.status(options.statusCode).json(options.message);
+  },
 });
 
 const noopMiddleware: RequestHandler = (_req, _res, next) => next();

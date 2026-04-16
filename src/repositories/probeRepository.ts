@@ -1,6 +1,7 @@
 // Data access for the probe_results table
 import type Database from 'better-sqlite3';
 import type { ProbeResult } from '../types';
+import { dbQueryDuration } from '../middleware/metrics';
 
 export class ProbeRepository {
   constructor(private db: Database.Database) {}
@@ -58,16 +59,21 @@ export class ProbeRepository {
   /** Per-tier success rates in a window. Used by the multi-tier penalty signal.
    *  Returns { tier_sats: { success: N, total: M } } for tiers that have data. */
   computeTierSuccessRates(targetHash: string, windowSec: number): Map<number, { success: number; total: number }> {
-    const cutoff = Math.floor(Date.now() / 1000) - windowSec;
-    const rows = this.db.prepare(`
-      SELECT probe_amount_sats, SUM(CASE WHEN reachable = 1 THEN 1 ELSE 0 END) AS success, COUNT(*) AS total
-      FROM probe_results
-      WHERE target_hash = ? AND probed_at >= ? AND probe_amount_sats IS NOT NULL
-      GROUP BY probe_amount_sats
-    `).all(targetHash, cutoff) as Array<{ probe_amount_sats: number; success: number; total: number }>;
-    const result = new Map<number, { success: number; total: number }>();
-    for (const r of rows) result.set(r.probe_amount_sats, { success: r.success, total: r.total });
-    return result;
+    const endTimer = dbQueryDuration.startTimer({ repo: 'probe', method: 'computeTierSuccessRates' });
+    try {
+      const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+      const rows = this.db.prepare(`
+        SELECT probe_amount_sats, SUM(CASE WHEN reachable = 1 THEN 1 ELSE 0 END) AS success, COUNT(*) AS total
+        FROM probe_results
+        WHERE target_hash = ? AND probed_at >= ? AND probe_amount_sats IS NOT NULL
+        GROUP BY probe_amount_sats
+      `).all(targetHash, cutoff) as Array<{ probe_amount_sats: number; success: number; total: number }>;
+      const result = new Map<number, { success: number; total: number }>();
+      for (const r of rows) result.set(r.probe_amount_sats, { success: r.success, total: r.total });
+      return result;
+    } finally {
+      endTimer();
+    }
   }
 
   /** Find all probe results for an agent, most recent first */

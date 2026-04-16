@@ -8,6 +8,12 @@ import type { ScoringService } from '../services/scoringService';
 import type { SurvivalService } from '../services/survivalService';
 import { logger } from '../logger';
 import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
+import {
+  nostrPublishTotal,
+  nostrRelayAckTotal,
+  nostrPublishDuration,
+  nostrLastPublishTimestamp,
+} from '../middleware/metrics';
 
 const KIND_TRUSTED_ASSERTION = 30382;
 
@@ -209,15 +215,26 @@ export class NostrPublisher {
         // we don't wait for the relay's OK confirmation, not that the event
         // wasn't stored. Fire-fast, not fire-and-forget.
         await Promise.allSettled(
-          connections.map(({ relay }) =>
-            Promise.race([
-              relay.publish(signed),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('Publish timeout')), PUBLISH_TIMEOUT_MS)),
-            ]).catch(() => { /* individual relay failures are non-fatal */ }),
-          ),
+          connections.map(async ({ relay, url }) => {
+            try {
+              await Promise.race([
+                relay.publish(signed),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Publish timeout')), PUBLISH_TIMEOUT_MS)),
+              ]);
+              nostrRelayAckTotal.inc({ relay: url, result: 'success' });
+            } catch (err: unknown) {
+              // Timeouts are a distinct signal from protocol errors: the first
+              // means the relay is slow, the second means it rejected the
+              // event or the socket dropped. Both are non-fatal (we move on)
+              // but the metric preserves the distinction for diagnosis.
+              const result = err instanceof Error && err.message === 'Publish timeout' ? 'timeout' : 'error';
+              nostrRelayAckTotal.inc({ relay: url, result });
+            }
+          }),
         );
 
         published++;
+        nostrPublishTotal.inc({ stream: 'A', result: 'published' });
 
         // Update the delta map so the next cycle skips this d-tag if unchanged
         this.lastPublished.set(ev.lnPubkey, fingerprint(ev));
@@ -238,6 +255,7 @@ export class NostrPublisher {
         }
       } catch (err: unknown) {
         errors++;
+        nostrPublishTotal.inc({ stream: 'A', result: 'error' });
         if (errors <= 5) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.warn({ lnPubkey: ev.lnPubkey.slice(0, 12), error: msg }, 'Failed to sign/publish Nostr event');
@@ -259,6 +277,13 @@ export class NostrPublisher {
     for (const { relay, url } of connections) {
       try { relay.close(); } catch { logger.warn({ relay: url }, 'Failed to close relay connection'); }
     }
+
+    // Skipped events (unchanged fingerprint) are useful to track: a cycle
+    // that suddenly publishes everything (skipped drops to 0) can signal
+    // a delta-map wipe or a scoring regression that changed every agent.
+    if (skipped > 0) nostrPublishTotal.inc({ stream: 'A', result: 'skipped' }, skipped);
+    nostrPublishDuration.observe({ stream: 'A' }, (Date.now() - cycleStartMs) / 1000);
+    if (published > 0) nostrLastPublishTimestamp.set({ stream: 'A' }, Math.floor(Date.now() / 1000));
 
     logger.info(
       { published, errors, skipped, total: allEvents.length, relays: connections.length },

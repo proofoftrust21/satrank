@@ -9,6 +9,7 @@ import type { ScoringService } from '../services/scoringService';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
 import { logger } from '../logger';
 import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
+import { verdictTotal } from '../middleware/metrics';
 
 const KIND_JOB_REQUEST = 5900;
 const KIND_JOB_RESULT = 6900;
@@ -421,6 +422,7 @@ export class SatRankDvm {
       const probe = this.probeRepo.findLatestAtTier(hash, 1000);
       const reachable = probe ? probe.reachable === 1 : null;
       const verdict = scoreResult.total >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : scoreResult.total >= 30 ? 'UNKNOWN' : 'RISKY';
+      verdictTotal.inc({ verdict, source: 'dvm' });
 
       return {
         pubkey: lnPubkey,
@@ -439,17 +441,20 @@ export class SatRankDvm {
         const response = await this.lndClient.queryRoutes(lnPubkey, 1000);
         const routes = response.routes ?? [];
         const hasRoute = routes.length > 0;
+        const verdict = hasRoute ? 'UNKNOWN' as const : 'RISKY' as const;
+        verdictTotal.inc({ verdict, source: 'dvm' });
 
         return {
           pubkey: lnPubkey,
           score: null,
-          verdict: hasRoute ? 'UNKNOWN' : 'RISKY',
+          verdict,
           reachable: hasRoute,
           successRate: null,
           alias: null,
           source: 'live_ping',
         };
       } catch {
+        verdictTotal.inc({ verdict: 'RISKY', source: 'dvm' });
         return {
           pubkey: lnPubkey,
           score: null,
@@ -463,6 +468,7 @@ export class SatRankDvm {
     }
 
     // No LND — can't check
+    verdictTotal.inc({ verdict: 'UNKNOWN', source: 'dvm' });
     return {
       pubkey: lnPubkey,
       score: null,

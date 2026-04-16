@@ -492,6 +492,32 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 28, 'composite index (agent_hash, computed_at DESC) on score_snapshots');
   }
 
+  // v29: report_bonus_log — tracks per-reporter daily counters for the Tier 2
+  // economic incentive (10 eligible reports = +1 sat credit, capped at 3
+  // bonuses/day/reporter). The table is always created; the bonus mechanic
+  // itself is gated by the REPORT_BONUS_ENABLED env flag. Schema lands now so
+  // activation is an env-flag flip, not a migration.
+  //
+  //   PRIMARY KEY (reporter_hash, utc_day) enforces "one row per reporter per day"
+  //   eligible_count     = count of reports that passed the anti-sybil gate
+  //   bonuses_credited   = how many 10-report thresholds we've crossed (<= DAILY_CAP)
+  //   total_sats_credited = running sum of sats credited to the reporter's L402 balance
+  if (!hasVersion(db, 29)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS report_bonus_log (
+        reporter_hash TEXT NOT NULL,
+        utc_day TEXT NOT NULL,
+        eligible_count INTEGER NOT NULL DEFAULT 0,
+        bonuses_credited INTEGER NOT NULL DEFAULT 0,
+        total_sats_credited INTEGER NOT NULL DEFAULT 0,
+        last_credit_at INTEGER,
+        PRIMARY KEY (reporter_hash, utc_day)
+      );
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_report_bonus_log_day ON report_bonus_log(utc_day)');
+    recordVersion(db, 29, 'report_bonus_log table for Tier 2 economic incentive (off by default)');
+  }
+
   // v27: source column on service_endpoints for trust classification.
   // Runs LAST (after v22 creates service_endpoints and v26 adds metadata columns)
   // because the other migrations appear in reverse order in this file and would
@@ -660,6 +686,10 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   },
   28: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_snapshots_agent_time');
+  },
+  29: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_report_bonus_log_day');
+    db.exec('DROP TABLE IF EXISTS report_bonus_log');
   },
 };
 

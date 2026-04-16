@@ -8,6 +8,7 @@ import type Database from 'better-sqlite3';
 import { config } from '../config';
 import { ValidationError } from '../errors';
 import { logger } from '../logger';
+import { depositPhaseTotal } from '../middleware/metrics';
 
 const MIN_DEPOSIT_SATS = 21;
 const MAX_DEPOSIT_SATS = 10_000;
@@ -104,6 +105,7 @@ export class DepositController {
     const rHashHex = Buffer.from(result.r_hash, 'base64').toString('hex');
 
     logger.info({ amount, rHashHex: rHashHex.slice(0, 16) }, 'Deposit invoice created');
+    depositPhaseTotal.inc({ phase: 'invoice_created' });
 
     res.status(402).json({
       invoice: result.payment_request,
@@ -152,6 +154,7 @@ export class DepositController {
     const preCheck = this.db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?')
       .get(paymentHashBuf) as { remaining: number } | undefined;
     if (preCheck) {
+      depositPhaseTotal.inc({ phase: 'verify_success_cached' });
       res.json({
         balance: preCheck.remaining,
         paymentHash: body.paymentHash,
@@ -164,6 +167,7 @@ export class DepositController {
     // Beyond this point we need LND. If macaroon is missing, the paymentHash is
     // unknown to SatRank and we can't verify it.
     if (!invoiceMacaroonHex) {
+      depositPhaseTotal.inc({ phase: 'verify_not_found' });
       res.status(404).json({
         error: { code: 'NOT_FOUND', message: 'paymentHash not found in SatRank balance table. The deposit was either never created here or is awaiting verification (LND lookup unavailable).' },
         paymentHash: body.paymentHash,
@@ -175,6 +179,7 @@ export class DepositController {
     const invoice = await lndLookupInvoice(body.paymentHash);
 
     if (!invoice.settled) {
+      depositPhaseTotal.inc({ phase: 'verify_pending' });
       res.status(402).json({
         error: { code: 'PAYMENT_PENDING', message: 'Invoice not yet settled. Pay the invoice first, then retry.' },
         paymentHash: body.paymentHash,
@@ -182,11 +187,26 @@ export class DepositController {
       return;
     }
 
-    // Atomic credit — handles concurrent requests safely
+    // Atomic credit — handles concurrent requests safely.
+    // Audit H8: defend against malformed LND responses. If `value` is not a
+    // finite positive integer, refuse to credit rather than insert a 0-balance
+    // token (silent loss for the depositor) or a NaN row (DB-engine dependent).
     const quota = parseInt(invoice.value, 10);
+    if (!Number.isFinite(quota) || quota <= 0) {
+      logger.error({ paymentHash: body.paymentHash.slice(0, 16), rawValue: invoice.value }, 'Deposit: LND returned invalid invoice.value — refusing to credit');
+      res.status(502).json({
+        error: { code: 'UPSTREAM_INVALID', message: 'Lightning backend returned an invalid invoice value. Please retry; contact support if this persists.' },
+        paymentHash: body.paymentHash,
+      });
+      return;
+    }
     const result = checkAndInsert(quota);
 
     if (result.alreadyRedeemed) {
+      // Race loser: the paymentHash was credited by a concurrent request between
+      // our preCheck and checkAndInsert. Count distinctly so the cache/race path
+      // rate can be compared to the fresh path.
+      depositPhaseTotal.inc({ phase: 'verify_success_cached' });
       res.json({
         balance: result.balance,
         paymentHash: body.paymentHash,
@@ -197,6 +217,7 @@ export class DepositController {
     }
 
     logger.info({ paymentHash: body.paymentHash.slice(0, 16), quota }, 'Deposit verified and balance credited');
+    depositPhaseTotal.inc({ phase: 'verify_success_fresh' });
 
     res.status(201).json({
       balance: quota,

@@ -76,8 +76,14 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     return;
   }
 
-  // Unexpected error — always log the real message, never expose it to the client in production
-  logger.error({ err, requestId: req.requestId }, 'Unhandled internal error');
+  // Unexpected error — always log the real message, never expose it to the client in production.
+  // Audit H10: in production, omit the full stack trace so internal paths,
+  // function names, and Node internals stay out of logs. The error name + message
+  // still convey enough for triage; stack is accessible in dev or via local repro.
+  const errorLogPayload = config.NODE_ENV === 'production'
+    ? { errName: err.name, errMessage: err.message, requestId: req.requestId }
+    : { err, requestId: req.requestId };
+  logger.error(errorLogPayload, 'Unhandled internal error');
   const message = config.NODE_ENV === 'production'
     ? 'Internal server error'
     : (err.message || 'Internal server error');

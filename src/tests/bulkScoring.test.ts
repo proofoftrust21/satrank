@@ -215,7 +215,12 @@ describe('Bulk scoring — LND nodes get scored', () => {
     expect(result.components.reputation).toBeGreaterThan(0);
   });
 
-  it('scoring a node with LN+ data but no capacity gets LN+ bonus on total', () => {
+  it('scoring a node with LN+ ratings but no capacity returns a neutral reputation', () => {
+    // Post-2026-04-16 change: when both centrality and peerTrust are unavailable
+    // (no pagerank, no channels), their nominal weights (0.20 + 0.30 = 0.50)
+    // redistribute across routingQuality / capacityTrend / feeStability which
+    // fall back to neutral 50. Reputation = 50. This replaces the old formula
+    // that hardcoded a 35/25/20/20 "no centrality" branch and produced 33.
     const lnplusNode = makeLndAgent('lnplus-only', {
       total_transactions: 0,
       capacity_sats: null,
@@ -228,12 +233,8 @@ describe('Bulk scoring — LND nodes get scored', () => {
     agentRepo.insert(lnplusNode);
 
     const result = scoringService.computeScore(lnplusNode.public_key_hash);
-
-    // No centrality, no capacity → peerTrust=0, routingQuality=50, capTrend=50, feeStability=50
-    // reputation = 0*0.35 + 50*0.25 + 50*0.20 + 50*0.20 = 33
-    expect(result.components.reputation).toBe(33);
+    expect(result.components.reputation).toBe(50);
     expect(result.components.diversity).toBe(0); // no capacity
-    // Total > 0 from reputation(18) + seniority + regularity + LN+ bonus
     expect(result.total).toBeGreaterThan(0);
   });
 

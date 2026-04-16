@@ -91,6 +91,52 @@ export interface ScoreComponents {
   seniority: number;
   regularity: number;
   diversity: number;
+  /** Attribution of the Reputation component to its internal sub-signals so a
+   *  client can answer "why did Reputation move by X points?". Optional on old
+   *  snapshots that predate the 2026-04-16 instrumentation. */
+  reputationBreakdown?: ReputationBreakdown;
+}
+
+/** Decomposition of the Reputation component into its sub-signals.
+ *  `contribution` = `value × weight` for each slot; the sum equals the
+ *  Reputation component (modulo rounding). Each slot carries its own
+ *  `weight` so the operator can see the formula, not just the numbers. */
+export interface ReputationBreakdown {
+  mode: 'lightning_graph' | 'attestations';
+  /** Populated for `lightning_graph` agents. */
+  subsignals?: {
+    centrality:      SubSignalContribution & { source: 'pagerank' | 'lnplus_ranks' | 'none' };
+    peerTrust:       SubSignalContribution;
+    routingQuality:  SubSignalContribution;
+    capacityTrend:   SubSignalContribution;
+    feeStability:    SubSignalContribution;
+  };
+  /** Populated for `attestations` agents (observer_protocol / manual). */
+  attestations?: {
+    /** Number of non-report attestations used in the weighted average. */
+    count: number;
+    /** Time-decay-weighted average of attester scores (0-100). */
+    weightedAverage: number;
+    /** Additional signal from `/api/report` outcomes (see REPORT_SIGNAL_CAP). */
+    reportSignal: number;
+  };
+}
+
+export interface SubSignalContribution {
+  /** Raw sub-signal score 0-100. */
+  value: number;
+  /** Weight inside the Reputation formula AFTER dynamic renormalization for
+   *  missing signals. Available weights sum to ~1.0; unavailable slots have
+   *  weight 0 and are excluded from the score. */
+  weight: number;
+  /** value × weight, in the same 0-100 space as the Reputation component. */
+  contribution: number;
+  /** False when the sub-signal has no observable data (e.g. peerTrust on a
+   *  node with no channels, centrality on a pre-PageRank-crawl agent). When
+   *  false, the slot is excluded from the weighted average and its nominal
+   *  weight is redistributed to the available slots so the Reputation score
+   *  reflects what was actually measured. */
+  available?: boolean;
 }
 
 // Confidence level derived from the score
@@ -179,10 +225,23 @@ export interface HealthResponse {
   staleAgents: number;
   totalTransactions: number;
   lastUpdate: number;
+  /** Seconds since `lastUpdate`. Exposed so external monitoring can alert
+   *  without knowing current wall clock. Null when no snapshot exists yet. */
+  scoringAgeSec?: number | null;
+  /** True when the crawler hasn't written a score snapshot in > 2h. Flips
+   *  `status` to `error` even when the DB and caches look healthy. */
+  scoringStale?: boolean;
   uptime: number;
   schemaVersion: number;
   expectedSchemaVersion: number;
   dbStatus: 'ok' | 'error';
+  /** LND reachability. `disabled` = LND not configured, `unknown` = cold start
+   *  (no probe yet), `ok` = last probe succeeded, `degraded` = 3+ consecutive
+   *  getInfo() failures. `degraded` flips `status` to `error`. */
+  lndStatus?: 'ok' | 'degraded' | 'unknown' | 'disabled';
+  /** Seconds since the last LND probe (success OR failure). Null when LND is disabled
+   *  or no probe has run yet. Paired with `lndStatus` to detect staleness. */
+  lndLastProbeAgeSec?: number | null;
   /** Optional features that may be silently disabled if env vars are missing. */
   features?: {
     depositInvoiceGeneration: boolean;
@@ -386,6 +445,14 @@ export interface DecideResponse {
     available: number;
     empirical: number;
     pathQuality: number;
+  };
+  /** Raw score breakdown for audit trail — mirrors `/api/profile/:id.score`.
+   *  `components.reputationBreakdown` exposes the sub-signal contributions so
+   *  an agent can answer "why did this decision flip?" from a single /decide
+   *  call (no extra /profile request needed). Added after sim #5. */
+  scoreBreakdown: {
+    total: number;
+    components: ScoreComponents;
   };
   basis: 'proxy' | 'empirical';
   confidence: ConfidenceLevel;

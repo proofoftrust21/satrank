@@ -11,8 +11,16 @@ import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';
 import { AppError } from '../errors';
+import { logger } from '../logger';
 
 const TOKEN_QUOTA = 21;
+
+// HTTP status codes for which the balance decrement is refunded. Covers client
+// input errors that short-circuit before any business logic runs: zod parse
+// failures and body-parser rejections. 404/409 are NOT refunded because the
+// server performed a lookup (real cost). 5xx are NOT refunded because an
+// attacker could trigger them cheaply to keep their quota. See sim #5.
+const REFUNDABLE_STATUS_CODES = new Set([400, 413]);
 
 class BalanceExhaustedError extends AppError {
   constructor(used: number, max: number) {
@@ -45,6 +53,23 @@ export function createBalanceAuth(db: Database.Database) {
   const stmtInsert = db.prepare(
     'INSERT OR IGNORE INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)',
   );
+  const stmtRefund = db.prepare(
+    'UPDATE token_balance SET remaining = remaining + 1 WHERE payment_hash = ?',
+  );
+
+  function scheduleRefund(res: Response, paymentHash: Buffer): void {
+    let refunded = false;
+    res.on('finish', () => {
+      if (refunded) return;
+      if (!REFUNDABLE_STATUS_CODES.has(res.statusCode)) return;
+      refunded = true;
+      try {
+        stmtRefund.run(paymentHash);
+      } catch (err) {
+        logger.warn({ err, statusCode: res.statusCode }, 'balance refund failed');
+      }
+    });
+  }
 
   return function balanceAuth(req: Request, res: Response, next: NextFunction): void {
     // Skip balance check for operator token (X-Aperture-Token path)
@@ -72,6 +97,7 @@ export function createBalanceAuth(db: Database.Database) {
       // Decrement succeeded — read remaining balance for header
       const row = stmtGetBalance.get(paymentHash) as { remaining: number } | undefined;
       res.setHeader('X-SatRank-Balance', String(row?.remaining ?? 0));
+      scheduleRefund(res, paymentHash);
       next();
       return;
     }
@@ -97,6 +123,7 @@ export function createBalanceAuth(db: Database.Database) {
     // Aperture token — first use, create with remaining = quota - 1 (this request counts)
     stmtInsert.run(paymentHash, TOKEN_QUOTA - 1, now);
     res.setHeader('X-SatRank-Balance', String(TOKEN_QUOTA - 1));
+    scheduleRefund(res, paymentHash);
     next();
   };
 }

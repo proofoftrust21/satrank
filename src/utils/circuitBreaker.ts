@@ -1,8 +1,17 @@
 // Circuit breaker for external HTTP calls (LND, Observer)
 // Prevents cascading failures when a dependency is down
 import { logger } from '../logger';
+import { circuitBreakerState } from '../middleware/metrics';
 
 export type CircuitState = 'closed' | 'open' | 'half_open';
+
+/** Numeric encoding for the Prometheus gauge: closed=0 healthy,
+ *  half_open=1 probing recovery, open=2 rejecting calls. */
+const STATE_TO_GAUGE: Record<CircuitState, number> = {
+  closed: 0,
+  half_open: 1,
+  open: 2,
+};
 
 export interface CircuitBreakerOptions {
   /** Name for logging */
@@ -36,6 +45,9 @@ export class CircuitBreaker {
     this.initialBackoffMs = options.initialBackoffMs ?? 30_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 600_000;
     this.currentBackoffMs = this.initialBackoffMs;
+    // Initialize the Prometheus gauge so a never-tripped breaker still
+    // emits a 0 sample (otherwise the series only appears after first open).
+    circuitBreakerState.set({ breaker: this.name }, STATE_TO_GAUGE.closed);
   }
 
   getState(): CircuitState {
@@ -49,6 +61,7 @@ export class CircuitBreaker {
     if (this.state === 'open') {
       if (Date.now() >= this.nextRetryAt) {
         this.state = 'half_open';
+        circuitBreakerState.set({ breaker: this.name }, STATE_TO_GAUGE.half_open);
         logger.info({ breaker: this.name }, 'Circuit breaker half-open — allowing probe request');
         return true;
       }
@@ -69,6 +82,7 @@ export class CircuitBreaker {
       if (this.consecutiveSuccesses >= this.recoveryThreshold) {
         logger.info({ breaker: this.name, recoverySuccesses: this.consecutiveSuccesses }, 'Circuit breaker closed after recovery');
         this.state = 'closed';
+        circuitBreakerState.set({ breaker: this.name }, STATE_TO_GAUGE.closed);
         this.consecutiveSuccesses = 0;
         this.currentBackoffMs = this.initialBackoffMs;
       }
@@ -98,6 +112,7 @@ export class CircuitBreaker {
   private openCircuit(): void {
     this.state = 'open';
     this.nextRetryAt = Date.now() + this.currentBackoffMs;
+    circuitBreakerState.set({ breaker: this.name }, STATE_TO_GAUGE.open);
     logger.warn({
       breaker: this.name,
       failures: this.consecutiveFailures,

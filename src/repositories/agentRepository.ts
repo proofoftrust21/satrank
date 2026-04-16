@@ -1,6 +1,20 @@
 // Data access for the agents table
 import type Database from 'better-sqlite3';
 import type { Agent } from '../types';
+import { dbQueryDuration } from '../middleware/metrics';
+
+/** Time a DB call against the `satrank_db_query_duration_seconds` histogram.
+ *  Kept inline here (not in a shared utility) so the hot path stays a single
+ *  function-call level of indirection — the histogram `.startTimer()` returns
+ *  a closure that ends the timer on invocation. */
+function timed<T>(repo: string, method: string, fn: () => T): T {
+  const endTimer = dbQueryDuration.startTimer({ repo, method });
+  try {
+    return fn();
+  } finally {
+    endTimer();
+  }
+}
 
 export class AgentRepository {
   constructor(private db: Database.Database) {}
@@ -31,7 +45,9 @@ export class AgentRepository {
   }
 
   findTopByScore(limit: number, offset: number): Agent[] {
-    return this.db.prepare('SELECT * FROM agents WHERE stale = 0 ORDER BY avg_score DESC LIMIT ? OFFSET ?').all(limit, offset) as Agent[];
+    return timed('agent', 'findTopByScore', () =>
+      this.db.prepare('SELECT * FROM agents WHERE stale = 0 ORDER BY avg_score DESC LIMIT ? OFFSET ?').all(limit, offset) as Agent[],
+    );
   }
 
   findTopByActivity(limit: number): Agent[] {
@@ -207,18 +223,16 @@ export class AgentRepository {
   updateLightningStats(hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number, uniquePeers?: number, disabledChannels?: number): void {
     const cutoff = this.staleCutoff();
     if (uniquePeers !== undefined && uniquePeers > 0) {
-      try {
-        this.db.prepare(`
-          UPDATE agents
-          SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ?,
-              disabled_channels = ?,
-              stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
-          WHERE public_key_hash = ?
-        `).run(channels, capacitySats, alias, lastSeen, uniquePeers, disabledChannels ?? 0, lastSeen, cutoff, hash);
-        return;
-      } catch {
-        // unique_peers or disabled_channels column may not exist yet — fallback without them
-      }
+      // Schema v28 guarantees unique_peers + disabled_channels columns exist;
+      // the prior try/catch fallback is dead code and has been removed.
+      this.db.prepare(`
+        UPDATE agents
+        SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ?,
+            disabled_channels = ?,
+            stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
+        WHERE public_key_hash = ?
+      `).run(channels, capacitySats, alias, lastSeen, uniquePeers, disabledChannels ?? 0, lastSeen, cutoff, hash);
+      return;
     }
     this.db.prepare(`
       UPDATE agents
@@ -279,18 +293,14 @@ export class AgentRepository {
   }
 
   touchLastQueried(hash: string): void {
-    try {
-      this.db.prepare('UPDATE agents SET last_queried_at = ? WHERE public_key_hash = ?').run(Math.floor(Date.now() / 1000), hash);
-    } catch { /* column may not exist yet */ }
+    this.db.prepare('UPDATE agents SET last_queried_at = ? WHERE public_key_hash = ?').run(Math.floor(Date.now() / 1000), hash);
   }
 
   findHotNodes(withinSec: number): Agent[] {
-    try {
-      const cutoff = Math.floor(Date.now() / 1000) - withinSec;
-      return this.db.prepare(
-        "SELECT * FROM agents WHERE stale = 0 AND last_queried_at >= ? AND public_key IS NOT NULL AND source = 'lightning_graph' ORDER BY last_queried_at DESC"
-      ).all(cutoff) as Agent[];
-    } catch { return []; /* column may not exist yet */ }
+    const cutoff = Math.floor(Date.now() / 1000) - withinSec;
+    return this.db.prepare(
+      "SELECT * FROM agents WHERE stale = 0 AND last_queried_at >= ? AND public_key IS NOT NULL AND source = 'lightning_graph' ORDER BY last_queried_at DESC"
+    ).all(cutoff) as Agent[];
   }
 
   /** Atomic SQL increment — avoids read-modify-write race (C3) */

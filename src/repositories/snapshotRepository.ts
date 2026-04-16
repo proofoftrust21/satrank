@@ -1,6 +1,7 @@
 // Data access for the score_snapshots table
 import type Database from 'better-sqlite3';
 import type { ScoreSnapshot } from '../types';
+import { dbQueryDuration } from '../middleware/metrics';
 
 export class SnapshotRepository {
   constructor(private db: Database.Database) {}
@@ -14,19 +15,24 @@ export class SnapshotRepository {
   findLatestByAgents(agentHashes: string[]): Map<string, ScoreSnapshot> {
     if (agentHashes.length === 0) return new Map();
     if (agentHashes.length > 500) throw new Error('findLatestByAgents: array exceeds 500 elements');
+    const endTimer = dbQueryDuration.startTimer({ repo: 'snapshot', method: 'findLatestByAgents' });
     const placeholders = agentHashes.map(() => '?').join(',');
-    const rows = this.db.prepare(`
-      SELECT s.* FROM score_snapshots s
-      INNER JOIN (
-        SELECT agent_hash, MAX(computed_at) as max_at
-        FROM score_snapshots
-        WHERE agent_hash IN (${placeholders})
-        GROUP BY agent_hash
-      ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
-    `).all(...agentHashes) as ScoreSnapshot[];
-    const map = new Map<string, ScoreSnapshot>();
-    for (const row of rows) map.set(row.agent_hash, row);
-    return map;
+    try {
+      const rows = this.db.prepare(`
+        SELECT s.* FROM score_snapshots s
+        INNER JOIN (
+          SELECT agent_hash, MAX(computed_at) as max_at
+          FROM score_snapshots
+          WHERE agent_hash IN (${placeholders})
+          GROUP BY agent_hash
+        ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
+      `).all(...agentHashes) as ScoreSnapshot[];
+      const map = new Map<string, ScoreSnapshot>();
+      for (const row of rows) map.set(row.agent_hash, row);
+      return map;
+    } finally {
+      endTimer();
+    }
   }
 
   findHistoryByAgent(agentHash: string, limit: number, offset: number): ScoreSnapshot[] {

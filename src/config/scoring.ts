@@ -82,6 +82,12 @@ export const LN_DIVERSITY_LOG_BASE = 1001;
 export const LN_DIVERSITY_BTC_MULTIPLIER = 10;
 
 // --- LN+ reputation formula ---
+// @deprecated (2026-04-16 scoring audit): LN+ positive ratings no longer
+// factor into score computation. Coverage was 13.9%, r(positive_ratings,
+// Reputation) = 0.25, and the LN+ API is an external dependency without a
+// stable contract. Constants kept to preserve scoringConfig.test.ts bounds
+// and any downstream references. Negative ratings remain actively used by
+// src/utils/flags.ts for the `negative_reputation` flag.
 
 /** Points per LN+ rank level (0-10 scale -> max 50 points) */
 export const LNPLUS_RANK_MULTIPLIER = 5;

@@ -312,13 +312,27 @@ export class SatRankClient {
     const reportTarget = await normalizeTargetForReport(target);
     const reportCaller = await normalizeTargetForReport(caller);
 
-    const report = await this.report({
-      target: reportTarget,
-      reporter: reportCaller,
-      outcome: payment.success ? 'success' : 'failure',
-      preimage: payment.preimage,
-      paymentHash: payment.paymentHash,
-    });
+    // Submit the report opportunistically: the decision + payment already
+    // happened, so a report-side failure (auth rejected, rate-limited,
+    // duplicate within 1h, server 5xx) must NOT invalidate the caller's
+    // successful payment. Swallow the error and return `report: null`; the
+    // caller can re-submit later via satrank.report(...) if they care.
+    let report: ReportResponse | null = null;
+    try {
+      report = await this.report({
+        target: reportTarget,
+        reporter: reportCaller,
+        outcome: payment.success ? 'success' : 'failure',
+        preimage: payment.preimage,
+        paymentHash: payment.paymentHash,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Quiet `warn`-level hint in the console; richer logging is the caller's
+      // responsibility. Preserves the `paid` outcome regardless.
+      // eslint-disable-next-line no-console
+      console.warn(`[satrank] report submission failed (payment still counted): ${msg}`);
+    }
 
     return { paid: payment.success, decision, report };
   }

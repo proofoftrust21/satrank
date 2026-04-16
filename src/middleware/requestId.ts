@@ -13,8 +13,11 @@ declare global {
 // Only accepts incoming x-request-id if it has a safe format (alphanumeric, dashes, max 64 chars)
 const SAFE_REQUEST_ID = /^[\w\-]{1,64}$/;
 
-export function requestIdMiddleware(req: Request, _res: Response, next: NextFunction): void {
+export function requestIdMiddleware(req: Request, res: Response, next: NextFunction): void {
   const incoming = req.headers['x-request-id'] as string | undefined;
   req.requestId = (incoming && SAFE_REQUEST_ID.test(incoming)) ? incoming : uuid();
+  // Echo on the response so clients can correlate a bug report or slow trace
+  // to the server-side log line for this specific request.
+  res.setHeader('X-Request-Id', req.requestId);
   next();
 }

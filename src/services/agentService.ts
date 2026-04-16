@@ -9,6 +9,7 @@ import type { TrendService } from './trendService';
 import type { AgentScoreResponse, ScoreEvidence, ScoreComponents, Agent, ProbeData } from '../types';
 import { NotFoundError } from '../errors';
 import { computePopularityBonus } from '../utils/scoring';
+import { logger } from '../logger';
 
 export type SortByField = 'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity';
 
@@ -163,7 +164,14 @@ export class AgentService {
           if (typeof parsed === 'object' && parsed !== null && typeof parsed.volume === 'number') {
             components = parsed as ScoreComponents;
           }
-        } catch { /* use default */ }
+        } catch (err: unknown) {
+          // Malformed components JSON in score_snapshots — unlikely (we
+          // write it via JSON.stringify) but if it happens the top-list
+          // silently returns zeros for this agent. Log once per occurrence
+          // so the corrupt row can be traced back.
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn({ agentHash: a.public_key_hash.slice(0, 12), error: msg }, 'Failed to parse score components — using defaults');
+        }
       }
       return {
         publicKeyHash: a.public_key_hash,

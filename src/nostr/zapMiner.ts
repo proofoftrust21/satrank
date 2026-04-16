@@ -19,6 +19,13 @@ import { Relay, useWebSocketImplementation } from 'nostr-tools/relay';
 const WS = require('ws');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const bolt11 = require('bolt11');
+// Security note (audit M11): bolt11@1.4.1 depends on `secp256k1@4` → `elliptic@6`
+// which carries GHSA-848j-6mx2-7j84 (Minerva-class ECDSA timing leak). The CVE
+// leaks bits from the PRIVATE-KEY NONCE used during signing; verification is
+// unaffected. Here we only invoke bolt11.decode() which verifies public-invoice
+// signatures — no private key is held on the elliptic codepath in our process.
+// Residual exposure is effectively zero. Tracked for when bolt11 migrates to
+// @noble/secp256k1 upstream.
 useWebSocketImplementation(WS);
 
 import { logger } from '../logger';

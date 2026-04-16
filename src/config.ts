@@ -58,6 +58,34 @@ const configSchema = z.object({
   ZAP_MINING_PAGE_SIZE: z.coerce.number().int().positive().default(500),
   ZAP_MINING_MAX_PAGES: z.coerce.number().int().positive().default(40),
   ZAP_CUSTODIAL_THRESHOLD: z.coerce.number().int().positive().default(5),
+  // Crawler metrics server — /metrics exposed on this port so Prometheus can
+  // scrape crawlDuration, probe counters, Nostr publish stats. Auth mirrors
+  // the api container (localhost free, external X-API-Key).
+  CRAWLER_METRICS_PORT: z.coerce.number().int().positive().default(9091),
+
+  // --- Report bonus (Tier 2 economic incentive) ---
+  // OFF by default. Flip to "true" only after the 30-day Tier 1 observation
+  // window if organic report growth stalls. See REPORT-INCENTIVE-DESIGN.md.
+  REPORT_BONUS_ENABLED: z.coerce.boolean().default(false),
+  /** Eligible reports needed to earn 1 sat of balance credit. 10 → 10% discount. */
+  REPORT_BONUS_THRESHOLD: z.coerce.number().int().positive().default(10),
+  /** Max bonus credits per reporter per UTC day. 3 × 1 sat = 30 eligible reports. */
+  REPORT_BONUS_DAILY_CAP: z.coerce.number().int().positive().default(3),
+  /** Sats credited per bonus. */
+  REPORT_BONUS_SATS: z.coerce.number().int().positive().default(1),
+  /** Minimum reporter SatRank score to count without NIP-98 signature. */
+  REPORT_BONUS_MIN_REPORTER_SCORE: z.coerce.number().int().min(0).default(30),
+  /** Minimum npub age (days) when the reporter signs with NIP-98 instead of having a SatRank score. */
+  REPORT_BONUS_MIN_NPUB_AGE_DAYS: z.coerce.number().int().positive().default(30),
+  /** Canonical public hostname used to build the URL NIP-98 signatures must bind to.
+   *  Hardcoding this (instead of trusting the incoming Host header) closes audit H3 —
+   *  the client cannot trick the verifier into accepting a signature bound to a
+   *  different hostname they control. */
+  PUBLIC_HOST: z.string().default('satrank.dev'),
+  /** SAFE-ratio shift that triggers automatic rollback (disable bonus in-process). */
+  REPORT_BONUS_ROLLBACK_RATIO: z.coerce.number().positive().default(1.3),
+  /** Check interval for the auto-rollback guard (ms). */
+  REPORT_BONUS_GUARD_INTERVAL_MS: z.coerce.number().int().positive().default(15 * 60_000),
 });
 
 const parsed = configSchema.safeParse(process.env);

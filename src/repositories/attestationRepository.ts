@@ -25,6 +25,43 @@ export class AttestationRepository {
     return row.count;
   }
 
+  /** Report submission stats for an agent (as the attester / reporter).
+   *  Used by /api/profile to surface the `reporterStats` field and derive
+   *  the Trusted Reporter badge without touching scoring math. */
+  reporterStats(attesterHash: string, sinceUnix: number): {
+    submitted: number;
+    verified: number;
+    successes: number;
+    failures: number;
+    timeouts: number;
+  } {
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) AS submitted,
+        SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) AS verified,
+        SUM(CASE WHEN category = 'successful_transaction' THEN 1 ELSE 0 END) AS successes,
+        SUM(CASE WHEN category = 'failed_transaction' THEN 1 ELSE 0 END) AS failures,
+        SUM(CASE WHEN category = 'unresponsive' THEN 1 ELSE 0 END) AS timeouts
+      FROM attestations
+      WHERE attester_hash = ?
+        AND category IN ('successful_transaction','failed_transaction','unresponsive')
+        AND timestamp >= ?
+    `).get(attesterHash, sinceUnix) as {
+      submitted: number | null;
+      verified: number | null;
+      successes: number | null;
+      failures: number | null;
+      timeouts: number | null;
+    };
+    return {
+      submitted: row.submitted ?? 0,
+      verified: row.verified ?? 0,
+      successes: row.successes ?? 0,
+      failures: row.failures ?? 0,
+      timeouts: row.timeouts ?? 0,
+    };
+  }
+
   avgScoreBySubject(subjectHash: string): number {
     const row = this.db.prepare(
       'SELECT AVG(score) as avg FROM attestations WHERE subject_hash = ?'

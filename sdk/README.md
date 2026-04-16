@@ -187,9 +187,69 @@ if (result.paid) {
 The `transact()` response includes everything:
 - `result.paid`: whether the payment went through
 - `result.decision`: the full DecideResponse (successRate, verdict, pathfinding, risk profile)
-- `result.report`: the ReportResponse (only present if payment was attempted)
+- `result.report`: the ReportResponse when the report submission succeeded, `null` when the report failed (auth / rate limit / duplicate), `undefined` when NO-GO so no payment was attempted.
 
 Cost: 1 request from your L402 balance for decide (report is free). Latency: ~500ms + your payment time.
+
+## Reporting: why it matters, when to do it, how
+
+Reports are the **only non-circular signal** in the scoring system. Probe-based measurements predict their own inputs (the regularity component is derived from probe uptime, so "score predicts probe success" is trivially true). Your reports — *"I paid target X, it worked / it failed"* — are the ground truth that keeps the network's trust graph honest.
+
+### Why you personally should care
+
+- **Preimage-verified reports earn 2× weight**, tightening the score of every agent you transact with — so the next time *you* query a target, the score is more accurate because *you* (and people like you) fed it outcomes.
+- Reports cost **nothing** (no quota consumed, no on-chain fee, one HTTP round-trip).
+- The report endpoint is **free even without an API key** as long as you submit with an L402 token that already queried the target.
+
+### Two ways to report
+
+**Automatic (recommended)** — wrap your payment in `transact()`:
+
+```typescript
+const result = await client.transact(target, caller, async () => {
+  const p = await myWallet.sendPayment(invoice);
+  return { success: p.ok, preimage: p.preimage, paymentHash: p.paymentHash };
+});
+```
+
+The SDK submits the report for you. If submission fails (auth, rate limit), the payment outcome is preserved in `result.paid` and `result.report` is `null` — you can retry later via the manual path.
+
+**Manual** — any time after querying a target:
+
+```typescript
+await client.report({
+  target: '<target 64-hex hash>',
+  reporter: '<your own pubkey or hash>',
+  outcome: 'success',  // or 'failure' | 'timeout'
+  preimage: '<your payment preimage in hex>',     // optional — enables 2× weight
+  paymentHash: '<sha256(preimage) in hex>',        // required alongside preimage
+  memo: 'payment completed in 2.3s',               // optional, free text
+});
+```
+
+### Auth rules — which token can report on which target?
+
+One of these must be true:
+
+1. **You're using an `X-API-Key`** (partner-tier access) — report on anything.
+2. **You're using an L402 token** (`Authorization: L402 <macaroon>:<preimage>` or `L402 deposit:<preimage>`) that has **already queried** the target through *any* paid endpoint: `/api/decide`, `/api/verdicts`, `/api/agent/:hash/verdict`, `/api/profile/:id`, or `/api/best-route`. The token does not need remaining balance to submit a report, only to be non-exhausted.
+
+If the token you hold never hit any of those endpoints for the target you want to report on, the simplest fix is to query the target once (for example `client.getProfile(target)`) and then resubmit the report — the query binds the token to the target for future reports.
+
+### When to report — a simple rule
+
+Report **every paid interaction** the moment it completes:
+
+- `outcome: 'success'` — the payment settled.
+- `outcome: 'failure'` — the invoice was rejected, the channel couldn't route, the HTL timed out.
+- `outcome: 'timeout'` — you gave up before getting a terminal answer.
+
+Always include `preimage` + `paymentHash` when you have them. The 2× weight is the single biggest lever on report influence.
+
+### Rate limits & dedup
+
+- **Rate limit**: 20 reports/minute per reporter. Soft cap; a busy agent that legitimately transacts this fast should open an issue.
+- **Dedup**: one report per `(reporter, target)` per hour. Re-submitting within the window returns `409 Conflict` and does not overwrite the original.
 
 ## Deposit: Buy Bulk Balance
 

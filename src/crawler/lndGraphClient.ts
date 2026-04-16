@@ -87,10 +87,12 @@ export interface LndClientOptions {
 
 // Global semaphore on queryRoutes: LND can handle ~30/s, we cap at 10 concurrent
 // to prevent cascades when /api/decide, /api/best-route, and the probe crawler
-// all hit at once. Excess requests queue (caller pays the latency, not LND).
+// all hit at once. Excess requests queue, up to maxQueue — beyond that,
+// acquire() rejects with SemaphoreFullError so the event loop doesn't OOM
+// under flood (audit H1).
 import { Semaphore } from '../utils/semaphore';
 import { lndInflight, lndQueryRoutesDuration } from '../middleware/metrics';
-const queryRoutesSemaphore = new Semaphore(10);
+const queryRoutesSemaphore = new Semaphore({ max: 10, maxQueue: 50, name: 'lnd_queryRoutes' });
 
 export class HttpLndGraphClient implements LndGraphClient {
   private restUrl: string;

@@ -105,17 +105,33 @@ function isUrlBlocked(urlStr: string): boolean {
 }
 
 /** Resolve hostname to IP, verify it's not private, return the resolved IP.
- *  Returns null if blocked, or the original hostname if it's a raw IP. */
+ *  Returns null if blocked, or the original hostname if it's a raw IP.
+ *
+ *  Audit H4 closure: previously we only resolved A (IPv4) records. A hostname
+ *  with AAAA records pointing to link-local/ULA IPv6 could have slipped past
+ *  the check if the fetch implementation ever preferred IPv6 on dual-stack
+ *  servers. We now resolve BOTH families and reject if any returned address
+ *  is private; the returned IP is the first A record so the outbound fetch
+ *  is still forced to IPv4 (pinning behavior unchanged for callers). */
 async function resolveAndPin(urlStr: string): Promise<string | null> {
   if (isUrlBlocked(urlStr)) return null;
   try {
     const hostname = new URL(urlStr).hostname;
     if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return hostname;
-    const { resolve4 } = await import('dns/promises');
-    const ips = await resolve4(hostname);
-    if (ips.length === 0) return null;
-    if (ips.some(ip => isIpBlocked(ip))) return null;
-    return ips[0]; // pin to resolved IP — prevents DNS rebinding
+    const { resolve4, resolve6 } = await import('dns/promises');
+    // Resolve both families in parallel. If either resolution fails (NXDOMAIN
+    // for that family), promise rejects — we tolerate that by defaulting to
+    // [] and letting the other family cover the answer.
+    const [ipv4, ipv6] = await Promise.all([
+      resolve4(hostname).catch(() => [] as string[]),
+      resolve6(hostname).catch(() => [] as string[]),
+    ]);
+    const allIps = [...ipv4, ...ipv6];
+    if (allIps.length === 0) return null;
+    if (allIps.some(ip => isIpBlocked(ip))) return null;
+    // Pin to first IPv4 when available (fetch will use this for connection).
+    // Fallback to IPv6 only if no A record — rare for web services.
+    return ipv4[0] ?? ipv6[0];
   } catch { return null; }
 }
 
@@ -162,7 +178,7 @@ export class DecideService {
     this.agentRepo.touchLastQueried(targetHash);
 
     // Get the full verdict (reuses pathfinding, personal trust, flags, risk profile)
-    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash, pathfindingSourcePubkey);
+    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash, pathfindingSourcePubkey, 'decide');
 
     // P_trust — sigmoid of the trust score, centered at 50
     const scoreResult = this.scoringService.getScore(targetHash);
@@ -316,6 +332,10 @@ export class DecideService {
         available: Math.round(pAvailable * 1000) / 1000,
         empirical: Math.round(pEmpirical * 1000) / 1000,
         pathQuality: Math.round(pPath * 1000) / 1000,
+      },
+      scoreBreakdown: {
+        total: scoreResult.total,
+        components: scoreResult.components,
       },
       basis,
       confidence: scoreResult.confidence,

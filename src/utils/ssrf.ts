@@ -1,5 +1,8 @@
-// Shared SSRF protection for all outbound HTTP requests
-const PRIVATE_IPV4_RE = /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|169\.254\.\d+\.\d+)$/;
+// Shared SSRF protection for all outbound HTTP requests.
+// RFC1918 private ranges + loopback + link-local + **CGN** (RFC6598, 100.64/10).
+// Audit H4 noted CGN was missing — an attacker-controlled hostname resolving
+// into a CGN range could target ISP infrastructure we don't operate.
+const PRIVATE_IPV4_RE = /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+|0\.0\.0\.0|169\.254\.\d+\.\d+|22[4-9]\.\d+\.\d+\.\d+|2[3-5]\d\.\d+\.\d+\.\d+|255\.255\.255\.255)$/;
 const SERVER_IP = process.env.SERVER_IP ?? '178.104.108.108';
 
 export function isPrivateIp(ip: string): boolean {

@@ -5,6 +5,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';
 import { config } from '../config';
 import { AppError } from '../errors';
+import { normalizeIdentifier } from '../utils/identifier';
 
 class AuthenticationError extends AppError {
   constructor(message: string) {
@@ -20,8 +21,10 @@ class PaymentRequiredError extends AppError {
   }
 }
 
-// Constant-time comparison via HMAC — normalizes lengths to eliminate timing oracle
-function safeEqual(provided: string | undefined, expected: string | undefined): boolean {
+// Constant-time comparison via HMAC — normalizes lengths to eliminate timing oracle.
+// Exported so `/metrics` endpoints (api + crawler) reuse the same primitive —
+// previously they used `===`/`!==` and were timing-leak vulnerable (audit C2).
+export function safeEqual(provided: string | undefined, expected: string | undefined): boolean {
   if (!provided || !expected) return false;
   const key = crypto.randomBytes(32);
   const a = crypto.createHmac('sha256', key).update(provided).digest();
@@ -80,15 +83,28 @@ export function createReportAuth(db: Database.Database) {
       const row = stmtCheck.get(paymentHash) as { remaining: number } | undefined;
       if (row && row.remaining > 0) {
         // Target MUST be present — don't rely on downstream Zod to catch this
-        const target = (req.body as Record<string, unknown>)?.target as string | undefined;
-        if (!target || typeof target !== 'string') {
+        const rawTarget = (req.body as Record<string, unknown>)?.target as string | undefined;
+        if (!rawTarget || typeof rawTarget !== 'string') {
           next(new AuthenticationError('Report requires a target field'));
           return;
         }
-        // Verify the target was queried via /api/decide with this token
-        const queried = stmtDecideLog.get(paymentHash, target);
+        // decide_log stores the normalized hash (sha256 of a pubkey, or the
+        // 64-char hash as-is). Agents often submit the pubkey in both /decide
+        // and /report — we must apply the same normalization here or the
+        // lookup silently misses. See sim #5 finding #7.
+        const normalizedTargetHash = normalizeIdentifier(rawTarget).hash;
+        // Verify this token has looked up the target. As of 2026-04-16 the
+        // log is populated by /api/decide, /api/best-route, /api/profile,
+        // /api/agent/:hash/verdict and /api/verdicts — any paid target
+        // query works, not just /api/decide.
+        const queried = stmtDecideLog.get(paymentHash, normalizedTargetHash);
         if (!queried) {
-          next(new AuthenticationError('Report rejected: this token did not query the target via /api/decide. Only report on targets you queried.'));
+          next(new AuthenticationError(
+            'Report rejected: this L402 token has no record of querying the target. ' +
+            'Query the target first via /api/decide, /api/verdicts, /api/agent/:hash/verdict, ' +
+            '/api/profile/:id, or /api/best-route (any works), then retry the report. ' +
+            'If you used a different token to query, switch back to that token, or submit with X-API-Key.',
+          ));
           return;
         }
         next();

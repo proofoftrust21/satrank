@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { PingController } from '../controllers/pingController';
+import { rateLimitHits } from '../middleware/metrics';
 
 const pingRateLimit = rateLimit({
   windowMs: 60_000,
@@ -10,6 +11,10 @@ const pingRateLimit = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => req.ip ?? '0.0.0.0',
   message: { error: { code: 'RATE_LIMITED', message: 'Too many ping requests, please try again later' } },
+  handler: (req, res, _next, options) => {
+    rateLimitHits.inc({ limiter: 'ping' });
+    res.status(options.statusCode).json(options.message);
+  },
 });
 
 export function createPingRoutes(controller: PingController): Router {

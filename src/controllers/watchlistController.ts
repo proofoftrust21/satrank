@@ -10,6 +10,16 @@ import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import { cache } from '../cache/cacheProvider';
+import { watchlistChanges } from '../middleware/metrics';
+import { config } from '../config';
+
+/** HMAC key for deterministic-but-unpredictable watchlist cache keys.
+ *  Derived once from API_KEY so every instance of the app using the same
+ *  API_KEY reuses the same cache namespace. If API_KEY is unset (dev/tests),
+ *  falls back to a random per-process key — caches do not survive restart,
+ *  but that's acceptable in dev. Audit H9 closes: cache keys are no longer
+ *  attacker-enumerable by simply knowing a user's target list. */
+const WATCHLIST_HMAC_KEY: string = config.API_KEY ?? crypto.randomBytes(32).toString('hex');
 
 const VERDICT_UNKNOWN_THRESHOLD = 30;
 const MAX_TARGETS = 50;
@@ -63,16 +73,27 @@ export class WatchlistController {
       //     `since` was actually used for the DB query.
       const sortedHashes = [...hashes].sort();
       const sinceBucket = Math.floor(since / SINCE_BUCKET_SEC);
-      const cacheKey = `watchlist:${crypto.createHash('sha256').update(sortedHashes.join(',')).digest('hex').slice(0, 16)}:${sinceBucket}`;
+      // HMAC-SHA256 instead of plain SHA256 (audit H9). Without the server-
+      // side secret, an attacker cannot pre-compute cache keys for a known
+      // target list — even after C4's full-digest fix, predictable keys
+      // meant the attacker could deterministically enumerate any target
+      // set they suspected a user of watching. HMAC removes that.
+      const cacheKey = `watchlist:${crypto.createHmac('sha256', WATCHLIST_HMAC_KEY).update(sortedHashes.join(',')).digest('hex')}:${sinceBucket}`;
 
       const cached = cache.getOrCompute(cacheKey, WATCHLIST_CACHE_TTL_MS, () => {
         const snapshots = this.snapshotRepo.findChangedSince(hashes, since);
+        let up = 0, down = 0, fresh = 0;
         const changes = snapshots.map(snap => {
           const score = snap.score;
           const verdict = score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' as const
             : score >= VERDICT_UNKNOWN_THRESHOLD ? 'UNKNOWN' as const : 'RISKY' as const;
           const agent = this.agentRepo.findByHash(snap.agent_hash);
           const components = safeParseJson(snap.components);
+          // Direction tally — inc once per cache miss (unique business event)
+          // rather than per poll, so metric reflects detected changes, not poll volume.
+          if (snap.previous_score === null) fresh++;
+          else if (score > snap.previous_score) up++;
+          else if (score < snap.previous_score) down++;
           return {
             publicKeyHash: snap.agent_hash,
             alias: agent?.alias ?? null,
@@ -83,6 +104,9 @@ export class WatchlistController {
             changedAt: snap.computed_at,
           };
         });
+        if (up > 0) watchlistChanges.inc({ direction: 'up' }, up);
+        if (down > 0) watchlistChanges.inc({ direction: 'down' }, down);
+        if (fresh > 0) watchlistChanges.inc({ direction: 'fresh' }, fresh);
         return { changes, effectiveSince: since };
       });
 

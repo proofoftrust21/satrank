@@ -146,6 +146,65 @@ describe('ScoringService', () => {
     });
   });
 
+  describe('reputation breakdown (audit trail)', () => {
+    it('emits per-sub-signal breakdown for lightning_graph agents', () => {
+      const agent = makeAgent('rep-breakdown-ln', {
+        source: 'lightning_graph',
+        total_transactions: 50,
+        capacity_sats: 500_000_000,
+        hubness_rank: 10,
+        betweenness_rank: 15,
+      });
+      agentRepo.insert(agent);
+
+      const result = scoring.computeScore(agent.public_key_hash);
+      const breakdown = result.components.reputationBreakdown;
+      expect(breakdown).toBeDefined();
+      expect(breakdown!.mode).toBe('lightning_graph');
+      expect(breakdown!.subsignals).toBeDefined();
+      const subs = breakdown!.subsignals!;
+      // Every slot declared, values in range, weights non-negative
+      for (const slot of ['centrality', 'peerTrust', 'routingQuality', 'capacityTrend', 'feeStability'] as const) {
+        expect(subs[slot].value, `${slot}.value`).toBeGreaterThanOrEqual(0);
+        expect(subs[slot].value, `${slot}.value`).toBeLessThanOrEqual(100);
+        expect(subs[slot].weight, `${slot}.weight`).toBeGreaterThanOrEqual(0);
+      }
+      // Weights must sum to ~1.0 (either centrality path or centrality-less fallback)
+      const weightSum = subs.centrality.weight + subs.peerTrust.weight + subs.routingQuality.weight + subs.capacityTrend.weight + subs.feeStability.weight;
+      expect(weightSum).toBeCloseTo(1.0, 2);
+      // Sum of contributions must equal the Reputation component (modulo rounding)
+      const contribSum = subs.centrality.contribution + subs.peerTrust.contribution + subs.routingQuality.contribution + subs.capacityTrend.contribution + subs.feeStability.contribution;
+      expect(contribSum).toBeCloseTo(result.components.reputation, 0);
+    });
+
+    it('reports centrality source as `lnplus_ranks` when pagerank_score is missing', () => {
+      const agent = makeAgent('rep-breakdown-fallback', {
+        source: 'lightning_graph',
+        total_transactions: 10,
+        capacity_sats: 100_000_000,
+        hubness_rank: 5,
+        betweenness_rank: 8,
+        pagerank_score: null,
+      });
+      agentRepo.insert(agent);
+      const result = scoring.computeScore(agent.public_key_hash);
+      expect(result.components.reputationBreakdown!.subsignals!.centrality.source).toBe('lnplus_ranks');
+    });
+
+    it('emits attestations-mode breakdown for observer_protocol agents', () => {
+      const agent = makeAgent('rep-breakdown-obs', {
+        source: 'observer_protocol',
+        total_transactions: 5,
+      });
+      agentRepo.insert(agent);
+      const result = scoring.computeScore(agent.public_key_hash);
+      const breakdown = result.components.reputationBreakdown;
+      expect(breakdown).toBeDefined();
+      expect(breakdown!.mode).toBe('attestations');
+      expect(breakdown!.attestations).toBeDefined();
+    });
+  });
+
   describe('anti-gaming: mutual attestations', () => {
     it('penalizes agents with mutual attestations (A<->B)', () => {
       const agentA = makeAgent('legit-agent', { avg_score: 70 });
@@ -498,9 +557,13 @@ describe('ScoringService', () => {
       expect(scoreCentral.components.reputation).toBeGreaterThan(scorePeripheral.components.reputation);
     });
 
-    it('negative ratings reduce total score via LN+ bonus', () => {
-      // Reputation component is now objective (centrality + peer trust) — same for both
-      // LN+ ratings affect the TOTAL score as a bonus, not the reputation component
+    it('LN+ positive/negative ratio no longer affects total score (bonus deprecated 2026-04-16)', () => {
+      // Pre-deprecation this test expected the total score to move with the
+      // LN+ positive/negative ratio. The audit retired the multiplier because
+      // coverage was too thin (14%) and the signal too weak (r=0.25) to
+      // justify the external dependency. Negative ratings still drive the
+      // `negative_reputation` flag via src/utils/flags.ts — this test just
+      // asserts the SCORE is now ratio-independent.
       const goodNode = makeAgent('ln-good', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -525,10 +588,8 @@ describe('ScoringService', () => {
 
       // Reputation component is the same (same centrality + peer trust)
       expect(scoreGood.components.reputation).toBe(scoreMixed.components.reputation);
-      // LN+ bonus: good = min(8, log2(11) * (10/11) * 3) ≈ 9.4 → 8 (capped)
-      // LN+ bonus: mixed = min(8, log2(11) * (10/21) * 3) ≈ 4.9 → 5
-      // Good node total > mixed node total due to higher LN+ bonus
-      expect(scoreGood.total).toBeGreaterThan(scoreMixed.total);
+      // Totals equal — no more LN+ bonus branching on the ratio
+      expect(scoreGood.total).toBe(scoreMixed.total);
     });
 
     it('verified transaction bonus boosts observer_protocol agents above small LN nodes', () => {

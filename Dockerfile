@@ -18,6 +18,11 @@ RUN apk add --no-cache python3 make g++
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+# --omit=dev is CRITICAL (audit M12): it keeps vitest / vite / tsx / supertest
+# out of the runtime image. These carry their own CVEs (e.g. vite path
+# traversal GHSA series) that are irrelevant to prod if they are never
+# installed. Do NOT change to plain `npm ci` without re-verifying the prod
+# dependency tree.
 RUN npm ci --omit=dev && npm cache clean --force
 
 # Stage 3 — Minimal runtime (no build tools)

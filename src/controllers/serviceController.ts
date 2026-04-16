@@ -111,10 +111,17 @@ export class ServiceController {
       const parsed = serviceSearchSchema.safeParse(req.query);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.query));
 
-      // Pull all matching services (cap at 100 candidates to keep ranking O(n))
+      // Candidate pool sorted by UPTIME rather than the default check_count
+      // (audit H5). Previously an attacker could register many service
+      // endpoints then trigger health checks to inflate their rank. With
+      // uptime sort, the top of the pool is dominated by services that
+      // pass health checks consistently, which the attacker can't fake
+      // without actually serving healthy responses. Post-fetch we still
+      // rank client-side on score × uptime / sqrt(price).
       const { services } = this.serviceEndpointRepo.findServices({
         q: parsed.data.q,
         category: parsed.data.category,
+        sort: 'uptime',
         limit: 100,
         offset: 0,
       });

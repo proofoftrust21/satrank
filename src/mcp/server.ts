@@ -338,7 +338,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!parsed.success) {
           return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
-        const verdict = await verdictService.getVerdict(normalizeId(parsed.data.publicKeyHash), parsed.data.callerPubkey);
+        const verdict = await verdictService.getVerdict(normalizeId(parsed.data.publicKeyHash), parsed.data.callerPubkey, undefined, 'mcp');
         return { content: [{ type: 'text', text: JSON.stringify(verdict, null, 2) }] };
       }
 
@@ -355,7 +355,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const chunk = ids.slice(i, i + BATCH_CONCURRENCY);
           const results = await Promise.all(
             chunk.map(async (id) => {
-              const v = await verdictService.getVerdict(id);
+              const v = await verdictService.getVerdict(id, undefined, undefined, 'mcp');
               return { publicKeyHash: id, ...v };
             }),
           );

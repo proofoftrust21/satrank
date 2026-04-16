@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit';
 import type { RequestHandler } from 'express';
 import type { AttestationController } from '../controllers/attestationController';
 import { apiKeyAuth, apertureGateAuth } from '../middleware/auth';
+import { rateLimitHits } from '../middleware/metrics';
 
 // Stricter rate limit for write operations (10 req/min per IP)
 const writeRateLimit = rateLimit({
@@ -13,6 +14,10 @@ const writeRateLimit = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => req.ip ?? '0.0.0.0',
   message: { error: { code: 'RATE_LIMITED', message: 'Too many write requests, please try again later' } },
+  handler: (req, res, _next, options) => {
+    rateLimitHits.inc({ limiter: 'attestation' });
+    res.status(options.statusCode).json(options.message);
+  },
 });
 
 const noopMiddleware: RequestHandler = (_req, _res, next) => next();

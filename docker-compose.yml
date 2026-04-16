@@ -55,6 +55,11 @@ services:
     container_name: satrank-crawler
     restart: unless-stopped
     entrypoint: ["node", "--experimental-require-module", "dist/crawler/run.js", "--cron"]
+    ports:
+      # Crawler /metrics on loopback — same host-binding model as the api (3000).
+      # Prometheus scrapes via localhost:9091. External access requires
+      # X-API-Key; loopback (SSH tunnel / sidecar) is unauthenticated.
+      - "127.0.0.1:${CRAWLER_METRICS_PORT:-9091}:9091"
     env_file:
       - .env.production
     environment:

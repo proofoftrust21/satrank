@@ -1,7 +1,17 @@
 // Decision API controller — decide, report, profile
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';
+
+/** Convert the L402 Authorization preimage into its payment_hash Buffer.
+ *  Returns null when the header is missing, malformed, or not an L402 token
+ *  (e.g. X-API-Key path). Consumed by the Tier 2 bonus balance credit. */
+function extractL402PaymentHashFromAuth(authHeader: string | undefined): Buffer | null {
+  if (!authHeader) return null;
+  const match = authHeader.match(/^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i);
+  if (!match) return null;
+  return crypto.createHash('sha256').update(Buffer.from(match[1], 'hex')).digest();
+}
 import type { DecideService } from '../services/decideService';
 import type { ReportService } from '../services/reportService';
 import type { AgentService } from '../services/agentService';
@@ -16,6 +26,7 @@ import type { SurvivalService } from '../services/survivalService';
 import type { ChannelFlowService } from '../services/channelFlowService';
 import type { FeeVolatilityService } from '../services/feeVolatilityService';
 import type { VerdictService } from '../services/verdictService';
+import type { ReportBonusService } from '../services/reportBonusService';
 import { agentIdentifierSchema, decideSchema, reportSchema, bestRouteSchema } from '../middleware/validation';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
@@ -24,6 +35,8 @@ import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import { WALLET_PROVIDERS } from '../config/walletProviders';
+import { verdictTotal } from '../middleware/metrics';
+import { logTokenQuery } from '../utils/tokenQueryLog';
 
 export class V2Controller {
   constructor(
@@ -42,6 +55,10 @@ export class V2Controller {
     private verdictService?: VerdictService,
     private serviceEndpointRepo?: ServiceEndpointRepository,
     private db?: Database.Database,
+    // Tier 2 economic incentive. Optional so dev/test can skip it; when omitted
+    // the controller never attempts to credit bonuses (identical to
+    // REPORT_BONUS_ENABLED=false behavior).
+    private reportBonusService?: ReportBonusService,
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -64,18 +81,9 @@ export class V2Controller {
         parsed.data.serviceUrl,
       );
 
-      // Log the decide for report auth (link L402 token to target)
-      if (this.db) {
-        const authHeader = req.headers.authorization ?? '';
-        const preimageMatch = authHeader.match(/^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i);
-        if (preimageMatch) {
-          const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimageMatch[1], 'hex')).digest();
-          const now = Math.floor(Date.now() / 1000);
-          try {
-            this.db.prepare('INSERT OR IGNORE INTO decide_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)').run(paymentHash, target.hash, now);
-          } catch { /* table may not exist in tests */ }
-        }
-      }
+      // Log this target query for /api/report auth. See utils/tokenQueryLog.ts
+      // for why every paid target-query path writes here, not just /api/decide.
+      logTokenQuery(this.db, req.headers.authorization, target.hash, req.requestId);
 
       res.json({ data: result });
     } catch (err) {
@@ -114,10 +122,15 @@ export class V2Controller {
           .map(t => {
             const scoreResult = this.scoringService.getScore(t.hash);
             const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
+            verdictTotal.inc({ verdict, source: 'best-route' });
             return { publicKeyHash: t.hash, alias: t.agent!.alias, score: scoreResult.total, verdict, pathfinding: null };
           })
           .sort((a, b) => b.score - a.score)
           .slice(0, 3);
+        // Token→target binding for /api/report (degraded path)
+        for (const t of targetInfos) {
+          logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
+        }
         res.json({
           data: {
             candidates,
@@ -164,6 +177,7 @@ export class V2Controller {
         .map(r => {
           const scoreResult = this.scoringService.getScore(r.hash);
           const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
+          verdictTotal.inc({ verdict, source: 'best-route' });
 
           // Route quality (0-100) from pathfinding
           const hops = r.pathfinding!.hops ?? 99;
@@ -219,6 +233,13 @@ export class V2Controller {
       const totalQueried = parsed.data.targets.length;
       const reachableCount = ranked.length;
 
+      // Bind every queried target to the caller token so each one is eligible
+      // for a later /api/report submission. Log ALL targets (not just the top
+      // candidates) — the caller may want to report on any of them.
+      for (const t of targetInfos) {
+        logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
+      }
+
       res.json({
         data: {
           candidates,
@@ -234,7 +255,7 @@ export class V2Controller {
     }
   };
 
-  report = (req: Request, res: Response, next: NextFunction): void => {
+  report = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = reportSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
@@ -252,7 +273,28 @@ export class V2Controller {
         memo: parsed.data.memo,
       });
 
-      res.status(201).json({ data: result });
+      // Tier 2 bonus — gated by REPORT_BONUS_ENABLED env, auto-rollback, and
+      // the anti-sybil eligibility gates inside the service. `null` when the
+      // bonus service is not wired (test env) or when no bonus was earned.
+      let bonus: { credited: boolean; sats?: number; gate?: string } | null = null;
+      if (this.reportBonusService) {
+        const l402PaymentHash = extractL402PaymentHashFromAuth(req.headers.authorization);
+        const creditResult = await this.reportBonusService.maybeCredit({
+          reporterHash: reporter.hash,
+          req,
+          verified: result.verified,
+          paymentHash: l402PaymentHash,
+        });
+        if (creditResult.credited) {
+          bonus = { credited: true, sats: creditResult.sats, gate: creditResult.gate };
+        } else {
+          // Expose the gate decision even when nothing was credited so the
+          // client knows whether they were eligible (useful for UX hints).
+          bonus = { credited: false, gate: creditResult.gate };
+        }
+      }
+
+      res.status(201).json({ data: { ...result, bonus } });
     } catch (err) {
       next(err);
     }
@@ -270,6 +312,10 @@ export class V2Controller {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Agent not found' } });
         return;
       }
+
+      // Token→target binding for /api/report — a profile fetch counts as
+      // "interest in this target" so the caller can later report outcomes.
+      logTokenQuery(this.db, req.headers.authorization, hash, req.requestId);
 
       const scoreResult = this.scoringService.getScore(hash);
       const delta = this.trendService.computeDeltas(hash, scoreResult.total);
@@ -324,6 +370,19 @@ export class V2Controller {
       const capacityHealth = this.channelFlowService?.computeCapacityHealth(hash) ?? null;
       const feeVolatility = this.feeVolatilityService?.compute(hash) ?? null;
 
+      // Reporter stats: how ACTIVELY this agent has submitted reports (as
+      // attester). Separate from `reports` above (which counts reports about
+      // this agent as subject). The Trusted Reporter badge is a pure visibility
+      // incentive — no scoring impact, no economic reward, zero gaming surface.
+      const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * DAY;
+      const reporter = this.attestationRepo.reporterStats(hash, thirtyDaysAgo);
+      const TRUSTED_REPORTER_THRESHOLD = 20;
+      const reporterBadge =
+        reporter.verified >= TRUSTED_REPORTER_THRESHOLD ? 'trusted_reporter' :
+        reporter.submitted >= 5 ? 'active_reporter' :
+        reporter.submitted >= 1 ? 'reporter' :
+        null;
+
       res.json({
         data: {
           agent: {
@@ -346,6 +405,13 @@ export class V2Controller {
             failures: reports.failures,
             timeouts: reports.timeouts,
             successRate: Math.round(successRate * 1000) / 1000,
+          },
+          reporterStats: {
+            badge: reporterBadge,
+            submitted30d: reporter.submitted,
+            verified30d: reporter.verified,
+            breakdown: { successes: reporter.successes, failures: reporter.failures, timeouts: reporter.timeouts },
+            trustedThreshold: TRUSTED_REPORTER_THRESHOLD,
           },
           probeUptime: probeUptime !== null ? Math.round(probeUptime * 1000) / 1000 : null,
           survival,

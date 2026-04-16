@@ -13,6 +13,7 @@ import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import { config } from '../config';
 import { logger } from '../logger';
+import { verdictTotal } from '../middleware/metrics';
 const POSITIVE_ATTESTATION_MIN_SCORE = 70;
 const PATH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const PATH_CACHE_MAX_SIZE = 1000;
@@ -38,9 +39,17 @@ export class VerdictService {
     private lndClient?: LndGraphClient,
   ) {}
 
-  async getVerdict(publicKeyHash: string, callerPubkey?: string, pathfindingSourcePubkey?: string): Promise<VerdictResponse> {
+  async getVerdict(
+    publicKeyHash: string,
+    callerPubkey?: string,
+    pathfindingSourcePubkey?: string,
+    // `source` tags the call path for the verdictTotal counter. Defaults to
+    // 'unknown' so test cases and legacy callers don't need to thread it.
+    source: string = 'unknown',
+  ): Promise<VerdictResponse> {
     const agent = this.agentRepo.findByHash(publicKeyHash);
     if (!agent) {
+      verdictTotal.inc({ verdict: 'UNKNOWN', source });
       return {
         verdict: 'UNKNOWN',
         confidence: 0,
@@ -153,6 +162,7 @@ export class VerdictService {
     // Build human-readable reason
     const reason = this.buildReason(agent, scoreResult.total, delta.delta7d, ageDays, flags);
 
+    verdictTotal.inc({ verdict, source });
     return { verdict, confidence: confidenceNum, reason, flags, personalTrust, riskProfile, pathfinding };
   }
 

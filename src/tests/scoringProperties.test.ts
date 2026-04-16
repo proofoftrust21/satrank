@@ -168,10 +168,15 @@ describe('Scoring properties', () => {
     const none = scoring.computeScore(sha256('no-ratings'));
 
     // Negative-only should be penalized at or below zero-data baseline.
-    // Both have no capacity and no centrality → peerTrust=0, routingQuality=50, capTrend=50, feeStability=50
-    // reputation = 0*0.35 + 50*0.25 + 50*0.20 + 50*0.20 = 33
+    // Post-2026-04-16 change: both agents have no centrality (no PageRank, no
+    // LN+ ranks) AND no peerTrust (no capacity). Their two nominal weights
+    // (0.20 + 0.30) redistribute to the neutral-fallback signals, so Reputation
+    // = 50 for both. The flag `negative_reputation` in src/utils/flags.ts still
+    // captures the negative-ratings asymmetry, but it no longer moves the
+    // numeric reputation sub-score (LN+ positive-ratings bonus was retired
+    // in the same audit).
     expect(neg.components.reputation).toBeLessThanOrEqual(none.components.reputation);
-    expect(neg.components.reputation).toBe(33);
+    expect(neg.components.reputation).toBe(50);
   });
 
   // --- Seniority ---
@@ -249,7 +254,11 @@ describe('Scoring properties', () => {
     }));
 
     const result = scoring.computeScore(sha256('comp-bounds'));
-    for (const [name, value] of Object.entries(result.components)) {
+    // Skip the non-numeric `reputationBreakdown` audit-trail field which was
+    // added to ScoreComponents alongside the numeric slots in 2026-04-16.
+    const numericSlots: (keyof typeof result.components)[] = ['volume', 'reputation', 'seniority', 'regularity', 'diversity'];
+    for (const name of numericSlots) {
+      const value = result.components[name] as number;
       expect(value, `${name} component`).toBeGreaterThanOrEqual(0);
       expect(value, `${name} component`).toBeLessThanOrEqual(100);
     }
@@ -370,9 +379,11 @@ describe('Scoring properties', () => {
     expect(first.total).toBe(second.total);
   });
 
-  it('higher positive/negative ratio yields higher LN+ bonus on total score', () => {
-    // Reputation component is objective (centrality + peer trust) — same for both
-    // LN+ ratings affect the total score via bonus, not the reputation component
+  it('positive/negative ratio no longer affects total score (LN+ bonus deprecated 2026-04-16)', () => {
+    // LN+ positive ratings used to drive a ×1.0-1.05 post-composite multiplier
+    // but the scoring audit flagged them as near-noise (r=0.25 with Reputation,
+    // 14% coverage). With the multiplier removed, two agents identical in every
+    // objective dimension should score the same regardless of their LN+ ratio.
     agentRepo.insert(makeAgent('good-ratio', {
       source: 'lightning_graph',
       total_transactions: 100,
@@ -385,7 +396,7 @@ describe('Scoring properties', () => {
     agentRepo.insert(makeAgent('bad-ratio', {
       source: 'lightning_graph',
       total_transactions: 100,
-      capacity_sats: 1_000_000_000, // same capacity/channels
+      capacity_sats: 1_000_000_000,
       positive_ratings: 10,
       negative_ratings: 8,
       lnplus_rank: 5,
@@ -397,7 +408,7 @@ describe('Scoring properties', () => {
 
     // Same reputation component (same centrality + peer trust)
     expect(good.components.reputation).toBe(bad.components.reputation);
-    // Higher ratio yields higher LN+ bonus → higher total
-    expect(good.total).toBeGreaterThan(bad.total);
+    // Same total — LN+ ratio no longer a multiplier
+    expect(good.total).toBe(bad.total);
   });
 });

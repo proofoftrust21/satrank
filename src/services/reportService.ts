@@ -10,6 +10,7 @@ import type { ScoringService } from './scoringService';
 import type { Attestation, ReportRequest, ReportResponse, ReportOutcome, AttestationCategory } from '../types';
 import { NotFoundError, ValidationError, ConflictError } from '../errors';
 import { logger } from '../logger';
+import { reportSubmittedTotal } from '../middleware/metrics';
 
 const OUTCOME_SCORE: Record<ReportOutcome, number> = {
   success: 85,
@@ -149,6 +150,14 @@ export class ReportService {
     } else {
       doInsert();
     }
+
+    // Monitoring counter — always emitted, labelled by verified status and the
+    // declared outcome. Drives the 30-day Tier 1 dashboard and the Tier 2
+    // eligibility funnel once activated.
+    reportSubmittedTotal.inc({
+      verified: verified ? '1' : '0',
+      outcome: input.outcome,
+    });
 
     return {
       reportId: attestation.attestation_id,

@@ -443,6 +443,31 @@ describe('DecideService', () => {
     expect(result.successRate).toBeGreaterThanOrEqual(0);
     expect(result.successRate).toBeLessThanOrEqual(1);
   });
+
+  // Sim #5 finding #2 — reputationBreakdown must be surfaced in /decide so
+  // agents can audit a flip without a second paid /profile call.
+  it('exposes scoreBreakdown with components including reputationBreakdown', async () => {
+    const snapshotRepo = new SnapshotRepository(db);
+    const probeRepo = new ProbeRepository(db);
+    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
+    const trendService = new TrendService(agentRepo, snapshotRepo);
+    const riskService = new RiskService();
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+    const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
+
+    const result = await decideService.decide(sha256('bob'), sha256('alice'));
+    expect(result.scoreBreakdown).toBeDefined();
+    expect(result.scoreBreakdown.total).toBeGreaterThanOrEqual(0);
+    expect(result.scoreBreakdown.total).toBeLessThanOrEqual(100);
+    expect(result.scoreBreakdown.components).toHaveProperty('volume');
+    expect(result.scoreBreakdown.components).toHaveProperty('reputation');
+    expect(result.scoreBreakdown.components).toHaveProperty('seniority');
+    expect(result.scoreBreakdown.components).toHaveProperty('regularity');
+    expect(result.scoreBreakdown.components).toHaveProperty('diversity');
+    // reputationBreakdown is optional on old snapshots but must be populated
+    // on a fresh score computation.
+    expect(result.scoreBreakdown.components.reputationBreakdown).toBeDefined();
+  });
 });
 
 // --- ReportService unit tests ---

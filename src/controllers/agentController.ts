@@ -12,6 +12,8 @@ import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
 import { logger } from '../logger';
 import * as memoryCache from '../cache/memoryCache';
 import { formatZodError } from '../utils/zodError';
+import { logTokenQuery } from '../utils/tokenQueryLog';
+import type Database from 'better-sqlite3';
 
 /** TTL for the leaderboard response cache — matches the stats TTL of 5 minutes.
  *  Long enough that refresh blocks are rare, short enough that new scoring cycles
@@ -49,6 +51,10 @@ export class AgentController {
     private trendService: TrendService,
     private verdictService: VerdictService,
     private autoIndexService: AutoIndexService | null = null,
+    // Optional DB handle — used to write decide_log entries from verdict/batch
+    // paths so the /api/report endpoint accepts tokens whose history lives on
+    // those endpoints rather than /api/decide.
+    private db?: Database.Database,
   ) {}
 
   getAgent = (req: Request, res: Response, next: NextFunction): void => {
@@ -202,7 +208,9 @@ export class AgentController {
         callerPubkey = normalizeIdentifier(callerParsed.data).hash;
       }
 
-      const result = await this.verdictService.getVerdict(hash, callerPubkey);
+      const result = await this.verdictService.getVerdict(hash, callerPubkey, undefined, 'verdict');
+      // Record token-target binding so the caller can later /api/report on it.
+      logTokenQuery(this.db, req.headers.authorization, hash, req.requestId);
 
       // Auto-index if UNKNOWN and input was a Lightning pubkey
       if (result.verdict === 'UNKNOWN' && this.autoIndexService && pubkey) {
@@ -231,7 +239,10 @@ export class AgentController {
       const results: Array<{ publicKeyHash: string } & Awaited<ReturnType<typeof this.verdictService.getVerdict>>> = [];
       for (const identifier of parsed.data.hashes) {
         const { hash, pubkey } = resolveIdentifier(identifier, p => this.agentRepo.findByPubkey(p));
-        const verdict = await this.verdictService.getVerdict(hash);
+        const verdict = await this.verdictService.getVerdict(hash, undefined, undefined, 'verdict');
+        // Bind every queried target to the caller token so each one is eligible
+        // for a later /api/report submission.
+        logTokenQuery(this.db, req.headers.authorization, hash, req.requestId);
 
         // Auto-index unknown Lightning pubkeys (capped per batch to prevent abuse)
         if (verdict.verdict === 'UNKNOWN' && this.autoIndexService && pubkey && autoIndexCount < MAX_AUTO_INDEX_PER_BATCH) {

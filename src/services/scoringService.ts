@@ -8,7 +8,7 @@ import type { TransactionRepository } from '../repositories/transactionRepositor
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
-import type { ScoreComponents, ConfidenceLevel } from '../types';
+import type { ScoreComponents, ConfidenceLevel, ReputationBreakdown } from '../types';
 import { logger } from '../logger';
 // computePopularityBonus removed — query_count is gameable (see modifier block)
 import { scoreComputeDuration } from '../middleware/metrics';
@@ -31,10 +31,9 @@ import {
   SATS_PER_BTC,
   LN_DIVERSITY_LOG_BASE,
   LN_DIVERSITY_BTC_MULTIPLIER,
-  LNPLUS_RANK_MULTIPLIER,
-  LNPLUS_RATINGS_WEIGHT,
-  NEGATIVE_RATINGS_PENALTY,
-  LNPLUS_BONUS_CAP,
+  // LN+ tuning constants retained in src/config/scoring.ts for the existing
+  // scoringConfig.test.ts assertions but no longer imported here after the
+  // 2026-04-16 audit removed the LN+ positive-ratings multiplier.
   CENTRALITY_BONUS_MULTIPLIER,
   CENTRALITY_DECAY_CONSTANT,
   VOLUME_LOG_BASE,
@@ -109,13 +108,18 @@ export class ScoringService {
     const verifiedTxCount = isLightningGraph ? 0 : this.txRepo.countVerifiedByAgent(agentHash);
     const maxNetworkChannels = isLightningGraph ? this.agentRepo.maxChannels() : 0;
 
+    // Compute Reputation and its sub-signal breakdown in one pass. The
+    // breakdown is emitted into components JSON so downstream audits can
+    // attribute Reputation movements to individual sub-signals.
+    const repResult = isLightningGraph
+      ? this.computeLightningReputationBreakdown(agentHash, agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
+      : this.computeReputationWithBreakdown(agentHash, now);
+
     const components: ScoreComponents = {
       volume: isLightningGraph
         ? this.computeLightningVolume(agent.total_transactions, agent.capacity_sats)
         : this.computeVolume(verifiedTxCount),
-      reputation: isLightningGraph
-        ? this.computeLightningReputation(agentHash, agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
-        : this.computeReputation(agentHash, now),
+      reputation: repResult.score,
       seniority: this.computeSeniority(agent.first_seen, now),
       regularity: isLightningGraph
         ? this.computeLightningRegularity(agentHash, agent.last_seen, now)
@@ -123,6 +127,7 @@ export class ScoringService {
       diversity: isLightningGraph
         ? this.computeLightningDiversity(agent.capacity_sats, agent.unique_peers)
         : this.computeDiversity(agentHash),
+      reputationBreakdown: repResult.breakdown,
     };
 
     // Observer agents without attestations have reputation=0. Renormalize to avoid
@@ -169,13 +174,13 @@ export class ScoringService {
       total = Math.min(100, Math.round(total * verifiedMult));
     }
 
-    // LN+ community ratings — ×1.0 to ×1.05 based on positive/negative ratio
-    if (isLightningGraph && agent.positive_ratings > 0) {
-      const ratingsRatio = agent.positive_ratings / (agent.positive_ratings + agent.negative_ratings + 1);
-      const lnplusScore = Math.log2(agent.positive_ratings + 1) * ratingsRatio * 3;
-      const lnplusMult = Math.min(1.05, 1.0 + Math.min(LNPLUS_BONUS_CAP, lnplusScore) * 0.006);
-      total = Math.min(100, Math.round(total * lnplusMult));
-    }
+    // LN+ positive ratings deprecated (2026-04-16 scoring audit):
+    //   - coverage only 13.9% of agents
+    //   - r(positive_ratings, Reputation) = 0.25 (near-noise)
+    //   - LN+ API is an external dependency without stable contract
+    // Negative ratings stay actively used for the `negative_reputation` flag
+    // (src/utils/flags.ts) — the signal is asymmetric: absence of a rating
+    // says nothing, but a negative rating remains a meaningful fraud signal.
 
     // Probe-based penalty — two regimes:
     //
@@ -371,6 +376,18 @@ export class ScoringService {
     capacitySats: number | null,
     channels: number,
   ): number {
+    return this.computeLightningReputationBreakdown(agentHash, hubnessRank, betweennessRank, capacitySats, channels).score;
+  }
+
+  /** Same math as computeLightningReputation, but also emits the per-sub-signal
+   *  contributions so a downstream audit can answer "why did Reputation move?". */
+  private computeLightningReputationBreakdown(
+    agentHash: string,
+    hubnessRank: number,
+    betweennessRank: number,
+    capacitySats: number | null,
+    channels: number,
+  ): { score: number; breakdown: ReputationBreakdown } {
     // --- Sub-signal 1: Centrality (0-100) ---
     // PRIMARY: sovereign PageRank computed hourly from the full LND graph.
     // Covers 100% of nodes (vs ~70% with LN+ API). Every node — including
@@ -381,51 +398,110 @@ export class ScoringService {
     const agent = this.agentRepo.findByHash(agentHash);
     const pagerankScore = agent?.pagerank_score;
     let centrality: number;
+    let centralitySource: 'pagerank' | 'lnplus_ranks' | 'none';
     if (pagerankScore != null && pagerankScore > 0) {
       centrality = Math.round(pagerankScore);
-    } else {
-      // Legacy LN+ fallback
+      centralitySource = 'pagerank';
+    } else if (hubnessRank > 0 || betweennessRank > 0) {
       centrality = 0;
       if (hubnessRank > 0) centrality += 50 * Math.exp(-hubnessRank / 100);
       if (betweennessRank > 0) centrality += 50 * Math.exp(-betweennessRank / 100);
       centrality = Math.min(100, Math.round(centrality));
+      centralitySource = 'lnplus_ranks';
+    } else {
+      centrality = 0;
+      centralitySource = 'none';
     }
 
     // --- Sub-signal 2: Peer trust (0-100) ---
-    // BTC per channel as inbound confidence proxy
+    // Available only when the graph crawler has populated BOTH capacity and
+    // channel count. On a newly-discovered node, peer trust is structurally
+    // unavailable (no peers observed yet) and must be excluded from the
+    // weighted average — returning 0 here would push Reputation down by
+    // peerTrust's 30% share for reasons unrelated to the node's trust.
     let peerTrust = 0;
+    let peerTrustAvailable = false;
     if (capacitySats && capacitySats > 0 && channels > 0) {
       const btcPerChannel = capacitySats / SATS_PER_BTC / channels;
       peerTrust = Math.min(100, Math.round(Math.log10(btcPerChannel * 100 + 1) / Math.log10(201) * 100));
+      peerTrustAvailable = true;
     }
 
     // --- Sub-signal 3: Capacity trend (0-100) ---
+    // Fallback returns 50 (neutral) when there is no channel_snapshot history
+    // — always treated as available; neutral is a legitimate datum.
     const capTrend = this.computeCapacityTrend(agentHash);
 
     // --- Sub-signal 4: Routing quality (0-100) ---
-    // Proprietary signal from our 1.7M+ probe results. Uses the ABSOLUTE
-    // hop count and latency (not their variability — that's regularity).
-    // Closer nodes = more reliable from our vantage point. Non-replicable:
-    // a competitor forking the code doesn't have these probe measurements.
+    // Fallback returns 50 (neutral) when < 3 probes — always treated as available.
     const routingQuality = this.computeRoutingQuality(agentHash);
 
     // --- Sub-signal 5: Fee stability (0-100) ---
-    // How stable are this node's routing fees? Frequent changes signal
-    // fee sniping or unreliable routing configuration.
+    // Fallback returns 50 (neutral) when no fee snapshots — always treated as available.
     const feeStability = this.computeFeeStability(agentHash);
 
-    // Weighted blend. With PageRank, centrality data is available for ALL
-    // nodes in the graph (100% coverage). The "without centrality" path
-    // is now only for test environments without a graph crawler.
-    const hasCentrality = centrality > 0;
-    let score: number;
-    if (hasCentrality) {
-      score = centrality * 0.20 + peerTrust * 0.30 + routingQuality * 0.20 + capTrend * 0.15 + feeStability * 0.15;
-    } else {
-      score = peerTrust * 0.35 + routingQuality * 0.25 + capTrend * 0.20 + feeStability * 0.20;
-    }
+    // Dynamic renormalization:
+    //   Nominal weights are centrality 0.20 / peerTrust 0.30 / routingQuality 0.20
+    //   / capacityTrend 0.15 / feeStability 0.15. When a sub-signal returns 0
+    //   *because its data is missing* (not because of a true-zero measurement),
+    //   including it in the weighted sum is a structural penalty unrelated to
+    //   the node's trust. The fix is to drop the unavailable slot and scale
+    //   the remaining weights back up to 1.0, so the observed signals drive
+    //   the whole Reputation component.
+    //
+    //   Only centrality and peerTrust can be unavailable — the other three
+    //   have semantically-meaningful neutral fallbacks (50) that belong in
+    //   the average. This solves the 2026-04-16 audit finding that ~28% of
+    //   scored LN agents lost 4-6 points of total score from missing
+    //   PageRank or missing capacity data on freshly-discovered nodes.
+    const NOMINAL_WEIGHTS = { centrality: 0.20, peerTrust: 0.30, routingQuality: 0.20, capacityTrend: 0.15, feeStability: 0.15 };
+    const centralityAvailable = centralitySource !== 'none';
+    const availSum =
+      (centralityAvailable ? NOMINAL_WEIGHTS.centrality : 0) +
+      (peerTrustAvailable  ? NOMINAL_WEIGHTS.peerTrust  : 0) +
+      NOMINAL_WEIGHTS.routingQuality +
+      NOMINAL_WEIGHTS.capacityTrend +
+      NOMINAL_WEIGHTS.feeStability;
 
-    return Math.min(100, Math.round(score));
+    // Renormalized weights used in the score computation AND reported verbatim
+    // in the breakdown so downstream audits can see what was actually applied.
+    const weights = {
+      centrality:      centralityAvailable ? NOMINAL_WEIGHTS.centrality / availSum : 0,
+      peerTrust:       peerTrustAvailable  ? NOMINAL_WEIGHTS.peerTrust  / availSum : 0,
+      routingQuality:  NOMINAL_WEIGHTS.routingQuality / availSum,
+      capacityTrend:   NOMINAL_WEIGHTS.capacityTrend  / availSum,
+      feeStability:    NOMINAL_WEIGHTS.feeStability   / availSum,
+    };
+
+    const score = Math.min(100, Math.round(
+      centrality      * weights.centrality +
+      peerTrust       * weights.peerTrust +
+      routingQuality  * weights.routingQuality +
+      capTrend        * weights.capacityTrend +
+      feeStability    * weights.feeStability,
+    ));
+
+    const mkSlot = (value: number, weight: number, available = true) => ({
+      value,
+      weight: Math.round(weight * 1000) / 1000,
+      // Contribution is value × weight — operator can verify the formula by
+      // summing the contribution fields; sum ≈ score (modulo rounding).
+      contribution: Math.round(value * weight * 100) / 100,
+      available,
+    });
+
+    const breakdown: ReputationBreakdown = {
+      mode: 'lightning_graph',
+      subsignals: {
+        centrality:      { ...mkSlot(centrality,      weights.centrality,     centralityAvailable), source: centralitySource },
+        peerTrust:       mkSlot(peerTrust,       weights.peerTrust, peerTrustAvailable),
+        routingQuality:  mkSlot(routingQuality,  weights.routingQuality),
+        capacityTrend:   mkSlot(capTrend,        weights.capacityTrend),
+        feeStability:    mkSlot(feeStability,    weights.feeStability),
+      },
+    };
+
+    return { score, breakdown };
   }
 
   // Capacity trend: compare latest channel_snapshot capacity with the
@@ -523,6 +599,12 @@ export class ScoringService {
   // Reputation with reinforced anti-gaming
   // Batch attester lookups to avoid N+1 queries
   private computeReputation(agentHash: string, now: number): number {
+    return this.computeReputationWithBreakdown(agentHash, now).score;
+  }
+
+  /** Same math as computeReputation, but returns the breakdown (attestation
+   *  count + weighted average + report signal) for audit trail. */
+  private computeReputationWithBreakdown(agentHash: string, now: number): { score: number; breakdown: ReputationBreakdown } {
     const REPORT_CATEGORIES = new Set(['successful_transaction', 'failed_transaction', 'unresponsive']);
     const allAttestations = this.attestationRepo.findBySubject(agentHash, MAX_ATTESTATIONS_PER_AGENT, 0);
     // Exclude report-category attestations from the general reputation loop —
@@ -530,7 +612,15 @@ export class ScoringService {
     const attestations = allAttestations.filter(a => !REPORT_CATEGORIES.has(a.category));
     if (attestations.length === 0) {
       // No general attestations — report signal alone can still contribute
-      return Math.min(100, Math.max(0, this.computeReportSignal(agentHash)));
+      const rs = this.computeReportSignal(agentHash);
+      const onlyReportScore = Math.min(100, Math.max(0, rs));
+      return {
+        score: onlyReportScore,
+        breakdown: {
+          mode: 'attestations',
+          attestations: { count: 0, weightedAverage: 0, reportSignal: rs },
+        },
+      };
     }
 
     if (attestations.length >= MAX_ATTESTATIONS_PER_AGENT) {
@@ -600,11 +690,29 @@ export class ScoringService {
 
     if (totalWeight === 0) {
       // No attestations — report signal alone can still contribute
-      return Math.min(100, Math.max(0, this.computeReportSignal(agentHash)));
+      const rs = this.computeReportSignal(agentHash);
+      return {
+        score: Math.min(100, Math.max(0, rs)),
+        breakdown: {
+          mode: 'attestations',
+          attestations: { count: attestations.length, weightedAverage: 0, reportSignal: rs },
+        },
+      };
     }
     const attestationScore = Math.round(weightedSum / totalWeight);
     const reportAdjustment = this.computeReportSignal(agentHash);
-    return Math.min(100, Math.max(0, attestationScore + reportAdjustment));
+    const finalScore = Math.min(100, Math.max(0, attestationScore + reportAdjustment));
+    return {
+      score: finalScore,
+      breakdown: {
+        mode: 'attestations',
+        attestations: {
+          count: attestations.length,
+          weightedAverage: attestationScore,
+          reportSignal: reportAdjustment,
+        },
+      },
+    };
   }
 
   /** Compute the report-based signal for the reputation component.
