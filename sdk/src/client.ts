@@ -64,6 +64,33 @@ export class ServiceUnavailableError extends SatRankError { constructor(message:
 export class TimeoutError extends SatRankError { constructor(message = 'Request timeout') { super(message, 504, 'TIMEOUT'); this.name = 'TimeoutError'; } }
 export class NetworkError extends SatRankError { constructor(message: string) { super(message, 0, 'NETWORK_ERROR'); this.name = 'NetworkError'; } }
 
+/** Reads a Response body as text once, then attempts JSON.parse. Non-JSON
+ *  bodies (e.g. Nginx plaintext `payment required` on a missing Authorization
+ *  header) are returned with parsed=false so the caller can map them to the
+ *  appropriate typed error. */
+async function readBody<T>(response: Response): Promise<{ body: T | string; parsed: boolean }> {
+  const text = await response.text();
+  if (text.length === 0) return { body: '' as unknown as T, parsed: false };
+  try {
+    return { body: JSON.parse(text) as T, parsed: true };
+  } catch {
+    return { body: text as unknown as T, parsed: false };
+  }
+}
+
+/** Selects the right SatRankError subclass given the HTTP response, accounting
+ *  for non-JSON bodies (plaintext 402 from Nginx, HTML error pages, etc.). */
+function errorFromHttp(response: Response, parsed: boolean, body: unknown, path: string): SatRankError {
+  if (parsed) {
+    const errBody = body as { error?: { code: string; message: string } };
+    return errorFromResponse(response.status, errBody.error?.code, errBody.error?.message ?? `HTTP ${response.status}`, path);
+  }
+  // Non-JSON body — use status alone to pick the subclass, preserve raw text as message.
+  const raw = typeof body === 'string' ? body.trim().slice(0, 200) : `HTTP ${response.status}`;
+  const message = raw.length > 0 ? raw : `HTTP ${response.status}`;
+  return errorFromResponse(response.status, undefined, message, path);
+}
+
 /** Maps an HTTP response (status + body.error) to the correct SatRankError subclass.
  *  Agents can `catch (e)` and use `instanceof SpecificError` to dispatch on error type. */
 function errorFromResponse(status: number, code: string | undefined, message: string, path: string): SatRankError {
@@ -97,6 +124,18 @@ export interface SatRankClientOptions {
 interface ApiEnvelope<T> {
   data: T;
   meta?: PaginationMeta;
+}
+
+/** Wire-level shape returned by POST /api/deposit (phase 1). Mapped to the
+ *  public DepositInvoiceResponse by the SDK to shield callers from the
+ *  relative-time `expiresIn` field and the server-internal `amount` naming. */
+interface DepositInvoiceServerShape {
+  invoice: string;
+  paymentHash: string;
+  amount: number;
+  quotaGranted: number;
+  expiresIn: number;
+  instructions: string;
 }
 
 export class SatRankClient {
@@ -254,7 +293,19 @@ export class SatRankClient {
    * Both token types work interchangeably.
    */
   async deposit(amount: number): Promise<DepositInvoiceResponse> {
-    return this.post<DepositInvoiceResponse>(`/api/deposit`, { amount });
+    const envelope = await this.post<ApiEnvelope<DepositInvoiceServerShape>>(`/api/deposit`, { amount });
+    const raw = envelope.data;
+    // Server returns { amount, expiresIn } — surface them as { amountSats, expiresAt }
+    // so consumers can `new Date(expiresAt * 1000)` without tripping on undefined.
+    const nowSec = Math.floor(Date.now() / 1000);
+    return {
+      invoice: raw.invoice,
+      paymentHash: raw.paymentHash,
+      amountSats: raw.amount,
+      quotaGranted: raw.quotaGranted,
+      expiresAt: nowSec + raw.expiresIn,
+      instructions: raw.instructions,
+    };
   }
 
   /**
@@ -268,7 +319,8 @@ export class SatRankClient {
    * @returns The token string and balance. Set headers.Authorization to the token value.
    */
   async verifyDeposit(paymentHash: string, preimage: string): Promise<DepositVerifyResponse> {
-    return this.post<DepositVerifyResponse>(`/api/deposit`, { paymentHash, preimage });
+    const envelope = await this.post<ApiEnvelope<DepositVerifyResponse>>(`/api/deposit`, { paymentHash, preimage });
+    return envelope.data;
   }
 
   // --- Transact (decide → pay → report) ---
@@ -462,18 +514,22 @@ export class SatRankClient {
         signal: controller.signal,
       });
 
-      const body = await response.json() as T & { error?: { code: string; message: string } };
-
       // Track remaining balance from response header
       const balanceHeader = response.headers.get('x-satrank-balance');
       if (balanceHeader !== null) this.lastBalance = parseInt(balanceHeader, 10);
 
+      const { body, parsed } = await readBody<T>(response);
+
       if (!response.ok) {
-        const errBody = body as { error?: { code: string; message: string } };
-        throw errorFromResponse(response.status, errBody.error?.code, errBody.error?.message ?? `HTTP ${response.status}`, path);
+        throw errorFromHttp(response, parsed, body, path);
       }
 
-      return body;
+      if (!parsed) {
+        // 2xx with a non-JSON body is unexpected for SatRank; surface loudly.
+        throw new NetworkError(`Unexpected non-JSON response (HTTP ${response.status})`);
+      }
+
+      return body as T;
     } catch (err) {
       if (err instanceof SatRankError) throw err;
       if (err instanceof Error && err.name === 'AbortError') throw new TimeoutError();
@@ -501,26 +557,31 @@ export class SatRankClient {
         signal: controller.signal,
       });
 
-      const responseBody = await response.json() as T & { error?: { code: string; message: string }; invoice?: string };
-
       // Track remaining balance from response header
       const balanceHeader = response.headers.get('x-satrank-balance');
       if (balanceHeader !== null) this.lastBalance = parseInt(balanceHeader, 10);
 
+      const { body: responseBody, parsed } = await readBody<T>(response);
+
       if (!response.ok) {
         // L402 invoice issuance: /api/deposit phase 1 returns HTTP 402 with an
-        // `invoice` body (not an `error` body). Per L402 semantics "here is your
-        // invoice" is a functional success, so treat it as such rather than
-        // throwing PaymentRequiredError and losing the invoice.
-        const maybeInvoice = responseBody as { error?: unknown; invoice?: unknown };
-        if (response.status === 402 && !maybeInvoice.error && typeof maybeInvoice.invoice === 'string') {
-          return responseBody;
+        // `invoice` body wrapped in `{data}` (not an `error` body). Per L402
+        // semantics "here is your invoice" is a functional success, so treat
+        // it as such rather than throwing PaymentRequiredError.
+        if (parsed && response.status === 402) {
+          const envelope = responseBody as { error?: unknown; data?: { invoice?: unknown } };
+          if (!envelope.error && typeof envelope.data?.invoice === 'string') {
+            return responseBody as T;
+          }
         }
-        const errBody = responseBody as { error?: { code: string; message: string } };
-        throw errorFromResponse(response.status, errBody.error?.code, errBody.error?.message ?? `HTTP ${response.status}`, path);
+        throw errorFromHttp(response, parsed, responseBody, path);
       }
 
-      return responseBody;
+      if (!parsed) {
+        throw new NetworkError(`Unexpected non-JSON response (HTTP ${response.status})`);
+      }
+
+      return responseBody as T;
     } catch (err) {
       if (err instanceof SatRankError) throw err;
       if (err instanceof Error && err.name === 'AbortError') throw new TimeoutError();

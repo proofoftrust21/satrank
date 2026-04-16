@@ -309,16 +309,23 @@ export interface MoversResponse {
 export interface DepositInvoiceResponse {
   invoice: string;
   paymentHash: string;
-  amount: number;
+  /** Amount in sats to pay. Maps 1:1 to requests granted. */
+  amountSats: number;
+  /** Number of paid requests credited once the invoice settles. */
   quotaGranted: number;
-  expiresIn: number;
+  /** Absolute Unix timestamp (seconds) when the invoice expires. */
+  expiresAt: number;
+  /** Human-readable next step for the caller. */
   instructions: string;
 }
 
 export interface DepositVerifyResponse {
   balance: number;
   paymentHash: string;
-  token: string;
+  /** Token string to use in Authorization header, or already-redeemed indicator. */
+  token?: string;
+  /** Present when the paymentHash was already settled in a prior call. */
+  alreadyRedeemed?: boolean;
   instructions: string;
 }
 

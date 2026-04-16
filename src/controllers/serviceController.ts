@@ -144,7 +144,7 @@ export class ServiceController {
           const httpHealth = svc.last_http_status !== null && svc.last_http_status > 0
             ? classifyStatus(svc.last_http_status)
             : 'unknown' as const;
-          return { svc, agent, score, uptimeRatio, price, httpHealth };
+          return { svc, agent, score, uptimeRatio, price, httpHealth, lastCheckedAt: svc.last_checked_at };
         })
         .filter(s =>
           s.score >= VERDICT_SAFE_THRESHOLD &&
@@ -187,10 +187,19 @@ export class ServiceController {
       // can gate on warnings.length === 0 instead of re-deriving thresholds
       // client-side.
       const LOW_UPTIME_THRESHOLD = 0.20;
+      // Sim #7 #4: the cached httpHealth on /services/best can disagree with a
+      // fresh probe run by /decide. Surface lastHealthCheckedAt + a derived
+      // `stale` boolean so agents can gate on freshness or re-probe themselves.
+      const STALE_HEALTH_AGE_SEC = 5 * 60; // 5 min — tied to crawler probe cadence
+      const nowSec = Math.floor(Date.now() / 1000);
       const format = (e: typeof pool[number]) => {
         const warnings: string[] = [];
         if (e.uptimeRatio < LOW_UPTIME_THRESHOLD) warnings.push('LOW_UPTIME');
         if (e.httpHealth === 'degraded') warnings.push('DEGRADED_HTTP');
+        const lastCheckedAt = e.lastCheckedAt ?? null;
+        const ageSec = lastCheckedAt !== null ? nowSec - lastCheckedAt : null;
+        const stale = ageSec === null || ageSec > STALE_HEALTH_AGE_SEC;
+        if (stale) warnings.push('STALE_HEALTH');
         return {
           name: e.svc.name,
           category: e.svc.category,
@@ -199,6 +208,8 @@ export class ServiceController {
           priceSats: e.price,
           uptimeRatio: Math.round(e.uptimeRatio * 1000) / 1000,
           httpHealth: e.httpHealth,
+          lastHealthCheckedAt: lastCheckedAt,
+          stale,
           node: e.agent ? {
             publicKeyHash: e.agent.public_key_hash,
             alias: e.agent.alias,

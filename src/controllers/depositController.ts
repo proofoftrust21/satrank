@@ -108,12 +108,14 @@ export class DepositController {
     depositPhaseTotal.inc({ phase: 'invoice_created' });
 
     res.status(402).json({
-      invoice: result.payment_request,
-      paymentHash: rHashHex,
-      amount,
-      quotaGranted: amount, // 1 sat = 1 request
-      expiresIn: INVOICE_EXPIRY_SEC,
-      instructions: 'Pay the invoice, then call POST /api/deposit with { paymentHash, preimage } to activate your balance. Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+      data: {
+        invoice: result.payment_request,
+        paymentHash: rHashHex,
+        amount,
+        quotaGranted: amount, // 1 sat = 1 request
+        expiresIn: INVOICE_EXPIRY_SEC,
+        instructions: 'Pay the invoice, then call POST /api/deposit with { paymentHash, preimage } to activate your balance. Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+      },
     });
   }
 
@@ -156,10 +158,12 @@ export class DepositController {
     if (preCheck) {
       depositPhaseTotal.inc({ phase: 'verify_success_cached' });
       res.json({
-        balance: preCheck.remaining,
-        paymentHash: body.paymentHash,
-        alreadyRedeemed: true,
-        instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+        data: {
+          balance: preCheck.remaining,
+          paymentHash: body.paymentHash,
+          alreadyRedeemed: true,
+          instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+        },
       });
       return;
     }
@@ -208,10 +212,12 @@ export class DepositController {
       // rate can be compared to the fresh path.
       depositPhaseTotal.inc({ phase: 'verify_success_cached' });
       res.json({
-        balance: result.balance,
-        paymentHash: body.paymentHash,
-        alreadyRedeemed: true,
-        instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+        data: {
+          balance: result.balance,
+          paymentHash: body.paymentHash,
+          alreadyRedeemed: true,
+          instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
+        },
       });
       return;
     }
@@ -220,10 +226,12 @@ export class DepositController {
     depositPhaseTotal.inc({ phase: 'verify_success_fresh' });
 
     res.status(201).json({
-      balance: quota,
-      paymentHash: body.paymentHash,
-      token: `L402 deposit:${body.preimage}`,
-      instructions: 'Use the token value as your Authorization header on all paid endpoints.',
+      data: {
+        balance: quota,
+        paymentHash: body.paymentHash,
+        token: `L402 deposit:${body.preimage}`,
+        instructions: 'Use the token value as your Authorization header on all paid endpoints.',
+      },
     });
   }
 }
