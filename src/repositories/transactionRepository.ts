@@ -1,6 +1,9 @@
 // Data access for the transactions table
 import type Database from 'better-sqlite3';
 import type { Transaction } from '../types';
+import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
+
+export type DualWriteMode = 'off' | 'dry_run' | 'active';
 
 export class TransactionRepository {
   constructor(private db: Database.Database) {}
@@ -80,5 +83,49 @@ export class TransactionRepository {
       INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(tx.tx_id, tx.sender_hash, tx.receiver_hash, tx.amount_bucket, tx.timestamp, tx.payment_hash, tx.preimage, tx.status, tx.protocol);
+  }
+
+  /** Dual-write-aware insert used during the Phase 1 rollout. Dispatches on
+   *  the shadow-mode flag so the crawler code path is identical regardless of
+   *  which rollout step we're in.
+   *    off     — legacy 9-col INSERT only. Four v31 columns stay NULL.
+   *    dry_run — legacy 9-col INSERT + NDJSON shadow emit. Four v31 columns
+   *              stay NULL in DB; the enriched row is only logged.
+   *    active  — single 13-col INSERT. Four v31 columns are populated. No
+   *              NDJSON emit (the live table IS the source of truth now).
+   *  Invariants (see docs/PHASE-1-DESIGN.md §4):
+   *   - Exactly one INSERT is issued per call (no duplicate rows under any mode).
+   *   - Callers always pass `enrichment` — dispatch is purely flag-driven.
+   *   - Logger failure is swallowed by DualWriteLogger; DB failure bubbles. */
+  insertWithDualWrite(
+    tx: Transaction,
+    enrichment: DualWriteEnrichment,
+    mode: DualWriteMode,
+    shadowLogger?: DualWriteLogger,
+  ): void {
+    if (mode === 'active') {
+      this.db.prepare(`
+        INSERT INTO transactions (
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id, source, window_bucket
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        tx.tx_id, tx.sender_hash, tx.receiver_hash, tx.amount_bucket, tx.timestamp,
+        tx.payment_hash, tx.preimage, tx.status, tx.protocol,
+        enrichment.endpoint_hash, enrichment.operator_id, enrichment.source, enrichment.window_bucket,
+      );
+      return;
+    }
+
+    this.insert(tx);
+
+    if (mode === 'dry_run' && shadowLogger) {
+      shadowLogger.emit({
+        loggedAt: Date.now(),
+        txId: tx.tx_id,
+        enrichment,
+      });
+    }
   }
 }

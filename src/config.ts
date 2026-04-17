@@ -86,6 +86,23 @@ const configSchema = z.object({
   REPORT_BONUS_ROLLBACK_RATIO: z.coerce.number().positive().default(1.3),
   /** Check interval for the auto-rollback guard (ms). */
   REPORT_BONUS_GUARD_INTERVAL_MS: z.coerce.number().int().positive().default(15 * 60_000),
+
+  // --- Phase 1 dual-write (transactions table enrichment) ---
+  // Three-valued flag driving the shadow-write strategy during the Phase 1
+  // rollout window (48-72h dry-run before flipping to `active`) :
+  //   off     — legacy 9-col INSERT only (production default, zero risk).
+  //   dry_run — legacy 9-col INSERT + NDJSON shadow log of the enriched row.
+  //             The 4 new columns stay NULL in DB so the crawler can be
+  //             observed without mutating the ledger.
+  //   active  — single 13-col INSERT. New columns populated; NDJSON silent.
+  // See docs/PHASE-1-DESIGN.md §5 for the rollout runbook.
+  TRANSACTIONS_DUAL_WRITE_MODE: z.enum(['off', 'dry_run', 'active']).default('off'),
+  // Primary NDJSON path for dry-run shadow writes. Mounted as a Docker volume
+  // in production. If the path is not writable at boot, dualWriteLogger falls
+  // back to `${cwd}/logs/dual-write-dryrun.ndjson` and logs WARN; if the
+  // fallback also fails, logging is disabled (ERROR) and active/dry_run modes
+  // degrade gracefully so the API never crashes over a logging issue.
+  TRANSACTIONS_DRY_RUN_LOG_PATH: z.string().default('/var/log/satrank/dual-write-dryrun.ndjson'),
 });
 
 const parsed = configSchema.safeParse(process.env);
