@@ -518,6 +518,23 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 29, 'report_bonus_log table for Tier 2 economic incentive (off by default)');
   }
 
+  // v30: max_quota column on token_balance. Lets the X-SatRank-Balance-Max
+  // header surface "852/10000" instead of just "852" (sim #9 FINDING #14).
+  // Nullable — existing rows default to remaining at first read so behavior
+  // stays unchanged for tokens that predate the column.
+  if (!hasVersion(db, 30)) {
+    try {
+      db.exec('ALTER TABLE token_balance ADD COLUMN max_quota INTEGER');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    // Backfill existing rows: Aperture tokens quota=21, deposit tokens
+    // unknown (use `remaining` as lower bound so header is never misleading).
+    db.exec('UPDATE token_balance SET max_quota = remaining WHERE max_quota IS NULL');
+    recordVersion(db, 30, 'max_quota column on token_balance for X-SatRank-Balance-Max header');
+  }
+
   // v27: source column on service_endpoints for trust classification.
   // Runs LAST (after v22 creates service_endpoints and v26 adds metadata columns)
   // because the other migrations appear in reverse order in this file and would
@@ -690,6 +707,13 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   29: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_report_bonus_log_day');
     db.exec('DROP TABLE IF EXISTS report_bonus_log');
+  },
+  30: (db) => {
+    // SQLite 3.35+ supports DROP COLUMN. Older SQLite would need a table
+    // rebuild; we ignore the error there since a rollback on pre-3.35 simply
+    // leaves an orphan column, which the next `runMigrations(db)` will
+    // tolerate via the duplicate-column guard in the up-migration.
+    try { db.exec('ALTER TABLE token_balance DROP COLUMN max_quota'); } catch { /* SQLite < 3.35 */ }
   },
 };
 
