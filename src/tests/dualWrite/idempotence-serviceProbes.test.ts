@@ -25,6 +25,16 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Agent } from '../../types';
 
+// Stub the SSRF pre-flight: the crawler now resolves DNS + rejects private
+// IPs before fetching, but this test uses `api.example.com` (no A record) as
+// a stable synthetic hostname. Return a bogus-but-public IP so the guard
+// passes and the mocked fetch gets to run. Real SSRF behavior is covered in
+// src/tests/ssrf.test.ts.
+vi.mock('../../utils/ssrf', async () => {
+  const actual = await vi.importActual<typeof import('../../utils/ssrf')>('../../utils/ssrf');
+  return { ...actual, resolveAndPin: async () => '203.0.113.1' };
+});
+
 // 2026-04-18T12:00:00Z → window_bucket must be '2026-04-18' regardless of the
 // host TZ (ISO slice is UTC-anchored).
 const FIXED_ISO = '2026-04-18T12:00:00Z';

@@ -33,3 +33,42 @@ export function isSafeUrl(urlStr: string): boolean {
     return true;
   } catch { return false; }
 }
+
+const BLOCKED_HOSTNAMES = /^(localhost|\[::1?\]|\[::ffff:.+\])$/i;
+
+function isIpBlocked(ip: string): boolean {
+  return isPrivateIp(ip) || ip === '0.0.0.0';
+}
+
+export function isUrlBlocked(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    if (!['http:', 'https:'].includes(u.protocol)) return true;
+    if (u.username || u.password) return true;
+    if (BLOCKED_HOSTNAMES.test(u.hostname)) return true;
+    if (isIpBlocked(u.hostname)) return true;
+    const mapped = u.hostname.match(/^\[::ffff:([\d.]+)\]$/i);
+    if (mapped && isIpBlocked(mapped[1])) return true;
+    return false;
+  } catch { return true; }
+}
+
+/** Resolve hostname to IP, verify it's not private, return the resolved IP.
+ *  Returns null if blocked, or the original hostname if it's a raw IP.
+ *  Resolves A+AAAA in parallel to defeat AAAA-based bypass on dual-stack. */
+export async function resolveAndPin(urlStr: string): Promise<string | null> {
+  if (isUrlBlocked(urlStr)) return null;
+  try {
+    const hostname = new URL(urlStr).hostname;
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return hostname;
+    const { resolve4, resolve6 } = await import('dns/promises');
+    const [ipv4, ipv6] = await Promise.all([
+      resolve4(hostname).catch(() => [] as string[]),
+      resolve6(hostname).catch(() => [] as string[]),
+    ]);
+    const allIps = [...ipv4, ...ipv6];
+    if (allIps.length === 0) return null;
+    if (allIps.some(ip => isIpBlocked(ip))) return null;
+    return ipv4[0] ?? ipv6[0];
+  } catch { return null; }
+}

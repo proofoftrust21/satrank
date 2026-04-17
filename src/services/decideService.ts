@@ -79,62 +79,12 @@ export interface DecideServiceOptions {
   serviceEndpointRepo?: ServiceEndpointRepository;
 }
 
-// SSRF protection: use shared isPrivateIp + resolve DNS once and fetch by IP
-import { isPrivateIp } from '../utils/ssrf';
+// SSRF protection: shared helpers from utils/ssrf — resolve DNS once and fetch by IP
+import { resolveAndPin } from '../utils/ssrf';
 
-const BLOCKED_HOSTNAMES = /^(localhost|\[::1?\]|\[::ffff:.+\])$/i;
-const SERVER_IP = process.env.SERVER_IP ?? '178.104.108.108';
 const SERVICE_HEALTH_CACHE_TTL_SEC = 1800; // 30 min
 const SERVICE_HEALTH_TIMEOUT_MS = 3000;
 const SERVICE_HEALTH_NONBLOCK_MS = 500;
-
-function isIpBlocked(ip: string): boolean {
-  return isPrivateIp(ip) || ip === '0.0.0.0';
-}
-
-function isUrlBlocked(urlStr: string): boolean {
-  try {
-    const u = new URL(urlStr);
-    if (!['http:', 'https:'].includes(u.protocol)) return true;
-    if (u.username || u.password) return true; // block credentials in URL
-    if (BLOCKED_HOSTNAMES.test(u.hostname)) return true;
-    if (isIpBlocked(u.hostname)) return true;
-    const mapped = u.hostname.match(/^\[::ffff:([\d.]+)\]$/i);
-    if (mapped && isIpBlocked(mapped[1])) return true;
-    return false;
-  } catch { return true; }
-}
-
-/** Resolve hostname to IP, verify it's not private, return the resolved IP.
- *  Returns null if blocked, or the original hostname if it's a raw IP.
- *
- *  Audit H4 closure: previously we only resolved A (IPv4) records. A hostname
- *  with AAAA records pointing to link-local/ULA IPv6 could have slipped past
- *  the check if the fetch implementation ever preferred IPv6 on dual-stack
- *  servers. We now resolve BOTH families and reject if any returned address
- *  is private; the returned IP is the first A record so the outbound fetch
- *  is still forced to IPv4 (pinning behavior unchanged for callers). */
-async function resolveAndPin(urlStr: string): Promise<string | null> {
-  if (isUrlBlocked(urlStr)) return null;
-  try {
-    const hostname = new URL(urlStr).hostname;
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return hostname;
-    const { resolve4, resolve6 } = await import('dns/promises');
-    // Resolve both families in parallel. If either resolution fails (NXDOMAIN
-    // for that family), promise rejects — we tolerate that by defaulting to
-    // [] and letting the other family cover the answer.
-    const [ipv4, ipv6] = await Promise.all([
-      resolve4(hostname).catch(() => [] as string[]),
-      resolve6(hostname).catch(() => [] as string[]),
-    ]);
-    const allIps = [...ipv4, ...ipv6];
-    if (allIps.length === 0) return null;
-    if (allIps.some(ip => isIpBlocked(ip))) return null;
-    // Pin to first IPv4 when available (fetch will use this for connection).
-    // Fallback to IPv6 only if no A record — rare for web services.
-    return ipv4[0] ?? ipv6[0];
-  } catch { return null; }
-}
 
 function classifyHttp(status: number): 'healthy' | 'degraded' | 'down' {
   if (status >= 200 && status < 300) return 'healthy';  // 2xx success

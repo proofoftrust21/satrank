@@ -1,6 +1,6 @@
 // Report engine — outcome feedback (success / failure / timeout)
 // Converts success/failure/timeout into weighted attestations
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { v4 as uuid } from 'uuid';
 import type Database from 'better-sqlite3';
 import type { AttestationRepository } from '../repositories/attestationRepository';
@@ -91,10 +91,12 @@ export class ReportService {
     }
 
     // Preimage verification (pure computation — safe outside transaction)
+    // Constant-time comparison to prevent byte-by-byte timing oracle on preimage guesses.
     let verified = false;
     if (input.paymentHash && input.preimage) {
-      const hash = createHash('sha256').update(Buffer.from(input.preimage, 'hex')).digest('hex');
-      verified = hash === input.paymentHash;
+      const hashBuf = createHash('sha256').update(Buffer.from(input.preimage, 'hex')).digest();
+      const expectedBuf = Buffer.from(input.paymentHash, 'hex');
+      verified = hashBuf.length === expectedBuf.length && timingSafeEqual(hashBuf, expectedBuf);
       if (!verified) {
         logger.warn({ reporter: input.reporter.slice(0, 12), target: input.target.slice(0, 12) }, 'Preimage verification failed');
       }

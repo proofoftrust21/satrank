@@ -25,6 +25,10 @@ export class HealthController {
   };
 
   getVersion = (_req: Request, res: Response): void => {
+    // Version is immutable per build — let clients cache for 60s so status
+    // pages polling every few seconds don't keep tripping the rate-limiter.
+    // Sim #9 FINDING #13.
+    res.setHeader('Cache-Control', 'public, max-age=60');
     res.json({ data: VERSION });
   };
 }

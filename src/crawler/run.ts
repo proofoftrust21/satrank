@@ -9,6 +9,7 @@ import { crawlDuration } from '../middleware/metrics';
 import { startCrawlerMetricsServer } from './metricsServer';
 import { getDatabase, closeDatabase } from '../database/connection';
 import { runMigrations } from '../database/migrations';
+import { acquireBulkRescoreLock } from '../utils/advisoryLock';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -176,7 +177,7 @@ async function crawlProbe(crawler: ProbeCrawler, probeRepo: ProbeRepository): Pr
   }
 
   // Purge stale probe results — keep 7 days
-  const purged = probeRepo.purgeOlderThan(7 * 24 * 3600);
+  const purged = await probeRepo.purgeOlderThan(7 * 24 * 3600);
   if (purged > 0) {
     logger.info({ purged }, 'Old probe results purged');
   }
@@ -238,33 +239,50 @@ async function scoreBatch(agents: { public_key_hash: string }[], scoringService:
   return scored;
 }
 
+// Lock path lives next to the DB on the shared docker volume so both
+// containers (and any manual script running inside either) see the same lock.
+const BULK_RESCORE_LOCK_PATH = join(dirname(config.DB_PATH), '.bulk-rescore.lock');
+
 async function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
+  // Advisory lock: only one bulk rescore at a time across all processes
+  // sharing this DB. If another process holds it, skip — the next cron
+  // cycle will pick up whatever this one would have scored. We don't wait
+  // because a rescore in flight will produce fresh snapshots anyway.
+  const lock = acquireBulkRescoreLock(BULK_RESCORE_LOCK_PATH);
+  if (!lock) {
+    logger.info({ lockPath: BULK_RESCORE_LOCK_PATH }, 'Bulk rescore skipped — another process holds the lock');
+    return;
+  }
+
   const startMs = Date.now();
+  try {
+    // Phase 1: Score all unscored agents that have exploitable data
+    const unscoredCount = agentRepo.countUnscoredWithData();
+    logger.info({ unscoredCount }, 'Starting bulk scoring: unscored agents with data');
 
-  // Phase 1: Score all unscored agents that have exploitable data
-  const unscoredCount = agentRepo.countUnscoredWithData();
-  logger.info({ unscoredCount }, 'Starting bulk scoring: unscored agents with data');
+    if (unscoredCount > 0) {
+      const unscored = agentRepo.findUnscoredWithData();
+      const scored = await scoreBatch(unscored, scoringService, 'unscored');
+      logger.info({ scored, total: unscored.length, durationMs: Date.now() - startMs }, 'Bulk scoring complete (unscored agents)');
+    }
 
-  if (unscoredCount > 0) {
-    const unscored = agentRepo.findUnscoredWithData();
-    const scored = await scoreBatch(unscored, scoringService, 'unscored');
-    logger.info({ scored, total: unscored.length, durationMs: Date.now() - startMs }, 'Bulk scoring complete (unscored agents)');
+    // Phase 2: Rescore already-scored agents (refresh with latest data)
+    const alreadyScored = agentRepo.findScoredAgents();
+    if (alreadyScored.length > 0) {
+      const rescoreStart = Date.now();
+      const rescored = await scoreBatch(alreadyScored, scoringService, 'rescore');
+      logger.info({ rescored, total: alreadyScored.length, durationMs: Date.now() - rescoreStart }, 'Bulk rescore complete (existing agents)');
+    }
+
+    const purged = await snapshotRepo.purgeOldSnapshots();
+    if (purged > 0) {
+      logger.info({ purged }, 'Old snapshots purged');
+    }
+
+    logger.info({ totalDurationMs: Date.now() - startMs }, 'Bulk scoring pipeline finished');
+  } finally {
+    lock.release();
   }
-
-  // Phase 2: Rescore already-scored agents (refresh with latest data)
-  const alreadyScored = agentRepo.findScoredAgents();
-  if (alreadyScored.length > 0) {
-    const rescoreStart = Date.now();
-    const rescored = await scoreBatch(alreadyScored, scoringService, 'rescore');
-    logger.info({ rescored, total: alreadyScored.length, durationMs: Date.now() - rescoreStart }, 'Bulk rescore complete (existing agents)');
-  }
-
-  const purged = snapshotRepo.purgeOldSnapshots();
-  if (purged > 0) {
-    logger.info({ purged }, 'Old snapshots purged');
-  }
-
-  logger.info({ totalDurationMs: Date.now() - startMs }, 'Bulk scoring pipeline finished');
 }
 
 // --- Full crawl (all sources once, used for single-run and initial cron boot) ---
@@ -631,6 +649,24 @@ async function main(): Promise<void> {
     }, RETENTION_INTERVAL_MS);
     logger.info({ intervalMs: RETENTION_INTERVAL_MS }, 'Retention cleanup cron timer started');
 
+    // WAL checkpoint cron — `wal_autocheckpoint = 1000` triggers opportunistic
+    // checkpoints on writes, but under constant read pressure readers keep
+    // snapshots open and the checkpoint never advances far enough to truncate.
+    // We've seen the WAL grow past 1.6 GB in practice. A periodic
+    // wal_checkpoint(TRUNCATE) reclaims disk and caps replay time on recovery.
+    const WAL_CHECKPOINT_INTERVAL_MS = 60 * 60 * 1000; // 1h
+    const timerWalCheckpoint = setInterval(() => {
+      try {
+        const result = db.pragma('wal_checkpoint(TRUNCATE)');
+        logger.info({ result }, 'WAL checkpoint(TRUNCATE) complete');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ error: msg }, 'WAL checkpoint failed');
+      }
+    }, WAL_CHECKPOINT_INTERVAL_MS);
+    timerWalCheckpoint.unref?.();
+    logger.info({ intervalMs: WAL_CHECKPOINT_INTERVAL_MS }, 'WAL checkpoint cron timer started');
+
     function shutdown() {
       logger.info('Stopping cron crawler');
       clearInterval(timerHeartbeat);
@@ -642,6 +678,7 @@ async function main(): Promise<void> {
       if (timerZapMining) clearInterval(timerZapMining);
       clearInterval(timerStaleSweep);
       clearInterval(timerRetention);
+      clearInterval(timerWalCheckpoint);
       metricsServer.close();
       closeDatabase();
       process.exit(0);

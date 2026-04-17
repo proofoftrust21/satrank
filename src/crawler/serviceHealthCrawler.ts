@@ -3,6 +3,7 @@
 // and haven't been checked in the last 30 minutes.
 import { logger } from '../logger';
 import { sha256 } from '../utils/crypto';
+import { resolveAndPin } from '../utils/ssrf';
 import { canonicalizeUrl, endpointHash } from '../utils/urlCanonical';
 import { windowBucket } from '../utils/dualWriteLogger';
 import type { ServiceEndpoint, ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
@@ -34,6 +35,20 @@ export class ServiceHealthCrawler {
       let healthy = false;
 
       try {
+        // SSRF guard: resolve DNS and reject if any returned IP is private/loopback/CGN.
+        // Attacker could register a URL resolving to 169.254.169.254 or 10.0.0.1; without
+        // this check the crawler would expose the internal status back via /api/services.
+        const pinnedIp = await resolveAndPin(endpoint.url);
+        if (pinnedIp === null) {
+          this.repo.upsert(endpoint.agent_hash, endpoint.url, 0, 0);
+          result.down++;
+          result.checked++;
+          if (result.checked < stale.length) {
+            await new Promise(resolve => setTimeout(resolve, CHECK_RATE_MS));
+          }
+          continue;
+        }
+
         const start = Date.now();
         const resp = await fetch(endpoint.url, {
           method: 'GET',

@@ -144,9 +144,18 @@ export class ServiceEndpointRepository {
 
     const countRow = this.db.prepare(`SELECT COUNT(*) as c FROM service_endpoints se ${where}`).get(...params) as { c: number };
 
-    const sortCol = filters.sort === 'price' ? 'se.service_price_sats ASC'
-      : filters.sort === 'uptime' ? '(CAST(se.success_count AS REAL) / MAX(se.check_count, 1)) DESC'
-      : 'se.check_count DESC'; // default: most-checked first (proxy for popularity)
+    // Explicit whitelist for ORDER BY column — defense in depth so a future
+    // refactor that widens `filters.sort`'s type can't accidentally route user
+    // input into the SQL string. Unknown values fall back to the default.
+    const SORT_SQL: Record<string, string> = {
+      price: 'se.service_price_sats ASC',
+      uptime: '(CAST(se.success_count AS REAL) / MAX(se.check_count, 1)) DESC',
+      score: 'se.check_count DESC',
+    };
+    const sortKey = typeof filters.sort === 'string' && Object.prototype.hasOwnProperty.call(SORT_SQL, filters.sort)
+      ? filters.sort
+      : 'score';
+    const sortCol = SORT_SQL[sortKey];
 
     const limit = Math.min(filters.limit ?? 20, 100);
     const offset = filters.offset ?? 0;

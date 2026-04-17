@@ -67,20 +67,20 @@ describe('SnapshotRepository.purgeOldSnapshots', () => {
     db.close();
   });
 
-  it('deletes all snapshots older than 30 days', () => {
+  it('deletes all snapshots older than 30 days', async () => {
     const agent = 'a'.repeat(64);
     insertSnapshot(agentRepo, repo, agent, now - 31 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 35 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 60 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 1 * DAY);
 
-    const purged = repo.purgeOldSnapshots();
+    const purged = await repo.purgeOldSnapshots();
 
     expect(purged).toBe(3);
     expect(repo.countByAgent(agent)).toBe(1);
   });
 
-  it('keeps all snapshots within the last 7 days', () => {
+  it('keeps all snapshots within the last 7 days', async () => {
     const agent = 'b'.repeat(64);
     insertSnapshot(agentRepo, repo, agent, now - 1 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 1 * DAY + 300);
@@ -88,13 +88,13 @@ describe('SnapshotRepository.purgeOldSnapshots', () => {
     insertSnapshot(agentRepo, repo, agent, now - 2 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 6 * DAY);
 
-    const purged = repo.purgeOldSnapshots();
+    const purged = await repo.purgeOldSnapshots();
 
     expect(purged).toBe(0);
     expect(repo.countByAgent(agent)).toBe(5);
   });
 
-  it('keeps only 1 snapshot per day between 7 and 30 days', () => {
+  it('keeps only 1 snapshot per day between 7 and 30 days', async () => {
     const agent = 'c'.repeat(64);
     const tenDaysAgo = now - 10 * DAY;
 
@@ -102,7 +102,7 @@ describe('SnapshotRepository.purgeOldSnapshots', () => {
     insertSnapshot(agentRepo, repo, agent, tenDaysAgo + 300);
     insertSnapshot(agentRepo, repo, agent, tenDaysAgo - 300);
 
-    const purged = repo.purgeOldSnapshots();
+    const purged = await repo.purgeOldSnapshots();
 
     expect(purged).toBe(2);
     expect(repo.countByAgent(agent)).toBe(1);
@@ -111,7 +111,7 @@ describe('SnapshotRepository.purgeOldSnapshots', () => {
     expect(surviving[0].computed_at).toBe(tenDaysAgo + 300);
   });
 
-  it('handles multiple agents independently in 7-30 day window', () => {
+  it('handles multiple agents independently in 7-30 day window', async () => {
     const agentA = 'd'.repeat(64);
     const agentB = 'e'.repeat(64);
     const fifteenDaysAgo = now - 15 * DAY;
@@ -123,27 +123,27 @@ describe('SnapshotRepository.purgeOldSnapshots', () => {
     insertSnapshot(agentRepo, repo, agentB, fifteenDaysAgo);
     insertSnapshot(agentRepo, repo, agentB, fifteenDaysAgo + 50);
 
-    const purged = repo.purgeOldSnapshots();
+    const purged = await repo.purgeOldSnapshots();
 
     expect(purged).toBe(3);
     expect(repo.countByAgent(agentA)).toBe(1);
     expect(repo.countByAgent(agentB)).toBe(1);
   });
 
-  it('keeps snapshots on different days in 7-30 day window', () => {
+  it('keeps snapshots on different days in 7-30 day window', async () => {
     const agent = 'f'.repeat(64);
 
     insertSnapshot(agentRepo, repo, agent, now - 10 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 15 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 20 * DAY);
 
-    const purged = repo.purgeOldSnapshots();
+    const purged = await repo.purgeOldSnapshots();
 
     expect(purged).toBe(0);
     expect(repo.countByAgent(agent)).toBe(3);
   });
 
-  it('applies all 3 tiers in a single purge', () => {
+  it('applies all 3 tiers in a single purge', async () => {
     const agent = 'abcd'.repeat(16);
 
     // Tier 1: recent (< 7 days) — keep all
@@ -160,14 +160,14 @@ describe('SnapshotRepository.purgeOldSnapshots', () => {
     insertSnapshot(agentRepo, repo, agent, now - 40 * DAY);
     insertSnapshot(agentRepo, repo, agent, now - 50 * DAY);
 
-    const purged = repo.purgeOldSnapshots();
+    const purged = await repo.purgeOldSnapshots();
 
     expect(purged).toBe(4);
     expect(repo.countByAgent(agent)).toBe(3);
   });
 
-  it('returns 0 when nothing to purge', () => {
-    const purged = repo.purgeOldSnapshots();
+  it('returns 0 when nothing to purge', async () => {
+    const purged = await repo.purgeOldSnapshots();
     expect(purged).toBe(0);
   });
 });

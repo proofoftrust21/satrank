@@ -130,13 +130,15 @@ export class DepositController {
       throw new ValidationError('preimage must be a 64-char hex string');
     }
 
-    // Verify preimage → payment_hash
-    const computedHash = crypto.createHash('sha256').update(Buffer.from(body.preimage, 'hex')).digest('hex');
-    if (computedHash !== body.paymentHash) {
+    // Verify preimage → payment_hash in constant time (timing oracle avoidance).
+    const computedHashBuf = crypto.createHash('sha256').update(Buffer.from(body.preimage, 'hex')).digest();
+    const paymentHashBuf = Buffer.from(body.paymentHash, 'hex');
+    if (
+      computedHashBuf.length !== paymentHashBuf.length ||
+      !crypto.timingSafeEqual(computedHashBuf, paymentHashBuf)
+    ) {
       throw new ValidationError('preimage does not match paymentHash (SHA256(preimage) != paymentHash)');
     }
-
-    const paymentHashBuf = Buffer.from(body.paymentHash, 'hex');
 
     // Atomic check-and-insert in a transaction to prevent race conditions.
     // Two concurrent requests with the same paymentHash: only the first credits,
@@ -147,8 +149,8 @@ export class DepositController {
       if (existing) return { alreadyRedeemed: true, balance: existing.remaining };
 
       const now = Math.floor(Date.now() / 1000);
-      this.db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
-        .run(paymentHashBuf, quota, now);
+      this.db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES (?, ?, ?, ?)')
+        .run(paymentHashBuf, quota, now, quota);
       return { alreadyRedeemed: false, balance: quota };
     });
 

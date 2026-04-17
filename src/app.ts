@@ -213,8 +213,13 @@ export function createApp() {
           'wss://relay.primal.net',
         ],
         frameAncestors: ["'none'"],
+        // Lock <base> and <form action> to same-origin to block base-tag hijacking
+        // and form-relay exfiltration if a DOM-XSS sneaks past scriptSrc 'self'.
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
       },
     },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
   app.use(cors({ origin: config.CORS_ORIGIN }));
   // express.json() parses the body into req.body but does NOT expose the raw
@@ -379,6 +384,20 @@ export function createApp() {
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
+  // Dedicated tight limiter on /api/version — the response is a thin build-info
+  // document with commit hash + build time, so probing it at rate for
+  // deploy-detection has no legitimate use. 60/min/IP keeps monitoring happy
+  // while closing the high-volume fingerprinting vector.
+  const versionRateLimit = rateLimit({
+    windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false,
+    keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    message: { error: { code: 'RATE_LIMITED', message: 'Too many version requests, please try again later' } },
+    handler: (req, res, _next, options) => {
+      rateLimitHits.inc({ limiter: 'version' });
+      res.status(options.statusCode).json(options.message);
+    },
+  });
+  api.use('/version', versionRateLimit);
   api.use(createHealthRoutes(healthController));          // health, stats, version
   // Free discovery/monitoring endpoints — own rate limits (expensive SQL, no L402 gate)
   const discoveryRateLimit = rateLimit({

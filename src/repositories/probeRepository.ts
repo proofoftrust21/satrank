@@ -172,10 +172,27 @@ export class ProbeRepository {
     return { count: row.count, mean: row.mean, stddev: Math.sqrt(variance) };
   }
 
-  /** Purge probe results older than maxAgeSec */
-  purgeOlderThan(maxAgeSec: number): number {
+  /** Purge probe results older than maxAgeSec.
+   *
+   *  Chunked: a plain `DELETE` on a 14-day probe table can touch hundreds of
+   *  thousands of rows and hold the write lock past the 15s busy_timeout.
+   *  We loop `DELETE ... LIMIT 1000` with a setImmediate yield between
+   *  chunks so concurrent writers (bulk scoring, probe inserts) keep flowing.
+   */
+  async purgeOlderThan(maxAgeSec: number): Promise<number> {
+    const CHUNK = 1000;
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
-    const result = this.db.prepare('DELETE FROM probe_results WHERE probed_at < ?').run(cutoff);
-    return result.changes;
+    const stmt = this.db.prepare(
+      'DELETE FROM probe_results WHERE rowid IN (SELECT rowid FROM probe_results WHERE probed_at < ? LIMIT ?)',
+    );
+    let total = 0;
+    for (;;) {
+      const info = stmt.run(cutoff, CHUNK);
+      const n = info.changes ?? 0;
+      if (n === 0) break;
+      total += n;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    return total;
   }
 }
