@@ -49,8 +49,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(30);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
+    expect(versions.length).toBe(31);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -66,7 +66,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(30);
+    expect(versions.length).toBe(31);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -400,5 +400,136 @@ describe('UNIQUE(attester_hash, subject_hash) constraint', () => {
     const colNames = cols.map(c => c.name);
     expect(colNames).toContain('verified');
     expect(colNames).toContain('weight');
+  });
+});
+
+// --- v31: Phase 1 dual-write transactions enrichment ---
+// Additive migration adding 4 columns (endpoint_hash, operator_id, source,
+// window_bucket) + 3 indexes to transactions. All nullable to preserve
+// backwards compatibility with pre-v31 rows; backfill runs separately.
+describe('v31 Phase 1 dual-write transactions', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+  });
+
+  afterEach(() => { db.close(); });
+
+  it('adds the 4 new columns to transactions', () => {
+    const cols = db.prepare("PRAGMA table_info(transactions)").all() as { name: string; type: string; notnull: number }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toContain('endpoint_hash');
+    expect(colNames).toContain('operator_id');
+    expect(colNames).toContain('source');
+    expect(colNames).toContain('window_bucket');
+  });
+
+  it('all 4 new columns are nullable (backwards-compatible)', () => {
+    const cols = db.prepare("PRAGMA table_info(transactions)").all() as { name: string; notnull: number }[];
+    const enrichedCols = cols.filter(c => ['endpoint_hash', 'operator_id', 'source', 'window_bucket'].includes(c.name));
+    for (const col of enrichedCols) {
+      expect(col.notnull).toBe(0);
+    }
+  });
+
+  it('source column enforces CHECK constraint with 4 valid values + NULL', () => {
+    const sender = sha256('s31');
+    const receiver = sha256('r31');
+    const agentRepo = new AgentRepository(db);
+    agentRepo.insert(makeAgent('s31', { public_key_hash: sender }));
+    agentRepo.insert(makeAgent('r31', { public_key_hash: receiver }));
+
+    const insertStmt = db.prepare(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    // Valid sources accepted
+    for (const src of ['probe', 'observer', 'report', 'intent']) {
+      expect(() => insertStmt.run(`tx-${src}`, sender, receiver, 'micro', NOW, `ph-${src}`, 'verified', 'l402', src)).not.toThrow();
+    }
+    // NULL accepted (legacy row backwards compat)
+    expect(() => insertStmt.run('tx-null', sender, receiver, 'micro', NOW, 'ph-null', 'verified', 'l402', null)).not.toThrow();
+    // Invalid rejected
+    expect(() => insertStmt.run('tx-bogus', sender, receiver, 'micro', NOW, 'ph-bogus', 'verified', 'l402', 'bogus')).toThrow(/CHECK constraint/);
+  });
+
+  it('creates the 3 expected indexes', () => {
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='transactions'"
+    ).all() as { name: string }[];
+    const names = indexes.map(i => i.name);
+    expect(names).toContain('idx_transactions_endpoint_window');
+    expect(names).toContain('idx_transactions_operator_window');
+    expect(names).toContain('idx_transactions_source');
+  });
+
+  it('preserves existing transactions indexes (sender, receiver, timestamp, status)', () => {
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='transactions'"
+    ).all() as { name: string }[];
+    const names = indexes.map(i => i.name);
+    expect(names).toContain('idx_transactions_sender');
+    expect(names).toContain('idx_transactions_receiver');
+    expect(names).toContain('idx_transactions_timestamp');
+    expect(names).toContain('idx_transactions_status');
+  });
+
+  it('legacy INSERT (9 columns) still works, 4 new columns default to NULL', () => {
+    const sender = sha256('s-legacy');
+    const receiver = sha256('r-legacy');
+    const agentRepo = new AgentRepository(db);
+    agentRepo.insert(makeAgent('s-legacy', { public_key_hash: sender }));
+    agentRepo.insert(makeAgent('r-legacy', { public_key_hash: receiver }));
+
+    const txRepo = new TransactionRepository(db);
+    const tx: Transaction = {
+      tx_id: 'legacy-tx-1',
+      sender_hash: sender,
+      receiver_hash: receiver,
+      amount_bucket: 'micro',
+      timestamp: NOW,
+      payment_hash: 'legacy-ph-1',
+      preimage: null,
+      status: 'verified',
+      protocol: 'l402',
+    };
+    expect(() => txRepo.insert(tx)).not.toThrow();
+
+    const row = db.prepare('SELECT endpoint_hash, operator_id, source, window_bucket FROM transactions WHERE tx_id = ?').get('legacy-tx-1') as Record<string, unknown>;
+    expect(row.endpoint_hash).toBeNull();
+    expect(row.operator_id).toBeNull();
+    expect(row.source).toBeNull();
+    expect(row.window_bucket).toBeNull();
+  });
+
+  it('enriched INSERT (13 columns) persists all 4 new columns', () => {
+    const sender = sha256('s-enriched');
+    const receiver = sha256('r-enriched');
+    const agentRepo = new AgentRepository(db);
+    agentRepo.insert(makeAgent('s-enriched', { public_key_hash: sender }));
+    agentRepo.insert(makeAgent('r-enriched', { public_key_hash: receiver }));
+
+    const endpointHash = sha256('https://api.example.com/svc');
+    const operatorId = sha256('02abc123');
+    db.prepare(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol, endpoint_hash, operator_id, source, window_bucket)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('enriched-tx-1', sender, receiver, 'micro', NOW, 'enriched-ph-1', 'verified', 'l402', endpointHash, operatorId, 'probe', '2026-04-17');
+
+    const row = db.prepare('SELECT endpoint_hash, operator_id, source, window_bucket FROM transactions WHERE tx_id = ?').get('enriched-tx-1') as Record<string, unknown>;
+    expect(row.endpoint_hash).toBe(endpointHash);
+    expect(row.operator_id).toBe(operatorId);
+    expect(row.source).toBe('probe');
+    expect(row.window_bucket).toBe('2026-04-17');
+  });
+
+  it('migration is idempotent — second run does not throw on duplicate column', () => {
+    expect(() => runMigrations(db)).not.toThrow();
+    const versions = getAppliedVersions(db);
+    expect(versions.filter(v => v.version === 31).length).toBe(1);
   });
 });

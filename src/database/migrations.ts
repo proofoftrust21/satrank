@@ -557,6 +557,41 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 27, 'source column on service_endpoints (402index/self_registered/ad_hoc)');
   }
 
+  // v31: Phase 1 dual-write — enrich transactions with 4 columns for the
+  // canonical ledger (endpoint_hash, operator_id, source, window_bucket).
+  // Migration is additive: all columns nullable for backwards compatibility
+  // with pre-v31 rows; backfill runs separately via scripts/backfillTransactionsV31.ts.
+  //   endpoint_hash : sha256hex(canonicalizeUrl(service_url)) — NULL for Observer tx
+  //   operator_id   : sha256hex(node_pubkey) — NULL when node unknown (no sentinel)
+  //   source        : 'probe' | 'observer' | 'report' | 'intent' — NULL for legacy rows
+  //   window_bucket : 'YYYY-MM-DD' UTC derived from timestamp — deterministic
+  if (!hasVersion(db, 31)) {
+    try { db.exec('ALTER TABLE transactions ADD COLUMN endpoint_hash TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    try { db.exec('ALTER TABLE transactions ADD COLUMN operator_id TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    try {
+      db.exec(
+        "ALTER TABLE transactions ADD COLUMN source TEXT CHECK(source IS NULL OR source IN ('probe', 'observer', 'report', 'intent'))"
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    try { db.exec('ALTER TABLE transactions ADD COLUMN window_bucket TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_endpoint_window ON transactions(endpoint_hash, window_bucket)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_operator_window ON transactions(operator_id, window_bucket)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_source ON transactions(source)');
+    recordVersion(db, 31, 'transactions +4 columns (endpoint_hash, operator_id, source, window_bucket) + 3 indexes — Phase 1 dual-write additive');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -566,6 +601,15 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  31: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_transactions_source');
+    db.exec('DROP INDEX IF EXISTS idx_transactions_operator_window');
+    db.exec('DROP INDEX IF EXISTS idx_transactions_endpoint_window');
+    try { db.exec('ALTER TABLE transactions DROP COLUMN window_bucket'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE transactions DROP COLUMN source'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE transactions DROP COLUMN operator_id'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE transactions DROP COLUMN endpoint_hash'); } catch { /* SQLite < 3.35 */ }
+  },
   20: (db) => {
     try { db.exec('ALTER TABLE probe_results DROP COLUMN probe_amount_sats'); } catch { /* SQLite < 3.35 */ }
   },
