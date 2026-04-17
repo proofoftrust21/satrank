@@ -588,7 +588,12 @@ async function main(): Promise<void> {
     const { ServiceHealthCrawler } = await import('./serviceHealthCrawler');
     const { ServiceEndpointRepository } = await import('../repositories/serviceEndpointRepository');
     const serviceEndpointRepo = new ServiceEndpointRepository(db);
-    const serviceHealthCrawler = new ServiceHealthCrawler(serviceEndpointRepo);
+    const serviceHealthCrawler = new ServiceHealthCrawler(
+      serviceEndpointRepo,
+      txRepo,
+      config.TRANSACTIONS_DUAL_WRITE_MODE,
+      dualWriteLogger,
+    );
     const timerServiceHealth = setInterval(() => {
       serviceHealthCrawler.run()
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Service health crawl error'));
