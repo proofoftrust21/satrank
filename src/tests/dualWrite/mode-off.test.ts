@@ -86,7 +86,7 @@ describe('dual-write mode=off', () => {
     const repo = new TransactionRepository(db);
     const tx = makeTx('off-tx-1', sender, receiver);
 
-    repo.insertWithDualWrite(tx, ENRICHMENT, 'off');
+    repo.insertWithDualWrite(tx, ENRICHMENT, 'off', 'crawler');
 
     const row = db.prepare(
       'SELECT tx_id, endpoint_hash, operator_id, source, window_bucket FROM transactions WHERE tx_id = ?'
@@ -102,7 +102,7 @@ describe('dual-write mode=off', () => {
     const repo = new TransactionRepository(db);
     const logger = new DualWriteLogger(path.join(tmpDir, 'primary.ndjson'), tmpDir);
 
-    repo.insertWithDualWrite(makeTx('off-tx-2', sender, receiver), ENRICHMENT, 'off', logger);
+    repo.insertWithDualWrite(makeTx('off-tx-2', sender, receiver), ENRICHMENT, 'off', 'crawler', logger);
 
     // No line written — file may exist (from init touch) but must be empty.
     const content = logger.effectivePath ? fs.readFileSync(logger.effectivePath, 'utf8') : '';
@@ -113,7 +113,7 @@ describe('dual-write mode=off', () => {
     const repo = new TransactionRepository(db);
     const tx = makeTx('off-tx-3', sender, receiver);
 
-    repo.insertWithDualWrite(tx, ENRICHMENT, 'off');
+    repo.insertWithDualWrite(tx, ENRICHMENT, 'off', 'crawler');
 
     const row = db.prepare(
       'SELECT tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol FROM transactions WHERE tx_id = ?'
@@ -129,7 +129,7 @@ describe('dual-write mode=off', () => {
 
   it('issues exactly one INSERT (no duplicate row)', () => {
     const repo = new TransactionRepository(db);
-    repo.insertWithDualWrite(makeTx('off-tx-4', sender, receiver), ENRICHMENT, 'off');
+    repo.insertWithDualWrite(makeTx('off-tx-4', sender, receiver), ENRICHMENT, 'off', 'crawler');
 
     const count = (db.prepare('SELECT COUNT(*) as c FROM transactions WHERE tx_id = ?').get('off-tx-4') as { c: number }).c;
     expect(count).toBe(1);

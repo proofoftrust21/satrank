@@ -84,7 +84,7 @@ describe('dual-write mode=active', () => {
 
   it('issues single 13-col INSERT with v31 columns populated', () => {
     const repo = new TransactionRepository(db);
-    repo.insertWithDualWrite(makeTx('act-tx-1', sender, receiver), ENRICHMENT, 'active');
+    repo.insertWithDualWrite(makeTx('act-tx-1', sender, receiver), ENRICHMENT, 'active', 'crawler');
 
     const row = db.prepare(
       'SELECT endpoint_hash, operator_id, source, window_bucket FROM transactions WHERE tx_id = ?'
@@ -97,7 +97,7 @@ describe('dual-write mode=active', () => {
 
   it('persists the base 9 columns alongside the enriched 4', () => {
     const repo = new TransactionRepository(db);
-    repo.insertWithDualWrite(makeTx('act-tx-2', sender, receiver), ENRICHMENT, 'active');
+    repo.insertWithDualWrite(makeTx('act-tx-2', sender, receiver), ENRICHMENT, 'active', 'crawler');
 
     const row = db.prepare(
       'SELECT tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol FROM transactions WHERE tx_id = ?'
@@ -117,7 +117,7 @@ describe('dual-write mode=active', () => {
     const logPath = path.join(tmpDir, 'primary.ndjson');
     const logger = new DualWriteLogger(logPath, tmpDir);
 
-    repo.insertWithDualWrite(makeTx('act-tx-3', sender, receiver), ENRICHMENT, 'active', logger);
+    repo.insertWithDualWrite(makeTx('act-tx-3', sender, receiver), ENRICHMENT, 'active', 'crawler', logger);
 
     // File exists (init touch) but must have zero payload bytes.
     const content = fs.readFileSync(logPath, 'utf8');
@@ -132,7 +132,7 @@ describe('dual-write mode=active', () => {
       source: 'observer',
       window_bucket: '2026-04-18',
     };
-    repo.insertWithDualWrite(makeTx('act-tx-null', sender, receiver), partial, 'active');
+    repo.insertWithDualWrite(makeTx('act-tx-null', sender, receiver), partial, 'active', 'crawler');
 
     const row = db.prepare(
       'SELECT endpoint_hash, operator_id, source, window_bucket FROM transactions WHERE tx_id = ?'
@@ -145,7 +145,7 @@ describe('dual-write mode=active', () => {
 
   it('issues exactly one row (no dual write)', () => {
     const repo = new TransactionRepository(db);
-    repo.insertWithDualWrite(makeTx('act-tx-single', sender, receiver), ENRICHMENT, 'active');
+    repo.insertWithDualWrite(makeTx('act-tx-single', sender, receiver), ENRICHMENT, 'active', 'crawler');
 
     const count = (db.prepare('SELECT COUNT(*) as c FROM transactions WHERE tx_id = ?').get('act-tx-single') as { c: number }).c;
     expect(count).toBe(1);
@@ -156,6 +156,6 @@ describe('dual-write mode=active', () => {
     // @ts-expect-error — runtime CHECK path
     const bad: DualWriteEnrichment = { ...ENRICHMENT, source: 'bogus' };
 
-    expect(() => repo.insertWithDualWrite(makeTx('act-tx-bad', sender, receiver), bad, 'active')).toThrow(/CHECK constraint/);
+    expect(() => repo.insertWithDualWrite(makeTx('act-tx-bad', sender, receiver), bad, 'active', 'crawler')).toThrow(/CHECK constraint/);
   });
 });

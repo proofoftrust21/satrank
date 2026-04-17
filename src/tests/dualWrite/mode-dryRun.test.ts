@@ -87,7 +87,7 @@ describe('dual-write mode=dry_run', () => {
     const repo = new TransactionRepository(db);
     const logger = new DualWriteLogger(path.join(tmpDir, 'primary.ndjson'), tmpDir);
 
-    repo.insertWithDualWrite(makeTx('dry-tx-1', sender, receiver), ENRICHMENT, 'dry_run', logger);
+    repo.insertWithDualWrite(makeTx('dry-tx-1', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger);
 
     const row = db.prepare(
       'SELECT endpoint_hash, operator_id, source, window_bucket FROM transactions WHERE tx_id = ?'
@@ -98,19 +98,24 @@ describe('dual-write mode=dry_run', () => {
     expect(row.window_bucket).toBeNull();
   });
 
-  it('emits one NDJSON line per insert with the enriched row', () => {
+  it('emits one NDJSON line per insert with the §3 enriched row', () => {
     const repo = new TransactionRepository(db);
     const logPath = path.join(tmpDir, 'primary.ndjson');
     const logger = new DualWriteLogger(logPath, tmpDir);
 
-    repo.insertWithDualWrite(makeTx('dry-tx-2', sender, receiver), ENRICHMENT, 'dry_run', logger);
+    repo.insertWithDualWrite(makeTx('dry-tx-2', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger);
 
     const content = fs.readFileSync(logPath, 'utf8').trim();
     expect(content.split('\n').length).toBe(1);
     const row = JSON.parse(content);
-    expect(row.txId).toBe('dry-tx-2');
-    expect(typeof row.loggedAt).toBe('number');
-    expect(row.enrichment).toEqual(ENRICHMENT);
+    expect(row.would_insert.tx_id).toBe('dry-tx-2');
+    expect(row.would_insert.endpoint_hash).toBe(ENRICHMENT.endpoint_hash);
+    expect(row.would_insert.operator_id).toBe(ENRICHMENT.operator_id);
+    expect(row.would_insert.source).toBe(ENRICHMENT.source);
+    expect(row.would_insert.window_bucket).toBe(ENRICHMENT.window_bucket);
+    expect(typeof row.emitted_at).toBe('number');
+    expect(row.source_module).toBe('crawler');
+    expect(row.legacy_inserted).toBe(true);
   });
 
   it('multiple inserts append multiple NDJSON lines', () => {
@@ -118,13 +123,13 @@ describe('dual-write mode=dry_run', () => {
     const logPath = path.join(tmpDir, 'primary.ndjson');
     const logger = new DualWriteLogger(logPath, tmpDir);
 
-    repo.insertWithDualWrite(makeTx('dry-tx-a', sender, receiver), ENRICHMENT, 'dry_run', logger);
-    repo.insertWithDualWrite(makeTx('dry-tx-b', sender, receiver), ENRICHMENT, 'dry_run', logger);
-    repo.insertWithDualWrite(makeTx('dry-tx-c', sender, receiver), ENRICHMENT, 'dry_run', logger);
+    repo.insertWithDualWrite(makeTx('dry-tx-a', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger);
+    repo.insertWithDualWrite(makeTx('dry-tx-b', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger);
+    repo.insertWithDualWrite(makeTx('dry-tx-c', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger);
 
     const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n');
     expect(lines).toHaveLength(3);
-    const ids = lines.map(l => JSON.parse(l).txId);
+    const ids = lines.map(l => JSON.parse(l).would_insert.tx_id);
     expect(ids).toEqual(['dry-tx-a', 'dry-tx-b', 'dry-tx-c']);
   });
 
@@ -132,7 +137,7 @@ describe('dual-write mode=dry_run', () => {
     const repo = new TransactionRepository(db);
     const logger = new DualWriteLogger(path.join(tmpDir, 'primary.ndjson'), tmpDir);
 
-    repo.insertWithDualWrite(makeTx('dry-tx-unique', sender, receiver), ENRICHMENT, 'dry_run', logger);
+    repo.insertWithDualWrite(makeTx('dry-tx-unique', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger);
 
     const count = (db.prepare('SELECT COUNT(*) as c FROM transactions WHERE tx_id = ?').get('dry-tx-unique') as { c: number }).c;
     expect(count).toBe(1);
@@ -141,10 +146,21 @@ describe('dual-write mode=dry_run', () => {
   it('no-op when shadowLogger is undefined (degrades safely)', () => {
     const repo = new TransactionRepository(db);
 
-    expect(() => repo.insertWithDualWrite(makeTx('dry-tx-nolog', sender, receiver), ENRICHMENT, 'dry_run')).not.toThrow();
+    expect(() => repo.insertWithDualWrite(makeTx('dry-tx-nolog', sender, receiver), ENRICHMENT, 'dry_run', 'crawler')).not.toThrow();
 
     const count = (db.prepare('SELECT COUNT(*) as c FROM transactions WHERE tx_id = ?').get('dry-tx-nolog') as { c: number }).c;
     expect(count).toBe(1);
+  });
+
+  it('propagates optional trace_id when provided by caller', () => {
+    const repo = new TransactionRepository(db);
+    const logPath = path.join(tmpDir, 'primary.ndjson');
+    const logger = new DualWriteLogger(logPath, tmpDir);
+
+    repo.insertWithDualWrite(makeTx('dry-tx-trace', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger, 'trace-abc-123');
+
+    const row = JSON.parse(fs.readFileSync(logPath, 'utf8').trim());
+    expect(row.trace_id).toBe('trace-abc-123');
   });
 
   it('logger falls back to cwd/logs when primary path is not writable', () => {
@@ -164,11 +180,11 @@ describe('dual-write mode=dry_run', () => {
     const logger = new DualWriteLogger(unwritablePrimary, tmpDir);
     const repo = new TransactionRepository(db);
 
-    repo.insertWithDualWrite(makeTx('dry-tx-fb', sender, receiver), ENRICHMENT, 'dry_run', logger);
+    repo.insertWithDualWrite(makeTx('dry-tx-fb', sender, receiver), ENRICHMENT, 'dry_run', 'crawler', logger);
 
     const content = fs.readFileSync(logger.effectivePath!, 'utf8').trim();
     expect(content.split('\n').length).toBe(1);
-    expect(JSON.parse(content).txId).toBe('dry-tx-fb');
+    expect(JSON.parse(content).would_insert.tx_id).toBe('dry-tx-fb');
   });
 
   it('disables logging when both primary and fallback are unwritable', () => {
@@ -180,6 +196,11 @@ describe('dual-write mode=dry_run', () => {
     expect(logger.enabled).toBe(false);
     expect(logger.effectivePath).toBeNull();
     // emit() must not throw even when disabled.
-    expect(() => logger.emit({ loggedAt: Date.now(), txId: 'x', enrichment: ENRICHMENT })).not.toThrow();
+    expect(() => logger.emit({
+      emitted_at: Math.floor(Date.now() / 1000),
+      source_module: 'crawler',
+      would_insert: { ...makeTx('x', sender, receiver), ...ENRICHMENT },
+      legacy_inserted: true,
+    })).not.toThrow();
   });
 });

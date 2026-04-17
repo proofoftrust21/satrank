@@ -29,6 +29,7 @@ import { ProbeCrawler } from './probeCrawler';
 import { SurvivalService } from '../services/survivalService';
 import { runRetentionCleanup } from '../database/retention';
 import { RETENTION_INTERVAL_MS } from '../config/retention';
+import { DualWriteLogger } from '../utils/dualWriteLogger';
 
 // --- Uncaught exception / unhandled rejection safety net ---
 // nostr-tools internals (Relay.publish) are known to create orphan promises
@@ -343,7 +344,21 @@ async function main(): Promise<void> {
     baseUrl: config.OBSERVER_BASE_URL,
     timeoutMs: config.OBSERVER_TIMEOUT_MS,
   });
-  const observerCrawler = new Crawler(observerClient, agentRepo, txRepo);
+  // Phase 1 shadow-mode rollout: construct the NDJSON logger only when
+  // dry_run is active. In `off` and `active` modes the logger is silent by
+  // contract, so skipping construction saves a filesystem mkdir + open on
+  // every crawler process boot (and avoids WARN noise on dev laptops that
+  // lack the /var/log/satrank mount).
+  const dualWriteLogger = config.TRANSACTIONS_DUAL_WRITE_MODE === 'dry_run'
+    ? new DualWriteLogger(config.TRANSACTIONS_DRY_RUN_LOG_PATH)
+    : undefined;
+  const observerCrawler = new Crawler(
+    observerClient,
+    agentRepo,
+    txRepo,
+    config.TRANSACTIONS_DUAL_WRITE_MODE,
+    dualWriteLogger,
+  );
 
   const lndClient = new HttpLndGraphClient({
     restUrl: config.LND_REST_URL,

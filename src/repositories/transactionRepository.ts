@@ -1,7 +1,7 @@
 // Data access for the transactions table
 import type Database from 'better-sqlite3';
 import type { Transaction } from '../types';
-import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
+import type { DualWriteEnrichment, DualWriteLogger, DualWriteSourceModule } from '../utils/dualWriteLogger';
 
 export type DualWriteMode = 'off' | 'dry_run' | 'active';
 
@@ -101,7 +101,9 @@ export class TransactionRepository {
     tx: Transaction,
     enrichment: DualWriteEnrichment,
     mode: DualWriteMode,
+    sourceModule: DualWriteSourceModule,
     shadowLogger?: DualWriteLogger,
+    traceId?: string,
   ): void {
     if (mode === 'active') {
       this.db.prepare(`
@@ -122,9 +124,11 @@ export class TransactionRepository {
 
     if (mode === 'dry_run' && shadowLogger) {
       shadowLogger.emit({
-        loggedAt: Date.now(),
-        txId: tx.tx_id,
-        enrichment,
+        emitted_at: Math.floor(Date.now() / 1000),
+        source_module: sourceModule,
+        would_insert: { ...tx, ...enrichment },
+        legacy_inserted: true,
+        ...(traceId ? { trace_id: traceId } : {}),
       });
     }
   }

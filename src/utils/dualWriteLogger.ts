@@ -21,6 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../logger';
+import type { Transaction } from '../types';
 
 export interface DualWriteEnrichment {
   endpoint_hash: string | null;
@@ -29,13 +30,27 @@ export interface DualWriteEnrichment {
   window_bucket: string | null;
 }
 
+/** Logical origin of the shadow emit — used by the audit script (§6) to
+ *  distribute observed traffic by code-path. Distinct from the DB-level
+ *  `source` column inside `would_insert` which tags the tx provenance. */
+export type DualWriteSourceModule = 'crawler' | 'reportService' | 'decideService' | 'serviceProbes';
+
+/** NDJSON line format defined by docs/PHASE-1-DESIGN.md §3. Each line is a
+ *  self-contained JSON object so a batch can be streamed / grepped / fed to
+ *  `jq` without any framing state. */
 export interface DualWriteLogRow {
-  /** ms since epoch, when the shadow write was attempted */
-  loggedAt: number;
-  /** the tx_id that the legacy INSERT used — join key against the live table */
-  txId: string;
-  /** the 4 enrichment columns we would have written in `active` mode */
-  enrichment: DualWriteEnrichment;
+  /** unix seconds of the emit itself (not the tx's own `timestamp`). */
+  emitted_at: number;
+  source_module: DualWriteSourceModule;
+  /** Full enriched payload the `active` mode would have written — legacy 9
+   *  columns + 4 enrichment columns. Lets the audit script verify column
+   *  values match the live row once backfill runs. */
+  would_insert: Transaction & DualWriteEnrichment;
+  /** True when the legacy INSERT succeeded on this call. Diverging from
+   *  true signals a bug (we would have shadow-logged a row we never wrote). */
+  legacy_inserted: boolean;
+  /** Optional correlation id — lets the audit script group multi-module events. */
+  trace_id?: string;
 }
 
 export class DualWriteLogger {
@@ -94,4 +109,13 @@ export class DualWriteLogger {
       logger.error({ path: this.effectivePath, error: msg }, 'Dual-write shadow logger: append failed');
     }
   }
+}
+
+/** UTC YYYY-MM-DD bucket used as the `window_bucket` enrichment column. The
+ *  Phase 3 Bayesian aggregator groups tx by (operator_id, window_bucket, source)
+ *  so the granularity must match the aggregate window (daily). UTC is chosen
+ *  for global consistency — operators cross timezones and a local-TZ bucket
+ *  would produce non-aligned rollups. Input is unix seconds. */
+export function windowBucket(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
