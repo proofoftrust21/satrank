@@ -46,6 +46,34 @@ export class ReportService {
     private dualWriteLogger?: DualWriteLogger,
   ) {}
 
+  /** Looks up decide_log to decide the tx source:
+   *    'intent' — this report closes out a prior /api/decide call from the
+   *               same L402 token on the same target. Outcome is the truth
+   *               value of that intent per §4 cases 1 & 2 of PHASE-1-DESIGN.
+   *    'report' — no matching decide_log row; the report is a standalone
+   *               observation (user-driven POST without a prior /decide).
+   *  Returns 'report' if the DB handle is unavailable, the token's
+   *  paymentHash wasn't passed, or the query errors — classification is
+   *  best-effort and must never break report submission. */
+  private classifySource(
+    l402PaymentHash: Buffer | null | undefined,
+    targetHash: string,
+  ): 'intent' | 'report' {
+    if (!this.db || !l402PaymentHash) return 'report';
+    try {
+      const row = this.db.prepare(
+        'SELECT 1 FROM decide_log WHERE payment_hash = ? AND target_hash = ? LIMIT 1',
+      ).get(l402PaymentHash, targetHash);
+      return row ? 'intent' : 'report';
+    } catch (err) {
+      logger.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        'decide_log lookup failed, falling back to source=report',
+      );
+      return 'report';
+    }
+  }
+
   submit(input: ReportRequest): ReportResponse {
     const now = Math.floor(Date.now() / 1000);
 
@@ -141,17 +169,21 @@ export class ReportService {
           status: (input.outcome === 'success' ? 'verified' : 'failed') as 'verified' | 'failed',
           protocol: 'bolt11' as const,
         };
+        // §4: if the submitter's L402 token has a matching decide_log row
+        // for this target, the report closes out a prior /decide intent.
+        // Otherwise it's a standalone observation.
+        const source = this.classifySource(input.l402PaymentHash, input.target);
         const enrichment: DualWriteEnrichment = {
           endpoint_hash: null,
           operator_id: input.target,
-          source: 'report',
+          source,
           window_bucket: windowBucket(now),
         };
         this.txRepo.insertWithDualWrite(
           reportTx,
           enrichment,
           this.dualWriteMode,
-          'reportService',
+          source === 'intent' ? 'decideService' : 'reportService',
           this.dualWriteLogger,
         );
       }

@@ -103,6 +103,14 @@ const configSchema = z.object({
   // fallback also fails, logging is disabled (ERROR) and active/dry_run modes
   // degrade gracefully so the API never crashes over a logging issue.
   TRANSACTIONS_DRY_RUN_LOG_PATH: z.string().default('/var/log/satrank/dual-write-dryrun.ndjson'),
+  // Phase 1 — decide→outcome reconciliation window. `decideLogTimeoutWorker`
+  // scans `decide_log` for rows older than this threshold whose /decide
+  // intent was never closed out by a matching /report. Per §4 case 3 of
+  // docs/PHASE-1-DESIGN.md the worker writes NOTHING to `transactions`
+  // (the stale decide_log row stands as the lone trace of an unresolved
+  // intent); the threshold only gates how old a row must be before the
+  // worker classifies it as "timed out" for metrics.
+  INTENT_OUTCOME_TIMEOUT_HOURS: z.coerce.number().int().positive().default(24),
 });
 
 const parsed = configSchema.safeParse(process.env);

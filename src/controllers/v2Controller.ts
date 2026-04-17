@@ -277,6 +277,13 @@ export class V2Controller {
       const target = normalizeIdentifier(parsed.data.target);
       const reporter = normalizeIdentifier(parsed.data.reporter);
 
+      // L402 token's payment_hash (raw sha256 digest Buffer) — null under
+      // API-key auth. Consumed by both ReportService (source classification
+      // via decide_log lookup) and the Tier 2 bonus credit path; hoisted
+      // above submit() so it's available to both without re-parsing the
+      // header.
+      const l402PaymentHash = extractL402PaymentHashFromAuth(req.headers.authorization);
+
       const result = this.reportService.submit({
         target: target.hash,
         reporter: reporter.hash,
@@ -285,6 +292,7 @@ export class V2Controller {
         preimage: parsed.data.preimage,
         amountBucket: parsed.data.amountBucket,
         memo: parsed.data.memo,
+        l402PaymentHash: l402PaymentHash ?? undefined,
       });
 
       // Tier 2 bonus — gated by REPORT_BONUS_ENABLED env, auto-rollback, and
@@ -292,7 +300,6 @@ export class V2Controller {
       // bonus service is not wired (test env) or when no bonus was earned.
       let bonus: { credited: boolean; sats?: number; gate?: string } | null = null;
       if (this.reportBonusService) {
-        const l402PaymentHash = extractL402PaymentHashFromAuth(req.headers.authorization);
         const creditResult = await this.reportBonusService.maybeCredit({
           reporterHash: reporter.hash,
           req,

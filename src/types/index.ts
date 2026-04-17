@@ -505,6 +505,12 @@ export interface ReportRequest {
   preimage?: string;
   amountBucket?: AmountBucket;
   memo?: string;
+  /** Raw sha256 digest of the L402 Authorization preimage, when the caller
+   *  is using L402 auth. Populated by the v2Controller from the request's
+   *  Authorization header; undefined for API-key auth / direct callers.
+   *  ReportService cross-references this against `decide_log` to tag the tx
+   *  row as `source='intent'` when the report closes out a prior /decide. */
+  l402PaymentHash?: Buffer;
 }
 
 export interface ReportResponse {
