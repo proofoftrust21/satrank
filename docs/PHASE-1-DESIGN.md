@@ -247,20 +247,26 @@ Calcule et imprime :
 
 ## 7. Tests
 
-| Fichier | Couverture |
-|---|---|
-| `src/tests/dualWrite/migration-v31.test.ts` | Migration v31 applicable et réversible. Schéma final correct. |
-| `src/tests/dualWrite/mode-off.test.ts` | Mode `off` : INSERT legacy comme avant, 4 colonnes NULL. |
-| `src/tests/dualWrite/mode-dryRun.test.ts` | Mode `dry_run` : INSERT legacy, NDJSON écrit, 4 colonnes NULL en base. |
-| `src/tests/dualWrite/mode-active.test.ts` | Mode `active` : INSERT legacy + 4 colonnes peuplées. Pas de NDJSON. |
-| `src/tests/dualWrite/idempotence-crawler.test.ts` | Observer crawler : même event 2× → 1 ligne. |
-| `src/tests/dualWrite/idempotence-reportService.test.ts` | Report : même tx_id 2× → 1 ligne, dernières colonnes préservées. |
-| `src/tests/dualWrite/idempotence-decideService.test.ts` | Decide → écriture tx sur outcome observé, 2× → 1 ligne. |
-| `src/tests/dualWrite/idempotence-serviceProbes.test.ts` | Service probes : même probe 2× → 1 ligne. |
-| `src/tests/dualWrite/backfill.test.ts` | Backfill rejouable, ne récrase pas, progresse sur checkpoint. |
-| `src/tests/dualWrite/audit-script.test.ts` | Script d'audit : lit NDJSON synthétique, retourne métriques correctes. |
+Convention d'emplacement :
+- Les **tests de migration** (schéma, colonnes, CHECK, indexes, nullability, rollback, idempotence de la migration) restent dans `src/tests/migrations.test.ts` — convention existante du projet, cohérent avec les 29 migrations précédentes.
+- Les **tests de dual-write logique** (modes runtime, idempotence applicative, scripts) vont dans le nouveau dossier `src/tests/dualWrite/`, créé au Commit 3.
+- L'utilitaire `urlCanonical` a son propre fichier hors dualWrite/ car il est réutilisable (pas propre à la Phase 1).
 
-Total prévu : 10 nouveaux tests. Existants : 588 doivent rester verts.
+| Fichier | Couverture | Commit |
+|---|---|---|
+| `src/tests/migrations.test.ts` (describe `v31 Phase 1 dual-write transactions`) | 8 cas : colonnes présentes, nullability, CHECK, indexes créés, legacy INSERT 9-col → 4 NULL, INSERT enrichi 13-col persiste, idempotence migration. | **Commit 2 (déjà livré)** |
+| `src/utils/urlCanonical.ts` + `src/tests/urlCanonical.test.ts` | Canonicalisation RFC 3986 (≥ 10 cas : port défaut, casse scheme/host, trailing slash, query/fragment/userinfo strip, IDN, percent-encoding, malformed throws). | Commit 3 |
+| `src/tests/dualWrite/mode-off.test.ts` | Mode `off` : INSERT legacy comme avant, 4 colonnes NULL. | Commit 3 |
+| `src/tests/dualWrite/mode-dryRun.test.ts` | Mode `dry_run` : INSERT legacy, NDJSON écrit, 4 colonnes NULL en base, fallback path + WARN si volume indisponible. | Commit 3 |
+| `src/tests/dualWrite/mode-active.test.ts` | Mode `active` : INSERT legacy + 4 colonnes peuplées dans un seul INSERT. Pas de NDJSON. | Commit 3 |
+| `src/tests/dualWrite/idempotence-crawler.test.ts` | Observer crawler : même event 2× → 1 ligne. | Commit 4 |
+| `src/tests/dualWrite/idempotence-serviceProbes.test.ts` | Service probes : même probe 2× → 1 ligne. | Commit 5 |
+| `src/tests/dualWrite/idempotence-reportService.test.ts` | Report : même tx_id 2× → 1 ligne, dernières colonnes préservées. | Commit 6 |
+| `src/tests/dualWrite/idempotence-decideService.test.ts` | Decide → écriture tx sur outcome observé, 2× → 1 ligne. Worker timeout ne produit pas d'écriture. | Commit 7 |
+| `src/tests/dualWrite/backfill.test.ts` | Backfill rejouable, ne récrase pas, progresse sur checkpoint. | Commit 8 |
+| `src/tests/dualWrite/audit-script.test.ts` | Script d'audit : lit NDJSON synthétique, retourne métriques correctes. | Commit 9 |
+
+Total Phase 1 : **8 tests v31 migration (déjà livrés) + 10 tests dual-write** à venir = 18 nouveaux tests. Baseline à préserver : 596 verts après Commit 2.
 
 ---
 
