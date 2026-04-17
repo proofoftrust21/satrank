@@ -5,9 +5,11 @@ import { v4 as uuid } from 'uuid';
 import type Database from 'better-sqlite3';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { AgentRepository } from '../repositories/agentRepository';
-import type { TransactionRepository } from '../repositories/transactionRepository';
+import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
 import type { ScoringService } from './scoringService';
 import type { Attestation, ReportRequest, ReportResponse, ReportOutcome, AttestationCategory } from '../types';
+import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
+import { windowBucket } from '../utils/dualWriteLogger';
 import { NotFoundError, ValidationError, DuplicateReportError } from '../errors';
 import { logger } from '../logger';
 import { reportSubmittedTotal } from '../middleware/metrics';
@@ -40,6 +42,8 @@ export class ReportService {
     private txRepo: TransactionRepository,
     private scoringService: ScoringService,
     private db?: Database.Database,
+    private dualWriteMode: DualWriteMode = 'off',
+    private dualWriteLogger?: DualWriteLogger,
   ) {}
 
   submit(input: ReportRequest): ReportResponse {
@@ -119,7 +123,14 @@ export class ReportService {
       // S2: do NOT store raw preimage — evidence_hash holds the paymentHash
       const existingTx = this.txRepo.findById(txId);
       if (!existingTx) {
-        this.txRepo.insert({
+        // operator_id = target agent_hash (already sha256 of the pubkey per
+        // agents schema — matches §1.1's operator_id definition without
+        // re-hashing). endpoint_hash stays NULL: /api/report carries no
+        // target_url today, so we can't derive the URL's canonical hash here.
+        // §5 backfill will not fill it either (source='report' rows have no
+        // URL to reach back to); a future ReportRequest extension can tighten
+        // this when target_url becomes available.
+        const reportTx = {
           tx_id: txId,
           sender_hash: input.reporter,
           receiver_hash: input.target,
@@ -127,9 +138,22 @@ export class ReportService {
           timestamp: now,
           payment_hash: input.paymentHash ?? txId,
           preimage: null, // S2: never store raw preimage
-          status: input.outcome === 'success' ? 'verified' : 'failed',
-          protocol: 'bolt11',
-        });
+          status: (input.outcome === 'success' ? 'verified' : 'failed') as 'verified' | 'failed',
+          protocol: 'bolt11' as const,
+        };
+        const enrichment: DualWriteEnrichment = {
+          endpoint_hash: null,
+          operator_id: input.target,
+          source: 'report',
+          window_bucket: windowBucket(now),
+        };
+        this.txRepo.insertWithDualWrite(
+          reportTx,
+          enrichment,
+          this.dualWriteMode,
+          'reportService',
+          this.dualWriteLogger,
+        );
       }
 
       this.attestationRepo.insert(attestation);

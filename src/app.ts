@@ -72,6 +72,7 @@ import { openapiSpec } from './openapi';
 // Infra
 import { logger } from './logger';
 import { set as cacheSet, getStale as cacheGetStale } from './cache/memoryCache';
+import { DualWriteLogger } from './utils/dualWriteLogger';
 
 export function createApp() {
   const app = express();
@@ -129,7 +130,18 @@ export function createApp() {
     probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined, survivalService,
     serviceEndpointRepo,
   });
-  const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
+  // Phase 1 shadow-mode: construct the NDJSON logger only when dry_run is
+  // active (mirrors the crawler process — silent contract in off/active, no
+  // filesystem setup when not needed). Shared across reportService + future
+  // in-process writers if any.
+  const dualWriteLogger = config.TRANSACTIONS_DUAL_WRITE_MODE === 'dry_run'
+    ? new DualWriteLogger(config.TRANSACTIONS_DRY_RUN_LOG_PATH)
+    : undefined;
+  const reportService = new ReportService(
+    attestationRepo, agentRepo, txRepo, scoringService, db,
+    config.TRANSACTIONS_DUAL_WRITE_MODE,
+    dualWriteLogger,
+  );
 
   // Tier 2 report bonus — gated by REPORT_BONUS_ENABLED env (off by default).
   // Constructing the service has no side effects when disabled; the guard
