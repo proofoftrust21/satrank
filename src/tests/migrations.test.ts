@@ -1,7 +1,7 @@
 // Schema versioning and migration tests
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations, getAppliedVersions } from '../database/migrations';
+import { runMigrations, getAppliedVersions, rollbackTo } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
@@ -49,8 +49,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(31);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
+    expect(versions.length).toBe(32);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -66,7 +66,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(31);
+    expect(versions.length).toBe(32);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -531,5 +531,99 @@ describe('v31 Phase 1 dual-write transactions', () => {
     expect(() => runMigrations(db)).not.toThrow();
     const versions = getAppliedVersions(db);
     expect(versions.filter(v => v.version === 31).length).toBe(1);
+  });
+});
+
+// --- v32: Phase 2 anonymous-report preimage_pool ---
+// Table dédiée pour reports permissionless. CHECK contraint strict sur source
+// et confidence_tier. Rollback drope la table et ses 2 indexes.
+describe('v32 Phase 2 anonymous-report preimage_pool', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+  });
+
+  afterEach(() => { db.close(); });
+
+  it('creates preimage_pool table with expected columns', () => {
+    const cols = db.prepare('PRAGMA table_info(preimage_pool)').all() as { name: string; type: string; notnull: number }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toEqual([
+      'payment_hash',
+      'bolt11_raw',
+      'first_seen',
+      'confidence_tier',
+      'source',
+      'consumed_at',
+      'consumer_report_id',
+    ]);
+    const notNullByName = Object.fromEntries(cols.map(c => [c.name, c.notnull]));
+    expect(notNullByName.first_seen).toBe(1);
+    expect(notNullByName.confidence_tier).toBe(1);
+    expect(notNullByName.source).toBe(1);
+    expect(notNullByName.consumed_at).toBe(0);
+    expect(notNullByName.consumer_report_id).toBe(0);
+    expect(notNullByName.bolt11_raw).toBe(0);
+  });
+
+  it('enforces CHECK on confidence_tier (high|medium|low)', () => {
+    const insertStmt = db.prepare(
+      "INSERT INTO preimage_pool (payment_hash, first_seen, confidence_tier, source) VALUES (?, ?, ?, 'crawler')"
+    );
+    for (const tier of ['high', 'medium', 'low']) {
+      expect(() => insertStmt.run(`ph-${tier}`, NOW, tier)).not.toThrow();
+    }
+    expect(() => insertStmt.run('ph-bogus', NOW, 'bogus')).toThrow(/CHECK constraint/);
+  });
+
+  it('enforces CHECK on source (crawler|intent|report)', () => {
+    const insertStmt = db.prepare(
+      "INSERT INTO preimage_pool (payment_hash, first_seen, confidence_tier, source) VALUES (?, ?, 'medium', ?)"
+    );
+    for (const src of ['crawler', 'intent', 'report']) {
+      expect(() => insertStmt.run(`ph-src-${src}`, NOW, src)).not.toThrow();
+    }
+    expect(() => insertStmt.run('ph-src-bogus', NOW, 'bogus')).toThrow(/CHECK constraint/);
+  });
+
+  it('payment_hash is PRIMARY KEY (INSERT OR IGNORE idempotent)', () => {
+    db.prepare(
+      "INSERT INTO preimage_pool (payment_hash, first_seen, confidence_tier, source) VALUES ('ph1', ?, 'medium', 'crawler')"
+    ).run(NOW);
+    const second = db.prepare(
+      "INSERT OR IGNORE INTO preimage_pool (payment_hash, first_seen, confidence_tier, source) VALUES ('ph1', ?, 'low', 'report')"
+    ).run(NOW + 1);
+    expect(second.changes).toBe(0);
+    const row = db.prepare('SELECT confidence_tier, source FROM preimage_pool WHERE payment_hash = ?').get('ph1') as { confidence_tier: string; source: string };
+    expect(row.confidence_tier).toBe('medium');
+    expect(row.source).toBe('crawler');
+  });
+
+  it('creates the 2 expected indexes on preimage_pool', () => {
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='preimage_pool'"
+    ).all() as { name: string }[];
+    const names = indexes.map(i => i.name);
+    expect(names).toContain('idx_preimage_pool_confidence');
+    expect(names).toContain('idx_preimage_pool_consumed');
+  });
+
+  it('rollback v32 drops table and indexes cleanly', () => {
+    rollbackTo(db, 31);
+    const after = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='preimage_pool'").get();
+    expect(after).toBeUndefined();
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_preimage_pool_%'").all();
+    expect(indexes.length).toBe(0);
+    const versions = getAppliedVersions(db);
+    expect(versions.length).toBe(31);
+  });
+
+  it('migration is idempotent — second run leaves exactly one v32 row', () => {
+    expect(() => runMigrations(db)).not.toThrow();
+    const versions = getAppliedVersions(db);
+    expect(versions.filter(v => v.version === 32).length).toBe(1);
   });
 });

@@ -19,6 +19,9 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { PreimagePoolRepository } from '../repositories/preimagePoolRepository';
+import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
+import { logger } from '../logger';
 import type { ScoringService } from '../services/scoringService';
 import type { TrendService } from '../services/trendService';
 import type { RiskService } from '../services/riskService';
@@ -27,9 +30,11 @@ import type { ChannelFlowService } from '../services/channelFlowService';
 import type { FeeVolatilityService } from '../services/feeVolatilityService';
 import type { VerdictService } from '../services/verdictService';
 import type { ReportBonusService } from '../services/reportBonusService';
-import { agentIdentifierSchema, decideSchema, reportSchema, bestRouteSchema } from '../middleware/validation';
+import { agentIdentifierSchema, decideSchema, reportSchema, anonymousReportSchema, bestRouteSchema } from '../middleware/validation';
 import { formatZodError } from '../utils/zodError';
-import { ValidationError } from '../errors';
+import { ValidationError, ConflictError } from '../errors';
+import { v4 as uuidv4 } from 'uuid';
+import type { AnonymousReportRequest } from '../middleware/auth';
 import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
 import { confidenceToNumber } from '../utils/confidence';
 import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
@@ -61,6 +66,10 @@ export class V2Controller {
     // the controller never attempts to credit bonuses (identical to
     // REPORT_BONUS_ENABLED=false behavior).
     private reportBonusService?: ReportBonusService,
+    // Phase 2 voie 2 : pool d'autorisation des reports anonymes. Optional
+    // pour rester backwards-compatible — sans lui, bolt11Raw dans /api/decide
+    // est validé mais pas stocké.
+    private preimagePoolRepo?: PreimagePoolRepository,
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -83,6 +92,27 @@ export class V2Controller {
         parsed.data.serviceUrl,
         parsed.data.walletProvider as WalletProvider | undefined,
       );
+
+      // Phase 2 voie 2 — si l'agent fournit bolt11Raw (l'invoice qu'il va
+      // payer), pré-alimente le pool pour autoriser un report anonyme
+      // ultérieur via la preimage correspondante. Non-fatal : un BOLT11
+      // malformé n'échoue pas /api/decide (validé par zod en amont).
+      if (parsed.data.bolt11Raw && this.preimagePoolRepo) {
+        try {
+          const parsedInvoice = parseBolt11(parsed.data.bolt11Raw);
+          this.preimagePoolRepo.insertIfAbsent({
+            paymentHash: parsedInvoice.paymentHash,
+            bolt11Raw: parsed.data.bolt11Raw,
+            firstSeen: Math.floor(Date.now() / 1000),
+            confidenceTier: 'medium',
+            source: 'intent',
+          });
+        } catch (err) {
+          if (!(err instanceof InvalidBolt11Error)) {
+            logger.warn({ error: err instanceof Error ? err.message : String(err) }, 'decide: preimage_pool insert failed');
+          }
+        }
+      }
 
       // Log this target query for /api/report auth. See utils/tokenQueryLog.ts
       // for why every paid target-query path writes here, not just /api/decide.
@@ -271,6 +301,14 @@ export class V2Controller {
 
   report = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+      // Phase 2 voie 3 — dispatch : si le middleware a marqué la requête comme
+      // anonyme, délègue à reportAnonymous. Sinon, chemin legacy authentifié.
+      const anonReq = req as AnonymousReportRequest;
+      if (anonReq.isAnonymousReport) {
+        await this.reportAnonymous(anonReq, res, next);
+        return;
+      }
+
       const parsed = reportSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
@@ -316,6 +354,101 @@ export class V2Controller {
       }
 
       res.status(201).json({ data: { ...result, bonus } });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  /** Phase 2 voie 3 — report anonyme via preimage_pool.
+   *  Le middleware createReportDispatchAuth a déjà :
+   *    - détecté X-L402-Preimage (ou body.preimage sans reporter),
+   *    - posé req.isAnonymousReport = true + req.anonymousPreimage.
+   *  Ici : validation stricte du payload (anonymousReportSchema), voie 3 opt-in
+   *  (insertIfAbsent tier='low' source='report' si bolt11Raw valide), lookup
+   *  obligatoire dans preimage_pool, consumeAtomic puis submitAnonymous. */
+  private reportAnonymous = async (req: AnonymousReportRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!this.preimagePoolRepo) {
+        throw new ValidationError('Anonymous reports are not enabled on this instance');
+      }
+
+      const parsed = anonymousReportSchema.safeParse(req.body);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
+
+      // La preimage vient prioritairement du header X-L402-Preimage (pattern
+      // L402 standard) et fallback sur body.preimage. Le middleware a déjà
+      // tranché : req.anonymousPreimage est la source de vérité.
+      const preimage = req.anonymousPreimage ?? parsed.data.preimage;
+      if (!preimage || !/^[a-f0-9]{64}$/.test(preimage)) {
+        throw new ValidationError('preimage must be 64 hex chars');
+      }
+
+      // Dérive payment_hash = sha256(preimage) côté serveur — jamais trust le
+      // client sur cette relation cryptographique.
+      const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+
+      // Voie 3 — self-declared : si bolt11Raw fourni, parse et vérifie que son
+      // payment_hash matche celui dérivé de la preimage. Sinon on pollue le
+      // pool avec des invoices non-reliées à la preimage soumise.
+      if (parsed.data.bolt11Raw) {
+        try {
+          const parsedInvoice = parseBolt11(parsed.data.bolt11Raw);
+          if (parsedInvoice.paymentHash !== paymentHash) {
+            throw new ValidationError('BOLT11_MISMATCH: bolt11Raw payment_hash does not match sha256(preimage)');
+          }
+          this.preimagePoolRepo.insertIfAbsent({
+            paymentHash,
+            bolt11Raw: parsed.data.bolt11Raw,
+            firstSeen: Math.floor(Date.now() / 1000),
+            confidenceTier: 'low',
+            source: 'report',
+          });
+        } catch (err) {
+          if (err instanceof ValidationError) throw err;
+          if (err instanceof InvalidBolt11Error) {
+            throw new ValidationError('bolt11Raw could not be parsed');
+          }
+          logger.warn({ error: err instanceof Error ? err.message : String(err) }, 'Anonymous: preimage_pool insert failed');
+        }
+      }
+
+      // Lookup — si pas de match, l'agent doit fournir un bolt11Raw pour
+      // auto-peupler, ou payer un endpoint crawlé par 402index.
+      const entry = this.preimagePoolRepo.findByPaymentHash(paymentHash);
+      if (!entry) {
+        throw new ValidationError(
+          'PREIMAGE_UNKNOWN: payment_hash not found in pool. Submit bolt11Raw to self-declare, ' +
+          'or pay an L402 endpoint crawled by our registry (e.g. via 402index.io).',
+        );
+      }
+
+      const reportId = uuidv4();
+
+      // Consumption one-shot atomique : seule la première requête concurrente
+      // réussit ; les autres voient consumed_at ≠ NULL et récupèrent 409.
+      const consumed = this.preimagePoolRepo.consumeAtomic(
+        paymentHash, reportId, Math.floor(Date.now() / 1000),
+      );
+      if (!consumed) {
+        throw new ConflictError(
+          'DUPLICATE_REPORT: this preimage has already been consumed by another report',
+          'DUPLICATE_REPORT',
+        );
+      }
+
+      const target = normalizeIdentifier(parsed.data.target);
+
+      const result = this.reportService.submitAnonymous({
+        reportId,
+        target: target.hash,
+        paymentHash,
+        tier: entry.confidence_tier,
+        outcome: parsed.data.outcome,
+        amountBucket: parsed.data.amountBucket,
+        memo: parsed.data.memo,
+      });
+
+      res.status(200).json({ data: result });
     } catch (err) {
       next(err);
     }

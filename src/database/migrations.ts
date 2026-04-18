@@ -592,6 +592,35 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 31, 'transactions +4 columns (endpoint_hash, operator_id, source, window_bucket) + 3 indexes — Phase 1 dual-write additive');
   }
 
+  // v32: Phase 2 anonymous-report — preimage_pool table enabling permissionless
+  // reports. Une preimage valide (sha256 = payment_hash connu du pool) autorise
+  // un report anonyme one-shot via consumed_at atomique. Trois voies alimentent
+  // le pool : crawler (402index), intent (/decide avec bolt11_raw), report
+  // (self-declared par l'agent dans /api/report).
+  //   payment_hash       : sha256hex de la preimage (clé primaire)
+  //   bolt11_raw         : BOLT11 source (NULL pour voie crawler si non capturée)
+  //   first_seen         : unix timestamp d'insertion initiale
+  //   confidence_tier    : high|medium|low — dérive reporter_weight à consommation
+  //   source             : 'crawler' | 'intent' | 'report' — provenance de l'entrée
+  //   consumed_at        : unix timestamp de consommation one-shot (NULL = disponible)
+  //   consumer_report_id : tx_id du report ayant consommé (NULL si non consommé)
+  if (!hasVersion(db, 32)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS preimage_pool (
+        payment_hash TEXT PRIMARY KEY,
+        bolt11_raw TEXT,
+        first_seen INTEGER NOT NULL,
+        confidence_tier TEXT NOT NULL CHECK(confidence_tier IN ('high', 'medium', 'low')),
+        source TEXT NOT NULL CHECK(source IN ('crawler', 'intent', 'report')),
+        consumed_at INTEGER,
+        consumer_report_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_preimage_pool_confidence ON preimage_pool(confidence_tier);
+      CREATE INDEX IF NOT EXISTS idx_preimage_pool_consumed ON preimage_pool(consumed_at);
+    `);
+    recordVersion(db, 32, 'preimage_pool table for anonymous permissionless reports — Phase 2');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -601,6 +630,11 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  32: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_preimage_pool_consumed');
+    db.exec('DROP INDEX IF EXISTS idx_preimage_pool_confidence');
+    db.exec('DROP TABLE IF EXISTS preimage_pool');
+  },
   31: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_transactions_source');
     db.exec('DROP INDEX IF EXISTS idx_transactions_operator_window');

@@ -54,6 +54,11 @@ const httpUrlSchema = z.string().url().refine(url => {
   catch { return false; }
 }, 'Only http:// and https:// URLs allowed');
 
+// BOLT11 schema : accepts `lnbc...`, `lntb...`, `lntbs...`, `lnbcrt...`,
+// bornée à 2048 caractères pour éviter des abuses. Le parsing fin (payment_hash,
+// amount, network) est délégué à utils/bolt11Parser à la consommation.
+const bolt11Schema = z.string().min(10).max(2048).regex(/^ln(bc|tb|tbs|bcrt)[a-z0-9]+$/i, 'BOLT11 must start with lnbc/lntb/lntbs/lnbcrt');
+
 export const decideSchema = z.object({
   target: agentIdentifierSchema,
   caller: agentIdentifierSchema,
@@ -61,6 +66,10 @@ export const decideSchema = z.object({
   walletProvider: z.enum(VALID_PROVIDERS as [string, ...string[]]).optional(),
   callerNodePubkey: lnPubkeySchema.optional(),
   serviceUrl: httpUrlSchema.optional(),
+  // Phase 2 voie 2 : l'agent peut soumettre le BOLT11 de l'invoice qu'il est
+  // sur le point de payer. S'il est valide, on pré-alimente preimage_pool
+  // (tier='medium', source='intent') pour autoriser le report anonyme ultérieur.
+  bolt11Raw: bolt11Schema.optional(),
 });
 
 export const bestRouteSchema = z.object({
@@ -89,3 +98,19 @@ export const reportSchema = z.object({
   (data) => !data.preimage || !!data.paymentHash,
   { message: 'preimage requires paymentHash', path: ['preimage'] },
 );
+
+// Phase 2 voie 3 — anonymous report. Agent prouve sa preimage (sha256 =
+// payment_hash présent dans preimage_pool) sans NIP-98 ni API-key. Pas de
+// champ `reporter` : l'identité anonyme est dérivée du payment_hash. La
+// preimage est fournie soit via header X-L402-Preimage (pattern L402 standard)
+// soit dans body.preimage (fallback) — le middleware createReportDispatchAuth
+// extrait les deux et pose req.anonymousPreimage. Donc la preimage est
+// optional au niveau zod (validée format strict côté controller).
+export const anonymousReportSchema = z.object({
+  target: agentIdentifierSchema,
+  outcome: z.enum(reportOutcomeValues),
+  preimage: z.string().regex(/^[a-f0-9]{64}$/, 'preimage must be 64 hex chars').refine(v => v !== '0'.repeat(64), 'All-zero preimage rejected').optional(),
+  bolt11Raw: bolt11Schema.optional(),
+  amountBucket: z.enum(['micro', 'small', 'medium', 'large']).optional(),
+  memo: z.string().max(280).regex(/^[^\x00-\x1f]*$/, 'Memo must not contain control characters').optional(),
+});
