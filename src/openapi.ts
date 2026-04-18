@@ -3,7 +3,7 @@ export const openapiSpec = {
   openapi: '3.1.0',
   info: {
     title: 'SatRank API',
-    version: '1.0.0',
+    version: '0.1.0',
     description: 'Trust score for AI agents on Bitcoin Lightning. The PageRank of the agentic economy.',
     license: { name: 'AGPL-3.0' },
   },
@@ -382,6 +382,9 @@ export const openapiSpec = {
             targets: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50, description: 'Target hashes or Lightning pubkeys' },
             caller: { type: 'string', description: 'Caller hash or Lightning pubkey (for personalized pathfinding)' },
             amountSats: { type: 'integer', minimum: 1, description: 'Payment amount for fee estimation' },
+            walletProvider: { type: 'string', enum: ['phoenix', 'wos', 'strike', 'blink', 'breez', 'zeus', 'coinos', 'cashapp'], description: 'Wallet provider name. SatRank computes pathfinding from the provider hub node.' },
+            callerNodePubkey: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$', description: 'Lightning pubkey to use as pathfinding source. Overrides walletProvider.' },
+            serviceUrls: { type: 'object', additionalProperties: { type: 'string', format: 'uri' }, description: 'Map of targetHash → L402 service URL for HTTP health enrichment. SSRF-protected.' },
           },
         } } } },
         responses: {
@@ -430,8 +433,9 @@ export const openapiSpec = {
       post: {
         summary: 'Report transaction outcome',
         operationId: 'report',
-        description: 'Submit a success/failure/timeout report. Free (no L402 payment). Weighted by reporter trust score. Preimage verification gives 2x weight bonus.',
+        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously decided on this target — see decide_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
         tags: ['Reports'],
+        security: [{ apiKey: [] }, { l402: [] }],
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { $ref: '#/components/schemas/ReportRequest' } } },
@@ -442,6 +446,8 @@ export const openapiSpec = {
             content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/ReportResponse' } } } } },
           },
           '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { description: 'Missing or invalid auth (no X-API-Key and no decide-scoped L402 token for this target)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '403': { description: 'L402 token not scoped to this target (no decide_log row linking token→target within the auth window)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '404': { $ref: '#/components/responses/NotFound' },
           '409': { description: 'Duplicate report — same reporter+target within 1 hour (error.code = DUPLICATE_REPORT)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },
@@ -772,6 +778,7 @@ export const openapiSpec = {
             type: 'object',
             properties: {
               total: { type: 'integer', minimum: 0, maximum: 100 },
+              totalFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float version of the score. Used to break visual ties when many nodes compress into the same integer band.' },
               components: { $ref: '#/components/schemas/ScoreComponents' },
               confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
               computedAt: { type: 'integer' },
@@ -894,9 +901,10 @@ export const openapiSpec = {
         type: 'object',
         description: 'Temporal score deltas — the core differentiating product',
         properties: {
-          delta24h: { type: ['integer', 'null'], description: 'Score change over 24 hours' },
-          delta7d: { type: ['integer', 'null'], description: 'Score change over 7 days' },
-          delta30d: { type: ['integer', 'null'], description: 'Score change over 30 days' },
+          delta24h: { type: ['number', 'null'], description: 'Score change over 24 hours' },
+          delta7d: { type: ['number', 'null'], description: 'Score change over 7 days' },
+          delta30d: { type: ['number', 'null'], description: 'Score change over 30 days' },
+          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16). UI should render "—" or a "methodology change" badge instead of the numeric delta. Auto-resolves 7 days after the cutoff.' },
           trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
         },
       },
@@ -914,7 +922,9 @@ export const openapiSpec = {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
           score: { type: 'integer' },
-          delta7d: { type: 'integer', description: '7-day score change' },
+          scoreFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float score; matches top-list `scoreFine`.' },
+          delta7d: { type: 'number', description: '7-day score change (1-decimal float). Read with `deltaValid`.' },
+          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16).' },
           trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
         },
       },
@@ -933,9 +943,13 @@ export const openapiSpec = {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
           score: { type: 'integer' },
+          scoreFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float score. Breaks visual ties when many nodes sit in the same integer band (the 80-82 compression observed 2026-04-17).' },
+          rank: { type: ['integer', 'null'] },
           totalTransactions: { type: 'integer' },
           source: { type: 'string' },
           components: { $ref: '#/components/schemas/ScoreComponents' },
+          delta7d: { type: ['number', 'null'], description: '7-day score change (1-decimal float). Read with `deltaValid`: when false, render a methodology-change badge instead of the numeric value.' },
+          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16). Auto-resolves 7 days after the cutoff.' },
         },
       },
       AgentSearchResult: {
@@ -944,9 +958,13 @@ export const openapiSpec = {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
           score: { type: 'integer' },
+          scoreFine: { type: 'number', minimum: 0, maximum: 100 },
+          rank: { type: ['integer', 'null'] },
           totalTransactions: { type: 'integer' },
           source: { type: 'string' },
           components: { $ref: '#/components/schemas/ScoreComponents' },
+          delta7d: { type: ['number', 'null'] },
+          deltaValid: { type: 'boolean' },
         },
       },
       Attestation: {
@@ -1050,7 +1068,7 @@ export const openapiSpec = {
         properties: {
           name: {
             type: 'string',
-            enum: ['established_hub', 'growing_node', 'declining_node', 'new_unproven', 'small_reliable', 'suspicious_rapid_rise', 'default'],
+            enum: ['established_hub', 'growing_node', 'declining_node', 'new_unproven', 'small_reliable', 'suspicious_rapid_rise', 'unrated'],
           },
           riskLevel: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'] },
           description: { type: 'string', description: 'Human-readable explanation of the profile classification' },
@@ -1074,10 +1092,15 @@ export const openapiSpec = {
       NetworkStats: {
         type: 'object',
         properties: {
-          totalAgents: { type: 'integer', description: 'Total agents indexed across all sources' },
+          totalAgents: { type: 'integer', description: 'Active Lightning agents indexed across all sources (stale >90d excluded)' },
+          totalEndpoints: { type: 'integer', description: 'Total registered endpoints (agents + service_endpoints)' },
+          nodesProbed: { type: 'integer', description: 'Nodes probed at least once via LND QueryRoutes (used as the denominator for phantomRate)' },
+          phantomRate: { type: 'number', description: 'Percentage of probed nodes that are unreachable in routing (0–100). Computed live from the last 24h probe window' },
+          verifiedReachable: { type: 'integer', description: 'Nodes with at least one successful probe in the last 24h — "who you can actually pay"' },
+          probes24h: { type: 'integer', description: 'Total QueryRoutes probes executed in the last 24h rolling window (all amount tiers combined)' },
           totalChannels: { type: 'integer', description: 'Sum of Lightning channels across all lightning_graph agents' },
-          nodesWithRatings: { type: 'integer', description: 'Number of agents with LN+ ratings (lnplus_rank > 0)' },
-          networkCapacityBtc: { type: 'number', description: 'Total network capacity in BTC (sum of all agent capacities)' },
+          nodesWithRatings: { type: 'integer', description: 'Number of agents with non-zero sovereign reputation (PageRank > 0 on SatRank peer-trust graph; LN+ has been deprecated since v19)' },
+          networkCapacityBtc: { type: 'number', description: 'Total network capacity in BTC (sum of all validated channel capacities)' },
           avgScore: { type: 'number', description: 'Average score across all scored agents' },
           totalVolumeBuckets: {
             type: 'object',
@@ -1089,6 +1112,15 @@ export const openapiSpec = {
             },
           },
           trends: { $ref: '#/components/schemas/NetworkTrends' },
+          serviceSources: {
+            type: 'object',
+            description: 'Breakdown of service_endpoints by discovery source. Exposes SatRank\'s sovereign oracle coverage of the L402 paid-service landscape.',
+            properties: {
+              '402index': { type: 'integer', description: 'Endpoints auto-discovered from 402index.io' },
+              self_registered: { type: 'integer', description: 'Endpoints declared by operators via /api/declare-provider' },
+              ad_hoc: { type: 'integer', description: 'Endpoints observed on-the-fly through /api/decide serviceUrl checks' },
+            },
+          },
         },
       },
       ReportStatsResponse: {
@@ -1173,6 +1205,14 @@ export const openapiSpec = {
               pathQuality: { type: 'number', description: 'P_path — personalized path quality from caller to target (0-1, based on hops, fee, alternatives)' },
             },
           },
+          scoreBreakdown: {
+            type: 'object',
+            description: 'Raw score breakdown — mirrors /api/profile/:id.score. Lets agents audit a decision without a second request.',
+            properties: {
+              total: { type: 'integer', minimum: 0, maximum: 100 },
+              components: { $ref: '#/components/schemas/ScoreComponents' },
+            },
+          },
           basis: { type: 'string', enum: ['proxy', 'empirical'], description: 'proxy = <10 reports (using trust score), empirical = >=10 reports' },
           confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
           verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
@@ -1229,6 +1269,22 @@ export const openapiSpec = {
           verified: { type: 'boolean', description: 'true if preimage verified successfully' },
           weight: { type: 'number', description: 'Applied weight (0.3-2.0)' },
           timestamp: { type: 'integer' },
+          bonus: {
+            oneOf: [
+              {
+                type: 'object',
+                description: 'Tier 2 reporter-bonus outcome. Returned when REPORT_BONUS_ENABLED=true and the report service is wired.',
+                properties: {
+                  credited: { type: 'boolean' },
+                  sats: { type: 'integer', description: 'Sats credited to the reporter deposit balance (only when credited=true)' },
+                  gate: { type: 'string', description: 'Gate code explaining the decision (eligibility check or payout reason)' },
+                },
+                required: ['credited'],
+              },
+              { type: 'null' },
+            ],
+            description: 'Tier 2 reporter-bonus payload. Null when the bonus flag is off or the service is not wired.',
+          },
         },
         required: ['reportId', 'verified', 'weight', 'timestamp'],
       },

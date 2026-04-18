@@ -17,7 +17,12 @@ export type SortByField = 'score' | 'volume' | 'reputation' | 'seniority' | 'reg
 export interface TopAgentEntry {
   publicKeyHash: string;
   alias: string | null;
+  /** Integer score (0-100) — the official API value. */
   score: number;
+  /** 2-decimal float of the same score. Drives leaderboard tie-breaks so the
+   *  nine nodes compressed in the 80-82 band order by actual precision instead
+   *  of by pubkey lexicographically. */
+  scoreFine: number;
   totalTransactions: number;
   source: string;
   components: ScoreComponents;
@@ -44,7 +49,8 @@ export class AgentService {
     const attestationsCount = this.attestationRepo.countBySubject(publicKeyHash);
     const avgAttestationScore = this.attestationRepo.avgScoreBySubject(publicKeyHash);
 
-    const delta = this.trendService.computeDeltas(publicKeyHash, scoreResult.total);
+    // Deltas use the float score so 80.7 → 82.3 = +1.6 doesn't round-trip to +1.
+    const delta = this.trendService.computeDeltas(publicKeyHash, scoreResult.totalFine);
     const alerts = this.trendService.computeAlerts(publicKeyHash, scoreResult.total, delta);
 
     return {
@@ -57,6 +63,7 @@ export class AgentService {
       },
       score: {
         total: scoreResult.total,
+        totalFine: scoreResult.totalFine,
         components: scoreResult.components,
         confidence: confidenceToNumber(scoreResult.confidence),
         computedAt: scoreResult.computedAt,
@@ -174,19 +181,30 @@ export class AgentService {
           logger.warn({ agentHash: a.public_key_hash.slice(0, 12), error: msg }, 'Failed to parse score components — using defaults');
         }
       }
+      // agents.avg_score is a REAL column — since Apr 17 it carries the
+      // 2-decimal float. Round for the integer `score` surface, expose the
+      // float as `scoreFine` for display/tie-breaking.
+      const scoreFine = Math.round(a.avg_score * 100) / 100;
       return {
         publicKeyHash: a.public_key_hash,
         alias: a.alias,
-        score: a.avg_score,
+        score: Math.round(scoreFine),
+        scoreFine,
         totalTransactions: a.total_transactions,
         source: a.source,
         components,
       };
     });
 
-    // Sort by requested field
+    // Sort by requested field. For score-sort, ORDER BY avg_score DESC in SQL
+    // already returns the float-precision order — entries are in the right
+    // order. For component-sort, break ties on scoreFine so the deterministic
+    // secondary key is meaningful instead of pubkey lexicographical.
     if (sortBy !== 'score') {
-      entries.sort((a, b) => b.components[sortBy] - a.components[sortBy]);
+      entries.sort((a, b) => {
+        const delta = b.components[sortBy] - a.components[sortBy];
+        return delta !== 0 ? delta : b.scoreFine - a.scoreFine;
+      });
       entries = entries.slice(offset, offset + limit);
     }
 

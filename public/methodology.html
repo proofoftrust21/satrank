@@ -2,683 +2,930 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SatRank — Scoring Methodology</title>
+  <meta name="description" content="How SatRank computes trust scores for Lightning nodes. Components, formulas, anti-gaming, verdict API, Nostr NIP-85 distribution.">
   <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body class="methodology-page">
 
-<header>
-  <div class="container">
-    <h1>Scoring Methodology</h1>
-    <p>How SatRank computes reliability scores for Lightning endpoints</p>
-    <p><a href="/">&larr; Back to SatRank</a></p>
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-brand" aria-label="SatRank home">
+      <img src="/logo.png" alt="" class="nav-logo" width="28" height="28">
+      <span class="nav-wordmark">SatRank</span>
+    </a>
+    <div class="nav-links">
+      <a href="/methodology.html" class="active">Methodology</a>
+      <a href="/api/docs">API</a>
+      <a href="https://www.npmjs.com/package/@satrank/sdk" rel="noopener noreferrer">SDK</a>
+      <a href="https://github.com/proofoftrust21/satrank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://njump.me/npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4" rel="noopener noreferrer" aria-label="Nostr">Nostr</a>
+    </div>
   </div>
-</header>
+</nav>
 
-<main class="container">
+<div class="doc-shell">
 
-  <!-- Overview -->
-  <h2>Overview</h2>
-  <p>
-    SatRank produces a composite trust score between <strong>0 and 100</strong> for each agent,
-    computed from 5 independently measurable components. The score is deterministic: the same
-    inputs always produce the same output. All data sources are verifiable through public URLs.
-  </p>
+  <header class="doc-header">
+    <div class="doc-eyebrow">
+      <span class="pulse" aria-hidden="true"></span>
+      Technical documentation · Deterministic · Reproducible
+    </div>
+    <h1 class="doc-title">Scoring Methodology</h1>
+    <p class="doc-sub">
+      How SatRank computes trust scores for Lightning nodes and agents. Every formula, every
+      threshold, every anti-gaming mechanism, every predictive signal — documented so the
+      score is verifiable, not magical.
+    </p>
+    <a href="/" class="doc-header-back">← Back to SatRank</a>
+  </header>
 
-  <!-- Components -->
-  <h2>Components and Weights</h2>
-  <p>The final score is a weighted sum of 5 components, each scored 0&ndash;100:</p>
+  <div class="doc-layout">
 
-  <pre>score = volume * 0.25 + reputation * 0.30 + seniority * 0.15 + regularity * 0.15 + diversity * 0.15</pre>
+    <aside class="doc-toc" aria-label="Table of contents">
+      <div class="doc-toc-heading">Fundamentals</div>
+      <a href="#overview">Overview</a>
+      <a href="#components">Components &amp; Weights</a>
+      <a href="#formulas">Formulas</a>
+      <a href="#modifiers">Post-Composite Modifiers</a>
+      <a href="#confidence">Confidence Levels</a>
 
-  <table>
-    <thead>
-      <tr><th>Component</th><th>Weight</th><th>Measures</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><strong>Volume</strong></td>
-        <td><span class="weight-bar wb-volume wb-25"></span>25%</td>
-        <td>Transaction throughput or channel count + capacity blend</td>
-      </tr>
-      <tr>
-        <td><strong>Reputation</strong></td>
-        <td><span class="weight-bar wb-reputation wb-30"></span>30%</td>
-        <td>PageRank centrality, peer trust, routing quality, capacity trend, fee stability</td>
-      </tr>
-      <tr>
-        <td><strong>Seniority</strong></td>
-        <td><span class="weight-bar wb-seniority wb-15"></span>15%</td>
-        <td>Time on the network since first observation</td>
-      </tr>
-      <tr>
-        <td><strong>Regularity</strong></td>
-        <td><span class="weight-bar wb-regularity wb-15"></span>15%</td>
-        <td>Consistency of activity over time</td>
-      </tr>
-      <tr>
-        <td><strong>Diversity</strong></td>
-        <td><span class="weight-bar wb-diversity wb-15"></span>15%</td>
-        <td>Breadth of counterparties or capacity</td>
-      </tr>
-    </tbody>
-  </table>
+      <div class="doc-toc-heading">Sources &amp; Evidence</div>
+      <a href="#data-sources">Data Sources</a>
+      <a href="#data-validation">Data Validation</a>
+      <a href="#evidence">Evidence &amp; Verification</a>
+      <a href="#worked-example">Worked Example: ACINQ</a>
 
-  <!-- Formulas -->
-  <h2>Formulas</h2>
+      <div class="doc-toc-heading">Integrity</div>
+      <a href="#anti-gaming">Anti-Gaming Mechanisms</a>
+      <a href="#limitations">Limitations &amp; Centralization</a>
 
-  <h3>Volume (Lightning nodes)</h3>
-  <p>50/50 blend of channel count and total capacity (in BTC). Channel count alone is gameable: 500 tiny channels totalling 0.005 BTC scored 100 under the old formula. Adding a capacity dimension prevents this while keeping real hubs at 85&ndash;100.</p>
-  <pre>channelScore  = min(100, log(channels + 1) / log(501) * 100)   // ref 500 channels
+      <div class="doc-toc-heading">Agent API</div>
+      <a href="#verdict">Verdict API (SAFE / RISKY / UNKNOWN)</a>
+      <a href="#agent-workflow">Agent Workflow</a>
+      <a href="#trust-graph">Personal Trust Graph</a>
+      <a href="#risk-profiles">Risk Profiles</a>
+      <a href="#alerts">Alerts</a>
+      <a href="#pathfinding">Personalized Pathfinding</a>
+      <a href="#decision-engine">Decision Engine</a>
+
+      <div class="doc-toc-heading">Temporal &amp; Predictive</div>
+      <a href="#score-history">Score History &amp; Deltas</a>
+      <a href="#predictive-signals">Predictive Signals</a>
+
+      <div class="doc-toc-heading">Distribution</div>
+      <a href="#l402-signal">L402 Payment as Data</a>
+      <a href="#nostr-distribution">Nostr NIP-85</a>
+      <a href="#live-circuit">Live Circuit</a>
+    </aside>
+
+    <main class="doc-main">
+
+      <!-- Overview -->
+      <section class="doc-section" id="overview">
+        <h2>Overview</h2>
+        <p>
+          SatRank produces a composite trust score between <strong>0 and 100</strong> for each agent,
+          computed from 5 independently measurable components. The score is deterministic: the same
+          inputs always produce the same output. All data sources are verifiable through public URLs.
+        </p>
+        <div class="callout note">
+          <span class="callout-icon">i</span>
+          <div class="callout-body">
+            <strong>Core principle.</strong> Trust must be reproducible. Every number on this page can be
+            cross-checked against the live <code>/api/stats</code>, <code>/api/agent/{hash}</code>, and
+            <code>/api/verdicts</code> endpoints. No signal is hidden in a black box.
+          </div>
+        </div>
+      </section>
+
+      <!-- Components -->
+      <section class="doc-section" id="components">
+        <h2>Components &amp; Weights</h2>
+        <p>The final score is a weighted sum of 5 components, each scored 0&ndash;100:</p>
+        <pre>score = volume * 0.25 + reputation * 0.30 + seniority * 0.15 + regularity * 0.15 + diversity * 0.15</pre>
+        <table>
+          <thead>
+            <tr><th>Component</th><th>Weight</th><th>Measures</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Volume</strong></td>
+              <td><span class="weight-bar wb-volume wb-25"></span>25%</td>
+              <td>Transaction throughput or channel count + capacity blend</td>
+            </tr>
+            <tr>
+              <td><strong>Reputation</strong></td>
+              <td><span class="weight-bar wb-reputation wb-30"></span>30%</td>
+              <td>PageRank centrality, peer trust, routing quality, capacity trend, fee stability</td>
+            </tr>
+            <tr>
+              <td><strong>Seniority</strong></td>
+              <td><span class="weight-bar wb-seniority wb-15"></span>15%</td>
+              <td>Time on the network since first observation</td>
+            </tr>
+            <tr>
+              <td><strong>Regularity</strong></td>
+              <td><span class="weight-bar wb-regularity wb-15"></span>15%</td>
+              <td>Consistency of activity over time</td>
+            </tr>
+            <tr>
+              <td><strong>Diversity</strong></td>
+              <td><span class="weight-bar wb-diversity wb-15"></span>15%</td>
+              <td>Breadth of counterparties or capacity</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Formulas -->
+      <section class="doc-section" id="formulas">
+        <h2>Formulas</h2>
+
+        <h3 class="factor-heading factor-volume">Volume (Lightning nodes)</h3>
+        <p>50/50 blend of channel count and total capacity (in BTC). Channel count alone is gameable: 500 tiny channels totalling 0.005 BTC scored 100 under the old formula. Adding a capacity dimension prevents this while keeping real hubs at 85&ndash;100.</p>
+        <pre>channelScore  = min(100, log(channels + 1) / log(501) * 100)   // ref 500 channels
 capacityScore = min(100, log(btc + 1)      / log(51)  * 100)   // ref 50 BTC
 
 volume = round(channelScore * 0.5 + capacityScore * 0.5)</pre>
-  <p><em>500 ch / 0.005 BTC: ~50 (was 100). 2010 ch / 38 BTC: ~100. 20 ch / 0.5 BTC: ~35.</em></p>
+        <p><em>500 ch / 0.005 BTC: ~50 (was 100). 2010 ch / 38 BTC: ~100. 20 ch / 0.5 BTC: ~35.</em></p>
 
-  <h3>Volume (Observer Protocol agents)</h3>
-  <p>Logarithmic scale normalized to a reference of 1000 verified transactions:</p>
-  <pre>volume = min(100, round(log(count + 1) / log(1001) * 100))</pre>
+        <h3 class="factor-heading factor-volume">Volume (Observer Protocol agents)</h3>
+        <p>Logarithmic scale normalized to a reference of 1000 verified transactions:</p>
+        <pre>volume = min(100, round(log(count + 1) / log(1001) * 100))</pre>
 
-  <h3>Reputation (Lightning nodes)</h3>
-  <p>Blends 5 objective sub-signals. With PageRank data (100% of nodes in production):</p>
-  <pre>reputation = centrality * 0.20 + peerTrust * 0.30 + routingQuality * 0.20
+        <h3 class="factor-heading factor-reputation">Reputation (Lightning nodes)</h3>
+        <p>Blends 5 objective sub-signals. With PageRank data (100% of nodes in production):</p>
+        <pre>reputation = centrality * 0.20 + peerTrust * 0.30 + routingQuality * 0.20
            + capTrend   * 0.15 + feeStability * 0.15
 
 // Fallback without centrality (test environments only):
 reputation = peerTrust * 0.35 + routingQuality * 0.25 + capTrend * 0.20 + feeStability * 0.20</pre>
 
-  <p><strong>Sub-signals:</strong></p>
-  <ul>
-    <li><strong>Centrality (0&ndash;100)</strong> &mdash; sovereign PageRank computed hourly from the full LND graph (~11,700 nodes, ~41k edges, &lt;500ms). Capacity-weighted with log-scale edge weights so a 10 BTC channel is ~2.3x more influential than 0.1 BTC, not 100x. Percentile-normalized 0&ndash;100. Replaces the LN+ hubness/betweenness dependency &mdash; covers 100% of nodes vs ~70% before.</li>
-    <li><strong>Peer trust (0&ndash;100)</strong> &mdash; BTC per channel as inbound confidence proxy. <code>min(100, log10(btcPerChannel * 100 + 1) / log10(201) * 100)</code>. Unchanged formula, rescaled from 0&ndash;50 to 0&ndash;100.</li>
-    <li><strong>Routing quality (0&ndash;100)</strong> &mdash; hop distance (60%: 1 hop = 100, -12 per extra hop, floor 4) + latency (40%: 0ms = 100, 300ms+ = 0) from probe results over 7 days. Requires &ge; 3 reachable probes. Measures how well a node performs from SatRank&rsquo;s position in the graph. Proprietary signal: a fork without our probe history defaults to 50.</li>
-    <li><strong>Capacity trend (0&ndash;100)</strong> &mdash; 7-day capacity delta from channel_snapshots. Sigmoid centered at 0% change: no change = 50, growth = higher, shrinkage = lower. A +20% week maps to ~77; a -20% week maps to ~23. Returns 50 (neutral) when no snapshot history is available.</li>
-    <li><strong>Fee stability (0&ndash;100)</strong> &mdash; fee change rate per channel per week from fee_snapshots. Sigmoid: 0 changes/channel/week = 100, 1 = ~73, 3 = ~27, 5+ = ~5. Nodes with stable fees score higher; frequent fee changes signal unreliable routing.</li>
-  </ul>
-  <p>
-    <strong>LN+ community ratings</strong> (from <a href="https://lightningnetwork.plus" style="color:#f7931a">lightningnetwork.plus</a>)
-    contribute a separate multiplicative modifier of up to &times;1.05 on the final score. This keeps the social signal
-    without making 30% of the score depend on a third-party platform.
-  </p>
+        <p><strong>Sub-signals:</strong></p>
+        <ul>
+          <li><strong>Centrality (0&ndash;100)</strong> &mdash; sovereign PageRank computed hourly from the full LND graph (~11,700 nodes, ~41k edges, &lt;500ms). Capacity-weighted with log-scale edge weights so a 10 BTC channel is ~2.3x more influential than 0.1 BTC, not 100x. Percentile-normalized 0&ndash;100. Replaces the LN+ hubness/betweenness dependency &mdash; covers 100% of nodes vs ~70% before.</li>
+          <li><strong>Peer trust (0&ndash;100)</strong> &mdash; BTC per channel as inbound confidence proxy. <code>min(100, log10(btcPerChannel * 100 + 1) / log10(201) * 100)</code>. Unchanged formula, rescaled from 0&ndash;50 to 0&ndash;100.</li>
+          <li><strong>Routing quality (0&ndash;100)</strong> &mdash; hop distance (60%: 1 hop = 100, -12 per extra hop, floor 4) + latency (40%: 0ms = 100, 300ms+ = 0) from probe results over 7 days. Requires &ge; 3 reachable probes. Measures how well a node performs from SatRank&rsquo;s position in the graph. Proprietary signal: a fork without our probe history defaults to 50.</li>
+          <li><strong>Capacity trend (0&ndash;100)</strong> &mdash; 7-day capacity delta from channel_snapshots. Sigmoid centered at 0% change: no change = 50, growth = higher, shrinkage = lower. A +20% week maps to ~77; a -20% week maps to ~23. Returns 50 (neutral) when no snapshot history is available.</li>
+          <li><strong>Fee stability (0&ndash;100)</strong> &mdash; fee change rate per channel per week from fee_snapshots. Sigmoid: 0 changes/channel/week = 100, 1 = ~73, 3 = ~27, 5+ = ~5. Nodes with stable fees score higher; frequent fee changes signal unreliable routing.</li>
+        </ul>
+        <div class="callout info">
+          <span class="callout-icon">i</span>
+          <div class="callout-body">
+            <strong>LN+ community ratings</strong> contribute a separate multiplicative modifier of up to &times;1.05 on the final score. This keeps the social signal without making 30% of the score depend on a third-party platform.
+          </div>
+        </div>
 
-  <h3>Reputation (Observer Protocol agents)</h3>
-  <p>
-    Weighted average of attestation scores with exponential time decay (half-life: 30 days).
-    Each attestation's weight is multiplied by the attester's own score, normalized to [0, 1].
-    When enough payment reports exist (&ge; 5), the report signal (success/failure weighted by
-    reporter score, preimage-verified = 2x weight) contributes even without attestations.
-    See <a href="#anti-gaming">Anti-Gaming</a> for penalty mechanisms.
-  </p>
-  <p>
-    When no attestations or reports exist, reputation is 0 and its 30% weight is redistributed
-    to the other 4 components (<code>volume * 0.36 + seniority * 0.21 + regularity * 0.21 + diversity * 0.21</code>).
-  </p>
-  <p>
-    <em>Current state: ~30 Observer Protocol agents are indexed, with near-zero attestation activity.
-    In practice, 99.8% of scored agents are Lightning nodes whose reputation is computed via the
-    5 sub-signals described above (PageRank, peer trust, routing quality, capacity trend, fee stability).
-    The attestation system is functional but awaiting adoption.</em>
-  </p>
+        <h3 class="factor-heading factor-reputation">Reputation (Observer Protocol agents)</h3>
+        <p>
+          Weighted average of attestation scores with exponential time decay (half-life: 30 days).
+          Each attestation's weight is multiplied by the attester's own score, normalized to [0, 1].
+          When enough payment reports exist (&ge; 5), the report signal (success/failure weighted by
+          reporter score, preimage-verified = 2x weight) contributes even without attestations.
+          See <a href="#anti-gaming">Anti-Gaming</a> for penalty mechanisms.
+        </p>
+        <p>
+          When no attestations or reports exist, reputation is 0 and its 30% weight is redistributed
+          to the other 4 components (<code>volume * 0.36 + seniority * 0.21 + regularity * 0.21 + diversity * 0.21</code>).
+        </p>
+        <p>
+          <em>Current state: ~30 Observer Protocol agents are indexed, with near-zero attestation activity.
+          In practice, 99.8% of scored agents are Lightning nodes whose reputation is computed via the
+          5 sub-signals described above (PageRank, peer trust, routing quality, capacity trend, fee stability).
+          The attestation system is functional but awaiting adoption.</em>
+        </p>
 
-  <h3>Seniority</h3>
-  <p>Exponential growth curve with diminishing returns (2-year half-life):</p>
-  <pre>days = (now - firstSeen) / 86400
+        <h3 class="factor-heading factor-seniority">Seniority</h3>
+        <p>Exponential growth curve with diminishing returns (2-year half-life):</p>
+        <pre>days = (now - firstSeen) / 86400
 seniority = round(100 * (1 - exp(-days / 730)))</pre>
-  <p><em>30 days: ~4. 6 months: ~22. 1 year: ~39. 2 years: ~61. 3 years: ~78. 5 years: ~93.</em></p>
+        <p><em>30 days: ~4. 6 months: ~22. 1 year: ~39. 2 years: ~61. 3 years: ~78. 5 years: ~93.</em></p>
 
-  <h3>Regularity (Lightning nodes)</h3>
-  <p>
-    Multi-axis consistency over 7 days. A node that is always reachable but whose latency varies
-    wildly or whose routing paths flap is less reliable than one that is rock-steady, and the
-    score reflects that. Pure uptime alone used to saturate at 100 for ~77% of scored agents and
-    stopped differentiating the top cluster.
-  </p>
-  <pre>// Primary: multi-axis (requires >= 3 probes in 7 days)
+        <h3 class="factor-heading factor-regularity">Regularity (Lightning nodes)</h3>
+        <p>
+          Multi-axis consistency over 7 days. A node that is always reachable but whose latency varies
+          wildly or whose routing paths flap is less reliable than one that is rock-steady, and the
+          score reflects that. Pure uptime alone used to saturate at 100 for ~77% of scored agents and
+          stopped differentiating the top cluster.
+        </p>
+        <pre>// Primary: multi-axis (requires >= 3 probes in 7 days)
 regularity =  uptime_ratio        * 70   // reachable / total probes
             + latency_consistency * 20   // exp(-stddev/mean) across reachable latencies
             + hop_stability       * 10   // 1 - clamp(stddev_hops / 3, 0, 1)
 
 // Fallback: gossip recency (when < 3 probes available)
 regularity = min(100, round(100 * exp(-daysSinceGossip / 90)))</pre>
-  <p><em>
-    Stable, fast, rock-steady: ~100. 100% uptime with noticeable latency jitter: ~85.
-    80% uptime with stable routes: ~86. 50% uptime: ~65. Dead: 0.
-  </em></p>
+        <p><em>
+          Stable, fast, rock-steady: ~100. 100% uptime with noticeable latency jitter: ~85.
+          80% uptime with stable routes: ~86. 50% uptime: ~65. Dead: 0.
+        </em></p>
 
-  <h3>Regularity (Observer Protocol agents)</h3>
-  <p>
-    Inverse coefficient of variation (CV) of transaction intervals.
-    Requires at least 3 transactions. Regular intervals score high; erratic patterns score low.
-  </p>
-  <pre>cv = stddev(intervals) / mean(intervals)
-regularity = min(100, round(100 * exp(-cv)))</pre>
+        <h3 class="factor-heading factor-regularity">Regularity (Observer Protocol agents)</h3>
+        <p>Transactions over the last 30 days scored logarithmically against a reference of 30 transactions (1/day):</p>
+        <pre>regularity = min(100, round(log(txLast30d + 1) / log(31) * 100))</pre>
 
-  <h3>Diversity (Lightning nodes)</h3>
-  <p>
-    Number of unique peers (distinct nodes sharing a channel), extracted from the validated LND
-    graph. A node with 500 BTC concentrated on 2 peers offers no routing diversity; a node with
-    0.5 BTC spread across 20 peers is a real contributor to network health. Peer count is the
-    real signal; capacity is a correlated but weaker proxy.
-  </p>
-  <pre>diversity = min(100, round(log(unique_peers + 1) / log(501) * 100))</pre>
-  <p><em>1 peer: ~11. 10 peers: ~38. 50 peers: ~63. 200 peers: ~85. 500+ peers: 100.</em></p>
-  <p>Falls back to capacity-based scoring only for fresh agents the LND crawler has not yet indexed.</p>
+        <h3 class="factor-heading factor-diversity">Diversity (Lightning nodes)</h3>
+        <p>
+          Diversity now measures counterparty breadth via the validated LND graph: number of
+          unique peer nodes, log-normalized against a 500-peer reference. A node with 500+ unique peers
+          saturates at 100; a node with 20 peers scores ~43. This replaces the previous BTC-capacity
+          proxy, which inflated concentrated nodes.
+        </p>
+        <pre>diversity = min(100, round(log(uniquePeers + 1) / log(501) * 100))</pre>
+        <p><em>1 peer: 0. 20 peers: 43. 100 peers: 74. 500+ peers: 100.</em></p>
 
-  <h3>Diversity (Observer Protocol agents)</h3>
-  <pre>diversity = min(100, round(log(uniqueCounterparties + 1) / log(51) * 100))</pre>
+        <h3 class="factor-heading factor-diversity">Diversity (Observer Protocol agents)</h3>
+        <p>Number of unique counterparties. Log-normalized against 50 counterparties reference:</p>
+        <pre>diversity = min(100, round(log(uniqueCounterparties + 1) / log(51) * 100))</pre>
+      </section>
 
-  <!-- Modifiers -->
-  <h2>Post-Composite Modifiers</h2>
-  <p>
-    All post-composite adjustments are <strong>multiplicative</strong>, not additive. A base-40 node
-    cannot reach a high total via bonus stacking alone: 40 &times; 1.15 = 46 max, not 40 + 33 = 73.
-  </p>
+      <!-- Modifiers -->
+      <section class="doc-section" id="modifiers">
+        <h2>Post-Composite Modifiers</h2>
+        <p>
+          All post-composite adjustments are <strong>multiplicative</strong>, not additive. A base-40 node
+          cannot reach a high total via bonus stacking alone: 40 &times; 1.15 = 46 max, not 40 + 33 = 73.
+        </p>
 
-  <div class="card">
-    <div class="card-title">Verified Transaction Modifier (&times;1.0 to &times;1.10)</div>
-    <p>Agents with verified Observer Protocol transactions receive a multiplier: <code>min(1.10, 1.0 + verifiedCount * 0.003)</code>. This applies to all agent types, including Lightning nodes that also have Observer Protocol activity.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">Verified Transaction Modifier (&times;1.0 to &times;1.10)</div>
+          <p>Agents with verified Observer Protocol transactions receive a multiplier: <code>min(1.10, 1.0 + verifiedCount * 0.003)</code>. This applies to all agent types, including Lightning nodes that also have Observer Protocol activity.</p>
+        </div>
 
-  <div class="card">
-    <div class="card-title">LN+ Community Ratings Modifier (&times;1.0 to &times;1.05)</div>
-    <p>Positive ratings from <a href="https://lightningnetwork.plus" style="color:#f7931a">LN+</a> contribute a multiplier based on the positive/negative ratio. This keeps the social signal as a reward, not a requirement.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">LN+ Community Ratings Modifier (&times;1.0 to &times;1.05)</div>
+          <p>Positive ratings from <a href="https://lightningnetwork.plus" rel="noopener noreferrer">LN+</a> contribute a multiplier based on the positive/negative ratio. This keeps the social signal as a reward, not a requirement.</p>
+        </div>
 
-  <div class="card">
-    <div class="card-title">Probe Unreachable Penalty (graduated)</div>
-    <p>When the latest probe shows a node unreachable, the score is multiplied by a factor that depends on the failure cause:</p>
-    <table>
-      <thead><tr><th>Cause</th><th>Multiplier</th><th>Condition</th></tr></thead>
-      <tbody>
-        <tr><td>Dead</td><td>&times;0.65</td><td>80%+ channels disabled in gossip</td></tr>
-        <tr><td>Abandoned</td><td>&times;0.70</td><td>Gossip stale &gt; 30 days</td></tr>
-        <tr><td>Zombie</td><td>&times;0.80</td><td>Gossip stale 7&ndash;30 days or 30%+ channels disabled</td></tr>
-        <tr><td>Liquidity</td><td>&times;0.90</td><td>Gossip fresh, channels active, no route from our position</td></tr>
-      </tbody>
-    </table>
-    <p>Dead nodes are penalized far more heavily than nodes that are simply liquidity-constrained.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">Probe Unreachable Penalty (graduated)</div>
+          <p>When the latest probe shows a node unreachable, the score is multiplied by a factor that depends on the failure cause:</p>
+          <table>
+            <thead><tr><th>Cause</th><th>Multiplier</th><th>Condition</th></tr></thead>
+            <tbody>
+              <tr><td>Dead</td><td>&times;0.65</td><td>80%+ channels disabled in gossip</td></tr>
+              <tr><td>Abandoned</td><td>&times;0.70</td><td>Gossip stale &gt; 30 days</td></tr>
+              <tr><td>Zombie</td><td>&times;0.80</td><td>Gossip stale 7&ndash;30 days or 30%+ channels disabled</td></tr>
+              <tr><td>Liquidity</td><td>&times;0.90</td><td>Gossip fresh, channels active, no route from our position</td></tr>
+            </tbody>
+          </table>
+          <p>Dead nodes are penalized far more heavily than nodes that are simply liquidity-constrained.</p>
+        </div>
+      </section>
 
-  <!-- Confidence -->
-  <h2>Confidence Levels</h2>
-  <p>
-    Confidence indicates how much data backs the score. It is based on total data points (transactions, attestations, channels, and LN+ ratings):
-  </p>
-  <table>
-    <thead><tr><th>Level</th><th>Data Points</th><th>Interpretation</th></tr></thead>
-    <tbody>
-      <tr><td><strong>very_low</strong></td><td>&lt; 5</td><td>Insufficient data. Score is unreliable.</td></tr>
-      <tr><td><strong>low</strong></td><td>5 &ndash; 19</td><td>Limited data. Use with caution.</td></tr>
-      <tr><td><strong>medium</strong></td><td>20 &ndash; 99</td><td>Moderate evidence. Score is indicative.</td></tr>
-      <tr><td><strong>high</strong></td><td>100 &ndash; 499</td><td>Substantial evidence. Score is reliable.</td></tr>
-      <tr><td><strong>very_high</strong></td><td>&ge; 500</td><td>Extensive evidence. High trust in score accuracy.</td></tr>
-    </tbody>
-  </table>
+      <!-- Confidence -->
+      <section class="doc-section" id="confidence">
+        <h2>Confidence Levels</h2>
+        <p>
+          Confidence indicates how much data backs the score. It is based on total data points (transactions, attestations, channels, and LN+ ratings):
+        </p>
+        <table>
+          <thead><tr><th>Level</th><th>Data Points</th><th>Interpretation</th></tr></thead>
+          <tbody>
+            <tr><td><strong>very_low</strong></td><td>&lt; 5</td><td>Insufficient data. Score is unreliable.</td></tr>
+            <tr><td><strong>low</strong></td><td>5 &ndash; 19</td><td>Limited data. Use with caution.</td></tr>
+            <tr><td><strong>medium</strong></td><td>20 &ndash; 99</td><td>Moderate evidence. Score is indicative.</td></tr>
+            <tr><td><strong>high</strong></td><td>100 &ndash; 499</td><td>Substantial evidence. Score is reliable.</td></tr>
+            <tr><td><strong>very_high</strong></td><td>&ge; 500</td><td>Extensive evidence. High trust in score accuracy.</td></tr>
+          </tbody>
+        </table>
+      </section>
 
-  <!-- Data Sources -->
-  <h2>Data Sources</h2>
+      <!-- Data Sources -->
+      <section class="doc-section" id="data-sources">
+        <h2>Data Sources</h2>
 
-  <div class="card">
-    <div class="card-title">Observer Protocol</div>
-    <p>Source for agent-to-agent transactions. Provides transaction records with payment hashes, preimages, status (verified/pending/failed), and protocol type (L402, keysend, bolt11). Transactions are the basis for volume, regularity, and diversity computation for non-Lightning agents. Currently ~30 active agents indexed via Observer Protocol.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">Observer Protocol</div>
+          <p>Source for agent-to-agent transactions. Provides transaction records with payment hashes, preimages, status (verified/pending/failed), and protocol type (L402, keysend, bolt11). Transactions are the basis for volume, regularity, and diversity computation for non-Lightning agents. Currently ~30 active agents indexed via Observer Protocol.</p>
+        </div>
 
-  <div class="card">
-    <div class="card-title">LND Graph (Primary)</div>
-    <p>Full Lightning Network graph from our own LND node, backed by a full Bitcoin Core (<code>bitcoind v28.1</code>) node for channel validation. Currently indexing <strong>~13,900 active Lightning nodes</strong> &mdash; cryptographically verified against the Bitcoin UTXO set &mdash; with <strong>~4,250 stale nodes</strong> (not seen in 90+ days) preserved for history but excluded from scoring. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes. All numbers here are mirrored from the live <code>/api/stats</code> endpoint &mdash; if this paragraph ever disagrees with the landing page, the landing page wins.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">LND Graph (Primary)</div>
+          <p>Full Lightning Network graph from our own LND node, backed by a full Bitcoin Core (<code>bitcoind v28.1</code>) node for channel validation. Currently indexing <strong>~13,900 active Lightning nodes</strong> &mdash; cryptographically verified against the Bitcoin UTXO set &mdash; with <strong>~4,250 stale nodes</strong> (not seen in 90+ days) preserved for history but excluded from scoring. Coverage grows automatically through <a href="#auto-index">auto-indexation</a>: every query for an unknown node triggers background indexing. The more agents use SatRank, the more complete the graph becomes. All numbers here are mirrored from the live <code>/api/stats</code> endpoint &mdash; if this paragraph ever disagrees with the landing page, the landing page wins.</p>
+        </div>
 
-  <div class="card">
-    <div class="card-title">mempool.space (Fallback)</div>
-    <p>Lightning Network graph data via public API. Used as fallback when the LND node is unavailable or not synced. Limited to top 100 nodes by connectivity. Verifiable at <code>https://mempool.space/lightning/node/{publicKey}</code>.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">mempool.space (Fallback)</div>
+          <p>Lightning Network graph data via public API. Used as fallback when the LND node is unavailable or not synced. Limited to top 100 nodes by connectivity. Verifiable at <code>https://mempool.space/lightning/node/{publicKey}</code>.</p>
+        </div>
 
-  <div class="card">
-    <div class="card-title">LightningNetwork.Plus (LN+)</div>
-    <p>Community reputation platform. Provides positive/negative ratings. User ratings contribute a separate multiplicative modifier (&times;1.0 to &times;1.05). Centrality is now computed in-house via sovereign PageRank on the full LND graph, replacing the LN+ hubness/betweenness dependency. Verifiable at <code>https://lightningnetwork.plus/nodes/{publicKey}</code>.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">LightningNetwork.Plus (LN+)</div>
+          <p>Community reputation platform. Provides positive/negative ratings. User ratings contribute a separate multiplicative modifier (&times;1.0 to &times;1.05). Centrality is now computed in-house via sovereign PageRank on the full LND graph, replacing the LN+ hubness/betweenness dependency. Verifiable at <code>https://lightningnetwork.plus/nodes/{publicKey}</code>.</p>
+        </div>
 
-  <div class="card">
-    <div class="card-title">Route Probes</div>
-    <p>Periodic reachability checks via LND&rsquo;s <code>QueryRoutes</code> API. Each indexed node is probed <strong>every 30 minutes</strong> to determine whether a route exists from SatRank&rsquo;s node. Hot nodes &mdash; those recently queried via <code>/decide</code> or <code>/ping</code> within the last 2 hours &mdash; are probed first in each cycle so live traffic gets the freshest data. The <code>unreachable</code> flag in the verdict comes from probe data. Uptime ratios over 7 days are computed and exposed in the <a href="#decision-engine">agent profile</a>.</p>
-    <p><strong>Multi-amount probing.</strong> Hot nodes are probed at 4 tiers: 1k, 10k, 100k, and 1M sats. Higher tiers stop at the first failure. The highest successful tier is exposed as <code>maxRoutableAmount</code> in the decide response, so agents can verify capacity before committing to a payment amount.</p>
-    <p><strong>On-demand re-probe.</strong> When <code>/api/decide</code> encounters probe data older than 30 minutes (<code>DECIDE_REPROBE_STALE_SEC</code>), it fires a live <code>queryRoutes</code> before answering. This adds ~50&ndash;150 ms on the first call; subsequent calls within the window use the fresh result.</p>
-  </div>
+        <div class="doc-card">
+          <div class="doc-card-title">Route Probes</div>
+          <p>Periodic reachability checks via LND&rsquo;s <code>QueryRoutes</code> API. Each indexed node is probed <strong>every 30 minutes</strong> to determine whether a route exists from SatRank&rsquo;s node. Hot nodes &mdash; those recently queried via <code>/decide</code> or <code>/ping</code> within the last 2 hours &mdash; are probed first in each cycle so live traffic gets the freshest data. The <code>unreachable</code> flag in the verdict comes from probe data. Uptime ratios over 7 days are computed and exposed in the <a href="#decision-engine">agent profile</a>.</p>
+          <p><strong>Multi-amount probing.</strong> Hot nodes are probed at 4 tiers: 1k, 10k, 100k, and 1M sats. Higher tiers stop at the first failure. The highest successful tier is exposed as <code>maxRoutableAmount</code> in the decide response, so agents can verify capacity before committing to a payment amount.</p>
+          <p><strong>On-demand re-probe.</strong> When <code>/api/decide</code> encounters probe data older than 30 minutes (<code>DECIDE_REPROBE_STALE_SEC</code>), it fires a live <code>queryRoutes</code> before answering. This adds ~50&ndash;150 ms on the first call; subsequent calls within the window use the fresh result.</p>
+        </div>
+      </section>
 
-  <!-- Data Validation -->
-  <h2 id="data-validation">Data Validation</h2>
-  <p>
-    All channel data is validated against the Bitcoin UTXO set via a full <code>bitcoind</code>
-    node (v28.1). This means every channel&rsquo;s capacity is cryptographically verified &mdash;
-    not estimated from gossip alone. Nodes running lightweight backends (Neutrino, SPV) cannot
-    perform this validation, which is why many Lightning explorers report inflated node counts
-    and phantom channels.
-  </p>
-  <p>
-    SatRank&rsquo;s full-node validation reduced the apparent graph by ~4,250 nodes to
-    ~13,900 verified active nodes. The excluded nodes are <strong>stale</strong> (not seen
-    in 90+ days) and are preserved in the database but excluded from scoring, publishing,
-    and statistics. If a stale node reappears in the gossip with a recent update, it is
-    automatically restored to the active set &mdash; no history is lost.
-  </p>
-  <p>
-    This is the reason SatRank&rsquo;s numbers will diverge from other Lightning dashboards
-    that rely on Neutrino or SPV. Both pictures are internally consistent; only one is
-    validated end-to-end against Bitcoin.
-  </p>
+      <!-- Data Validation -->
+      <section class="doc-section" id="data-validation">
+        <h2>Data Validation</h2>
+        <p>
+          All channel data is validated against the Bitcoin UTXO set via a full <code>bitcoind</code>
+          node (v28.1). This means every channel&rsquo;s capacity is cryptographically verified &mdash;
+          not estimated from gossip alone. Nodes running lightweight backends (Neutrino, SPV) cannot
+          perform this validation, which is why many Lightning explorers report inflated node counts
+          and phantom channels.
+        </p>
+        <p>
+          SatRank&rsquo;s full-node validation reduced the apparent graph by ~4,250 nodes to
+          ~13,900 verified active nodes. The excluded nodes are <strong>stale</strong> (not seen
+          in 90+ days) and are preserved in the database but excluded from scoring, publishing,
+          and statistics. If a stale node reappears in the gossip with a recent update, it is
+          automatically restored to the active set &mdash; no history is lost.
+        </p>
+        <div class="callout note">
+          <span class="callout-icon">!</span>
+          <div class="callout-body">
+            This is the reason SatRank&rsquo;s numbers will diverge from other Lightning dashboards
+            that rely on Neutrino or SPV. Both pictures are internally consistent;
+            <strong>only one is validated end-to-end against Bitcoin.</strong>
+          </div>
+        </div>
+      </section>
 
-  <!-- Anti-Gaming -->
-  <h2 id="anti-gaming">Anti-Gaming Mechanisms</h2>
-  <p>
-    SatRank employs multiple layers of defense against score manipulation. The mechanisms are
-    described conceptually below; exact thresholds are proprietary to prevent circumvention.
-  </p>
+      <!-- Evidence -->
+      <section class="doc-section" id="evidence">
+        <h2>Evidence and Verification</h2>
+        <p>
+          Every score response includes an <code>evidence</code> object containing verifiable source data:
+        </p>
+        <ul>
+          <li><strong>Transactions:</strong> Total count, verified count, and a sample of the 5 most recent transactions with tx IDs, protocol, amount bucket, and verification status.</li>
+          <li><strong>Lightning Graph:</strong> Public key, channel count, capacity in sats, and a link to <code>mempool.space</code> where you can independently verify.</li>
+          <li><strong>Reputation:</strong> PageRank centrality score, BTC per channel (peer trust), routing quality, capacity trend, fee stability, and a link to <code>lightningnetwork.plus</code> for independent verification of community ratings.</li>
+        </ul>
+        <p>
+          The evidence structure enables any consumer to cross-check the score against primary sources
+          without trusting SatRank exclusively.
+        </p>
+      </section>
 
-  <ul>
-    <li><strong>Mutual attestation detection.</strong> When agent A attests agent B and B attests A, both attestations are detected and heavily penalized. The effective score from these attestations is capped.</li>
-    <li><strong>Circular cluster detection.</strong> Cycles up to depth 4 (A&rarr;B&rarr;C&rarr;D&rarr;A) are identified via BFS. Attestations from cycle members receive reduced weight and capped effective scores.</li>
-    <li><strong>Attestation concentration.</strong> When a disproportionate number of attestations come from too few unique attesters, a penalty is applied. This discourages sybil attestation farms.</li>
-    <li><strong>New attester weight reduction.</strong> Attesters younger than a minimum age carry significantly reduced weight. This prevents rapid bootstrapping of fake reputation.</li>
-    <li><strong>Attester reliability weighting.</strong> Each attester's weight is proportional to their own score. Unknown attesters (score 0) carry minimal weight.</li>
-    <li><strong>Temporal decay.</strong> Attestation weight decays exponentially over time. Old attestations matter less than recent ones. This ensures scores reflect current behavior.</li>
-    <li><strong>Negative ratings dilution.</strong> Community negative ratings on LN+ reduce the LN+ bonus. A node with more negatives than positives receives no bonus.</li>
-    <li><strong>Manual source penalty.</strong> Agents registered manually (not discovered via protocol or graph) face a linear penalty until they accumulate sufficient verified transactions.</li>
-    <li><strong>Capacity-weighted volume.</strong> Volume is now a 50/50 blend of channel count and total capacity (BTC). This prevents gaming via hundreds of tiny channels with negligible capacity.</li>
-    <li><strong>Popularity bonus removed.</strong> The query-count-based popularity bonus was trivially gameable (a node could query itself). It has been removed from scoring entirely. The demand signal remains in <code>last_queried_at</code> for probe prioritization only.</li>
-    <li><strong>Graduated probe penalty.</strong> Unreachable nodes are penalized by cause: dead nodes (&times;0.65) and abandoned nodes (&times;0.70) are penalized far more heavily than liquidity-constrained nodes (&times;0.90). This replaces the old flat penalty.</li>
-    <li><strong>Multi-amount probing (v20).</strong> The probe crawler now tests at 4 tiers: 1k, 10k, 100k, and 1M sats. Higher tiers run only for &ldquo;hot&rdquo; nodes (recently queried via <code>/decide</code>) and stop escalating at the first failure. The highest successful tier is exposed as <code>maxRoutableAmount</code> in the decide response. Migration v20 adds the <code>probe_amount_sats</code> column.</li>
-  </ul>
+      <!-- Worked Example -->
+      <section class="doc-section" id="worked-example">
+        <h2>Worked Example: ACINQ</h2>
+        <p>
+          ACINQ is a major Lightning node operator. Here is how the score is computed
+          with live data (values from <code>/api/agent/{hash}</code>):
+        </p>
 
-  <!-- Limitations -->
-  <h2 id="limitations">Limitations &amp; Centralization Risk</h2>
-  <p>
-    Our scores correlate with node size. Volume, capacity, seniority, and peer trust all favor
-    large, established nodes. Using the total score as the sole routing criterion will concentrate
-    traffic on dominant nodes.
-  </p>
-  <p>
-    We recommend agents use individual components and evidence to make nuanced decisions.
-    A small node with high reputation and low volume may be a better choice for network
-    resilience than a large node with a high total score. The <code>/agents/top?sort_by=reputation</code>
-    endpoint lets you discover these nodes directly.
-  </p>
-  <p>
-    <strong>The total score measures individual reliability, not value to the network. These are different things.</strong>
-  </p>
-  <p>
-    As the attestation system matures, peer-to-peer trust signals will increasingly complement
-    infrastructure metrics, enabling trust to emerge from consensus rather than size.
-  </p>
+        <table>
+          <thead><tr><th>Component</th><th>Score</th><th>Weighted</th></tr></thead>
+          <tbody>
+            <tr><td>Volume</td><td>100</td><td>100 &times; 0.25 = 25.0</td></tr>
+            <tr><td>Reputation</td><td>84</td><td>84 &times; 0.30 = 25.2</td></tr>
+            <tr><td>Seniority</td><td>98</td><td>98 &times; 0.15 = 14.7</td></tr>
+            <tr><td>Regularity</td><td>86</td><td>86 &times; 0.15 = 12.9</td></tr>
+            <tr><td>Diversity</td><td>100</td><td>100 &times; 0.15 = 15.0</td></tr>
+          </tbody>
+          <tfoot>
+            <tr><td colspan="2"><strong>Base score</strong></td><td><strong>~93</strong></td></tr>
+            <tr><td colspan="2">Probe penalty &times;0.90 (unreachable at time of scoring, liquidity cause)</td><td>&times;0.90</td></tr>
+            <tr><td colspan="2"><strong>Final score</strong></td><td><strong>84</strong></td></tr>
+          </tfoot>
+        </table>
 
-  <!-- Evidence -->
-  <h2>Evidence and Verification</h2>
-  <p>
-    Every score response includes an <code>evidence</code> object containing verifiable source data:
-  </p>
+        <p><em>
+          Live values as of April 2026. ACINQ scores 84 when probe penalty applies (liquidity &times;0.90
+          reduces base 93 to 84). When reachable, score is 93. Actual scores are computed in real-time
+          and fluctuate with probe results. Verify at <code>/api/agent/{hash}</code>.
+        </em></p>
+      </section>
 
-  <ul>
-    <li><strong>Transactions:</strong> Total count, verified count, and a sample of the 5 most recent transactions with tx IDs, protocol, amount bucket, and verification status.</li>
-    <li><strong>Lightning Graph:</strong> Public key, channel count, capacity in sats, and a link to <code>mempool.space</code> where you can independently verify.</li>
-    <li><strong>Reputation:</strong> PageRank centrality score, BTC per channel (peer trust), routing quality, capacity trend, fee stability, and a link to <code>lightningnetwork.plus</code> for independent verification of community ratings.</li>
-  </ul>
+      <!-- Anti-Gaming -->
+      <section class="doc-section" id="anti-gaming">
+        <h2>Anti-Gaming Mechanisms</h2>
+        <p>
+          SatRank employs multiple layers of defense against score manipulation. The mechanisms are
+          described conceptually below; exact thresholds are proprietary to prevent circumvention.
+        </p>
+        <ul>
+          <li><strong>Mutual attestation detection.</strong> When agent A attests agent B and B attests A, both attestations are detected and heavily penalized. The effective score from these attestations is capped.</li>
+          <li><strong>Circular cluster detection.</strong> Cycles up to depth 4 (A&rarr;B&rarr;C&rarr;D&rarr;A) are identified via BFS. Attestations from cycle members receive reduced weight and capped effective scores.</li>
+          <li><strong>Attestation concentration.</strong> When a disproportionate number of attestations come from too few unique attesters, a penalty is applied. This discourages sybil attestation farms.</li>
+          <li><strong>New attester weight reduction.</strong> Attesters younger than a minimum age carry significantly reduced weight. This prevents rapid bootstrapping of fake reputation.</li>
+          <li><strong>Attester reliability weighting.</strong> Each attester's weight is proportional to their own score. Unknown attesters (score 0) carry minimal weight.</li>
+          <li><strong>Temporal decay.</strong> Attestation weight decays exponentially over time. Old attestations matter less than recent ones. This ensures scores reflect current behavior.</li>
+          <li><strong>Negative ratings dilution.</strong> Community negative ratings on LN+ reduce the LN+ bonus. A node with more negatives than positives receives no bonus.</li>
+          <li><strong>Manual source penalty.</strong> Agents registered manually (not discovered via protocol or graph) face a linear penalty until they accumulate sufficient verified transactions.</li>
+          <li><strong>Capacity-weighted volume.</strong> Volume is now a 50/50 blend of channel count and total capacity (BTC). This prevents gaming via hundreds of tiny channels with negligible capacity.</li>
+          <li><strong>Popularity bonus removed.</strong> The query-count-based popularity bonus was trivially gameable (a node could query itself). It has been removed from scoring entirely. The demand signal remains in <code>last_queried_at</code> for probe prioritization only.</li>
+          <li><strong>Graduated probe penalty.</strong> Unreachable nodes are penalized by cause: dead nodes (&times;0.65) and abandoned nodes (&times;0.70) are penalized far more heavily than liquidity-constrained nodes (&times;0.90). This replaces the old flat penalty.</li>
+          <li><strong>Multi-amount probing (v20).</strong> The probe crawler now tests at 4 tiers: 1k, 10k, 100k, and 1M sats. Higher tiers run only for &ldquo;hot&rdquo; nodes (recently queried via <code>/decide</code>) and stop escalating at the first failure. The highest successful tier is exposed as <code>maxRoutableAmount</code> in the decide response. Migration v20 adds the <code>probe_amount_sats</code> column.</li>
+        </ul>
+      </section>
 
-  <p>
-    The evidence structure enables any consumer to cross-check the score against primary sources
-    without trusting SatRank exclusively.
-  </p>
+      <!-- Limitations -->
+      <section class="doc-section" id="limitations">
+        <h2>Limitations &amp; Centralization Risk</h2>
+        <div class="callout warn">
+          <span class="callout-icon">!</span>
+          <div class="callout-body">
+            <strong>Our scores correlate with node size.</strong> Volume, capacity, seniority, and peer trust all favor
+            large, established nodes. Using the total score as the sole routing criterion will concentrate
+            traffic on dominant nodes.
+          </div>
+        </div>
+        <p>
+          We recommend agents use individual components and evidence to make nuanced decisions.
+          A small node with high reputation and low volume may be a better choice for network
+          resilience than a large node with a high total score. The <code>/agents/top?sort_by=reputation</code>
+          endpoint lets you discover these nodes directly.
+        </p>
+        <p>
+          <strong>The total score measures individual reliability, not value to the network. These are different things.</strong>
+        </p>
+        <p>
+          As the attestation system matures, peer-to-peer trust signals will increasingly complement
+          infrastructure metrics, enabling trust to emerge from consensus rather than size.
+        </p>
+      </section>
 
-  <!-- Worked Example -->
-  <h2>Worked Example: ACINQ</h2>
-  <p>
-    ACINQ is a major Lightning node operator. Here is how the score is computed
-    with live data (values from <code>/api/agent/{hash}</code>):
-  </p>
+      <!-- Verdict API -->
+      <section class="doc-section" id="verdict">
+        <h2>Verdict API &mdash; SAFE / RISKY / UNKNOWN</h2>
+        <p>
+          An AI agent evaluating a 10,000 sat transaction has less than 200ms to decide.
+          A composite score from 0 to 100 requires interpretation &mdash; what threshold is safe?
+          How should a score of 47 be treated differently from 52? These are questions an autonomous
+          agent should not have to answer in real-time.
+        </p>
+        <p>
+          The Verdict API (<code>GET /api/agent/{hash}/verdict</code>) returns a single, actionable
+          decision: <strong>SAFE</strong>, <strong>RISKY</strong>, or <strong>UNKNOWN</strong>.
+          No interpretation required.
+        </p>
 
-  <table>
-    <thead><tr><th>Component</th><th>Score</th><th>Weighted</th></tr></thead>
-    <tbody>
-      <tr>
-        <td>Volume</td>
-        <td>100</td>
-        <td>100 &times; 0.25 = 25.0</td>
-      </tr>
-      <tr>
-        <td>Reputation</td>
-        <td>84</td>
-        <td>84 &times; 0.30 = 25.2</td>
-      </tr>
-      <tr>
-        <td>Seniority</td>
-        <td>98</td>
-        <td>98 &times; 0.15 = 14.7</td>
-      </tr>
-      <tr>
-        <td>Regularity</td>
-        <td>86</td>
-        <td>86 &times; 0.15 = 12.9</td>
-      </tr>
-      <tr>
-        <td>Diversity</td>
-        <td>100</td>
-        <td>100 &times; 0.15 = 15.0</td>
-      </tr>
-    </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="2"><strong>Base score</strong></td>
-        <td><strong>~93</strong></td>
-      </tr>
-      <tr>
-        <td colspan="2">Probe penalty &times;0.90 (unreachable at time of scoring, liquidity cause)</td>
-        <td>&times;0.90</td>
-      </tr>
-      <tr>
-        <td colspan="2"><strong>Final score</strong></td>
-        <td><strong>84</strong></td>
-      </tr>
-    </tfoot>
-  </table>
+        <h3>Decision Logic</h3>
+        <table>
+          <thead><tr><th>Verdict</th><th>Condition</th></tr></thead>
+          <tbody>
+            <tr><td><strong>RISKY</strong></td><td><code>fraud_reported</code> or <code>negative_reputation</code> flag, OR <code>unreachable</code> (fresh probe), OR delta_7d &lt; &minus;15, OR score &lt; 30 with confidence &ge; low (0.25)</td></tr>
+            <tr><td><strong>SAFE</strong></td><td>Score &ge; 47, no critical flags, confidence &ge; medium (0.5)</td></tr>
+            <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;46, OR score &lt; 30 with very low confidence, OR score &ge; 47 with confidence &lt; medium</td></tr>
+          </tbody>
+        </table>
+        <div class="callout info">
+          <span class="callout-icon">?</span>
+          <div class="callout-body">
+            <strong>Why 47, not 50?</strong> Until v15 the SAFE threshold was 50 on a 0&ndash;100 scale that
+            practically saturated at 100 (seven nodes tied at the cap). The v15 calibration replaced two
+            proxies with real signals: diversity now measures unique peers from the validated LND graph
+            instead of BTC capacity, and regularity now measures multi-axis consistency (uptime, latency,
+            route stability) instead of uptime alone. The best nodes realistically score 93&ndash;94
+            post-calibration, so the SAFE threshold was moved from 50 to 47 to preserve the exact
+            semantic: &ldquo;SAFE = top 50% of the theoretical maximum.&rdquo; 47/94 &asymp; 50/100.
+          </div>
+        </div>
+        <p>
+          UNKNOWN is the honest answer when data is insufficient to commit either way. A score of 42
+          with low confidence could be a legitimate new node or a sophisticated fake &mdash; the system
+          signals uncertainty rather than forcing a premature judgment. Agents receiving UNKNOWN should
+          retry after the node accumulates more history, or use <code>caller_pubkey</code> for a
+          personal trust graph assessment.
+        </p>
 
-  <p><em>
-    Live values as of April 2026. ACINQ scores 84 when probe penalty applies (liquidity &times;0.90
-    reduces base 93 to 84). When reachable, score is 93. Actual scores are computed in real-time
-    and fluctuate with probe results. Verify at <code>/api/agent/{hash}</code>.
-  </em></p>
+        <h3>Confidence Mapping</h3>
+        <p>
+          Confidence is a numeric value (0&ndash;1) derived from the existing confidence level:
+          <code>very_low=0.1</code>, <code>low=0.25</code>, <code>medium=0.5</code>,
+          <code>high=0.75</code>, <code>very_high=0.9</code>. UNKNOWN agents return
+          confidence <code>0</code>.
+        </p>
 
-  <!-- Verdict API -->
-  <h2 id="verdict">Verdict API &mdash; SAFE / RISKY / UNKNOWN</h2>
+        <h3>Flags</h3>
+        <p>Flags provide machine-readable context for the verdict:</p>
+        <ul>
+          <li><code>new_agent</code> &mdash; first seen less than 30 days ago</li>
+          <li><code>low_volume</code> &mdash; fewer than 10 transactions</li>
+          <li><code>rapid_decline</code> &mdash; score dropped more than 10 points in 7 days</li>
+          <li><code>rapid_rise</code> &mdash; score increased more than 15 points in 7 days</li>
+          <li><code>negative_reputation</code> &mdash; negative ratings exceed positive ratings</li>
+          <li><code>high_demand</code> &mdash; queried more than 50 times (popular agent)</li>
+          <li><code>no_reputation_data</code> &mdash; no LN+ data available</li>
+          <li><code>fraud_reported</code> &mdash; at least one attestation with category &ldquo;fraud&rdquo;</li>
+          <li><code>dispute_reported</code> &mdash; at least one attestation with category &ldquo;dispute&rdquo;</li>
+          <li><code>unreachable</code> &mdash; no route from SatRank&rsquo;s node to the target (fresh probe only)</li>
+          <li><code>unreachable_from_caller</code> &mdash; no route from the caller&rsquo;s position to the target (requires <code>caller_pubkey</code>, see <a href="#pathfinding">Pathfinding</a>)</li>
+          <li><code>stale_gossip</code> &mdash; no gossip update in 7&ndash;14 days</li>
+          <li><code>zombie_gossip</code> &mdash; no gossip update in 14+ days</li>
+          <li><code>capacity_drain</code> &mdash; capacity dropped 30%+ in 24 hours</li>
+          <li><code>severe_capacity_drain</code> &mdash; capacity dropped 50%+ in 24 hours</li>
+        </ul>
 
-  <p>
-    An AI agent evaluating a 10,000 sat transaction has less than 200ms to decide.
-    A composite score from 0 to 100 requires interpretation &mdash; what threshold is safe?
-    How should a score of 47 be treated differently from 52? These are questions an autonomous
-    agent should not have to answer in real-time.
-  </p>
-  <p>
-    The Verdict API (<code>GET /api/agent/{hash}/verdict</code>) returns a single, actionable
-    decision: <strong>SAFE</strong>, <strong>RISKY</strong>, or <strong>UNKNOWN</strong>.
-    No interpretation required.
-  </p>
+        <h3>Structured Attestation Categories</h3>
+        <p>
+          When submitting attestations via <code>POST /api/attestations</code>, agents can include
+          a <code>category</code> field: <code>successful_transaction</code>,
+          <code>failed_transaction</code>, <code>dispute</code>, <code>fraud</code>,
+          <code>unresponsive</code>, or <code>general</code> (default).
+        </p>
+        <p>
+          Attestations with category <code>fraud</code> or <code>dispute</code> automatically trigger the
+          corresponding flag in the verdict, ensuring the agent is classified as <strong>RISKY</strong>
+          regardless of their score. This is the foundation for a decentralized dispute resolution layer.
+        </p>
+        <div class="callout note">
+          <span class="callout-icon">i</span>
+          <div class="callout-body">
+            <strong>Attestations are free.</strong> They are the fuel of the trust network. Submitting
+            attestations requires an API key for identity verification, but no Lightning payment (no L402).
+            The more agents attest, the more accurate the scoring becomes for everyone.
+          </div>
+        </div>
 
-  <h3>Decision Logic</h3>
-  <table>
-    <thead><tr><th>Verdict</th><th>Condition</th></tr></thead>
-    <tbody>
-      <tr><td><strong>RISKY</strong></td><td><code>fraud_reported</code> or <code>negative_reputation</code> flag, OR <code>unreachable</code> (fresh probe), OR delta_7d &lt; &minus;15, OR score &lt; 30 with confidence &ge; low (0.25)</td></tr>
-      <tr><td><strong>SAFE</strong></td><td>Score &ge; 47, no critical flags, confidence &ge; medium (0.5)</td></tr>
-      <tr><td><strong>UNKNOWN</strong></td><td>Agent not found, OR score 30&ndash;46, OR score &lt; 30 with very low confidence, OR score &ge; 47 with confidence &lt; medium</td></tr>
-    </tbody>
-  </table>
-  <p>
-    <strong>Why 47, not 50?</strong> Until v15 the SAFE threshold was 50 on a 0&ndash;100 scale that
-    practically saturated at 100 (seven nodes tied at the cap). The v15 calibration replaced two
-    proxies with real signals: diversity now measures unique peers from the validated LND graph
-    instead of BTC capacity, and regularity now measures multi-axis consistency (uptime, latency,
-    route stability) instead of uptime alone. This corrected roughly 1,000 nodes whose previous
-    scores were inflated by the old proxies &mdash; nodes with concentrated BTC on a handful of
-    peers, for instance, saw their diversity drop from 100 to about 18. The best nodes realistically
-    score 93&ndash;94 post-calibration, so the SAFE threshold was moved from 50 to 47 to preserve
-    the exact semantic: &ldquo;SAFE = top 50% of the theoretical maximum.&rdquo; 47/94 &asymp; 50/100.
-    The meaning of SAFE is unchanged; the number follows the new scale.
-  </p>
-  <p>
-    UNKNOWN is the honest answer when data is insufficient to commit either way. A score of 42
-    with low confidence could be a legitimate new node or a sophisticated fake &mdash; the system
-    signals uncertainty rather than forcing a premature judgment. Agents receiving UNKNOWN should
-    retry after the node accumulates more history, or use <code>caller_pubkey</code> for a
-    personal trust graph assessment.
-  </p>
+        <h3 id="auto-index">Auto-Indexation</h3>
+        <p>
+          When you query <code>/agent/{pubkey}</code> or <code>/verdict</code> for an unknown Lightning
+          pubkey (66 hex characters starting with <code>02</code> or <code>03</code>), SatRank returns
+          <code>202 Accepted</code> and begins indexing that node in the background via our LND graph
+          connection. Retry after 10 seconds to get the score.
+        </p>
+        <p>
+          This means the index grows organically as agents query new counterparties &mdash; usage drives
+          coverage. The system is rate-limited (configurable, default 10 auto-indexes per minute) to
+          prevent abuse, and deduplicates concurrent requests for the same pubkey.
+        </p>
+        <p>
+          Batch verdicts (<code>POST /api/verdicts</code>) also trigger auto-indexation for unknown
+          Lightning pubkeys, capped at 2 per batch to prevent a single request from consuming the
+          entire rate budget.
+        </p>
 
-  <h3>Confidence Mapping</h3>
-  <p>
-    Confidence is a numeric value (0&ndash;1) derived from the existing confidence level:
-    <code>very_low=0.1</code>, <code>low=0.25</code>, <code>medium=0.5</code>,
-    <code>high=0.75</code>, <code>very_high=0.9</code>. UNKNOWN agents return
-    confidence <code>0</code>.
-  </p>
+        <h3>Batch Verdict</h3>
+        <p>
+          <code>POST /api/verdicts</code> accepts up to 100 hashes in a single request, returning an
+          array of verdicts. One request screens 100 targets, each consuming a single unit from the L402
+          balance. Unknown Lightning pubkeys trigger auto-indexation automatically.
+        </p>
+      </section>
 
-  <h3>Flags</h3>
-  <p>Flags provide machine-readable context for the verdict:</p>
-  <ul>
-    <li><code>new_agent</code> &mdash; first seen less than 30 days ago</li>
-    <li><code>low_volume</code> &mdash; fewer than 10 transactions</li>
-    <li><code>rapid_decline</code> &mdash; score dropped more than 10 points in 7 days</li>
-    <li><code>rapid_rise</code> &mdash; score increased more than 15 points in 7 days</li>
-    <li><code>negative_reputation</code> &mdash; negative ratings exceed positive ratings</li>
-    <li><code>high_demand</code> &mdash; queried more than 50 times (popular agent)</li>
-    <li><code>no_reputation_data</code> &mdash; no LN+ data available</li>
-    <li><code>fraud_reported</code> &mdash; at least one attestation with category &ldquo;fraud&rdquo;</li>
-    <li><code>dispute_reported</code> &mdash; at least one attestation with category &ldquo;dispute&rdquo;</li>
-    <li><code>unreachable</code> &mdash; no route from SatRank&rsquo;s node to the target (fresh probe only)</li>
-    <li><code>unreachable_from_caller</code> &mdash; no route from the caller&rsquo;s position to the target (requires <code>caller_pubkey</code>, see <a href="#pathfinding">Pathfinding</a>)</li>
-    <li><code>stale_gossip</code> &mdash; no gossip update in 7&ndash;14 days</li>
-    <li><code>zombie_gossip</code> &mdash; no gossip update in 14+ days</li>
-    <li><code>capacity_drain</code> &mdash; capacity dropped 30%+ in 24 hours</li>
-    <li><code>severe_capacity_drain</code> &mdash; capacity dropped 50%+ in 24 hours</li>
-  </ul>
+      <!-- Agent Workflow -->
+      <section class="doc-section" id="agent-workflow">
+        <h2>Agent Workflow: Screen, Route, Decide</h2>
+        <p>
+          The optimal pattern for autonomous agents: screen many candidates in one batch, find the best
+          route among the safe ones, then make a personalized decision on the winner. Three API calls,
+          3 requests, under 1 second.
+        </p>
+        <pre>100 candidates → POST /api/verdicts → 42 SAFE → POST /api/best-route → top 3 → POST /api/decide → GO
+                      1 req, ~250ms                    1 req, ~100ms               1 req, ~150ms
+                                               total: 3 requests, ~500ms</pre>
+        <table>
+          <thead><tr><th>Step</th><th>Endpoint</th><th>Latency</th><th>Cost</th><th>Returns</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Screen</strong></td><td><code>POST /api/verdicts</code></td><td>~250 ms</td><td>1 request</td><td>verdict + score + confidence per target</td></tr>
+            <tr><td><strong>Route</strong></td><td><code>POST /api/best-route</code></td><td>~100 ms</td><td>1 request</td><td>top 3 candidates by composite rank</td></tr>
+            <tr><td><strong>Decide</strong></td><td><code>POST /api/decide</code></td><td>~150 ms</td><td>1 request</td><td>GO/NO-GO + success rate + pathfinding + fee volatility</td></tr>
+          </tbody>
+        </table>
+      </section>
 
-  <h3>Structured Attestation Categories</h3>
-  <p>
-    When submitting attestations via <code>POST /api/attestations</code>, agents can include
-    a <code>category</code> field: <code>successful_transaction</code>,
-    <code>failed_transaction</code>, <code>dispute</code>, <code>fraud</code>,
-    <code>unresponsive</code>, or <code>general</code> (default).
-  </p>
-  <p>
-    Attestations with category <code>fraud</code> or <code>dispute</code> automatically trigger the
-    corresponding flag in the verdict, ensuring the agent is classified as <strong>RISKY</strong>
-    regardless of their score. This is the foundation for a decentralized dispute resolution layer.
-  </p>
-  <p>
-    <strong>Attestations are free.</strong> They are the fuel of the trust network. Submitting
-    attestations requires an API key for identity verification, but no Lightning payment (no L402).
-    The more agents attest, the more accurate the scoring becomes for everyone.
-  </p>
+      <!-- Personal Trust Graph -->
+      <section class="doc-section" id="trust-graph">
+        <h2>Personal Trust Graph</h2>
+        <p>
+          A global score tells you what the network thinks. A <strong>personal trust graph</strong> tells
+          you what <em>your</em> network thinks. This is the difference between &ldquo;score 72&rdquo; and
+          &ldquo;3 agents you trust have positively attested this node.&rdquo;
+        </p>
+        <p>
+          When calling <code>GET /api/agent/{hash}/verdict</code>, pass your own pubkey hash via the
+          <code>caller_pubkey</code> query parameter or <code>X-Caller-Pubkey</code> header. SatRank
+          traverses the attestation graph to compute a <strong>trust distance</strong>:
+        </p>
+        <table>
+          <thead><tr><th>Distance</th><th>Meaning</th><th>How it&rsquo;s computed</th></tr></thead>
+          <tbody>
+            <tr><td><strong>0</strong></td><td>Direct trust</td><td>You have positively attested this agent (score &ge; 70)</td></tr>
+            <tr><td><strong>1</strong></td><td>Friend-of-friend</td><td>An agent you positively attested has also positively attested the target</td></tr>
+            <tr><td><strong>2</strong></td><td>Two degrees</td><td>An agent attested by someone you trust has attested the target</td></tr>
+            <tr><td><strong>null</strong></td><td>No connection</td><td>No path found within 2 hops in the attestation graph</td></tr>
+          </tbody>
+        </table>
+        <p>
+          The response also includes <code>sharedConnections</code> (number of mutual trusted agents)
+          and <code>strongestConnection</code> (alias of the highest-scoring shared agent).
+        </p>
+        <p>
+          The trust graph builds naturally as agents submit attestations after transactions.
+          No registration or explicit &ldquo;follow&rdquo; mechanism is needed &mdash; the attestation
+          history <em>is</em> the social graph.
+        </p>
+        <p>
+          If <code>caller_pubkey</code> is not provided, <code>personalTrust</code> is <code>null</code>
+          and the verdict uses only the global score. There is no regression for existing consumers.
+        </p>
+      </section>
 
-  <h3 id="auto-index">Auto-Indexation</h3>
-  <p>
-    When you query <code>/agent/{pubkey}</code> or <code>/verdict</code> for an unknown Lightning
-    pubkey (66 hex characters starting with <code>02</code> or <code>03</code>), SatRank returns
-    <code>202 Accepted</code> and begins indexing that node in the background via our LND graph
-    connection. Retry after 10 seconds to get the score.
-  </p>
-  <p>
-    This means the index grows organically as agents query new counterparties &mdash; usage drives
-    coverage. The system is rate-limited (configurable, default 10 auto-indexes per minute) to
-    prevent abuse, and deduplicates concurrent requests for the same pubkey.
-  </p>
-  <p>
-    Batch verdicts (<code>POST /api/verdicts</code>) also trigger auto-indexation for unknown
-    Lightning pubkeys, capped at 2 per batch to prevent a single request from consuming the
-    entire rate budget.
-  </p>
+      <!-- Risk Profiles -->
+      <section class="doc-section" id="risk-profiles">
+        <h2>Risk Profiles</h2>
+        <p>
+          A score of 55 for a 3-year-old hub means something very different than 55 for a 10-day-old node.
+          Risk profiles classify agents into behavioral categories based on observable properties, giving
+          the verdict context that a single number cannot convey.
+        </p>
+        <table>
+          <thead><tr><th>Profile</th><th>Risk</th><th>Criteria</th></tr></thead>
+          <tbody>
+            <tr><td><code>established_hub</code></td><td>Low</td><td>Score &ge; 70, seniority &gt; 365 days, &gt; 200 transactions</td></tr>
+            <tr><td><code>small_reliable</code></td><td>Low</td><td>Score 40&ndash;69, seniority &gt; 365 days, regularity &gt; 60</td></tr>
+            <tr><td><code>growing_node</code></td><td>Medium</td><td>delta_7d &gt; 10, seniority &lt; 180 days</td></tr>
+            <tr><td><code>new_unproven</code></td><td>High</td><td>Seniority &lt; 30 days, total transactions &lt; 5</td></tr>
+            <tr><td><code>declining_node</code></td><td>High</td><td>delta_7d &lt; &minus;10, trend = falling</td></tr>
+            <tr><td><code>suspicious_rapid_rise</code></td><td>High</td><td>delta_7d &gt; 20, seniority &lt; 60 days</td></tr>
+            <tr><td><code>default</code></td><td>Unknown</td><td>Does not match any specific profile</td></tr>
+          </tbody>
+        </table>
+        <p>
+          Profiles are evaluated in priority order (suspicious patterns first, then established trust,
+          then growth). The first match wins. The profile is a <strong>complement</strong> to the verdict,
+          not a replacement &mdash; an <code>established_hub</code> classified as RISKY due to a fraud
+          attestation is more alarming than a <code>new_unproven</code> classified as RISKY for having
+          no history.
+        </p>
+        <p>
+          Each profile includes a human-readable <code>description</code> with the specific values
+          that triggered the classification (e.g., &ldquo;Active for 45 days, rapid score increase
+          (+18 in 7d). Monitor closely.&rdquo;).
+        </p>
+      </section>
 
-  <h3>Batch Verdict</h3>
-  <p>
-    <code>POST /api/verdicts</code> accepts up to 100 hashes in a single request, returning an
-    array of verdicts. One request screens 100 targets, each consuming a single unit from the L402
-    balance. Unknown Lightning pubkeys trigger auto-indexation automatically.
-  </p>
+      <!-- Alerts -->
+      <section class="doc-section" id="alerts">
+        <h2>Alerts</h2>
+        <p>
+          The score response (<code>GET /api/agent/{hash}</code>) includes an <code>alerts</code>
+          array with machine-readable signals about the agent's current state. Alerts are computed
+          from deltas, age, and activity:
+        </p>
+        <table>
+          <thead><tr><th>Alert Type</th><th>Severity</th><th>Trigger</th></tr></thead>
+          <tbody>
+            <tr><td><code>score_drop</code></td><td><strong>warning</strong> or <strong>critical</strong></td><td>delta_7d &le; &minus;10 (warning) or &le; &minus;20 (critical)</td></tr>
+            <tr><td><code>score_surge</code></td><td><strong>info</strong></td><td>delta_7d &ge; +15</td></tr>
+            <tr><td><code>new_agent</code></td><td><strong>info</strong></td><td>First seen &le; 7 days ago</td></tr>
+            <tr><td><code>inactive</code></td><td><strong>info</strong></td><td>Last seen &ge; 60 days ago</td></tr>
+          </tbody>
+        </table>
+        <p>
+          Alerts complement verdicts. A <code>SAFE</code> agent with a <code>score_drop</code> alert
+          is still safe today but may not be next week. A <code>score_surge</code> on a new agent
+          warrants the same scrutiny as the <code>suspicious_rapid_rise</code> risk profile.
+        </p>
+        <p>
+          Alerts differ from verdict flags: flags affect the verdict decision itself
+          (<code>fraud_reported</code> forces RISKY), while alerts are informational and do not
+          change the verdict outcome.
+        </p>
+      </section>
 
-  <!-- Agent Workflow -->
-  <h2 id="agent-workflow">Agent Workflow: Screen, Route, Decide</h2>
-  <p>
-    The optimal pattern for autonomous agents: screen many candidates in one batch, find the best
-    route among the safe ones, then make a personalized decision on the winner. Three API calls,
-    3 requests, under 1 second.
-  </p>
-  <pre>100 candidates &rarr; POST /api/verdicts &rarr; 42 SAFE &rarr; POST /api/best-route &rarr; top 3 &rarr; POST /api/decide &rarr; GO
-                       1 req, ~250ms                       1 req, ~100ms                    1 req, ~150ms
-                                                    total: 3 requests, ~500ms</pre>
-  <table>
-    <thead><tr><th>Step</th><th>Endpoint</th><th>Latency</th><th>Cost</th><th>Returns</th></tr></thead>
-    <tbody>
-      <tr><td><strong>Screen</strong></td><td><code>POST /api/verdicts</code></td><td>~250 ms</td><td>1 request</td><td>verdict + score + confidence per target</td></tr>
-      <tr><td><strong>Route</strong></td><td><code>POST /api/best-route</code></td><td>~100 ms</td><td>1 request</td><td>top 3 candidates by composite rank</td></tr>
-      <tr><td><strong>Decide</strong></td><td><code>POST /api/decide</code></td><td>~150 ms</td><td>1 request</td><td>GO/NO-GO + success rate + pathfinding + fee volatility</td></tr>
-    </tbody>
-  </table>
+      <!-- Personalized Pathfinding -->
+      <section class="doc-section" id="pathfinding">
+        <h2>Personalized Pathfinding</h2>
+        <p>
+          Probe data tells you whether <em>our</em> node can reach a target. Personalized pathfinding
+          tells you whether <em>you</em> can reach the target. This is the difference between
+          &ldquo;reachable from SatRank&rdquo; and &ldquo;reachable from your position in the graph.&rdquo;
+        </p>
+        <p>
+          When calling <code>GET /api/agent/{hash}/verdict</code> with a <code>caller_pubkey</code>,
+          SatRank performs a real-time route query from the caller&rsquo;s position to the target using
+          LND&rsquo;s <code>QueryRoutes</code> API with the <code>source_pub_key</code> parameter.
+          No payment is sent &mdash; this is a read-only graph operation.
+        </p>
 
-  <!-- Personal Trust Graph -->
-  <h2 id="trust-graph">Personal Trust Graph</h2>
+        <h3>How It Works</h3>
+        <ol>
+          <li>The caller provides their pubkey hash (or 66-char Lightning pubkey) via <code>caller_pubkey</code></li>
+          <li>SatRank looks up both the caller&rsquo;s and target&rsquo;s Lightning public keys in the agents table</li>
+          <li>If both are indexed Lightning nodes, SatRank calls <code>GET /v1/graph/routes/{target}/{amt}?source_pub_key={caller}</code> on our LND node</li>
+          <li>LND computes Dijkstra pathfinding on the public Lightning graph from the caller&rsquo;s topological position</li>
+          <li>The result is returned as a <code>pathfinding</code> field in the verdict response</li>
+        </ol>
 
-  <p>
-    A global score tells you what the network thinks. A <strong>personal trust graph</strong> tells
-    you what <em>your</em> network thinks. This is the difference between &ldquo;score 72&rdquo; and
-    &ldquo;3 agents you trust have positively attested this node.&rdquo;
-  </p>
+        <h3>Positional Pathfinding (walletProvider)</h3>
+        <p>
+          Most AI agents pay via wallet providers (Phoenix, WoS, Strike) and don&rsquo;t know their
+          position in the graph. Pass <code>walletProvider</code> in <code>POST /api/decide</code> and
+          SatRank computes pathfinding from the provider&rsquo;s hub node instead of from SatRank.
+        </p>
+        <p>
+          Supported providers: <code>phoenix</code> (ACINQ), <code>wos</code> (WalletOfSatoshi),
+          <code>strike</code>, <code>blink</code>, <code>breez</code>, <code>zeus</code>,
+          <code>coinos</code>, <code>cashapp</code> (Block).
+          Alternatively, pass <code>callerNodePubkey</code> with any Lightning pubkey.
+          If both are provided, <code>callerNodePubkey</code> takes priority.
+        </p>
+        <div class="callout info">
+          <span class="callout-icon">i</span>
+          <div class="callout-body">
+            <strong>Impact:</strong> a Phoenix agent gets 1&ndash;2 hop pathfinding (avg 1.7 hops) instead of
+            4.4 hops from SatRank&rsquo;s position. P_path improves from 0.50 (fallback) to 0.97 (real signal).
+            The <code>pathfinding.sourceNode</code> field in the response confirms which node was used as the origin.
+          </div>
+        </div>
 
-  <p>
-    When calling <code>GET /api/agent/{hash}/verdict</code>, pass your own pubkey hash via the
-    <code>caller_pubkey</code> query parameter or <code>X-Caller-Pubkey</code> header. SatRank
-    traverses the attestation graph to compute a <strong>trust distance</strong>:
-  </p>
+        <h3>Response Fields</h3>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>reachable</code></td><td>boolean</td><td>Whether a route exists from the caller to the target</td></tr>
+            <tr><td><code>hops</code></td><td>integer | null</td><td>Number of hops in the best route</td></tr>
+            <tr><td><code>estimatedFeeMsat</code></td><td>integer | null</td><td>Estimated routing fee in millisatoshis</td></tr>
+            <tr><td><code>alternatives</code></td><td>integer</td><td>Number of alternative routes found</td></tr>
+            <tr><td><code>latencyMs</code></td><td>integer</td><td>Route computation time in milliseconds</td></tr>
+            <tr><td><code>source</code></td><td>string</td><td>Always <code>lnd_queryroutes</code></td></tr>
+            <tr><td><code>sourceNode</code></td><td>string</td><td>Pubkey used as pathfinding origin, or <code>satrank</code> for default position</td></tr>
+          </tbody>
+        </table>
 
-  <table>
-    <thead><tr><th>Distance</th><th>Meaning</th><th>How it&rsquo;s computed</th></tr></thead>
-    <tbody>
-      <tr>
-        <td><strong>0</strong></td>
-        <td>Direct trust</td>
-        <td>You have positively attested this agent (score &ge; 70)</td>
-      </tr>
-      <tr>
-        <td><strong>1</strong></td>
-        <td>Friend-of-friend</td>
-        <td>An agent you positively attested has also positively attested the target</td>
-      </tr>
-      <tr>
-        <td><strong>2</strong></td>
-        <td>Two degrees</td>
-        <td>An agent attested by someone you trust has attested the target</td>
-      </tr>
-      <tr>
-        <td><strong>null</strong></td>
-        <td>No connection</td>
-        <td>No path found within 2 hops in the attestation graph</td>
-      </tr>
-    </tbody>
-  </table>
+        <h3>When Pathfinding Is Unavailable</h3>
+        <p>
+          <code>pathfinding</code> is <code>null</code> when: <code>caller_pubkey</code> is not provided,
+          the caller is not an indexed Lightning node, the target has no Lightning pubkey, or the LND
+          node is unreachable. The verdict still returns normally using cached probe data and the global
+          score &mdash; pathfinding is additive, never blocking.
+        </p>
 
-  <p>
-    The response also includes <code>sharedConnections</code> (number of mutual trusted agents)
-    and <code>strongestConnection</code> (alias of the highest-scoring shared agent).
-  </p>
-  <p>
-    The trust graph builds naturally as agents submit attestations after transactions.
-    No registration or explicit &ldquo;follow&rdquo; mechanism is needed &mdash; the attestation
-    history <em>is</em> the social graph.
-  </p>
-  <p>
-    If <code>caller_pubkey</code> is not provided, <code>personalTrust</code> is <code>null</code>
-    and the verdict uses only the global score. There is no regression for existing consumers.
-  </p>
+        <h3>The <code>unreachable_from_caller</code> Flag</h3>
+        <p>
+          When pathfinding finds no route from the caller to the target, the flag
+          <code>unreachable_from_caller</code> is added to the verdict. This is distinct from the
+          <code>unreachable</code> flag (no route from <em>our</em> node). A target can be reachable
+          from SatRank but not from the caller, or vice versa.
+        </p>
 
-  <!-- Risk Profiles -->
-  <h2 id="risk-profiles">Risk Profiles</h2>
+        <h3>Caching</h3>
+        <p>
+          Results are cached for 5 minutes per (caller, target) pair. The Lightning graph topology
+          changes slowly enough that a 5-minute TTL provides accurate results while keeping LND
+          query volume manageable.
+        </p>
 
-  <p>
-    A score of 55 for a 3-year-old hub means something very different than 55 for a 10-day-old node.
-    Risk profiles classify agents into behavioral categories based on observable properties, giving
-    the verdict context that a single number cannot convey.
-  </p>
+        <h3>Competitive Advantage</h3>
+        <p>
+          No free Lightning service provides personalized pathfinding as an API.
+          <a href="https://mempool.space" rel="noopener noreferrer">mempool.space</a> shows the graph.
+          <a href="https://amboss.space" rel="noopener noreferrer">Amboss</a> shows node statistics.
+          <a href="https://1ml.com" rel="noopener noreferrer">1ML</a> shows connectivity. None of them answer the question:
+          &ldquo;Can <em>I</em> pay this node, and what will it cost <em>me</em>?&rdquo;
+        </p>
+      </section>
 
-  <table>
-    <thead><tr><th>Profile</th><th>Risk</th><th>Criteria</th></tr></thead>
-    <tbody>
-      <tr>
-        <td><code>established_hub</code></td>
-        <td>Low</td>
-        <td>Score &ge; 70, seniority &gt; 365 days, &gt; 200 transactions</td>
-      </tr>
-      <tr>
-        <td><code>small_reliable</code></td>
-        <td>Low</td>
-        <td>Score 40&ndash;69, seniority &gt; 365 days, regularity &gt; 60</td>
-      </tr>
-      <tr>
-        <td><code>growing_node</code></td>
-        <td>Medium</td>
-        <td>delta_7d &gt; 10, seniority &lt; 180 days</td>
-      </tr>
-      <tr>
-        <td><code>new_unproven</code></td>
-        <td>High</td>
-        <td>Seniority &lt; 30 days, total transactions &lt; 5</td>
-      </tr>
-      <tr>
-        <td><code>declining_node</code></td>
-        <td>High</td>
-        <td>delta_7d &lt; &minus;10, trend = falling</td>
-      </tr>
-      <tr>
-        <td><code>suspicious_rapid_rise</code></td>
-        <td>High</td>
-        <td>delta_7d &gt; 20, seniority &lt; 60 days</td>
-      </tr>
-      <tr>
-        <td><code>default</code></td>
-        <td>Unknown</td>
-        <td>Does not match any specific profile</td>
-      </tr>
-    </tbody>
-  </table>
+      <!-- Decision Engine -->
+      <section class="doc-section" id="decision-engine">
+        <h2>Decision Engine</h2>
+        <p>
+          Scores answer &ldquo;how trustworthy is this agent?&rdquo; The decision engine answers
+          &ldquo;should I transact with this agent <em>right now</em>?&rdquo; It combines the trust
+          score with real-time signals &mdash; route availability, probe uptime, and historical
+          outcomes &mdash; into a single GO / NO-GO decision.
+        </p>
+        <table>
+          <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>POST /api/decide</code></td><td>1 req</td><td>GO / NO-GO with success probability</td></tr>
+            <tr><td><code>POST /api/report</code></td><td>L402 token or API Key</td><td>Report transaction outcome (free, no quota consumed)</td></tr>
+            <tr><td><code>GET /api/profile/{id}</code></td><td>1 req</td><td>Agent profile with reports, uptime, rank</td></tr>
+          </tbody>
+        </table>
 
-  <p>
-    Profiles are evaluated in priority order (suspicious patterns first, then established trust,
-    then growth). The first match wins. The profile is a <strong>complement</strong> to the verdict,
-    not a replacement &mdash; an <code>established_hub</code> classified as RISKY due to a fraud
-    attestation is more alarming than a <code>new_unproven</code> classified as RISKY for having
-    no history.
-  </p>
-  <p>
-    Each profile includes a human-readable <code>description</code> with the specific values
-    that triggered the classification (e.g., &ldquo;Active for 45 days, rapid score increase
-    (+18 in 7d). Monitor closely.&rdquo;).
-  </p>
+        <h3>Decide</h3>
+        <p>
+          The decide endpoint returns a boolean <code>go</code> (true/false) and a
+          <code>successRate</code> (0&ndash;1) composed from 5 probability signals:
+        </p>
+        <pre>P_trust     = sigmoid(score, midpoint=50, steepness=0.1)   // SatRank score → probability
+P_path      = hop penalty + alt routes + fee score (0-1)     // Path quality from caller position
+P_routable  = 1.0 if pathfinding finds a route, else 0.0    // Can I reach this node?
+P_available = probe uptime over 7 days (0-1)                 // Is this node online?
+P_empirical = weighted success rate from past reports         // Did other agents succeed?</pre>
 
-  <!-- Score History & Deltas -->
-  <h2 id="score-history">Score History &amp; Deltas</h2>
+        <p>When <strong>fewer than 10 reports from 5+ unique reporters</strong> exist (proxy mode):</p>
+        <pre>successRate = P_trust * 0.30 + P_path * 0.30 + P_available * 0.20 + P_routable * 0.20</pre>
 
-  <p>
-    A score is a snapshot. A <strong>delta</strong> is a trajectory. SatRank stores score snapshots
-    over time and computes deltas at three intervals:
-  </p>
+        <p>When <strong>10+ reports from 5+ unique reporters</strong> exist (empirical mode):</p>
+        <pre>successRate = P_empirical * 0.40 + P_path * 0.25 + P_available * 0.15 + P_trust * 0.10 + P_routable * 0.10</pre>
 
-  <table>
-    <thead><tr><th>Field</th><th>Window</th><th>Use Case</th></tr></thead>
-    <tbody>
-      <tr><td><code>delta24h</code></td><td>24 hours</td><td>Detect sudden drops or spikes after an incident</td></tr>
-      <tr><td><code>delta7d</code></td><td>7 days</td><td>Primary trend signal. Used by verdict logic and risk profiles</td></tr>
-      <tr><td><code>delta30d</code></td><td>30 days</td><td>Long-term trajectory. Identifies sustained improvement or degradation</td></tr>
-    </tbody>
-  </table>
+        <p>
+          P_path captures route quality: hop count (50% weight, 8% penalty per extra hop),
+          alternative routes (30%), and fee relative to amount (20%). When no pathfinding data
+          is available, P_path defaults to 0.5 (neutral). Use <code>walletProvider</code> or
+          <code>callerNodePubkey</code> to get a real P_path from the agent&rsquo;s position.
+        </p>
+        <p>
+          The threshold requires both sufficient data <em>and</em> diverse reporters &mdash; 10 reports
+          from a single agent do not trigger empirical mode. This prevents self-reporting manipulation.
+        </p>
+        <p>
+          <code>go = true</code> when <code>successRate &ge; 0.5</code>, no critical flags
+          (<code>fraud_reported</code>, <code>negative_reputation</code>), service not down
+          (<code>serviceHealth.status !== 'down'</code>).
+        </p>
 
-  <p>
-    All deltas are <code>null</code> when no historical snapshot exists for the given window.
-    A delta of <code>0</code> means the score was measured at both endpoints and did not change.
-  </p>
+        <h3>Additional Decide Response Fields</h3>
+        <ul>
+          <li><strong><code>targetFeeStability</code></strong> (0&ndash;1 or null) &mdash; fee stability of the <em>target node only</em>, not the full route. 0 = highly volatile fees, 1 = perfectly stable. Null when no fee snapshot data is available. Agents should treat values below 0.3 as a warning that fees may change before the payment settles.</li>
+          <li><strong><code>maxRoutableAmount</code></strong> (integer or null) &mdash; highest amount in sats for which a route was found in recent multi-amount probes (1k / 10k / 100k / 1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.</li>
+          <li><strong><code>reportedSuccessRate</code></strong> (0&ndash;1 or null) &mdash; raw empirical success rate from payment reports. Null when fewer than 10 reports from 5+ unique reporters exist. Distinct from <code>successRate</code> which blends all 5 signals.</li>
+          <li><strong><code>lastProbeAgeMs</code></strong> (integer or null) &mdash; milliseconds since the last probe for this node. Null if never probed. Low values indicate fresh data; high values mean the probe may be stale (re-probe triggers at 30 minutes).</li>
+          <li><strong><code>serviceHealth</code></strong> (object or null) &mdash; HTTP health of the service behind this node. Requires <code>serviceUrl</code> in the request. Contains: <code>url</code>, <code>status</code> (healthy/degraded/down/checking/unknown), <code>httpCode</code>, <code>latencyMs</code>, <code>uptimeRatio</code> (after 3+ checks), <code>servicePriceSats</code> (from BOLT11 invoice). A 402 response counts as healthy (the service is up and accepting payments).</li>
+        </ul>
 
-  <h3>Trend Direction</h3>
-  <p>
-    Derived from <code>delta7d</code>:
-  </p>
-  <pre>if delta7d is null or between -2 and +2 → stable
+        <h3>Re-probe on Demand</h3>
+        <p>
+          When the last probe for a target is older than 30 minutes (configurable via <code>DECIDE_REPROBE_STALE_SEC</code>),
+          <code>/api/decide</code> fires a live <code>queryRoutes</code> before answering, using the request&rsquo;s
+          <code>amountSats</code> (not the default 1k). This adds ~50&ndash;150 ms on the first call; subsequent calls within
+          30 minutes use the fresh cache. The result is stored in <code>probe_results</code> for future calls.
+        </p>
+
+        <h3>Sovereign Oracle</h3>
+        <p>
+          SatRank autonomously collects service-level data without depending on third-party registries.
+          Five features combine LN routing intelligence with HTTP service health:
+        </p>
+        <ol>
+          <li><strong>Service health check.</strong> Pass <code>serviceUrl</code> in <code>POST /api/decide</code> and SatRank checks HTTP availability (GET with 3s timeout, SSRF-protected). A 402 response = healthy. Results are cached 30 minutes and returned as <code>serviceHealth</code> in the response. Non-blocking: if the check exceeds 500ms, SatRank returns <code>status: "checking"</code> immediately and finishes in background.</li>
+          <li><strong>Autonomous registry.</strong> A crawler scans 402index.io and L402Apps every 24h, extracts BOLT11 invoices from 402 responses, decodes <code>payee_node_key</code> via LND, and maps URLs to LN node hashes in <code>service_endpoints</code>. Currently ~100 endpoints mapped to ~16 distinct LN nodes. Service price (<code>servicePriceSats</code>) is extracted from the invoice amount.</li>
+          <li><strong>Composite best-route.</strong> <code>POST /api/best-route</code> ranks candidates using 3 dimensions: route quality (40%), trust score (30%), HTTP health (30%). Falls back to 50/50 route+trust when no service data is available. Auto-lookup: if the registry has mapped a URL for a target node, it is used automatically without the agent providing <code>serviceUrls</code>.</li>
+          <li><strong>Routable amount from provider.</strong> The on-demand multi-amount re-probe (1k/10k/100k/1M sats) uses <code>walletProvider</code> as the <code>source_pub_key</code> in queryRoutes, so <code>maxRoutableAmount</code> reflects capacity from the agent&rsquo;s wallet provider, not from SatRank.</li>
+        </ol>
+
+        <h3>Report</h3>
+        <p>
+          After a transaction, agents report the outcome: <code>success</code>,
+          <code>failure</code>, or <code>timeout</code>. Reports are
+          <strong>free</strong> (no payment required, no quota consumed) to maximize participation.
+          Authentication: L402 token (from a prior <code>/api/decide</code> call) or API key.
+          Reports are linked to the target via <code>decide_log</code> &mdash; an agent can only
+          report on targets it queried. This prevents sybil report spam.
+        </p>
+        <ul>
+          <li><strong>Reporter weighting:</strong> Each report&rsquo;s weight is proportional to the reporter&rsquo;s own SatRank score (floor 0.3, cap 1.0). High-trust reporters have more influence.</li>
+          <li><strong>Preimage verification:</strong> If the reporter provides <code>paymentHash</code> + <code>preimage</code> and SHA256(preimage) = paymentHash, the report receives a <strong>2&times; weight bonus</strong>. This cryptographic proof of payment makes the report unforgeable.</li>
+          <li><strong>Deduplication:</strong> Maximum 1 report per (reporter, target) per hour.</li>
+          <li><strong>Rate limiting:</strong> Maximum 5 reports per IP per minute.</li>
+          <li><strong>Self-report rejection:</strong> An agent cannot report on itself.</li>
+        </ul>
+
+        <h3>Feedback Loop</h3>
+        <p>
+          The decide &rarr; pay &rarr; report cycle creates a closed feedback loop.
+          The more agents report outcomes, the more accurate <code>P_empirical</code> becomes,
+          and the better future decisions perform. This is SatRank&rsquo;s flywheel:
+          usage generates data, data improves decisions, better decisions attract more usage.
+        </p>
+      </section>
+
+      <!-- Score History & Deltas -->
+      <section class="doc-section" id="score-history">
+        <h2>Score History &amp; Deltas</h2>
+        <p>
+          A score is a snapshot. A <strong>delta</strong> is a trajectory. SatRank stores score snapshots
+          over time and computes deltas at three intervals:
+        </p>
+        <table>
+          <thead><tr><th>Field</th><th>Window</th><th>Use Case</th></tr></thead>
+          <tbody>
+            <tr><td><code>delta24h</code></td><td>24 hours</td><td>Detect sudden drops or spikes after an incident</td></tr>
+            <tr><td><code>delta7d</code></td><td>7 days</td><td>Primary trend signal. Used by verdict logic and risk profiles</td></tr>
+            <tr><td><code>delta30d</code></td><td>30 days</td><td>Long-term trajectory. Identifies sustained improvement or degradation</td></tr>
+          </tbody>
+        </table>
+        <p>
+          All deltas are <code>null</code> when no historical snapshot exists for the given window.
+          A delta of <code>0</code> means the score was measured at both endpoints and did not change.
+        </p>
+
+        <h3>Trend Direction</h3>
+        <p>Derived from <code>delta7d</code>:</p>
+        <pre>if delta7d is null or between -2 and +2 → stable
 if delta7d > 2                          → rising
 if delta7d < -2                         → falling</pre>
-  <p>
-    The &plusmn;2 dead zone prevents noise from minor score fluctuations. Only meaningful
-    directional changes register as <code>rising</code> or <code>falling</code>.
-  </p>
+        <p>
+          The &plusmn;2 dead zone prevents noise from minor score fluctuations. Only meaningful
+          directional changes register as <code>rising</code> or <code>falling</code>.
+        </p>
 
-  <h3>History Endpoint</h3>
-  <p>
-    <code>GET /api/agent/{hash}/history</code> returns paginated score snapshots with per-entry
-    deltas (difference from previous snapshot), plus an aggregate delta summary for the agent:
-  </p>
-  <pre>{
+        <h3>History Endpoint</h3>
+        <p>
+          <code>GET /api/agent/{hash}/history</code> returns paginated score snapshots with per-entry
+          deltas (difference from previous snapshot), plus an aggregate delta summary for the agent:
+        </p>
+        <pre>{
   "data": [
     { "score": 72, "components": {...}, "computedAt": "2026-04-01T...", "delta": +3 },
     { "score": 69, "components": {...}, "computedAt": "2026-03-31T...", "delta": -1 },
@@ -688,479 +935,238 @@ if delta7d < -2                         → falling</pre>
   "meta": { "total": 45, "limit": 20, "offset": 0 }
 }</pre>
 
-  <h3>Top Movers</h3>
-  <p>
-    <code>GET /api/agents/movers</code> returns the 5 agents with the largest score increases
-    and the 5 with the largest decreases over the past 7 days. This surfaces emerging trust
-    signals and developing problems before they reach the individual agent level.
-  </p>
+        <h3>Top Movers</h3>
+        <p>
+          <code>GET /api/agents/movers</code> returns the 5 agents with the largest score increases
+          and the 5 with the largest decreases over the past 7 days. This surfaces emerging trust
+          signals and developing problems before they reach the individual agent level.
+        </p>
+      </section>
 
-  <!-- Alerts -->
-  <h2 id="alerts">Alerts</h2>
+      <!-- Predictive Signals -->
+      <section class="doc-section" id="predictive-signals">
+        <h2>Predictive Signals</h2>
+        <p>
+          Scores describe the present. Predictive signals answer: will this node still be here
+          in 7 days? All signals below are derived from data already in the index &mdash; no
+          external dependencies, no machine learning.
+        </p>
 
-  <p>
-    The score response (<code>GET /api/agent/{hash}</code>) includes an <code>alerts</code>
-    array with machine-readable signals about the agent's current state. Alerts are computed
-    from deltas, age, and activity:
-  </p>
-
-  <table>
-    <thead><tr><th>Alert Type</th><th>Severity</th><th>Trigger</th></tr></thead>
-    <tbody>
-      <tr>
-        <td><code>score_drop</code></td>
-        <td><strong>warning</strong> or <strong>critical</strong></td>
-        <td>delta_7d &le; &minus;10 (warning) or &le; &minus;20 (critical)</td>
-      </tr>
-      <tr>
-        <td><code>score_surge</code></td>
-        <td><strong>info</strong></td>
-        <td>delta_7d &ge; +15</td>
-      </tr>
-      <tr>
-        <td><code>new_agent</code></td>
-        <td><strong>info</strong></td>
-        <td>First seen &le; 7 days ago</td>
-      </tr>
-      <tr>
-        <td><code>inactive</code></td>
-        <td><strong>info</strong></td>
-        <td>Last seen &ge; 60 days ago</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <p>
-    Alerts complement verdicts. A <code>SAFE</code> agent with a <code>score_drop</code> alert
-    is still safe today but may not be next week. A <code>score_surge</code> on a new agent
-    warrants the same scrutiny as the <code>suspicious_rapid_rise</code> risk profile.
-  </p>
-  <p>
-    Alerts differ from verdict flags: flags affect the verdict decision itself
-    (<code>fraud_reported</code> forces RISKY), while alerts are informational and do not
-    change the verdict outcome.
-  </p>
-
-  <!-- Personalized Pathfinding -->
-  <h2 id="pathfinding">Personalized Pathfinding</h2>
-
-  <p>
-    Probe data tells you whether <em>our</em> node can reach a target. Personalized pathfinding
-    tells you whether <em>you</em> can reach the target. This is the difference between
-    &ldquo;reachable from SatRank&rdquo; and &ldquo;reachable from your position in the graph.&rdquo;
-  </p>
-
-  <p>
-    When calling <code>GET /api/agent/{hash}/verdict</code> with a <code>caller_pubkey</code>,
-    SatRank performs a real-time route query from the caller&rsquo;s position to the target using
-    LND&rsquo;s <code>QueryRoutes</code> API with the <code>source_pub_key</code> parameter.
-    No payment is sent &mdash; this is a read-only graph operation.
-  </p>
-
-  <h3>How It Works</h3>
-  <ol>
-    <li>The caller provides their pubkey hash (or 66-char Lightning pubkey) via <code>caller_pubkey</code></li>
-    <li>SatRank looks up both the caller&rsquo;s and target&rsquo;s Lightning public keys in the agents table</li>
-    <li>If both are indexed Lightning nodes, SatRank calls <code>GET /v1/graph/routes/{target}/{amt}?source_pub_key={caller}</code> on our LND node</li>
-    <li>LND computes Dijkstra pathfinding on the public Lightning graph from the caller&rsquo;s topological position</li>
-    <li>The result is returned as a <code>pathfinding</code> field in the verdict response</li>
-  </ol>
-
-  <h3>Positional Pathfinding (walletProvider)</h3>
-  <p>
-    Most AI agents pay via wallet providers (Phoenix, WoS, Strike) and don&rsquo;t know their
-    position in the graph. Pass <code>walletProvider</code> in <code>POST /api/decide</code> and
-    SatRank computes pathfinding from the provider&rsquo;s hub node instead of from SatRank.
-  </p>
-  <p>
-    Supported providers: <code>phoenix</code> (ACINQ), <code>wos</code> (WalletOfSatoshi),
-    <code>strike</code>, <code>blink</code>, <code>breez</code>, <code>zeus</code>,
-    <code>coinos</code>, <code>cashapp</code> (Block).
-    Alternatively, pass <code>callerNodePubkey</code> with any Lightning pubkey.
-    If both are provided, <code>callerNodePubkey</code> takes priority.
-  </p>
-  <p>
-    Impact: a Phoenix agent gets 1&ndash;2 hop pathfinding (avg 1.7 hops) instead of
-    4.4 hops from SatRank&rsquo;s position. P_path improves from 0.50 (fallback) to 0.97 (real signal).
-    The <code>pathfinding.sourceNode</code> field in the response confirms which node was used as the origin.
-  </p>
-
-  <h3>Response Fields</h3>
-  <table>
-    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
-    <tbody>
-      <tr><td><code>reachable</code></td><td>boolean</td><td>Whether a route exists from the caller to the target</td></tr>
-      <tr><td><code>hops</code></td><td>integer | null</td><td>Number of hops in the best route</td></tr>
-      <tr><td><code>estimatedFeeMsat</code></td><td>integer | null</td><td>Estimated routing fee in millisatoshis</td></tr>
-      <tr><td><code>alternatives</code></td><td>integer</td><td>Number of alternative routes found</td></tr>
-      <tr><td><code>latencyMs</code></td><td>integer</td><td>Route computation time in milliseconds</td></tr>
-      <tr><td><code>source</code></td><td>string</td><td>Always <code>lnd_queryroutes</code></td></tr>
-      <tr><td><code>sourceNode</code></td><td>string</td><td>Pubkey used as pathfinding origin, or <code>satrank</code> for default position</td></tr>
-    </tbody>
-  </table>
-
-  <h3>When Pathfinding Is Unavailable</h3>
-  <p>
-    <code>pathfinding</code> is <code>null</code> when: <code>caller_pubkey</code> is not provided,
-    the caller is not an indexed Lightning node, the target has no Lightning pubkey, or the LND
-    node is unreachable. The verdict still returns normally using cached probe data and the global
-    score &mdash; pathfinding is additive, never blocking.
-  </p>
-
-  <h3>The <code>unreachable_from_caller</code> Flag</h3>
-  <p>
-    When pathfinding finds no route from the caller to the target, the flag
-    <code>unreachable_from_caller</code> is added to the verdict. This is distinct from the
-    <code>unreachable</code> flag (no route from <em>our</em> node). A target can be reachable
-    from SatRank but not from the caller, or vice versa.
-  </p>
-
-  <h3>Caching</h3>
-  <p>
-    Results are cached for 5 minutes per (caller, target) pair. The Lightning graph topology
-    changes slowly enough that a 5-minute TTL provides accurate results while keeping LND
-    query volume manageable.
-  </p>
-
-  <h3>Competitive Advantage</h3>
-  <p>
-    No free Lightning service provides personalized pathfinding as an API.
-    <a href="https://mempool.space">mempool.space</a> shows the graph.
-    <a href="https://amboss.space">Amboss</a> shows node statistics.
-    <a href="https://1ml.com">1ML</a> shows connectivity. None of them answer the question:
-    &ldquo;Can <em>I</em> pay this node, and what will it cost <em>me</em>?&rdquo;
-  </p>
-
-  <!-- Decision Engine -->
-  <h2 id="decision-engine">Decision Engine</h2>
-
-  <p>
-    Scores answer &ldquo;how trustworthy is this agent?&rdquo; The decision engine answers
-    &ldquo;should I transact with this agent <em>right now</em>?&rdquo; It combines the trust
-    score with real-time signals &mdash; route availability, probe uptime, and historical
-    outcomes &mdash; into a single GO / NO-GO decision.
-  </p>
-
-  <table>
-    <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
-    <tbody>
-      <tr><td><code>POST /api/decide</code></td><td>1 req</td><td>GO / NO-GO with success probability</td></tr>
-      <tr><td><code>POST /api/report</code></td><td>L402 token or API Key</td><td>Report transaction outcome (free, no quota consumed)</td></tr>
-      <tr><td><code>GET /api/profile/{id}</code></td><td>1 req</td><td>Agent profile with reports, uptime, rank</td></tr>
-    </tbody>
-  </table>
-
-  <h3>Decide</h3>
-  <p>
-    The decide endpoint returns a boolean <code>go</code> (true/false) and a
-    <code>successRate</code> (0&ndash;1) composed from 5 probability signals:
-  </p>
-  <pre>P_trust     = sigmoid(score, midpoint=50, steepness=0.1)   // SatRank score &rarr; probability
-P_path      = hop penalty + alt routes + fee score (0-1)     // Path quality from caller position
-P_routable  = 1.0 if pathfinding finds a route, else 0.0    // Can I reach this node?
-P_available = probe uptime over 7 days (0-1)                 // Is this node online?
-P_empirical = weighted success rate from past reports         // Did other agents succeed?</pre>
-
-  <p>When <strong>fewer than 10 reports from 5+ unique reporters</strong> exist (proxy mode):</p>
-  <pre>successRate = P_trust * 0.30 + P_path * 0.30 + P_available * 0.20 + P_routable * 0.20</pre>
-
-  <p>When <strong>10+ reports from 5+ unique reporters</strong> exist (empirical mode):</p>
-  <pre>successRate = P_empirical * 0.40 + P_path * 0.25 + P_available * 0.15 + P_trust * 0.10 + P_routable * 0.10</pre>
-  <p>
-    P_path captures route quality: hop count (50% weight, 8% penalty per extra hop),
-    alternative routes (30%), and fee relative to amount (20%). When no pathfinding data
-    is available, P_path defaults to 0.5 (neutral). Use <code>walletProvider</code> or
-    <code>callerNodePubkey</code> to get a real P_path from the agent&rsquo;s position.
-  </p>
-  <p>
-    The threshold requires both sufficient data <em>and</em> diverse reporters &mdash; 10 reports
-    from a single agent do not trigger empirical mode. This prevents self-reporting manipulation.
-  </p>
-
-  <p>
-    <code>go = true</code> when <code>successRate &ge; 0.5</code>, no critical flags
-    (<code>fraud_reported</code>, <code>negative_reputation</code>), service not down
-    (<code>serviceHealth.status !== 'down'</code>).
-  </p>
-
-  <h3>Additional Decide Response Fields</h3>
-  <ul>
-    <li><strong><code>targetFeeStability</code></strong> (0&ndash;1 or null) &mdash; fee stability of the <em>target node only</em>, not the full route. 0 = highly volatile fees, 1 = perfectly stable. Null when no fee snapshot data is available. Agents should treat values below 0.3 as a warning that fees may change before the payment settles.</li>
-    <li><strong><code>maxRoutableAmount</code></strong> (integer or null) &mdash; highest amount in sats for which a route was found in recent multi-amount probes (1k / 10k / 100k / 1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.</li>
-    <li><strong><code>reportedSuccessRate</code></strong> (0&ndash;1 or null) &mdash; raw empirical success rate from payment reports. Null when fewer than 10 reports from 5+ unique reporters exist. Distinct from <code>successRate</code> which blends all 5 signals.</li>
-    <li><strong><code>lastProbeAgeMs</code></strong> (integer or null) &mdash; milliseconds since the last probe for this node. Null if never probed. Low values indicate fresh data; high values mean the probe may be stale (re-probe triggers at 30 minutes).</li>
-    <li><strong><code>serviceHealth</code></strong> (object or null) &mdash; HTTP health of the service behind this node. Requires <code>serviceUrl</code> in the request. Contains: <code>url</code>, <code>status</code> (healthy/degraded/down/checking/unknown), <code>httpCode</code>, <code>latencyMs</code>, <code>uptimeRatio</code> (after 3+ checks), <code>servicePriceSats</code> (from BOLT11 invoice). A 402 response counts as healthy (the service is up and accepting payments).</li>
-  </ul>
-
-  <h3>Re-probe on Demand</h3>
-  <p>
-    When the last probe for a target is older than 30 minutes (configurable via <code>DECIDE_REPROBE_STALE_SEC</code>),
-    <code>/api/decide</code> fires a live <code>queryRoutes</code> before answering, using the request&rsquo;s
-    <code>amountSats</code> (not the default 1k). This adds ~50&ndash;150 ms on the first call; subsequent calls within
-    30 minutes use the fresh cache. The result is stored in <code>probe_results</code> for future calls.
-  </p>
-
-  <h3>Sovereign Oracle</h3>
-  <p>
-    SatRank autonomously collects service-level data without depending on third-party registries.
-    Five features combine LN routing intelligence with HTTP service health:
-  </p>
-  <ol>
-    <li><strong>Service health check.</strong> Pass <code>serviceUrl</code> in <code>POST /api/decide</code> and SatRank checks HTTP availability (GET with 3s timeout, SSRF-protected). A 402 response = healthy. Results are cached 30 minutes and returned as <code>serviceHealth</code> in the response. Non-blocking: if the check exceeds 500ms, SatRank returns <code>status: "checking"</code> immediately and finishes in background.</li>
-    <li><strong>Autonomous registry.</strong> A crawler scans 402index.io and L402Apps every 24h, extracts BOLT11 invoices from 402 responses, decodes <code>payee_node_key</code> via LND, and maps URLs to LN node hashes in <code>service_endpoints</code>. Currently ~100 endpoints mapped to ~16 distinct LN nodes. Service price (<code>servicePriceSats</code>) is extracted from the invoice amount.</li>
-    <li><strong>Composite best-route.</strong> <code>POST /api/best-route</code> ranks candidates using 3 dimensions: route quality (40%), trust score (30%), HTTP health (30%). Falls back to 50/50 route+trust when no service data is available. Auto-lookup: if the registry has mapped a URL for a target node, it is used automatically without the agent providing <code>serviceUrls</code>.</li>
-    <li><strong>Routable amount from provider.</strong> The on-demand multi-amount re-probe (1k/10k/100k/1M sats) uses <code>walletProvider</code> as the <code>source_pub_key</code> in queryRoutes, so <code>maxRoutableAmount</code> reflects capacity from the agent&rsquo;s wallet provider, not from SatRank.</li>
-  </ol>
-
-  <h3>Report</h3>
-  <p>
-    After a transaction, agents report the outcome: <code>success</code>,
-    <code>failure</code>, or <code>timeout</code>. Reports are
-    <strong>free</strong> (no payment required, no quota consumed) to maximize participation.
-    Authentication: L402 token (from a prior <code>/api/decide</code> call) or API key.
-    Reports are linked to the target via <code>decide_log</code> &mdash; an agent can only
-    report on targets it queried. This prevents sybil report spam.
-  </p>
-  <ul>
-    <li><strong>Reporter weighting:</strong> Each report&rsquo;s weight is proportional to the reporter&rsquo;s own SatRank score (floor 0.3, cap 1.0). High-trust reporters have more influence.</li>
-    <li><strong>Preimage verification:</strong> If the reporter provides <code>paymentHash</code> + <code>preimage</code> and SHA256(preimage) = paymentHash, the report receives a <strong>2&times; weight bonus</strong>. This cryptographic proof of payment makes the report unforgeable.</li>
-    <li><strong>Deduplication:</strong> Maximum 1 report per (reporter, target) per hour.</li>
-    <li><strong>Rate limiting:</strong> Maximum 5 reports per IP per minute.</li>
-    <li><strong>Self-report rejection:</strong> An agent cannot report on itself.</li>
-  </ul>
-
-  <h3>Feedback Loop</h3>
-  <p>
-    The decide &rarr; pay &rarr; report cycle creates a closed feedback loop.
-    The more agents report outcomes, the more accurate <code>P_empirical</code> becomes,
-    and the better future decisions perform. This is SatRank&rsquo;s flywheel:
-    usage generates data, data improves decisions, better decisions attract more usage.
-  </p>
-
-  <!-- Predictive Signals -->
-  <h2 id="predictive-signals">Predictive Signals</h2>
-
-  <p>
-    Scores describe the present. Predictive signals answer: will this node still be here
-    in 7 days? All signals below are derived from data already in the index &mdash; no
-    external dependencies, no machine learning.
-  </p>
-
-  <h3>Survival Score (0&ndash;100)</h3>
-  <p>
-    Predicts whether a node will remain reachable, based on three weighted signals:
-  </p>
-  <table>
-    <thead><tr><th>Signal</th><th>Weight</th><th>Source</th><th>Thresholds</th></tr></thead>
-    <tbody>
-      <tr>
-        <td>Score Trajectory</td><td>40%</td><td>Score snapshots (7-day slope)</td>
-        <td>Slope &lt; &minus;2/day: &minus;40. Slope &minus;1 to &minus;2: &minus;20. Stable/positive: 0.</td>
-      </tr>
-      <tr>
-        <td>Probe Stability</td><td>40%</td><td>Probe results (uptime ratio)</td>
-        <td>0% uptime: &minus;40. &lt; 50%: &minus;30. &lt; 80%: &minus;15. &ge; 80%: 0.</td>
-      </tr>
-      <tr>
-        <td>Gossip Freshness</td><td>20%</td><td>Last gossip timestamp</td>
-        <td>&gt; 14 days: &minus;20 (zombie). &gt; 7 days: &minus;10 (stale). &le; 7 days: 0.</td>
-      </tr>
-    </tbody>
-  </table>
-  <pre>survival_score = clamp(0, 100, 100 + sum(adjustments))
+        <h3>Survival Score (0&ndash;100)</h3>
+        <p>Predicts whether a node will remain reachable, based on three weighted signals:</p>
+        <table>
+          <thead><tr><th>Signal</th><th>Weight</th><th>Source</th><th>Thresholds</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Score Trajectory</td><td>40%</td><td>Score snapshots (7-day slope)</td>
+              <td>Slope &lt; &minus;2/day: &minus;40. Slope &minus;1 to &minus;2: &minus;20. Stable/positive: 0.</td>
+            </tr>
+            <tr>
+              <td>Probe Stability</td><td>40%</td><td>Probe results (uptime ratio)</td>
+              <td>0% uptime: &minus;40. &lt; 50%: &minus;30. &lt; 80%: &minus;15. &ge; 80%: 0.</td>
+            </tr>
+            <tr>
+              <td>Gossip Freshness</td><td>20%</td><td>Last gossip timestamp</td>
+              <td>&gt; 14 days: &minus;20 (zombie). &gt; 7 days: &minus;10 (stale). &le; 7 days: 0.</td>
+            </tr>
+          </tbody>
+        </table>
+        <pre>survival_score = clamp(0, 100, 100 + sum(adjustments))
 prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre>
 
-  <h3>Channel Flow</h3>
-  <p>
-    Net change in channel count and capacity over 7 days. A node losing 3+ channels/week
-    is <code>declining</code>. A node gaining 3+ is <code>growing</code>. Derived from
-    hourly channel snapshots stored during each LND graph crawl.
-  </p>
+        <h3>Channel Flow</h3>
+        <p>
+          Net change in channel count and capacity over 7 days. A node losing 3+ channels/week
+          is <code>declining</code>. A node gaining 3+ is <code>growing</code>. Derived from
+          hourly channel snapshots stored during each LND graph crawl.
+        </p>
 
-  <h3>Capacity Drain Rate</h3>
-  <p>
-    Percentage change in total capacity over 24 hours and 7 days. A drain rate
-    &le; &minus;30% triggers the <code>capacity_drain</code> flag. &le; &minus;50% triggers
-    <code>severe_capacity_drain</code>. A node hemorrhaging capacity is likely closing
-    channels or being force-closed by peers.
-  </p>
+        <h3>Capacity Drain Rate</h3>
+        <p>
+          Percentage change in total capacity over 24 hours and 7 days. A drain rate
+          &le; &minus;30% triggers the <code>capacity_drain</code> flag. &le; &minus;50% triggers
+          <code>severe_capacity_drain</code>. A node hemorrhaging capacity is likely closing
+          channels or being force-closed by peers.
+        </p>
 
-  <h3>Fee Volatility Index (FVI)</h3>
-  <p>
-    Measures how often a node changes its fee policies. Computed as the average number
-    of fee changes per channel per day, normalized to 0&ndash;100. Interpretation:
-    &lt; 10 = <code>stable</code>, &lt; 30 = <code>moderate</code>,
-    &ge; 30 = <code>volatile</code>. A node that spikes fees from 1 ppm to 1000 ppm
-    overnight is volatile and may indicate distress or adversarial behavior.
-  </p>
+        <h3>Fee Volatility Index (FVI)</h3>
+        <p>
+          Measures how often a node changes its fee policies. Computed as the average number
+          of fee changes per channel per day, normalized to 0&ndash;100. Interpretation:
+          &lt; 10 = <code>stable</code>, &lt; 30 = <code>moderate</code>,
+          &ge; 30 = <code>volatile</code>. A node that spikes fees from 1 ppm to 1000 ppm
+          overnight is volatile and may indicate distress or adversarial behavior.
+        </p>
 
-  <h3>Gossip Freshness Flags</h3>
-  <p>
-    Two flags based on the last gossip update timestamp:
-  </p>
-  <ul>
-    <li><code>stale_gossip</code> &mdash; no gossip update in 7&ndash;14 days. The node may be going offline.</li>
-    <li><code>zombie_gossip</code> &mdash; no gossip update in 14+ days. The node is almost certainly dead but its channels haven&rsquo;t expired yet.</li>
-  </ul>
+        <h3>Gossip Freshness Flags</h3>
+        <p>Two flags based on the last gossip update timestamp:</p>
+        <ul>
+          <li><code>stale_gossip</code> &mdash; no gossip update in 7&ndash;14 days. The node may be going offline.</li>
+          <li><code>zombie_gossip</code> &mdash; no gossip update in 14+ days. The node is almost certainly dead but its channels haven&rsquo;t expired yet.</li>
+        </ul>
+      </section>
 
-  <!-- L402 as Signal -->
-  <h2>L402 Payment as Data</h2>
-  <p>
-    Accessing scored endpoints requires an L402 token (1 sat = 1 request).
-    Two paths: standard L402 (any paid endpoint auto-invoices 21 sats for 21 requests) or
-    <code>POST /api/deposit</code> (buy 21&ndash;10,000 requests in a single invoice).
-    This is not just an access control mechanism &mdash; it is a data point.
-  </p>
-  <p>
-    Each paid query is an anonymous, permissionless signal of demand. An agent that is queried
-    frequently is one that others care about &mdash; partners evaluating transactions, services
-    checking trust, or researchers monitoring the network. This demand signal is retained in
-    <code>last_queried_at</code> for probe prioritization only; the popularity bonus has been
-    removed from scoring (it was gameable).
-  </p>
-  <p>
-    Unlike page views or API hits, L402 queries have a nonzero cost, which filters out noise.
-    A bot scraping every agent generates signal at 1 sat per request &mdash; sustainable for
-    legitimate research, expensive for spam. The <code>X-SatRank-Balance</code> header on each
-    response tracks remaining requests on the current token.
-  </p>
+      <!-- L402 as Signal -->
+      <section class="doc-section" id="l402-signal">
+        <h2>L402 Payment as Data</h2>
+        <p>
+          Accessing scored endpoints requires an L402 token (1 sat = 1 request).
+          Two paths: standard L402 (any paid endpoint auto-invoices 21 sats for 21 requests) or
+          <code>POST /api/deposit</code> (buy 21&ndash;10,000 requests in a single invoice).
+          This is not just an access control mechanism &mdash; it is a data point.
+        </p>
+        <p>
+          Each paid query is an anonymous, permissionless signal of demand. An agent that is queried
+          frequently is one that others care about &mdash; partners evaluating transactions, services
+          checking trust, or researchers monitoring the network. This demand signal is retained in
+          <code>last_queried_at</code> for probe prioritization only; the popularity bonus has been
+          removed from scoring (it was gameable).
+        </p>
+        <p>
+          Unlike page views or API hits, L402 queries have a nonzero cost, which filters out noise.
+          A bot scraping every agent generates signal at 1 sat per request &mdash; sustainable for
+          legitimate research, expensive for spam. The <code>X-SatRank-Balance</code> header on each
+          response tracks remaining requests on the current token.
+        </p>
+      </section>
 
-  <!-- Nostr Distribution -->
-  <h2 id="nostr-distribution">Nostr Distribution (NIP-85)</h2>
-  <p>
-    SatRank publishes trust scores as Nostr Trusted Assertions (NIP-85, kind <code>30382</code>).
-    Every 6 hours, scores for all active agents above threshold (score &ge; 30) are published
-    to three public relays:
-  </p>
-  <ul>
-    <li><code>wss://relay.damus.io</code></li>
-    <li><code>wss://nos.lol</code></li>
-    <li><code>wss://relay.primal.net</code></li>
-  </ul>
-  <p>
-    Each event carries the NIP-85 canonical <code>rank</code> tag (normalized 0-100 score) alongside
-    SatRank-specific tags: the 5 scoring components (volume, reputation, seniority, regularity,
-    diversity), verdict (SAFE / RISKY / UNKNOWN), reachability, and a survival prediction. Strict
-    NIP-85 consumers read <code>rank</code> without needing SatRank-specific knowledge; clients
-    that want the richer signal read the component tags too. Events are replaceable (same
-    <code>d</code>-tag per agent pubkey), so clients always see the latest score with no duplication.
-  </p>
+      <!-- Nostr Distribution -->
+      <section class="doc-section" id="nostr-distribution">
+        <h2>Nostr Distribution (NIP-85)</h2>
+        <p>
+          SatRank publishes trust scores as Nostr Trusted Assertions (NIP-85, kind <code>30382</code>).
+          Every 6 hours, scores for all active agents above threshold (score &ge; 30) are published
+          to three public relays:
+        </p>
+        <ul>
+          <li><code>wss://relay.damus.io</code></li>
+          <li><code>wss://nos.lol</code></li>
+          <li><code>wss://relay.primal.net</code></li>
+        </ul>
+        <p>
+          Each event carries the NIP-85 canonical <code>rank</code> tag (normalized 0-100 score) alongside
+          SatRank-specific tags: the 5 scoring components (volume, reputation, seniority, regularity,
+          diversity), verdict (SAFE / RISKY / UNKNOWN), reachability, and a survival prediction. Strict
+          NIP-85 consumers read <code>rank</code> without needing SatRank-specific knowledge; clients
+          that want the richer signal read the component tags too. Events are replaceable (same
+          <code>d</code>-tag per agent pubkey), so clients always see the latest score with no duplication.
+        </p>
+        <div class="callout note">
+          <span class="callout-icon">★</span>
+          <div class="callout-body">
+            <strong>Scope note.</strong> NIP-85&rsquo;s &ldquo;User as Subject&rdquo; is defined for a 32-byte
+            pubkey. SatRank extends the semantics to Lightning node pubkeys &mdash; same secp256k1 format,
+            different key space. We&rsquo;re the first provider to bridge the Lightning payment graph into
+            the NIP-85 ecosystem; every other implementation operates on the Nostr social graph.
+          </div>
+        </div>
 
-  <p>
-    <strong>Scope note.</strong> NIP-85&rsquo;s &ldquo;User as Subject&rdquo; is defined for a 32-byte
-    pubkey. SatRank extends the semantics to Lightning node pubkeys &mdash; same secp256k1 format,
-    different key space. We&rsquo;re the first provider to bridge the Lightning payment graph into
-    the NIP-85 ecosystem; every other implementation operates on the Nostr social graph.
-  </p>
+        <h3>Dual publishing &mdash; extension + strict conformance</h3>
+        <p>
+          Because NIP-85 as written targets 32-byte Nostr pubkeys and SatRank&rsquo;s primary signal
+          targets 66-byte Lightning pubkeys, we publish kind <code>30382</code> events in <strong>two
+          indexed namespaces</strong> so clients can read either one:
+        </p>
+        <ul>
+          <li>
+            <strong>Stream A &mdash; Lightning-indexed (extension, ~5,000 events / cycle).</strong>
+            <code>d = &lt;lightning_pubkey&gt;</code>. The default broad stream covering every active
+            Lightning node with score &ge; 30. Clients that understand Lightning pubkeys can query the
+            entire payment graph this way.
+          </li>
+          <li>
+            <strong>Stream B &mdash; Nostr-indexed (strict NIP-85).</strong>
+            <code>d = &lt;nostr_pubkey&gt;</code>. Published for every
+            <code>(nostr_pubkey, ln_pubkey)</code> pair SatRank can verify cryptographically. A strict
+            NIP-85 client filtering on <code>{kinds:[30382], authors:[&lt;satrank&gt;],
+            "#d":[&lt;user_npub_hex&gt;]}</code> gets a trust assertion about that Nostr user&rsquo;s
+            Lightning operations, with <em>zero SatRank-specific knowledge</em> of the Lightning key space.
+          </li>
+        </ul>
+        <p>
+          <strong>How we build the mapping.</strong> NIP-57 zap receipts (kind <code>9735</code>)
+          contain the recipient&rsquo;s Nostr pubkey in the <code>p</code> tag and the paid invoice in
+          the <code>bolt11</code> tag. The BOLT11 invoice&rsquo;s destination (<code>payee_node_key</code>)
+          is cryptographically embedded in the invoice signature &mdash; we decode it and cross-reference
+          with the <code>p</code> tag to get a verified <code>(nostr_pubkey, ln_pubkey)</code> tuple. The
+          miner paginates backwards across 9 relays
+          (<code>damus.io</code>, <code>nos.lol</code>, <code>relay.primal.net</code>,
+          <code>relay.nostr.band</code>, <code>nostr.wine</code>, <code>relay.snort.social</code>
+          and 3 others)
+          using NIP-01 <code>until</code>-based pagination, walking up to 40 pages of 500 events per
+          relay with a 90-day age wall. The latest production run processed ~15,500 distinct receipts,
+          resolved ~390 distinct Lightning pubkeys &mdash; from which 105 survive the production
+          filter below.
+        </p>
+        <p>
+          <strong>Custodian filter.</strong> Any ln_pubkey paired with more than 1 distinct Nostr
+          pubkey in the mining sample is rejected as likely custodial or shared (multiple users on
+          the same wallet provider), and any node whose alias matches known custodial / LSP patterns
+          (<code>zlnd*</code>, <code>lndus*</code>, <code>*coordinator*</code>, <code>*.cash</code>,
+          <code>zeus</code>, <code>alby</code>, <code>wos</code>, <code>cashu</code>,
+          <code>minibits</code>, <code>phoenix</code>, <code>breez</code>, <code>muun</code>,
+          <code>primal</code>, <code>nwc</code>, <code>fountain</code>, <code>wavlake</code>,
+          <code>fedi</code>, <code>fewsats</code>, <code>lightspark</code>, <code>voltage</code>,
+          <code>strike</code>, &hellip;) is also rejected. What remains is a conservative set of
+          self-hosted operators, each paired with exactly the Nostr identity that zaps them. An
+          optional relaxed mode (<code>ALLOW_SHARED_LNPK=1</code>) publishes up to 5 nostr pubkeys
+          per ln_pubkey for shared family/team nodes; the default is strict&nbsp;=&nbsp;1.
+        </p>
+        <p>
+          Stream B events carry the <strong>same</strong> <code>rank</code> / <code>verdict</code> /
+          component tags as Stream A, plus <code>ln_pubkey</code> (for traceability back to the
+          Lightning node), <code>subject_type</code> (<code>mined_mapping</code> or
+          <code>self_declaration</code>), <code>source</code> (<code>nip57_zap_receipt</code>), and
+          <code>zap_count</code> (evidence strength). Clients already consuming Stream A need zero
+          extra code to parse Stream B &mdash; they&rsquo;re identical except for the <code>d</code> tag.
+        </p>
+        <p>
+          The mining and publishing logic live in
+          <code>src/nostr/zapMiner.ts</code> and
+          <code>src/nostr/nostrIndexedPublisher.ts</code> (integrated into the crawler cron).
+          The one-shot self-declaration is in
+          <code>scripts/nostr-publish-self-declaration.ts</code>.
+        </p>
 
-  <h3>Dual publishing &mdash; extension + strict conformance</h3>
-  <p>
-    Because NIP-85 as written targets 32-byte Nostr pubkeys and SatRank&rsquo;s primary signal
-    targets 66-byte Lightning pubkeys, we publish kind <code>30382</code> events in <strong>two
-    indexed namespaces</strong> so clients can read either one:
-  </p>
-  <ul>
-    <li>
-      <strong>Stream A &mdash; Lightning-indexed (extension, ~5,000 events / cycle).</strong>
-      <code>d = &lt;lightning_pubkey&gt;</code>. The default broad stream covering every active
-      Lightning node with score &ge; 30. Clients that understand Lightning pubkeys can query the
-      entire payment graph this way.
-    </li>
-    <li>
-      <strong>Stream B &mdash; Nostr-indexed (strict NIP-85).</strong>
-      <code>d = &lt;nostr_pubkey&gt;</code>. Published for every
-      <code>(nostr_pubkey, ln_pubkey)</code> pair SatRank can verify cryptographically. A strict
-      NIP-85 client filtering on <code>{kinds:[30382], authors:[&lt;satrank&gt;],
-      "#d":[&lt;user_npub_hex&gt;]}</code> gets a trust assertion about that Nostr user&rsquo;s
-      Lightning operations, with <em>zero SatRank-specific knowledge</em> of the Lightning key space.
-    </li>
-  </ul>
-  <p>
-    <strong>How we build the mapping.</strong> NIP-57 zap receipts (kind <code>9735</code>)
-    contain the recipient&rsquo;s Nostr pubkey in the <code>p</code> tag and the paid invoice in
-    the <code>bolt11</code> tag. The BOLT11 invoice&rsquo;s destination (<code>payee_node_key</code>)
-    is cryptographically embedded in the invoice signature &mdash; we decode it and cross-reference
-    with the <code>p</code> tag to get a verified <code>(nostr_pubkey, ln_pubkey)</code> tuple. The
-    miner paginates backwards across 9 relays
-    (<code>damus.io</code>, <code>nos.lol</code>, <code>relay.primal.net</code>,
-    <code>relay.nostr.band</code>, <code>nostr.wine</code>, <code>relay.snort.social</code>
-    and 3 others)
-    using NIP-01 <code>until</code>-based pagination, walking up to 40 pages of 500 events per
-    relay with a 90-day age wall. The latest production run processed ~15,500 distinct receipts,
-    resolved ~390 distinct Lightning pubkeys &mdash; from which 105 survive the production
-    filter below.
-  </p>
-  <p>
-    <strong>Custodian filter.</strong> Any ln_pubkey paired with more than 1 distinct Nostr
-    pubkey in the mining sample is rejected as likely custodial or shared (multiple users on
-    the same wallet provider), and any node whose alias matches known custodial / LSP patterns
-    (<code>zlnd*</code>, <code>lndus*</code>, <code>*coordinator*</code>, <code>*.cash</code>,
-    <code>zeus</code>, <code>alby</code>, <code>wos</code>, <code>cashu</code>,
-    <code>minibits</code>, <code>phoenix</code>, <code>breez</code>, <code>muun</code>,
-    <code>primal</code>, <code>nwc</code>, <code>fountain</code>, <code>wavlake</code>,
-    <code>fedi</code>, <code>fewsats</code>, <code>lightspark</code>, <code>voltage</code>,
-    <code>strike</code>, &hellip;) is also rejected. What remains is a conservative set of
-    self-hosted operators, each paired with exactly the Nostr identity that zaps them. An
-    optional relaxed mode (<code>ALLOW_SHARED_LNPK=1</code>) publishes up to 5 nostr pubkeys
-    per ln_pubkey for shared family/team nodes; the default is strict&nbsp;=&nbsp;1.
-  </p>
-  <p>
-    Stream B events carry the <strong>same</strong> <code>rank</code> / <code>verdict</code> /
-    component tags as Stream A, plus <code>ln_pubkey</code> (for traceability back to the
-    Lightning node), <code>subject_type</code> (<code>mined_mapping</code> or
-    <code>self_declaration</code>), <code>source</code> (<code>nip57_zap_receipt</code>), and
-    <code>zap_count</code> (evidence strength). Clients already consuming Stream A need zero
-    extra code to parse Stream B &mdash; they&rsquo;re identical except for the <code>d</code> tag.
-  </p>
-  <p>
-    The mining and publishing logic live in
-    <code>src/nostr/zapMiner.ts</code> and
-    <code>src/nostr/nostrIndexedPublisher.ts</code> (integrated into the crawler cron).
-    The one-shot self-declaration is in
-    <code>scripts/nostr-publish-self-declaration.ts</code>.
-  </p>
+        <h3>Why Nostr?</h3>
+        <p>Nostr is the natural distribution layer for trust data in the Bitcoin ecosystem:</p>
+        <ul>
+          <li><strong>Sovereign identity.</strong> Agents sign their own events; no platform dependency.</li>
+          <li><strong>Relay redundancy.</strong> Data replicates across multiple relays with no single point of failure.</li>
+          <li><strong>Native discovery.</strong> Agents already transact via Lightning on Nostr (zaps, DVMs), so they find SatRank in the infrastructure they already use.</li>
+          <li><strong>Standard format.</strong> NIP-85 is an established protocol for trust assertions; consumers don&rsquo;t need SatRank-specific SDKs.</li>
+        </ul>
 
-  <h3>Why Nostr?</h3>
-  <p>
-    Nostr is the natural distribution layer for trust data in the Bitcoin ecosystem:
-  </p>
-  <ul>
-    <li><strong>Sovereign identity.</strong> Agents sign their own events; no platform dependency.</li>
-    <li><strong>Relay redundancy.</strong> Data replicates across multiple relays with no single point of failure.</li>
-    <li><strong>Native discovery.</strong> Agents already transact via Lightning on Nostr (zaps, DVMs), so they find SatRank in the infrastructure they already use.</li>
-    <li><strong>Standard format.</strong> NIP-85 is an established protocol for trust assertions; consumers don&rsquo;t need SatRank-specific SDKs.</li>
-  </ul>
+        <h3>DVM Trust-Check (NIP-90)</h3>
+        <p>
+          SatRank also operates a Data Vending Machine (NIP-90) for real-time trust queries.
+          Publish a kind <code>5900</code> job request with <code>["j", "trust-check"]</code>
+          and <code>["i", "&lt;ln_pubkey&gt;", "text"]</code> tags, and SatRank responds with
+          a signed kind <code>6900</code> event containing the trust score, verdict, and
+          reachability. Unknown nodes trigger an on-demand <code>QueryRoutes</code> probe so
+          the answer reflects the live graph, not just the cached snapshot. The DVM is
+          discoverable via a kind <code>31990</code> handler-info event published to the
+          three canonical relays on every startup. Free, no payment required.
+        </p>
 
-  <h3>DVM Trust-Check (NIP-90)</h3>
-  <p>
-    SatRank also operates a Data Vending Machine (NIP-90) for real-time trust queries.
-    Publish a kind <code>5900</code> job request with <code>["j", "trust-check"]</code>
-    and <code>["i", "&lt;ln_pubkey&gt;", "text"]</code> tags, and SatRank responds with
-    a signed kind <code>6900</code> event containing the trust score, verdict, and
-    reachability. Unknown nodes trigger an on-demand <code>QueryRoutes</code> probe so
-    the answer reflects the live graph, not just the cached snapshot. The DVM is
-    discoverable via a kind <code>31990</code> handler-info event published to the
-    three canonical relays on every startup. Free, no payment required.
-  </p>
+        <h3>Unique Position</h3>
+        <p>
+          Every other NIP-85 implementation (Brainstorm, wot-scoring, nostr-wot-sdk,
+          nostr-wot-oracle, Vertex) operates on the Nostr social graph &mdash; scoring based on
+          follows, mutes, and zaps. SatRank is the only provider that bridges the Lightning
+          payment graph into NIP-85. Because Brainstorm and SatRank both use the canonical
+          <code>rank</code> tag on kind <code>30382</code> events, a wallet or agent can list
+          both in its kind <code>10040</code> and receive social trust <em>and</em> payment
+          reliability from the same Nostr relay connection &mdash; verified live on
+          <code>relay.damus.io</code> and <code>nos.lol</code>, where both providers publish.
+        </p>
 
-  <h3>Unique Position</h3>
-  <p>
-    Every other NIP-85 implementation (Brainstorm, wot-scoring, nostr-wot-sdk,
-    nostr-wot-oracle, Vertex) operates on the Nostr social graph &mdash; scoring based on
-    follows, mutes, and zaps. SatRank is the only provider that bridges the Lightning
-    payment graph into NIP-85. Because Brainstorm and SatRank both use the canonical
-    <code>rank</code> tag on kind <code>30382</code> events, a wallet or agent can list
-    both in its kind <code>10040</code> and receive social trust <em>and</em> payment
-    reliability from the same Nostr relay connection &mdash; verified live on
-    <code>relay.damus.io</code> and <code>nos.lol</code>, where both providers publish.
-  </p>
-
-  <h3 id="declare-provider">Declaring SatRank as a Trusted Provider (kind 10040)</h3>
-  <p>
-    NIP-85 kind <code>10040</code> is the user-side declaration that lists your trusted providers
-    for each &lt;kind:tag&gt; pair. To add SatRank to your own trusted provider list, publish a
-    kind <code>10040</code> event with one tag per (provider, relay) combo:
-  </p>
+        <h3 id="declare-provider">Declaring SatRank as a Trusted Provider (kind 10040)</h3>
+        <p>
+          NIP-85 kind <code>10040</code> is the user-side declaration that lists your trusted providers
+          for each &lt;kind:tag&gt; pair. To add SatRank to your own trusted provider list, publish a
+          kind <code>10040</code> event with one tag per (provider, relay) combo:
+        </p>
 <pre><code>{
   "kind": 10040,
   "tags": [
@@ -1169,84 +1175,128 @@ prediction = score > 70 ? "stable" : score > 40 ? "at_risk" : "likely_dead"</pre
     ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.primal.net"]
   ],
   "content": ""
-}
-</code></pre>
-  <p>
-    Multiple relay entries are independent &mdash; a client picks whichever relay is reachable
-    for the user. You can combine SatRank with other NIP-85 providers in the same
-    kind <code>10040</code> event: each provider gets its own row, and clients query all of them
-    in parallel.
-  </p>
-  <p>
-    SatRank itself publishes a self-declaration kind <code>10040</code> from its service key so
-    clients have an on-chain reference example to copy. Query it with:
-  </p>
+}</code></pre>
+        <p>
+          Multiple relay entries are independent &mdash; a client picks whichever relay is reachable
+          for the user. You can combine SatRank with other NIP-85 providers in the same
+          kind <code>10040</code> event: each provider gets its own row, and clients query all of them
+          in parallel.
+        </p>
+        <p>
+          SatRank itself publishes a self-declaration kind <code>10040</code> from its service key so
+          clients have an on-chain reference example to copy. Query it with:
+        </p>
 <pre><code>["REQ", "satrank-10040", {
   "kinds": [10040],
   "authors": ["5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4"]
-}]
-</code></pre>
+}]</code></pre>
+      </section>
 
-  <h3 id="live-circuit">Live circuit — kind 0 / 30382 / 10040</h3>
-  <p>
-    This page is not just documentation &mdash; it is an end-to-end probe of the SatRank Nostr
-    circuit. On every visit, your browser opens a WebSocket to each of the three canonical relays
-    (<code>relay.damus.io</code>, <code>nos.lol</code>, <code>relay.primal.net</code>) and issues a
-    <code>REQ</code> for kind 0 (profile), kind 30382 (trusted assertions) and kind 10040 (trusted
-    provider declaration) authored by SatRank&rsquo;s service pubkey. The results below are the
-    real events currently on the network &mdash; if the circuit is broken, this block tells you
-    directly. If the self-declaration has not yet been published, the kind 10040 count will
-    honestly read <strong>0</strong> until the script in <code>scripts/nostr-publish-10040.ts</code>
-    is run.
-  </p>
-  <div class="live-circuit" id="live-circuit">
-    <div class="live-circuit-header">
-      <span class="live-circuit-status" id="live-circuit-status">connecting...</span>
-      <button type="button" class="live-circuit-refresh" id="live-circuit-refresh">Re-check</button>
-    </div>
-    <div class="live-circuit-grid">
-      <div class="live-circuit-cell" id="live-kind-0">
-        <div class="live-circuit-kind">kind 0</div>
-        <div class="live-circuit-label">profile metadata</div>
-        <div class="live-circuit-count"><span id="live-kind-0-count">?</span> events</div>
-        <div class="live-circuit-sample" id="live-kind-0-sample"></div>
-      </div>
-      <div class="live-circuit-cell" id="live-kind-30382">
-        <div class="live-circuit-kind">kind 30382</div>
-        <div class="live-circuit-label">trusted assertions · dual-indexed (Stream A + B)</div>
-        <div class="live-circuit-count"><span id="live-kind-30382-count">?</span> events</div>
-        <div class="live-circuit-sample" id="live-kind-30382-sample"></div>
-      </div>
-      <div class="live-circuit-cell" id="live-kind-10040">
-        <div class="live-circuit-kind">kind 10040</div>
-        <div class="live-circuit-label">trusted provider declaration</div>
-        <div class="live-circuit-count"><span id="live-kind-10040-count">?</span> events</div>
-        <div class="live-circuit-sample" id="live-kind-10040-sample"></div>
-      </div>
-    </div>
-    <noscript>
-      <p class="live-circuit-noscript">
-        JavaScript is disabled &mdash; the live circuit check cannot run. Use
-        <code>npx tsx scripts/nostr-verify.ts</code> from the repo for a CLI version.
-      </p>
-    </noscript>
+      <!-- Live circuit -->
+      <section class="doc-section" id="live-circuit">
+        <h2>Live circuit &mdash; kind 0 / 30382 / 10040</h2>
+        <p>
+          This page is not just documentation &mdash; it is an end-to-end probe of the SatRank Nostr
+          circuit. On every visit, your browser opens a WebSocket to each of the three canonical relays
+          (<code>relay.damus.io</code>, <code>nos.lol</code>, <code>relay.primal.net</code>) and issues a
+          <code>REQ</code> for kind 0 (profile), kind 30382 (trusted assertions) and kind 10040 (trusted
+          provider declaration) authored by SatRank&rsquo;s service pubkey. The results below are the
+          real events currently on the network &mdash; if the circuit is broken, this block tells you
+          directly.
+        </p>
+        <div class="live-circuit" id="live-circuit">
+          <div class="live-circuit-header">
+            <span class="live-circuit-status" id="live-circuit-status">connecting...</span>
+            <button type="button" class="live-circuit-refresh" id="live-circuit-refresh">Re-check</button>
+          </div>
+          <div class="live-circuit-grid">
+            <div class="live-circuit-cell" id="live-kind-0">
+              <div class="live-circuit-kind">kind 0</div>
+              <div class="live-circuit-label">profile metadata</div>
+              <div class="live-circuit-count"><span id="live-kind-0-count">?</span> events</div>
+              <div class="live-circuit-sample" id="live-kind-0-sample"></div>
+            </div>
+            <div class="live-circuit-cell" id="live-kind-30382">
+              <div class="live-circuit-kind">kind 30382</div>
+              <div class="live-circuit-label">trusted assertions · dual-indexed (Stream A + B)</div>
+              <div class="live-circuit-count"><span id="live-kind-30382-count">?</span> events</div>
+              <div class="live-circuit-sample" id="live-kind-30382-sample"></div>
+            </div>
+            <div class="live-circuit-cell" id="live-kind-10040">
+              <div class="live-circuit-kind">kind 10040</div>
+              <div class="live-circuit-label">trusted provider declaration</div>
+              <div class="live-circuit-count"><span id="live-kind-10040-count">?</span> events</div>
+              <div class="live-circuit-sample" id="live-kind-10040-sample"></div>
+            </div>
+          </div>
+          <noscript>
+            <p class="live-circuit-noscript">
+              JavaScript is disabled &mdash; the live circuit check cannot run. Use
+              <code>npx tsx scripts/nostr-verify.ts</code> from the repo for a CLI version.
+            </p>
+          </noscript>
+        </div>
+        <p>
+          <strong>NIP-05:</strong> <code>satrank@satrank.dev</code><br>
+          <strong>Pubkey:</strong> <code>5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4</code>
+        </p>
+      </section>
+
+    </main>
   </div>
+</div>
 
-  <p>
-    <strong>NIP-05:</strong> <code>satrank@satrank.dev</code><br>
-    <strong>Pubkey:</strong> <code>5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4</code>
-  </p>
-
-  <script src="/methodology-live.js" defer></script>
-</main>
-
-<footer>
-  <div class="container">
-    SatRank &mdash; Route reliability for Lightning payments
-    <br>
-    <a href="/">Home</a> &middot; <a href="/api/docs">API Docs</a> &middot; <a href="/api/openapi.json">OpenAPI Spec</a> &middot; <a href="https://njump.me/npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4">Nostr</a> &middot; <a href="https://github.com/proofoftrust21/satrank">GitHub</a>
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <img src="/logo.png" alt="" class="footer-logo" width="20" height="20">
+      <span>SatRank</span>
+      <span class="footer-tag">Sovereign trust oracle for Lightning</span>
+    </div>
+    <div class="footer-links">
+      <a href="/methodology.html">Methodology</a>
+      <a href="/api/stats">Stats</a>
+      <a href="/api/health">Health</a>
+      <a href="/api/openapi.json">OpenAPI</a>
+      <a href="https://njump.me/npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4" rel="noopener noreferrer">Nostr</a>
+      <a href="https://github.com/proofoftrust21/satrank" rel="noopener noreferrer">GitHub</a>
+      <a href="mailto:contact@satrank.dev">Contact</a>
+    </div>
+    <div class="footer-meta">
+      AGPL-3.0 · Listed on <a href="https://402index.io" rel="noopener noreferrer">402index.io</a> · WoT-a-thon 2026 NIP-85 submission
+    </div>
   </div>
 </footer>
+
+<script src="/methodology-live.js" defer></script>
+<script>
+  (function () {
+    var links = document.querySelectorAll('.doc-toc a[href^="#"]');
+    if (!('IntersectionObserver' in window) || links.length === 0) return;
+    var sections = Array.prototype.map.call(links, function (a) {
+      return document.getElementById(a.getAttribute('href').slice(1));
+    }).filter(Boolean);
+    var byId = {};
+    Array.prototype.forEach.call(links, function (a) {
+      byId[a.getAttribute('href').slice(1)] = a;
+    });
+    var active = null;
+    var setActive = function (id) {
+      if (active === id) return;
+      if (active && byId[active]) byId[active].classList.remove('active');
+      active = id;
+      if (byId[id]) byId[id].classList.add('active');
+    };
+    var io = new IntersectionObserver(function (entries) {
+      var best = null;
+      entries.forEach(function (e) {
+        if (e.isIntersecting && (!best || e.intersectionRatio > best.intersectionRatio)) best = e;
+      });
+      if (best) setActive(best.target.id);
+    }, { rootMargin: '-80px 0px -60% 0px', threshold: [0, 0.25, 0.5, 1] });
+    sections.forEach(function (s) { io.observe(s); });
+  })();
+</script>
 
 </body>
 </html>

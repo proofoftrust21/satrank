@@ -518,6 +518,23 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 29, 'report_bonus_log table for Tier 2 economic incentive (off by default)');
   }
 
+  // v30: max_quota column on token_balance. Lets the X-SatRank-Balance-Max
+  // header surface "852/10000" instead of just "852" (sim #9 FINDING #14).
+  // Nullable — existing rows default to remaining at first read so behavior
+  // stays unchanged for tokens that predate the column.
+  if (!hasVersion(db, 30)) {
+    try {
+      db.exec('ALTER TABLE token_balance ADD COLUMN max_quota INTEGER');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    // Backfill existing rows: Aperture tokens quota=21, deposit tokens
+    // unknown (use `remaining` as lower bound so header is never misleading).
+    db.exec('UPDATE token_balance SET max_quota = remaining WHERE max_quota IS NULL');
+    recordVersion(db, 30, 'max_quota column on token_balance for X-SatRank-Balance-Max header');
+  }
+
   // v27: source column on service_endpoints for trust classification.
   // Runs LAST (after v22 creates service_endpoints and v26 adds metadata columns)
   // because the other migrations appear in reverse order in this file and would
@@ -540,6 +557,41 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 27, 'source column on service_endpoints (402index/self_registered/ad_hoc)');
   }
 
+  // v31: Phase 1 dual-write — enrich transactions with 4 columns for the
+  // canonical ledger (endpoint_hash, operator_id, source, window_bucket).
+  // Migration is additive: all columns nullable for backwards compatibility
+  // with pre-v31 rows; backfill runs separately via scripts/backfillTransactionsV31.ts.
+  //   endpoint_hash : sha256hex(canonicalizeUrl(service_url)) — NULL for Observer tx
+  //   operator_id   : sha256hex(node_pubkey) — NULL when node unknown (no sentinel)
+  //   source        : 'probe' | 'observer' | 'report' | 'intent' — NULL for legacy rows
+  //   window_bucket : 'YYYY-MM-DD' UTC derived from timestamp — deterministic
+  if (!hasVersion(db, 31)) {
+    try { db.exec('ALTER TABLE transactions ADD COLUMN endpoint_hash TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    try { db.exec('ALTER TABLE transactions ADD COLUMN operator_id TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    try {
+      db.exec(
+        "ALTER TABLE transactions ADD COLUMN source TEXT CHECK(source IS NULL OR source IN ('probe', 'observer', 'report', 'intent'))"
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    try { db.exec('ALTER TABLE transactions ADD COLUMN window_bucket TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_endpoint_window ON transactions(endpoint_hash, window_bucket)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_operator_window ON transactions(operator_id, window_bucket)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_source ON transactions(source)');
+    recordVersion(db, 31, 'transactions +4 columns (endpoint_hash, operator_id, source, window_bucket) + 3 indexes — Phase 1 dual-write additive');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -549,6 +601,15 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  31: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_transactions_source');
+    db.exec('DROP INDEX IF EXISTS idx_transactions_operator_window');
+    db.exec('DROP INDEX IF EXISTS idx_transactions_endpoint_window');
+    try { db.exec('ALTER TABLE transactions DROP COLUMN window_bucket'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE transactions DROP COLUMN source'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE transactions DROP COLUMN operator_id'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE transactions DROP COLUMN endpoint_hash'); } catch { /* SQLite < 3.35 */ }
+  },
   20: (db) => {
     try { db.exec('ALTER TABLE probe_results DROP COLUMN probe_amount_sats'); } catch { /* SQLite < 3.35 */ }
   },
@@ -690,6 +751,13 @@ const downMigrations: Record<number, (db: Database.Database) => void> = {
   29: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_report_bonus_log_day');
     db.exec('DROP TABLE IF EXISTS report_bonus_log');
+  },
+  30: (db) => {
+    // SQLite 3.35+ supports DROP COLUMN. Older SQLite would need a table
+    // rebuild; we ignore the error there since a rollback on pre-3.35 simply
+    // leaves an orphan column, which the next `runMigrations(db)` will
+    // tolerate via the duplicate-column guard in the up-migration.
+    try { db.exec('ALTER TABLE token_balance DROP COLUMN max_quota'); } catch { /* SQLite < 3.35 */ }
   },
 };
 

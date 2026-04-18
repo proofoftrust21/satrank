@@ -1,13 +1,15 @@
 // Report engine — outcome feedback (success / failure / timeout)
 // Converts success/failure/timeout into weighted attestations
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { v4 as uuid } from 'uuid';
 import type Database from 'better-sqlite3';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { AgentRepository } from '../repositories/agentRepository';
-import type { TransactionRepository } from '../repositories/transactionRepository';
+import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
 import type { ScoringService } from './scoringService';
 import type { Attestation, ReportRequest, ReportResponse, ReportOutcome, AttestationCategory } from '../types';
+import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
+import { windowBucket } from '../utils/dualWriteLogger';
 import { NotFoundError, ValidationError, DuplicateReportError } from '../errors';
 import { logger } from '../logger';
 import { reportSubmittedTotal } from '../middleware/metrics';
@@ -40,7 +42,37 @@ export class ReportService {
     private txRepo: TransactionRepository,
     private scoringService: ScoringService,
     private db?: Database.Database,
+    private dualWriteMode: DualWriteMode = 'off',
+    private dualWriteLogger?: DualWriteLogger,
   ) {}
+
+  /** Looks up decide_log to decide the tx source:
+   *    'intent' — this report closes out a prior /api/decide call from the
+   *               same L402 token on the same target. Outcome is the truth
+   *               value of that intent per §4 cases 1 & 2 of PHASE-1-DESIGN.
+   *    'report' — no matching decide_log row; the report is a standalone
+   *               observation (user-driven POST without a prior /decide).
+   *  Returns 'report' if the DB handle is unavailable, the token's
+   *  paymentHash wasn't passed, or the query errors — classification is
+   *  best-effort and must never break report submission. */
+  private classifySource(
+    l402PaymentHash: Buffer | null | undefined,
+    targetHash: string,
+  ): 'intent' | 'report' {
+    if (!this.db || !l402PaymentHash) return 'report';
+    try {
+      const row = this.db.prepare(
+        'SELECT 1 FROM decide_log WHERE payment_hash = ? AND target_hash = ? LIMIT 1',
+      ).get(l402PaymentHash, targetHash);
+      return row ? 'intent' : 'report';
+    } catch (err) {
+      logger.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        'decide_log lookup failed, falling back to source=report',
+      );
+      return 'report';
+    }
+  }
 
   submit(input: ReportRequest): ReportResponse {
     const now = Math.floor(Date.now() / 1000);
@@ -59,10 +91,12 @@ export class ReportService {
     }
 
     // Preimage verification (pure computation — safe outside transaction)
+    // Constant-time comparison to prevent byte-by-byte timing oracle on preimage guesses.
     let verified = false;
     if (input.paymentHash && input.preimage) {
-      const hash = createHash('sha256').update(Buffer.from(input.preimage, 'hex')).digest('hex');
-      verified = hash === input.paymentHash;
+      const hashBuf = createHash('sha256').update(Buffer.from(input.preimage, 'hex')).digest();
+      const expectedBuf = Buffer.from(input.paymentHash, 'hex');
+      verified = hashBuf.length === expectedBuf.length && timingSafeEqual(hashBuf, expectedBuf);
       if (!verified) {
         logger.warn({ reporter: input.reporter.slice(0, 12), target: input.target.slice(0, 12) }, 'Preimage verification failed');
       }
@@ -119,7 +153,14 @@ export class ReportService {
       // S2: do NOT store raw preimage — evidence_hash holds the paymentHash
       const existingTx = this.txRepo.findById(txId);
       if (!existingTx) {
-        this.txRepo.insert({
+        // operator_id = target agent_hash (already sha256 of the pubkey per
+        // agents schema — matches §1.1's operator_id definition without
+        // re-hashing). endpoint_hash stays NULL: /api/report carries no
+        // target_url today, so we can't derive the URL's canonical hash here.
+        // §5 backfill will not fill it either (source='report' rows have no
+        // URL to reach back to); a future ReportRequest extension can tighten
+        // this when target_url becomes available.
+        const reportTx = {
           tx_id: txId,
           sender_hash: input.reporter,
           receiver_hash: input.target,
@@ -127,9 +168,26 @@ export class ReportService {
           timestamp: now,
           payment_hash: input.paymentHash ?? txId,
           preimage: null, // S2: never store raw preimage
-          status: input.outcome === 'success' ? 'verified' : 'failed',
-          protocol: 'bolt11',
-        });
+          status: (input.outcome === 'success' ? 'verified' : 'failed') as 'verified' | 'failed',
+          protocol: 'bolt11' as const,
+        };
+        // §4: if the submitter's L402 token has a matching decide_log row
+        // for this target, the report closes out a prior /decide intent.
+        // Otherwise it's a standalone observation.
+        const source = this.classifySource(input.l402PaymentHash, input.target);
+        const enrichment: DualWriteEnrichment = {
+          endpoint_hash: null,
+          operator_id: input.target,
+          source,
+          window_bucket: windowBucket(now),
+        };
+        this.txRepo.insertWithDualWrite(
+          reportTx,
+          enrichment,
+          this.dualWriteMode,
+          source === 'intent' ? 'decideService' : 'reportService',
+          this.dualWriteLogger,
+        );
       }
 
       this.attestationRepo.insert(attestation);

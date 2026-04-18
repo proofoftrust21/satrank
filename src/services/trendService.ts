@@ -4,6 +4,7 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoreDelta, AgentAlert, TopMover, NetworkTrends, TrendDirection } from '../types';
 import { DAY } from '../utils/constants';
+import { METHODOLOGY_CHANGE_AT_UNIX } from '../config/scoring';
 
 /** Threshold for score drop alert (points) */
 const ALERT_DROP_THRESHOLD = 10;
@@ -23,18 +24,25 @@ export class TrendService {
   computeDeltas(agentHash: string, currentScore: number): ScoreDelta {
     const now = Math.floor(Date.now() / 1000);
 
-    const score24h = this.snapshotRepo.findScoreAt(agentHash, now - DAY);
-    const score7d = this.snapshotRepo.findScoreAt(agentHash, now - 7 * DAY);
-    const score30d = this.snapshotRepo.findScoreAt(agentHash, now - 30 * DAY);
+    const snap24h = this.snapshotRepo.findSnapshotAt(agentHash, now - DAY);
+    const snap7d = this.snapshotRepo.findSnapshotAt(agentHash, now - 7 * DAY);
+    const snap30d = this.snapshotRepo.findSnapshotAt(agentHash, now - 30 * DAY);
 
-    const delta24h = score24h !== null ? currentScore - score24h : null;
-    const delta7d = score7d !== null ? currentScore - score7d : null;
-    const delta30d = score30d !== null ? currentScore - score30d : null;
+    // 7d comparator drives the leaderboard badge — invalid when it predates Option D.
+    // When invalid, the numeric delta would mislead (e.g. -18 on ACINQ reflects the
+    // scoring shift, not degradation), so we null out delta7d entirely. The front-end
+    // renders "—" for null deltas; `deltaValid` stays on the envelope for diagnostics.
+    const deltaValid = snap7d === null ? true : snap7d.computed_at >= METHODOLOGY_CHANGE_AT_UNIX;
+
+    const delta24h = snap24h !== null ? currentScore - snap24h.score : null;
+    const delta7d = snap7d !== null && deltaValid ? currentScore - snap7d.score : null;
+    const delta30d = snap30d !== null ? currentScore - snap30d.score : null;
 
     return {
       delta24h,
       delta7d,
       delta30d,
+      deltaValid,
       trend: this.deriveTrend(delta7d),
     };
   }
@@ -45,24 +53,26 @@ export class TrendService {
     const now = Math.floor(Date.now() / 1000);
     const hashes = agents.map(a => a.hash);
 
-    const scores24h = this.snapshotRepo.findScoresAtForAgents(hashes, now - DAY);
-    const scores7d = this.snapshotRepo.findScoresAtForAgents(hashes, now - 7 * DAY);
-    const scores30d = this.snapshotRepo.findScoresAtForAgents(hashes, now - 30 * DAY);
+    const snaps24h = this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - DAY);
+    const snaps7d = this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - 7 * DAY);
+    const snaps30d = this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - 30 * DAY);
 
     const result = new Map<string, ScoreDelta>();
     for (const agent of agents) {
-      const s24h = scores24h.get(agent.hash);
-      const s7d = scores7d.get(agent.hash);
-      const s30d = scores30d.get(agent.hash);
+      const s24h = snaps24h.get(agent.hash);
+      const s7d = snaps7d.get(agent.hash);
+      const s30d = snaps30d.get(agent.hash);
 
-      const delta24h = s24h !== undefined ? agent.score - s24h : null;
-      const delta7d = s7d !== undefined ? agent.score - s7d : null;
-      const delta30d = s30d !== undefined ? agent.score - s30d : null;
+      const deltaValid = s7d === undefined ? true : s7d.computed_at >= METHODOLOGY_CHANGE_AT_UNIX;
+      const delta24h = s24h !== undefined ? agent.score - s24h.score : null;
+      const delta7d = s7d !== undefined && deltaValid ? agent.score - s7d.score : null;
+      const delta30d = s30d !== undefined ? agent.score - s30d.score : null;
 
       result.set(agent.hash, {
         delta24h,
         delta7d,
         delta30d,
+        deltaValid,
         trend: this.deriveTrend(delta7d),
       });
     }
@@ -127,47 +137,63 @@ export class TrendService {
     if (agents.length === 0) return { up: [], down: [] };
 
     const hashes = agents.map(a => a.public_key_hash);
-    const pastScores = this.snapshotRepo.findScoresAtForAgents(hashes, sevenDaysAgo);
+    // Full snapshots (not bare scores) so we can read computed_at and decide
+    // whether the comparator predates the Option D methodology change.
+    const pastSnaps = this.snapshotRepo.findSnapshotsAtForAgents(hashes, sevenDaysAgo);
 
-    const movers: { hash: string; alias: string | null; score: number; delta: number }[] = [];
+    const movers: {
+      hash: string;
+      alias: string | null;
+      scoreFine: number;
+      delta: number;
+      deltaValid: boolean;
+    }[] = [];
 
     for (const agent of agents) {
-      const pastScore = pastScores.get(agent.public_key_hash);
-      if (pastScore === undefined) continue; // No historical data
-      const delta = agent.avg_score - pastScore;
+      const snap = pastSnaps.get(agent.public_key_hash);
+      if (snap === undefined) continue; // No historical data
+      // Skip movers whose comparator predates Option D. Ranking by a delta that
+      // reflects a methodology shift (not real movement) is exactly the noise
+      // we're trying to suppress; hiding them from the list entirely is cleaner
+      // than surfacing `delta7d: null` in a list that's defined by delta order.
+      // Auto-heals 7 days after the cutoff when all comparators roll forward.
+      if (snap.computed_at < METHODOLOGY_CHANGE_AT_UNIX) continue;
+      const scoreFine = Math.round(agent.avg_score * 100) / 100;
+      // Round delta to 1 decimal — float subtraction emits noise like
+      // -17.439999999999998 which leaks into the JSON surface otherwise.
+      const delta = Math.round((scoreFine - snap.score) * 10) / 10;
       if (delta === 0) continue;
       movers.push({
         hash: agent.public_key_hash,
         alias: agent.alias,
-        score: agent.avg_score,
+        scoreFine,
         delta,
+        deltaValid: true,
       });
     }
 
     movers.sort((a, b) => b.delta - a.delta);
 
+    const toTopMover = (m: typeof movers[number], trend: TrendDirection): TopMover => ({
+      publicKeyHash: m.hash,
+      alias: m.alias,
+      score: Math.round(m.scoreFine),
+      scoreFine: m.scoreFine,
+      delta7d: m.delta,
+      deltaValid: m.deltaValid,
+      trend,
+    });
+
     const up: TopMover[] = movers
       .filter(m => m.delta > 0)
       .slice(0, limit)
-      .map(m => ({
-        publicKeyHash: m.hash,
-        alias: m.alias,
-        score: m.score,
-        delta7d: m.delta,
-        trend: 'rising' as TrendDirection,
-      }));
+      .map(m => toTopMover(m, 'rising'));
 
     const down: TopMover[] = movers
       .filter(m => m.delta < 0)
       .sort((a, b) => a.delta - b.delta)
       .slice(0, limit)
-      .map(m => ({
-        publicKeyHash: m.hash,
-        alias: m.alias,
-        score: m.score,
-        delta7d: m.delta,
-        trend: 'falling' as TrendDirection,
-      }));
+      .map(m => toTopMover(m, 'falling'));
 
     return { up, down };
   }

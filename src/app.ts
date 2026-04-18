@@ -72,6 +72,7 @@ import { openapiSpec } from './openapi';
 // Infra
 import { logger } from './logger';
 import { set as cacheSet, getStale as cacheGetStale } from './cache/memoryCache';
+import { DualWriteLogger } from './utils/dualWriteLogger';
 
 export function createApp() {
   const app = express();
@@ -129,7 +130,18 @@ export function createApp() {
     probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined, survivalService,
     serviceEndpointRepo,
   });
-  const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
+  // Phase 1 shadow-mode: construct the NDJSON logger only when dry_run is
+  // active (mirrors the crawler process — silent contract in off/active, no
+  // filesystem setup when not needed). Shared across reportService + future
+  // in-process writers if any.
+  const dualWriteLogger = config.TRANSACTIONS_DUAL_WRITE_MODE === 'dry_run'
+    ? new DualWriteLogger(config.TRANSACTIONS_DRY_RUN_LOG_PATH)
+    : undefined;
+  const reportService = new ReportService(
+    attestationRepo, agentRepo, txRepo, scoringService, db,
+    config.TRANSACTIONS_DUAL_WRITE_MODE,
+    dualWriteLogger,
+  );
 
   // Tier 2 report bonus — gated by REPORT_BONUS_ENABLED env (off by default).
   // Constructing the service has no side effects when disabled; the guard
@@ -201,8 +213,13 @@ export function createApp() {
           'wss://relay.primal.net',
         ],
         frameAncestors: ["'none'"],
+        // Lock <base> and <form action> to same-origin to block base-tag hijacking
+        // and form-relay exfiltration if a DOM-XSS sneaks past scriptSrc 'self'.
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
       },
     },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
   app.use(cors({ origin: config.CORS_ORIGIN }));
   // express.json() parses the body into req.body but does NOT expose the raw
@@ -367,6 +384,20 @@ export function createApp() {
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
+  // Dedicated tight limiter on /api/version — the response is a thin build-info
+  // document with commit hash + build time, so probing it at rate for
+  // deploy-detection has no legitimate use. 60/min/IP keeps monitoring happy
+  // while closing the high-volume fingerprinting vector.
+  const versionRateLimit = rateLimit({
+    windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false,
+    keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    message: { error: { code: 'RATE_LIMITED', message: 'Too many version requests, please try again later' } },
+    handler: (req, res, _next, options) => {
+      rateLimitHits.inc({ limiter: 'version' });
+      res.status(options.statusCode).json(options.message);
+    },
+  });
+  api.use('/version', versionRateLimit);
   api.use(createHealthRoutes(healthController));          // health, stats, version
   // Free discovery/monitoring endpoints — own rate limits (expensive SQL, no L402 gate)
   const discoveryRateLimit = rateLimit({

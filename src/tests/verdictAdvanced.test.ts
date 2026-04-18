@@ -1,5 +1,5 @@
 // Advanced verdict tests — confidence formula, risk profile edge cases, personal trust depth 2, 4-hop cycles
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
@@ -13,8 +13,12 @@ import { RiskService } from '../services/riskService';
 import { sha256 } from '../utils/crypto';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types';
+import { METHODOLOGY_CHANGE_AT_UNIX } from '../config/scoring';
 
-const NOW = Math.floor(Date.now() / 1000);
+// Anchor tests 30 days past the Option D cutoff so 7d snapshots are post-methodology.
+// Without this, any snapshot at `NOW - 7*DAY` would predate the cutoff and trigger
+// `deltaValid=false` → `delta7d=null`, which masks declining_node / rapid_rise profiles.
+const NOW = METHODOLOGY_CHANGE_AT_UNIX + 30 * 86400;
 const DAY = 86400;
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
@@ -69,6 +73,8 @@ describe('Verdict confidence formula', () => {
   let verdictService: VerdictService;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
@@ -81,7 +87,7 @@ describe('Verdict confidence formula', () => {
     verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => { db.close(); vi.useRealTimers(); });
 
   it('returns very_low confidence (0.1) for agent with < 5 data points', async () => {
     const agent = makeAgent({
@@ -242,6 +248,8 @@ describe('Risk profile edge cases', () => {
   let verdictService: VerdictService;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
@@ -254,7 +262,7 @@ describe('Risk profile edge cases', () => {
     verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => { db.close(); vi.useRealTimers(); });
 
   it('suspicious_rapid_rise takes priority over new_unproven (ordered profiles)', async () => {
     // Agent that matches both: < 30 days, < 5 tx, AND rapid rise > 20
@@ -310,8 +318,11 @@ describe('Risk profile edge cases', () => {
     agentRepo.insert(agent);
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
-    expect(result.riskProfile.name).toBe('default');
-    expect(result.riskProfile.riskLevel).toBe('unknown');
+    // Sim #9 HIGH: the unrated fallback now grades riskLevel by score (>=40
+    // means "some signal, just no matching archetype") instead of the flat
+    // 'unknown' that made every fallback look identical regardless of score.
+    expect(result.riskProfile.name).toBe('unrated');
+    expect(result.riskProfile.riskLevel).toBe('medium');
   });
 });
 
@@ -322,6 +333,8 @@ describe('Personal trust — distance 2', () => {
   let verdictService: VerdictService;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
@@ -334,7 +347,7 @@ describe('Personal trust — distance 2', () => {
     verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => { db.close(); vi.useRealTimers(); });
 
   it('returns distance 2 for caller→A→B→target path', async () => {
     const caller = makeAgent({ public_key_hash: sha256('d2-caller'), alias: 'Caller' });
@@ -384,6 +397,8 @@ describe('4-hop cycle detection', () => {
   let agentRepo: AgentRepository;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
@@ -394,7 +409,7 @@ describe('4-hop cycle detection', () => {
     scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => { db.close(); vi.useRealTimers(); });
 
   it('detects 4-hop cycle A→B→C→D→A', async () => {
     const a = sha256('cycle4-A');

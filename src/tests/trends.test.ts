@@ -1,5 +1,5 @@
 // Temporal delta and trend tests
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
 import { runMigrations } from '../database/migrations';
@@ -7,10 +7,14 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { TrendService } from '../services/trendService';
 import { sha256 } from '../utils/crypto';
+import { METHODOLOGY_CHANGE_AT_UNIX } from '../config/scoring';
 import type { Agent, ScoreSnapshot } from '../types';
 
-const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
+// Anchor the whole suite well past METHODOLOGY_CHANGE_AT_UNIX so tests that
+// insert snapshots at `NOW - 8*DAY` (pre-deltaValid shape) land post-cutoff
+// and keep a numeric delta7d. The cutoff-specific describes override this.
+const NOW = 1_776_240_000 + 30 * DAY; // cutoff + 30 days
 
 function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
   return {
@@ -54,6 +58,8 @@ describe('TrendService', () => {
   let trendService: TrendService;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
@@ -62,7 +68,10 @@ describe('TrendService', () => {
     trendService = new TrendService(agentRepo, snapshotRepo);
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => {
+    db.close();
+    vi.useRealTimers();
+  });
 
   // --- computeDeltas ---
 
@@ -233,6 +242,52 @@ describe('TrendService', () => {
     expect(down).toHaveLength(0);
   });
 
+  describe('movers float + methodology surface', () => {
+    // Anchor NOW 10 days past the cutoff so `sevenDaysAgo = NOW - 7*DAY` sits
+    // after the cutoff. That lets us craft two cases: a snapshot strictly
+    // before the cutoff (pre-methodology) AND a snapshot in [CUTOFF, NOW-7d]
+    // (post-methodology, still inside the 7d window).
+    const SIM_NOW = METHODOLOGY_CHANGE_AT_UNIX + 10 * DAY;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SIM_NOW * 1000);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('movers skip candidates whose 7d comparator predates the cutoff', () => {
+      // A mover ranked by a pre-cutoff comparator is noise: the number reflects
+      // the scoring regime shift, not real movement. Hide them from the list
+      // entirely rather than emitting `delta7d: null` in a delta-ordered list.
+      const hash = sha256('pre-cutoff-mover');
+      agentRepo.insert(makeAgent('pre-cutoff-mover', { avg_score: 82.35 }));
+      insertSnapshot(snapshotRepo, hash, 70, METHODOLOGY_CHANGE_AT_UNIX - 6 * DAY);
+
+      const { up } = trendService.getTopMovers(5);
+      expect(up.find(x => x.alias === 'pre-cutoff-mover')).toBeUndefined();
+    });
+
+    it('movers surface post-cutoff candidates with deltaValid=true and clean float delta', () => {
+      // Guard against the -17.439999999999998 regression and confirm that a
+      // post-cutoff comparator appears in the list with proper surfaces.
+      const hash = sha256('post-cutoff-mover');
+      agentRepo.insert(makeAgent('post-cutoff-mover', { avg_score: 80.56 }));
+      // Snapshot lives after the cutoff but before `sevenDaysAgo` (= cutoff+3d).
+      insertSnapshot(snapshotRepo, hash, 98, METHODOLOGY_CHANGE_AT_UNIX + 1 * DAY);
+
+      const { down } = trendService.getTopMovers(5);
+      const m = down.find(x => x.alias === 'post-cutoff-mover');
+      expect(m).toBeDefined();
+      expect(m!.score).toBe(81);          // Math.round(80.56) = 81 (API contract)
+      expect(m!.scoreFine).toBe(80.56);   // 2-decimal float for display
+      expect(m!.delta7d).toBe(-17.4);     // rounded to 1dp, no -17.4399... noise
+      expect(m!.deltaValid).toBe(true);
+    });
+  });
+
   // --- getNetworkTrends ---
 
   it('returns network trends with avgScoreDelta7d', () => {
@@ -295,5 +350,90 @@ describe('TrendService', () => {
 
     const avg = snapshotRepo.findAvgScoreAt(NOW - 7 * DAY);
     expect(avg).toBe(50); // (60+40)/2
+  });
+
+  // --- deltaValid (methodology-change badge) ---
+  // Context: the Option D multi-tier probe regime shipped 2026-04-16. The 7d
+  // window includes pre- and post-methodology snapshots, so the raw numeric
+  // delta would mix two scoring regimes and make stable hubs look like they
+  // crashed (-18 on ACINQ was a scoring shift, not a degradation). `deltaValid`
+  // is the signal the UI uses to render "—" or a methodology-change badge.
+
+  it('deltaValid is true when no comparator exists (nothing to badge)', () => {
+    const hash = sha256('fresh-agent');
+    agentRepo.insert(makeAgent('fresh-agent', { avg_score: 70 }));
+    // no snapshots at all
+
+    const delta = trendService.computeDeltas(hash, 70);
+
+    expect(delta.delta7d).toBeNull();
+    expect(delta.deltaValid).toBe(true);
+  });
+
+  describe('deltaValid — methodology cutoff', () => {
+    // Fake the clock to 8 days after the Option D cutoff so both pre- and
+    // post-cutoff comparator snapshots fit inside the 7-day window. Without
+    // fake time, real-time tests can't exercise the "after cutoff" branch
+    // because NOW < cutoff + 7d until 2026-04-23.
+    const CUTOFF = 1_776_240_000; // METHODOLOGY_CHANGE_AT_UNIX
+    const SIM_NOW = CUTOFF + 8 * DAY; // 8 days after cutoff
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SIM_NOW * 1000);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('deltaValid=false nulls out delta7d so the UI renders "—" instead of a misleading number', () => {
+      const hash = sha256('pre-cutoff-agent');
+      agentRepo.insert(makeAgent('pre-cutoff-agent', { avg_score: 80 }));
+      // 8d ago (relative to SIM_NOW) — just before the cutoff
+      insertSnapshot(snapshotRepo, hash, 95, CUTOFF - DAY);
+
+      const delta = trendService.computeDeltas(hash, 80);
+
+      // The numeric delta is suppressed — a -15 badge here would wrongly
+      // suggest the agent degraded, when the drop reflects the scoring
+      // methodology change (Option D). Flag stays on the envelope.
+      expect(delta.delta7d).toBeNull();
+      expect(delta.deltaValid).toBe(false);
+    });
+
+    it('deltaValid is true when 7d comparator is at/after the cutoff', () => {
+      const hash = sha256('post-cutoff-agent');
+      agentRepo.insert(makeAgent('post-cutoff-agent', { avg_score: 80 }));
+      // 7d-8d ago window; snapshot at cutoff itself counts as post-cutoff.
+      insertSnapshot(snapshotRepo, hash, 78, CUTOFF + DAY);
+
+      const delta = trendService.computeDeltas(hash, 80);
+
+      expect(delta.delta7d).toBe(2);
+      expect(delta.deltaValid).toBe(true);
+    });
+
+    it('computeDeltasBatch nulls delta7d for pre-cutoff agents and keeps it for post-cutoff', () => {
+      const preHash = sha256('batch-pre');
+      const postHash = sha256('batch-post');
+      agentRepo.insert(makeAgent('batch-pre', { avg_score: 80 }));
+      agentRepo.insert(makeAgent('batch-post', { avg_score: 80 }));
+
+      insertSnapshot(snapshotRepo, preHash, 95, CUTOFF - DAY);
+      insertSnapshot(snapshotRepo, postHash, 78, CUTOFF + DAY);
+
+      const map = trendService.computeDeltasBatch([
+        { hash: preHash, score: 80 },
+        { hash: postHash, score: 80 },
+      ]);
+
+      // Pre-cutoff: flag off, numeric delta suppressed (would be -15).
+      expect(map.get(preHash)!.deltaValid).toBe(false);
+      expect(map.get(preHash)!.delta7d).toBeNull();
+      // Post-cutoff: flag on, real numeric delta surfaces.
+      expect(map.get(postHash)!.deltaValid).toBe(true);
+      expect(map.get(postHash)!.delta7d).toBe(2);
+    });
   });
 });

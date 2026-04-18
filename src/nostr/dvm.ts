@@ -409,6 +409,7 @@ export class SatRankDvm {
     successRate: number | null;
     alias: string | null;
     source: 'index' | 'live_ping';
+    scoreBreakdown: { total: number; components: { volume: number; reputation: number; seniority: number; regularity: number; diversity: number } } | null;
   }> {
     // Check if the node is in our index
     const { sha256 } = await import('../utils/crypto');
@@ -432,6 +433,19 @@ export class SatRankDvm {
         successRate: null, // no reports yet
         alias: agent.alias,
         source: 'index',
+        // Sim #9 M3: audit trail on the Nostr surface. Mirrors the HTTP
+        // /api/decide response shape so DVM consumers can verify how the
+        // total breaks down across the 5 weighted factors.
+        scoreBreakdown: {
+          total: scoreResult.total,
+          components: {
+            volume: scoreResult.components.volume,
+            reputation: scoreResult.components.reputation,
+            seniority: scoreResult.components.seniority,
+            regularity: scoreResult.components.regularity,
+            diversity: scoreResult.components.diversity,
+          },
+        },
       };
     }
 
@@ -452,6 +466,7 @@ export class SatRankDvm {
           successRate: null,
           alias: null,
           source: 'live_ping',
+          scoreBreakdown: null,
         };
       } catch {
         verdictTotal.inc({ verdict: 'RISKY', source: 'dvm' });
@@ -463,6 +478,7 @@ export class SatRankDvm {
           successRate: null,
           alias: null,
           source: 'live_ping',
+          scoreBreakdown: null,
         };
       }
     }
@@ -477,6 +493,7 @@ export class SatRankDvm {
       successRate: null,
       alias: null,
       source: 'live_ping',
+      scoreBreakdown: null,
     };
   }
 

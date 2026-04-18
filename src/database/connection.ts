@@ -16,12 +16,18 @@ export function getDatabase(): Database.Database {
     fs.mkdirSync(dbDir, { recursive: true });
   }
 
-  db = new Database(config.DB_PATH);
+  db = new Database(config.DB_PATH, { timeout: 15_000 });
 
-  // SQLite performance optimizations
+  // SQLite performance & concurrency
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('synchronous = NORMAL');
+  // busy_timeout lets writers wait up to 15s on a locked DB instead of throwing
+  // SQLITE_BUSY immediately. WAL already allows concurrent readers; this covers
+  // the writer-on-writer case that surfaces under concurrent /api/best-route
+  // pathfinding batches (sim #9 FINDING #3).
+  db.pragma('busy_timeout = 15000');
+  db.pragma('wal_autocheckpoint = 1000');
 
   logger.info({ path: config.DB_PATH }, 'Database connected');
   return db;

@@ -53,6 +53,12 @@ import {
 
 export interface ScoreResult {
   total: number;
+  /** 2-decimal float score. Same pipeline as `total` but without the per-stage
+   *  rounding — breaks ties when 9 of the top-10 nodes compress into a 2-point
+   *  band (80-82). `total` remains the official integer score for display and
+   *  API consumers that expect an int; `totalFine` drives sorting and
+   *  tie-breaking on the leaderboard. */
+  totalFine: number;
   components: ScoreComponents;
   confidence: ConfidenceLevel;
   computedAt: number;
@@ -80,8 +86,12 @@ export class ScoringService {
       const agent = this.agentRepo.findByHash(agentHash);
       const components = this.safeParseComponents(latest.components);
       if (components) {
+        // Snapshots store the 2-decimal float (REAL column). Derive the
+        // integer `total` from it so the cache path matches the compute path.
+        const totalFine = Math.round(latest.score * 100) / 100;
         return {
-          total: latest.score,
+          total: Math.round(totalFine),
+          totalFine,
           components,
           confidence: agent
             ? this.deriveConfidence(agent.total_transactions, agent.total_attestations_received)
@@ -101,7 +111,7 @@ export class ScoringService {
     const now = Math.floor(Date.now() / 1000);
     const agent = this.agentRepo.findByHash(agentHash);
     if (!agent) {
-      return { total: 0, components: { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 }, confidence: 'very_low', computedAt: now };
+      return { total: 0, totalFine: 0, components: { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 }, confidence: 'very_low', computedAt: now };
     }
 
     const isLightningGraph = agent.source === 'lightning_graph';
@@ -134,24 +144,28 @@ export class ScoringService {
     // penalizing 30% of the score for a signal that requires community adoption.
     // LN nodes don't need this — their reputation is objective (centrality + peer trust).
     const noAttestationRep = !isLightningGraph && components.reputation === 0;
+    // Parallel float pipeline: `totalFloat` mirrors `total`'s multiplier chain
+    // without intermediate rounding. At the end, clamp and round to 2 decimals
+    // to get `totalFine`. The integer `total` remains the official score
+    // (API contract, compatibility), the float serves sorting/tie-breaks.
     let total: number;
+    let totalFloat: number;
     if (noAttestationRep) {
       const w = { volume: WEIGHTS.volume / 0.70, seniority: WEIGHTS.seniority / 0.70, regularity: WEIGHTS.regularity / 0.70, diversity: WEIGHTS.diversity / 0.70 };
-      total = Math.round(
+      totalFloat =
         components.volume * w.volume +
         components.seniority * w.seniority +
         components.regularity * w.regularity +
-        components.diversity * w.diversity
-      );
+        components.diversity * w.diversity;
     } else {
-      total = Math.round(
+      totalFloat =
         components.volume * WEIGHTS.volume +
         components.reputation * WEIGHTS.reputation +
         components.seniority * WEIGHTS.seniority +
         components.regularity * WEIGHTS.regularity +
-        components.diversity * WEIGHTS.diversity
-      );
+        components.diversity * WEIGHTS.diversity;
     }
+    total = Math.round(totalFloat);
 
     // --- Multiplicative modifiers ---
     // All post-composite adjustments are multiplicative (not additive) so a
@@ -163,6 +177,7 @@ export class ScoringService {
       const ratio = verifiedTxCount / MANUAL_SOURCE_PENALTY_THRESHOLD;
       const penaltyMultiplier = MANUAL_SOURCE_MIN_MULTIPLIER + (1 - MANUAL_SOURCE_MIN_MULTIPLIER) * ratio;
       total = Math.round(total * penaltyMultiplier);
+      totalFloat = totalFloat * penaltyMultiplier;
     }
 
     // Verified transaction bonus — ×1.0 to ×1.10 based on Observer Protocol txns
@@ -172,6 +187,7 @@ export class ScoringService {
     if (verifiedForBonus > 0) {
       const verifiedMult = Math.min(1.10, 1.0 + verifiedForBonus * 0.003);
       total = Math.min(100, Math.round(total * verifiedMult));
+      totalFloat = Math.min(100, totalFloat * verifiedMult);
     }
 
     // LN+ positive ratings deprecated (2026-04-16 scoring audit):
@@ -191,14 +207,23 @@ export class ScoringService {
     //
     // Regime 2: base tier REACHABLE → multi-tier liquidity signal (stable)
     //   signal = Σ(success_rate_tier × weight_tier) / Σ(weight_tier for PROBED tiers)
-    //   weights: 1k=0.4, 10k=0.3, 100k=0.2, 1M=0.1
+    //   weights: 1k=0.4, 10k=0.3, 100k=0.2 (1M excluded — see below)
     //   probeMult = max(0.65, signal)
     //
-    // This fixes the oscillation bug: before, findLatest() could return a high-tier
-    // failure (1M sats = legitimate liquidity limit) which applied the full 0.90
-    // penalty, causing scores to swing 9 points based on which tier was probed last.
-    // Now the signal aggregates all recent probes by tier, weighted by agent-facing
-    // importance (smaller payments matter more).
+    // Sim #10 FINDING #14 — the 1M tier used to be in TIER_WEIGHTS at 0.1, but
+    // routing 1M sats (0.01 BTC) in one hop requires exceptional inbound
+    // liquidity that most nodes legitimately lack. Failing 1M is the norm, not
+    // a trust signal. Nodes probed on all 4 tiers (ACINQ, Boltz, Kraken, bfx…)
+    // were systematically getting probeMult=0.9 while nodes probed only at 1k
+    // (CoinGate, IBEX…) kept probeMult=1.0 — a coverage-dependent score delta
+    // that inverted the "better instrumentation = better score" direction.
+    // The 1M tier stays probed for `maxRoutableAmount`, just not counted here.
+    //
+    // This also fixes the oscillation bug: before, findLatest() could return a
+    // high-tier failure (1M sats = legitimate liquidity limit) which applied
+    // the full 0.90 penalty, causing scores to swing 9 points based on which
+    // tier was probed last. Now the signal aggregates all recent probes by
+    // tier, weighted by agent-facing importance (smaller payments matter more).
     if (this.probeRepo) {
       const baseProbe = this.probeRepo.findLatestAtTier(agentHash, 1000);
       if (baseProbe && (now - baseProbe.probed_at) < PROBE_FRESHNESS_TTL) {
@@ -217,10 +242,11 @@ export class ScoringService {
           else if (gossipAgeSec > SEVEN_DAYS || disabledRatio >= 0.3) probeMult = 0.80;
           else probeMult = 0.90;
           total = Math.max(0, Math.round(total * probeMult));
+          totalFloat = Math.max(0, totalFloat * probeMult);
         } else {
           // Regime 2 — base tier reachable: multi-tier liquidity signal
           const SEVEN_DAYS_SEC = 7 * 86400;
-          const TIER_WEIGHTS = new Map<number, number>([[1000, 0.4], [10_000, 0.3], [100_000, 0.2], [1_000_000, 0.1]]);
+          const TIER_WEIGHTS = new Map<number, number>([[1000, 0.4], [10_000, 0.3], [100_000, 0.2]]);
           const rates = this.probeRepo.computeTierSuccessRates(agentHash, SEVEN_DAYS_SEC);
           let weightedSum = 0;
           let weightTotal = 0;
@@ -234,7 +260,10 @@ export class ScoringService {
           if (weightTotal > 0) {
             const signal = weightedSum / weightTotal;
             const probeMult = Math.max(0.65, signal);
-            if (probeMult < 1.0) total = Math.max(0, Math.round(total * probeMult));
+            if (probeMult < 1.0) {
+              total = Math.max(0, Math.round(total * probeMult));
+              totalFloat = Math.max(0, totalFloat * probeMult);
+            }
           }
         }
       }
@@ -246,16 +275,37 @@ export class ScoringService {
 
     const confidence = this.deriveConfidence(agent.total_transactions, agent.total_attestations_received);
 
-    // Persist snapshot + update denormalized agents.avg_score atomically
+    // Clamp the float pipeline and round to 2 decimals. `totalFine` is what we
+    // persist (both columns are REAL) — the integer is always re-derivable as
+    // Math.round(scoreFine) for API consumers that need it.
+    const totalFine = Math.round(Math.max(0, Math.min(100, totalFloat)) * 100) / 100;
+    const componentsJson = JSON.stringify(components);
+    const SNAPSHOT_HEARTBEAT_SEC = 86_400; // force ≥1 snapshot/agent/day even if unchanged
+
+    // Persist snapshot + update denormalized agents.avg_score atomically.
+    // Insert the snapshot only when (a) score or components changed since the
+    // previous snapshot, or (b) the previous snapshot is older than
+    // SNAPSHOT_HEARTBEAT_SEC. Static agents then cost ~1 row/day instead of
+    // ~280 (observer cycles every 5 min × 24 h), cutting score_snapshots by
+    // roughly 10× at current 18 k-agent scale.
+    //
+    // Change detection uses a 0.01-point float tolerance — sub-0.01 noise
+    // from re-running the same pipeline on unchanged inputs must not trigger
+    // a new row, otherwise we lose the snapshot-on-change compression.
     const persist = () => {
-      this.snapshotRepo.insert({
-        snapshot_id: uuid(),
-        agent_hash: agentHash,
-        score: total,
-        components: JSON.stringify(components),
-        computed_at: now,
-      });
-      this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, total, agent.first_seen, agent.last_seen);
+      const last = this.snapshotRepo.findLatestByAgent(agentHash);
+      const changed = !last || Math.abs(last.score - totalFine) >= 0.01 || last.components !== componentsJson;
+      const stale = !last || (now - last.computed_at) >= SNAPSHOT_HEARTBEAT_SEC;
+      if (changed || stale) {
+        this.snapshotRepo.insert({
+          snapshot_id: uuid(),
+          agent_hash: agentHash,
+          score: totalFine,
+          components: componentsJson,
+          computed_at: now,
+        });
+      }
+      this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, totalFine, agent.first_seen, agent.last_seen);
     };
 
     if (this.db) {
@@ -265,9 +315,9 @@ export class ScoringService {
     }
 
     scoreComputeDuration.observe(Number(process.hrtime.bigint() - startHr) / 1e9);
-    logger.debug({ agentHash, total, components }, 'Score computed');
+    logger.debug({ agentHash, total, totalFine, components }, 'Score computed');
 
-    return { total, components, confidence, computedAt: now };
+    return { total, totalFine, components, confidence, computedAt: now };
   }
 
   // --- Lightning graph scoring ---
@@ -611,11 +661,18 @@ export class ScoringService {
     // they flow through computeReportSignal() instead (avoids double-counting)
     const attestations = allAttestations.filter(a => !REPORT_CATEGORIES.has(a.category));
     if (attestations.length === 0) {
-      // No general attestations — report signal alone can still contribute
+      // No general attestations — report signal alone can still contribute.
+      // Use 50 (neutral) as the baseline, not 0: "no attestation data" is
+      // semantically neutral, consistent with the lightning_graph sub-signals
+      // feeStability/capacityTrend/routingQuality that also return 50 when
+      // their data is missing. Returning 0 here wrongly framed missing-data
+      // as a trust measurement and systematically under-weighted new observer
+      // agents (Sim #10 audit: 31 agents stuck at Reputation=0).
+      // rs is an adjustment in [-REPORT_SIGNAL_CAP, +REPORT_SIGNAL_CAP].
       const rs = this.computeReportSignal(agentHash);
-      const onlyReportScore = Math.min(100, Math.max(0, rs));
+      const score = Math.min(100, Math.max(0, 50 + rs));
       return {
-        score: onlyReportScore,
+        score,
         breakdown: {
           mode: 'attestations',
           attestations: { count: 0, weightedAverage: 0, reportSignal: rs },
@@ -689,10 +746,12 @@ export class ScoringService {
     }
 
     if (totalWeight === 0) {
-      // No attestations — report signal alone can still contribute
+      // All attesters had their weight pushed to zero by anti-gaming filters.
+      // No usable attestation data → neutral 50 baseline + rs adjustment,
+      // same semantics as the attestations.length === 0 branch above.
       const rs = this.computeReportSignal(agentHash);
       return {
-        score: Math.min(100, Math.max(0, rs)),
+        score: Math.min(100, Math.max(0, 50 + rs)),
         breakdown: {
           mode: 'attestations',
           attestations: { count: attestations.length, weightedAverage: 0, reportSignal: rs },

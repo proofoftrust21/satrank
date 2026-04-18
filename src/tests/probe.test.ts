@@ -147,14 +147,14 @@ describe('Probe repository', () => {
     expect(probeRepo.countProbedAgents()).toBe(2);
   });
 
-  it('purgeOlderThan removes old probes', () => {
+  it('purgeOlderThan removes old probes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('purge-probe') });
     agentRepo.insert(agent);
 
     probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW - 100000, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
     probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
 
-    const purged = probeRepo.purgeOlderThan(50000);
+    const purged = await probeRepo.purgeOlderThan(50000);
     expect(purged).toBe(1);
 
     const remaining = probeRepo.findByTarget(agent.public_key_hash, 10, 0);

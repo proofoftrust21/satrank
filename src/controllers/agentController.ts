@@ -1,4 +1,5 @@
 // Agent endpoint controller
+import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { AgentService } from '../services/agentService';
 import type { VerdictService } from '../services/verdictService';
@@ -24,12 +25,21 @@ interface TopResponse {
   data: Array<{
     publicKeyHash: string;
     alias: string | null;
+    /** Integer score (API contract, stable) */
     score: number;
+    /** 2-decimal float — use for visual tie-breaking when many nodes sit in
+     *  the same integer band (the 80-82 compression observed 2026-04-17). */
+    scoreFine: number;
     rank: number | null;
     totalTransactions: number;
     source: string;
     components: { volume: number; reputation: number; seniority: number; regularity: number; diversity: number };
     delta7d: number | null;
+    /** False when the 7d comparator predates the Option D methodology cutoff.
+     *  UI should render "—" or a "methodology change" badge instead of the
+     *  numeric delta, which would mix pre/post-methodology scores. Auto-
+     *  resolves 7 days after the cutoff. */
+    deltaValid: boolean;
   }>;
   meta: { total: number; limit: number; offset: number; sort_by: string };
 }
@@ -130,24 +140,33 @@ export class AgentController {
     const agents = this.agentService.getTopAgents(limit, offset, sort_by);
     const total = this.agentRepo.count();
 
-    // Batch: compute all deltas and ranks in 4 queries instead of 5N
+    // Batch: compute all deltas and ranks in 4 queries instead of 5N.
+    // Deltas are computed off the float score so the 7d delta reflects real
+    // movement (e.g. 80.7 → 82.3 = +1.6) and not integer-rounding noise.
     const hashes = agents.map(a => a.publicKeyHash);
     const deltas = this.trendService.computeDeltasBatch(
-      agents.map(a => ({ hash: a.publicKeyHash, score: a.score })),
+      agents.map(a => ({ hash: a.publicKeyHash, score: a.scoreFine })),
     );
     const ranks = this.agentRepo.getRanks(hashes);
 
     return {
-      data: agents.map(a => ({
-        publicKeyHash: a.publicKeyHash,
-        alias: a.alias,
-        score: a.score,
-        rank: ranks.get(a.publicKeyHash) ?? null,
-        totalTransactions: a.totalTransactions,
-        source: a.source,
-        components: a.components,
-        delta7d: deltas.get(a.publicKeyHash)?.delta7d ?? null,
-      })),
+      data: agents.map(a => {
+        const d = deltas.get(a.publicKeyHash);
+        const delta7d = d?.delta7d;
+        return {
+          publicKeyHash: a.publicKeyHash,
+          alias: a.alias,
+          score: a.score,
+          scoreFine: a.scoreFine,
+          rank: ranks.get(a.publicKeyHash) ?? null,
+          totalTransactions: a.totalTransactions,
+          source: a.source,
+          components: a.components,
+          // Round delta7d to 1 decimal for display while keeping source precision.
+          delta7d: delta7d != null ? Math.round(delta7d * 10) / 10 : null,
+          deltaValid: d?.deltaValid ?? true,
+        };
+      }),
       meta: { total, limit, offset, sort_by },
     };
   }
@@ -221,6 +240,19 @@ export class AgentController {
         }
       }
 
+      // Weak ETag over the verdict payload. Changes whenever score, flags,
+      // pathfinding, or personalTrust shifts — which is exactly what clients
+      // need to revalidate after the 30s Cache-Control window. Skipped when
+      // callerPubkey is present (personalTrust makes the response caller-specific
+      // and the Vary header makes shared caches useless).
+      const etag = `W/"${crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex').slice(0, 16)}"`;
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', callerPubkey ? 'private, max-age=30' : 'public, max-age=30');
+      if (callerPubkey) res.setHeader('Vary', 'X-Caller-Pubkey');
+      if (req.headers['if-none-match'] === etag) {
+        res.status(304).end();
+        return;
+      }
       res.json({ data: result });
     } catch (err) {
       next(err);
@@ -290,15 +322,20 @@ export class AgentController {
               components = parsed as typeof defaultComponents;
             }
           }
+          const scoreFine = Math.round(a.avg_score * 100) / 100;
+          const d = deltas.get(a.public_key_hash);
+          const delta7d = d?.delta7d;
           return {
             publicKeyHash: a.public_key_hash,
             alias: a.alias,
-            score: a.avg_score,
+            score: Math.round(scoreFine),
+            scoreFine,
             rank: ranks.get(a.public_key_hash) ?? null,
             totalTransactions: a.total_transactions,
             source: a.source,
             components,
-            delta7d: deltas.get(a.public_key_hash)?.delta7d ?? null,
+            delta7d: delta7d != null ? Math.round(delta7d * 10) / 10 : null,
+            deltaValid: d?.deltaValid ?? true,
           };
         }),
         meta: { total, limit, offset },

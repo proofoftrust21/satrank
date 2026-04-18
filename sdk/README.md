@@ -29,6 +29,22 @@ Endpoints that accept an agent identifier (`/api/score/:hash`, `/api/profile/:id
 
 If you compute hashes yourself and see `NOT_FOUND { details: { resource: 'Agent (...)' } }` despite the node being indexed, double-check you hashed the pubkey-as-string and not its raw bytes.
 
+### Response shapes — `publicKeyHash` vs `hash` vs `pubkey`
+
+Some endpoints and their responses use different names for the same concept. This is not the SDK being sloppy — it matches the server API surface:
+
+| Endpoint | Input parameter accepts | Response field |
+|---|---|---|
+| `/api/agents/top` | — | `publicKeyHash` (64-hex SHA-256) |
+| `/api/agents/search` | `q` (alias / partial hash / pubkey) | `publicKeyHash` |
+| `/api/agent/:publicKeyHash/verdict` | `:publicKeyHash` accepts **hash OR 66-hex LN pubkey** | verdict payload, no identifier echo |
+| `/api/profile/:id` | `:id` accepts **hash OR 66-hex LN pubkey** | `agent.publicKeyHash` and `agent.publicKey` (LN pubkey) side by side |
+| `/api/score/:hash` | `:hash` (64-hex only) | `publicKeyHash` |
+| `/api/report` | `target`, `reporter` both accept hash OR pubkey | no identifier echo |
+| `/api/decide` | `target`, `caller` both accept hash OR pubkey | `publicKeyHash` in score, plus `agent.publicKey` |
+
+**Rule of thumb**: when you read from SatRank, it always gives you `publicKeyHash` (64-hex SHA-256). When you write to SatRank, anywhere that takes an identifier in the path or body will accept **either** the hash **or** the 66-char LN pubkey — the server hashes the pubkey client-side the same way the SDK does. See `normalizeIdentifier()` in `sdk/src/client.ts` for the exact rule.
+
 ## Quick Start
 
 ```typescript
@@ -58,7 +74,7 @@ const results = await client.searchAgents('ACINQ');
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `timeout` | `number` | `10000` | Request timeout in ms |
+| `timeout` | `number` | `30000` | Request timeout in ms (covers `/api/decide` worst case with on-demand re-probe) |
 | `headers` | `Record<string, string>` | `{}` | Custom headers (e.g. L402 token) |
 
 ### Methods
@@ -86,6 +102,10 @@ const results = await client.searchAgents('ACINQ');
 | `getCategories()` | `ServiceCategory[]` | List available service categories (free) |
 | `deposit(amount)` | `DepositInvoiceResponse` | Request a deposit invoice (21–10,000 sats, free endpoint) |
 | `verifyDeposit(paymentHash, preimage)` | `DepositVerifyResponse` | Activate deposit balance after payment |
+| `getBalance()` | `number \| null` | Remaining L402 requests from the last response's `X-SatRank-Balance` header |
+| `getWatchlist(targets, since?)` | `WatchlistResponse` | One-shot verdict-change poll for up to 50 targets |
+| `watchPoll(targets, opts, cb)` | `() => void` | HTTP long-poll wrapper around `getWatchlist` |
+| `watchNostr(targets, cb, opts?)` | `() => void` | Subscribe to NIP-85 kind 30382 score updates via 3 relays |
 
 ### L402 Authentication
 
@@ -128,6 +148,63 @@ if (evidence.reputation) {
   console.log(evidence.reputation.sourceUrl); // lightningnetwork.plus link
 }
 
+```
+
+### Decision Breakdown: probability components
+
+`decide()` returns a **GO/NO-GO** backed by a `successRate` (0–1) and five probability components that each explain a distinct failure mode. `components` are not the 5 composite score factors (volume/reputation/seniority/regularity/diversity) — those live on `getProfile(id).score.components`. Decide components are the five independent sub-probabilities that multiply into `successRate`:
+
+```typescript
+const d = await client.decide({ target, caller, walletProvider: 'phoenix' });
+
+// Decision
+d.go                                            // true | false
+d.successRate                                   // 0–1, ≥ 0.85 → go=true
+d.basis                                         // 'empirical' when reports are dense enough, else 'proxy'
+d.confidence                                    // 'very_low' | 'low' | 'medium' | 'high' | 'very_high'
+d.verdict                                       // 'SAFE' | 'RISKY' | 'UNKNOWN'
+d.flags                                         // VerdictFlag[] — human-readable drivers
+d.reason                                        // short string, why go / why no-go
+
+// Probability components — each 0–1, combined into successRate
+const c = d.components;
+c.trustScore                                    // 0–1, normalized composite agent score
+c.routable                                      // 0–1, probability a route exists from the caller to the target
+c.available                                     // 0–1, recent HTLC acceptance rate from probes
+c.empirical                                     // 0–1, reporter-weighted historical success rate (null-like when sparse)
+c.pathQuality                                   // 0–1, hop/latency/fee penalty on the live route
+
+// Ancillary signals
+d.targetFeeStability                            // 0–1 on the target's own fee snapshots, null when no fee data
+d.maxRoutableAmount                             // highest sats with a known route, null when unknown
+d.reportedSuccessRate                           // raw empirical rate 0–1, null when sparse
+d.lastProbeAgeMs                                // freshness of the underlying probe
+d.serviceHealth                                 // { status, httpCode, latencyMs, uptimeRatio, servicePriceSats, ... } | null
+
+// Risk + survival
+d.riskProfile                                   // { name: 'low' | 'medium' | 'high', ... }
+d.survival                                      // { verdict: 'stable' | 'at_risk' | 'likely_dead', ... }
+
+// Positional pathfinding (walletProvider → hub node)
+d.pathfinding?.sourceProvider                   // "phoenix"
+d.pathfinding?.sourceNode                       // "03864ef025fde8fb..." (ACINQ pubkey)
+d.pathfinding?.hops                             // 2 (from phoenix's hub, not from SatRank)
+```
+
+Need the 5-factor breakdown (volume / reputation / seniority / regularity / diversity)? Call `getProfile(id)` or `getScore(hash)`:
+
+```typescript
+const p = await client.getProfile(target);
+p.score.total                                   // 0–100 composite
+p.score.components.volume                       // 0–100, weight 25 %
+p.score.components.reputation                   // 0–100, weight 30 %  (5 sub-signals inside: centrality 20, peerTrust 30, routingQuality 20, capacityTrend 15, feeStability 15)
+p.score.components.seniority                    // 0–100, weight 15 %
+p.score.components.regularity                   // 0–100, weight 15 %
+p.score.components.diversity                    // 0–100, weight 15 %
+p.survival                                      // same shape as on decide
+p.riskProfile                                   // same shape as on decide
+p.reports                                       // { total, successes, failures, timeouts, successRate }
+p.flags                                         // driver flags
 ```
 
 ### Error Handling
@@ -269,6 +346,26 @@ Always include `preimage` + `paymentHash` when you have them. The 2× weight is 
 
 - **Rate limit**: 20 reports/minute per reporter. Soft cap; a busy agent that legitimately transacts this fast should open an issue.
 - **Dedup**: one report per `(reporter, target)` per hour. Re-submitting within the window returns `409 Conflict` and does not overwrite the original.
+
+### Reporter badge: how the server weights you
+
+Your reporter weight on each `/api/report` submission is derived server-side from two inputs: your own agent score (fetched via `getProfile(yourHash)`) and a *badge tier* inferred from your recent verified-report count. The badge tier is not yet exposed as a standalone field on `ProfileResponse` — it's folded into the `weight` returned on every `ReportResponse`:
+
+```typescript
+const r = await client.report({ target, reporter, outcome: 'success', preimage, paymentHash });
+r.verified                          // true when paymentHash + preimage validate
+r.weight                            // effective weight the server applied (score × tier × 2× preimage bonus)
+```
+
+Tier thresholds (applied server-side):
+
+| Tier | Threshold | Meaning |
+|------|-----------|---------|
+| `novice` | 0 verified reports in the last 30 days | Base weight |
+| `contributor` | ≥ 5 verified reports | Weighted upward |
+| `trusted` | ≥ 20 verified reports | Full weight, counts toward sovereign PageRank peer-trust |
+
+To track your own progress: sum `/api/report` responses locally, or call `getProfile(yourHash)` and read `reports.total` / `reports.successRate` — these are reports you *received*, not submitted. A dedicated submitter-stats field may ship in a future `ProfileResponse` revision; the badge effect is already active in scoring.
 
 ## Deposit: Buy Bulk Balance
 

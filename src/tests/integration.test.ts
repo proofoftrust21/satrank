@@ -575,11 +575,15 @@ describe('Integration — Security headers and Content-Type', () => {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
-          styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'"],
           imgSrc: ["'self'", "data:"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
+          frameAncestors: ["'none'"],
         },
       },
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     }));
     testApp.use(express.json());
 

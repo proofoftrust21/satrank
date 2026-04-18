@@ -180,3 +180,13 @@ export const REPORT_SIGNAL_MIN_REPORTS = 5;
 
 /** Maximum adjustment (positive or negative) from report signal on the reputation component (0-100 scale) */
 export const REPORT_SIGNAL_CAP = 10;
+
+// --- Methodology change cutoff (Option D multi-tier probe regime) ---
+
+/** Unix timestamp of the Option D probe-regime deployment on prod (2026-04-16T00:00:00Z).
+ *  Score deltas computed against snapshots older than this mix pre- and post-methodology
+ *  values and are not comparable — the leaderboard badges them as "methodology_change"
+ *  instead of showing a misleading numeric drop (e.g. -18 for ACINQ is a scoring shift,
+ *  not a degradation). Resolves naturally 7 days after the cutoff. */
+// TODO Phase 3: réévaluer la pertinence de ce cutoff sous l'architecture bayésienne — possiblement obsolète
+export const METHODOLOGY_CHANGE_AT_UNIX = 1_776_240_000;

@@ -24,7 +24,8 @@
     "nostr:verify": "tsx scripts/nostr-verify.ts",
     "nostr:publish-10040": "tsx scripts/nostr-publish-10040.ts",
     "lint": "tsc --noEmit",
-    "sdk:build": "cd sdk && npx tsc"
+    "sdk:build": "cd sdk && npx tsc",
+    "check-drift": "tsx scripts/check-drift.ts"
   },
   "keywords": [
     "lightning",

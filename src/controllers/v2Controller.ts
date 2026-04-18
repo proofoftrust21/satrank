@@ -277,6 +277,13 @@ export class V2Controller {
       const target = normalizeIdentifier(parsed.data.target);
       const reporter = normalizeIdentifier(parsed.data.reporter);
 
+      // L402 token's payment_hash (raw sha256 digest Buffer) — null under
+      // API-key auth. Consumed by both ReportService (source classification
+      // via decide_log lookup) and the Tier 2 bonus credit path; hoisted
+      // above submit() so it's available to both without re-parsing the
+      // header.
+      const l402PaymentHash = extractL402PaymentHashFromAuth(req.headers.authorization);
+
       const result = this.reportService.submit({
         target: target.hash,
         reporter: reporter.hash,
@@ -285,6 +292,7 @@ export class V2Controller {
         preimage: parsed.data.preimage,
         amountBucket: parsed.data.amountBucket,
         memo: parsed.data.memo,
+        l402PaymentHash: l402PaymentHash ?? undefined,
       });
 
       // Tier 2 bonus — gated by REPORT_BONUS_ENABLED env, auto-rollback, and
@@ -292,7 +300,6 @@ export class V2Controller {
       // bonus service is not wired (test env) or when no bonus was earned.
       let bonus: { credited: boolean; sats?: number; gate?: string } | null = null;
       if (this.reportBonusService) {
-        const l402PaymentHash = extractL402PaymentHashFromAuth(req.headers.authorization);
         const creditResult = await this.reportBonusService.maybeCredit({
           reporterHash: reporter.hash,
           req,
@@ -391,11 +398,14 @@ export class V2Controller {
       const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * DAY;
       const reporter = this.attestationRepo.reporterStats(hash, thirtyDaysAgo);
       const TRUSTED_REPORTER_THRESHOLD = 20;
+      // Always return a badge string so agents don't have to null-check.
+      // `novice` is the default for agents that have never submitted a report
+      // (sim #9 FINDING #11 — `null` forced a defensive guard on every client).
       const reporterBadge =
         reporter.verified >= TRUSTED_REPORTER_THRESHOLD ? 'trusted_reporter' :
         reporter.submitted >= 5 ? 'active_reporter' :
         reporter.submitted >= 1 ? 'reporter' :
-        null;
+        'novice';
 
       res.json({
         data: {
@@ -425,7 +435,6 @@ export class V2Controller {
             submitted30d: reporter.submitted,
             verified30d: reporter.verified,
             breakdown: { successes: reporter.successes, failures: reporter.failures, timeouts: reporter.timeouts },
-            trustedThreshold: TRUSTED_REPORTER_THRESHOLD,
           },
           probeUptime: probeUptime !== null ? Math.round(probeUptime * 1000) / 1000 : null,
           survival,

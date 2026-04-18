@@ -2,11 +2,12 @@
 // Pulls events, creates agents from aliases, avoids duplicates
 import { z } from 'zod';
 import type { AgentRepository } from '../repositories/agentRepository';
-import type { TransactionRepository } from '../repositories/transactionRepository';
+import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
 import type { ObserverClient, ObserverEvent, CrawlResult } from './types';
 import type { AmountBucket, TransactionStatus, PaymentProtocol } from '../types';
 import { sha256 } from '../utils/crypto';
 import { logger } from '../logger';
+import { windowBucket, type DualWriteLogger } from '../utils/dualWriteLogger';
 
 // Validate critical fields before processing
 const observerEventSchema = z.object({
@@ -31,6 +32,12 @@ export class Crawler {
     private client: ObserverClient,
     private agentRepo: AgentRepository,
     private txRepo: TransactionRepository,
+    /** Phase 1 rollout knob. Defaults to `off` so existing test fixtures that
+     *  construct `new Crawler(client, agents, txs)` keep the legacy INSERT
+     *  path without wiring logger plumbing. Flip to `dry_run`/`active` in
+     *  prod by reading TRANSACTIONS_DUAL_WRITE_MODE from config. */
+    private dualWriteMode: DualWriteMode = 'off',
+    private dualWriteLogger?: DualWriteLogger,
   ) {}
 
   async run(): Promise<CrawlResult> {
@@ -140,17 +147,32 @@ export class Crawler {
     const senderHash = ev.direction === 'outbound' ? agentHash : counterpartyHash;
     const receiverHash = ev.direction === 'outbound' ? counterpartyHash : agentHash;
 
-    this.txRepo.insert({
-      tx_id: ev.transaction_hash,
-      sender_hash: senderHash,
-      receiver_hash: receiverHash,
-      amount_bucket: this.mapAmountBucket(ev.amount_bucket),
-      timestamp,
-      payment_hash: sha256(ev.transaction_hash),
-      preimage: ev.preimage,
-      status: ev.verified ? 'verified' : 'pending',
-      protocol: this.mapProtocol(ev.protocol),
-    });
+    // Observer-origin rows: the crawler never sees the L402 endpoint URL nor
+    // the operator pubkey, so those two columns are NULL by contract. Source
+    // tag distinguishes Observer-ingested rows from probe/report/intent so the
+    // Phase 3 aggregator can weight them. window_bucket is UTC YYYY-MM-DD.
+    this.txRepo.insertWithDualWrite(
+      {
+        tx_id: ev.transaction_hash,
+        sender_hash: senderHash,
+        receiver_hash: receiverHash,
+        amount_bucket: this.mapAmountBucket(ev.amount_bucket),
+        timestamp,
+        payment_hash: sha256(ev.transaction_hash),
+        preimage: ev.preimage,
+        status: ev.verified ? 'verified' : 'pending',
+        protocol: this.mapProtocol(ev.protocol),
+      },
+      {
+        endpoint_hash: null,
+        operator_id: null,
+        source: 'observer',
+        window_bucket: windowBucket(timestamp),
+      },
+      this.dualWriteMode,
+      'crawler',
+      this.dualWriteLogger,
+    );
 
     this.updateAgentActivity(senderHash, timestamp);
     this.updateAgentActivity(receiverHash, timestamp);

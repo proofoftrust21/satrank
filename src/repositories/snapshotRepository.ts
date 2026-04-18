@@ -79,39 +79,75 @@ export class SnapshotRepository {
     return row.count;
   }
 
-  /** Purge old snapshots: keep all < 7 days, keep 1/day between 7-30 days, delete all > 30 days */
-  purgeOldSnapshots(): number {
-    return this.db.transaction(() => {
-      const now = Math.floor(Date.now() / 1000);
-      const sevenDaysAgo = now - 7 * 86400;
-      const thirtyDaysAgo = now - 30 * 86400;
+  /** Purge old snapshots: keep all < 7 days, keep 1/day between 7-30 days, delete all > 30 days.
+   *
+   *  Chunked implementation: the prior single-transaction `DELETE ... WHERE rowid IN (window fn)`
+   *  could hold the SQLite write lock for 10-30s on a 10M-row table — exceeding the
+   *  15s busy_timeout and causing concurrent writers (scoring, probe inserts) to fail
+   *  with "database is locked". We now:
+   *    1. Select victim rowids into a TEMP TABLE (read-only on main DB — no write lock).
+   *    2. Delete in CHUNK-sized batches with a yield between each batch to cap the
+   *       write lock to ~100ms per chunk and let other writers in.
+   */
+  async purgeOldSnapshots(): Promise<number> {
+    const CHUNK = 1000;
+    const now = Math.floor(Date.now() / 1000);
+    const sevenDaysAgo = now - 7 * 86400;
+    const thirtyDaysAgo = now - 30 * 86400;
 
-      // Delete everything older than 30 days
-      const deleted30 = this.db.prepare(
-        'DELETE FROM score_snapshots WHERE computed_at < ?'
-      ).run(thirtyDaysAgo);
+    // Phase 1 — everything older than 30 days.
+    this.db.prepare('DROP TABLE IF EXISTS _purge_rowids_30').run();
+    this.db.prepare(`
+      CREATE TEMP TABLE _purge_rowids_30 AS
+      SELECT rowid FROM score_snapshots WHERE computed_at < ?
+    `).run(thirtyDaysAgo);
+    const deleted30 = await this.deleteInChunks('_purge_rowids_30', CHUNK);
+    this.db.prepare('DROP TABLE IF EXISTS _purge_rowids_30').run();
 
-      // Between 7 and 30 days: keep only the latest snapshot per agent per day
-      // Delete duplicates within the same (agent_hash, day) window, keeping the one with max computed_at
-      const deleted7 = this.db.prepare(`
-        DELETE FROM score_snapshots WHERE rowid IN (
-          SELECT s.rowid FROM score_snapshots s
-          WHERE s.computed_at >= ? AND s.computed_at < ?
-          AND s.rowid NOT IN (
-            SELECT rowid FROM (
-              SELECT rowid, ROW_NUMBER() OVER (
-                PARTITION BY agent_hash, CAST(computed_at / 86400 AS INTEGER)
-                ORDER BY computed_at DESC
-              ) AS rn
-              FROM score_snapshots
-              WHERE computed_at >= ? AND computed_at < ?
-            ) WHERE rn = 1
-          )
-        )
-      `).run(thirtyDaysAgo, sevenDaysAgo, thirtyDaysAgo, sevenDaysAgo);
+    // Phase 2 — keep only the latest snapshot per agent per day in the 7-30d window.
+    this.db.prepare('DROP TABLE IF EXISTS _purge_rowids_daily').run();
+    this.db.prepare(`
+      CREATE TEMP TABLE _purge_rowids_daily AS
+      SELECT rowid FROM (
+        SELECT rowid, ROW_NUMBER() OVER (
+          PARTITION BY agent_hash, CAST(computed_at / 86400 AS INTEGER)
+          ORDER BY computed_at DESC
+        ) AS rn
+        FROM score_snapshots
+        WHERE computed_at >= ? AND computed_at < ?
+      ) WHERE rn > 1
+    `).run(thirtyDaysAgo, sevenDaysAgo);
+    const deletedDaily = await this.deleteInChunks('_purge_rowids_daily', CHUNK);
+    this.db.prepare('DROP TABLE IF EXISTS _purge_rowids_daily').run();
 
-      return (deleted30.changes ?? 0) + (deleted7.changes ?? 0);
-    })();
+    return deleted30 + deletedDaily;
+  }
+
+  /** Consume a TEMP TABLE of rowids, deleting from score_snapshots in CHUNK-sized
+   *  batches. Each chunk is its own transaction; setImmediate yields between
+   *  chunks so other writers (busy_timeout=15s) can acquire the lock. */
+  private async deleteInChunks(tempTable: string, chunkSize: number): Promise<number> {
+    const popStmt = this.db.prepare(
+      `DELETE FROM score_snapshots WHERE rowid IN (SELECT rowid FROM ${tempTable} LIMIT ?)`,
+    );
+    const trimStmt = this.db.prepare(`DELETE FROM ${tempTable} WHERE rowid IN (SELECT rowid FROM ${tempTable} LIMIT ?)`);
+    const countStmt = this.db.prepare(`SELECT COUNT(*) as c FROM ${tempTable}`);
+
+    let totalDeleted = 0;
+    for (;;) {
+      const remaining = (countStmt.get() as { c: number }).c;
+      if (remaining === 0) break;
+      const txn = this.db.transaction(() => {
+        const r = popStmt.run(chunkSize);
+        trimStmt.run(chunkSize);
+        return r.changes ?? 0;
+      });
+      totalDeleted += txn();
+      // Yield the event loop so concurrent writers (bulk scoring, probe inserts,
+      // transaction inserts) can grab the write lock between chunks.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    return totalDeleted;
   }
 
   /** Find the closest snapshot to a target timestamp for an agent (looking backwards) */
@@ -120,6 +156,15 @@ export class SnapshotRepository {
       'SELECT score FROM score_snapshots WHERE agent_hash = ? AND computed_at <= ? ORDER BY computed_at DESC LIMIT 1'
     ).get(agentHash, timestamp) as { score: number } | undefined;
     return row?.score ?? null;
+  }
+
+  /** Like findScoreAt, but also returns the snapshot's computed_at so callers can
+   *  decide whether the comparator predates a methodology cutoff. */
+  findSnapshotAt(agentHash: string, timestamp: number): { score: number; computed_at: number } | null {
+    const row = this.db.prepare(
+      'SELECT score, computed_at FROM score_snapshots WHERE agent_hash = ? AND computed_at <= ? ORDER BY computed_at DESC LIMIT 1'
+    ).get(agentHash, timestamp) as { score: number; computed_at: number } | undefined;
+    return row ?? null;
   }
 
   /** Batch: find scores at a target timestamp for multiple agents */
@@ -138,6 +183,25 @@ export class SnapshotRepository {
     `).all(...agentHashes, timestamp) as { agent_hash: string; score: number }[];
     const map = new Map<string, number>();
     for (const row of rows) map.set(row.agent_hash, row.score);
+    return map;
+  }
+
+  /** Batch version of findSnapshotAt — returns score + computed_at per agent. */
+  findSnapshotsAtForAgents(agentHashes: string[], timestamp: number): Map<string, { score: number; computed_at: number }> {
+    if (agentHashes.length === 0) return new Map();
+    if (agentHashes.length > 500) throw new Error('findSnapshotsAtForAgents: array exceeds 500 elements');
+    const placeholders = agentHashes.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT s.agent_hash, s.score, s.computed_at FROM score_snapshots s
+      INNER JOIN (
+        SELECT agent_hash, MAX(computed_at) as max_at
+        FROM score_snapshots
+        WHERE agent_hash IN (${placeholders}) AND computed_at <= ?
+        GROUP BY agent_hash
+      ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
+    `).all(...agentHashes, timestamp) as { agent_hash: string; score: number; computed_at: number }[];
+    const map = new Map<string, { score: number; computed_at: number }>();
+    for (const row of rows) map.set(row.agent_hash, { score: row.score, computed_at: row.computed_at });
     return map;
   }
 

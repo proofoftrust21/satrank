@@ -138,8 +138,9 @@ describe('Report signal in reputation scoring', () => {
     agentRepo.insert(agent);
 
     const result = scoring.computeScore(agent.public_key_hash);
-    // No reports, no attestations -> reputation = 0
-    expect(result.components.reputation).toBe(0);
+    // No reports, no attestations -> neutral baseline 50 (missing-data pattern,
+    // same as feeStability/capacityTrend/routingQuality in lightning_graph mode)
+    expect(result.components.reputation).toBe(50);
   });
 
   it('agent with <5 reports -> no change (threshold)', () => {
@@ -151,8 +152,8 @@ describe('Report signal in reputation scoring', () => {
 
     const result = scoring.computeScore(agent.public_key_hash);
     // Reports exist but below threshold -> no report signal contribution
-    // Reputation is 0 because there are no general attestations either
-    expect(result.components.reputation).toBe(0);
+    // Reputation is 50 (neutral) because there are no general attestations either
+    expect(result.components.reputation).toBe(50);
   });
 
   it('agent with 10 positive reports -> reputation boost (capped at +10)', () => {
@@ -163,9 +164,10 @@ describe('Report signal in reputation scoring', () => {
     insertReports(agent.public_key_hash, 10, 'success');
 
     const result = scoring.computeScore(agent.public_key_hash);
-    // With only reports (no attestations), reputation comes solely from report signal
+    // With only reports (no attestations), reputation = neutral 50 + report signal
     // 10 successes, 0 failures -> ratio = 1.0 -> adjustment = (1.0 - 0.5) * 2 * 10 = +10
-    expect(result.components.reputation).toBe(10);
+    // Final: 50 + 10 = 60
+    expect(result.components.reputation).toBe(60);
   });
 
   it('agent with 10 negative reports -> reputation penalty (capped at -10)', () => {
@@ -177,8 +179,8 @@ describe('Report signal in reputation scoring', () => {
 
     const result = scoring.computeScore(agent.public_key_hash);
     // 10 failures, 0 successes -> ratio = 0.0 -> adjustment = (0.0 - 0.5) * 2 * 10 = -10
-    // Clamped at 0 (reputation can't go below 0)
-    expect(result.components.reputation).toBe(0);
+    // Final: 50 - 10 = 40 (baseline 50 + negative adjustment)
+    expect(result.components.reputation).toBe(40);
   });
 
   it('verified reports weighted 2x', () => {
@@ -254,7 +256,8 @@ describe('Report signal in reputation scoring', () => {
 
     const result = scoring.computeScore(agent.public_key_hash);
     // All successes -> (1.0 - 0.5) * 2 * 10 = +10, capped at 10
-    expect(result.components.reputation).toBeLessThanOrEqual(10);
+    // Final: 50 + 10 = 60 (capped at 60)
+    expect(result.components.reputation).toBeLessThanOrEqual(60);
   });
 
   it('timeout reports count as negative', () => {
@@ -265,8 +268,9 @@ describe('Report signal in reputation scoring', () => {
     insertReports(agent.public_key_hash, 10, 'timeout');
 
     const result = scoring.computeScore(agent.public_key_hash);
-    // All timeouts -> ratio = 0.0 -> adjustment = -10, clamped at 0
-    expect(result.components.reputation).toBe(0);
+    // All timeouts -> ratio = 0.0 -> adjustment = -10
+    // Final: 50 - 10 = 40
+    expect(result.components.reputation).toBe(40);
   });
 
   it('mixed reports produce proportional signal', () => {
@@ -279,7 +283,8 @@ describe('Report signal in reputation scoring', () => {
 
     const result = scoring.computeScore(agent.public_key_hash);
     // ratio = 7/10 = 0.7 -> adjustment = (0.7 - 0.5) * 2 * 10 = +4
-    expect(result.components.reputation).toBe(4);
+    // Final: 50 + 4 = 54
+    expect(result.components.reputation).toBe(54);
   });
 
   describe('attestationRepository.reportSignalStats', () => {
