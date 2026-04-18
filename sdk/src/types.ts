@@ -1,8 +1,7 @@
-// SatRank API response types
+// SatRank API response types — Phase 3 Bayesian (no legacy composite shape)
 // Decoupled from server — do not import from ../src/
 
 export type AgentSource = 'observer_protocol' | '4tress' | 'lightning_graph' | 'manual';
-export type ConfidenceLevel = 'very_low' | 'low' | 'medium' | 'high' | 'very_high';
 export type AmountBucket = 'micro' | 'small' | 'medium' | 'large';
 export type PaymentProtocol = 'l402' | 'keysend' | 'bolt11';
 
@@ -12,13 +11,45 @@ export interface PaginationMeta {
   offset: number;
 }
 
-export interface ScoreComponents {
-  volume: number;
-  reputation: number;
-  seniority: number;
-  regularity: number;
-  diversity: number;
+// --- Bayesian scoring block ---
+// Canonical shape shared across every public endpoint (verdict, decide,
+// profile, best-route, service, endpoint). Replaces the pre-Phase-3
+// composite 0-100 `score` + `components` shape outright.
+
+export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT';
+export type BayesianWindow = '24h' | '7d' | '30d';
+export type BayesianSource = 'probe' | 'report' | 'paid';
+
+export interface BayesianSourceBlock {
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  weight_total: number;
 }
+
+export interface BayesianConvergence {
+  converged: boolean;
+  sources_above_threshold: BayesianSource[];
+  threshold: number;
+}
+
+export interface BayesianScoreBlock {
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  verdict: Verdict;
+  window: BayesianWindow;
+  sources: {
+    probe:  BayesianSourceBlock | null;
+    report: BayesianSourceBlock | null;
+    paid:   BayesianSourceBlock | null;
+  };
+  convergence: BayesianConvergence;
+}
+
+// --- Evidence (unchanged — transactions, probes, lightning graph) ---
 
 export interface TransactionSample {
   txId: string;
@@ -70,20 +101,19 @@ export interface ScoreEvidence {
   probe: ProbeData | null;
 }
 
+// --- Agent responses ---
+
+export interface AgentSummary {
+  publicKeyHash: string;
+  alias: string | null;
+  firstSeen: number;
+  lastSeen: number;
+  source: AgentSource;
+}
+
 export interface AgentScoreResponse {
-  agent: {
-    publicKeyHash: string;
-    alias: string | null;
-    firstSeen: number;
-    lastSeen: number;
-    source: AgentSource;
-  };
-  score: {
-    total: number;
-    components: ScoreComponents;
-    confidence: ConfidenceLevel;
-    computedAt: number;
-  };
+  agent: AgentSummary;
+  bayesian: BayesianScoreBlock;
   stats: {
     totalTransactions: number;
     verifiedTransactions: number;
@@ -92,65 +122,78 @@ export interface AgentScoreResponse {
     avgAttestationScore: number;
   };
   evidence: ScoreEvidence;
-  delta: ScoreDelta;
   alerts: AgentAlert[];
 }
 
-export interface TopAgentsResponse {
-  agents: {
-    publicKeyHash: string;
-    alias: string | null;
-    score: number;
-    totalTransactions: number;
-    source: AgentSource;
-  }[];
-  meta: PaginationMeta;
+export interface TopAgentsEntry {
+  publicKeyHash: string;
+  alias: string | null;
+  rank: number | null;
+  totalTransactions: number;
+  source: AgentSource;
+  bayesian: BayesianScoreBlock;
 }
+
+export interface TopAgentsResponse {
+  agents: TopAgentsEntry[];
+  meta: PaginationMeta & { sort_by?: string };
+}
+
+export type SearchAgentsEntry = TopAgentsEntry;
 
 export interface SearchAgentsResponse {
-  agents: {
-    publicKeyHash: string;
-    alias: string | null;
-    score: number;
-    totalTransactions: number;
-    source: AgentSource;
-    components: ScoreComponents;
-  }[];
+  agents: SearchAgentsEntry[];
   meta: PaginationMeta;
 }
 
+/** Posterior history pending aggregate tables (Commit 8 placeholder kept for shape stability).
+ *  `data` is always `[]` today; `bayesian` exposes the live posterior. */
 export interface HistoryResponse {
-  snapshots: {
-    score: number;
-    components: ScoreComponents;
-    computedAt: number;
-  }[];
-  meta: PaginationMeta;
+  data: [];
+  bayesian: BayesianScoreBlock;
+  meta: PaginationMeta & { note?: string };
+}
+
+export interface AttestationRecord {
+  attestationId: string;
+  txId: string;
+  attesterHash: string;
+  score: number;
+  tags: string[];
+  evidenceHash: string | null;
+  timestamp: number;
+  category: AttestationCategory;
 }
 
 export interface AttestationsResponse {
-  attestations: {
-    attestationId: string;
-    txId: string;
-    attesterHash: string;
-    score: number;
-    tags: string[];
-    evidenceHash: string | null;
-    timestamp: number;
-    category: AttestationCategory;
-  }[];
+  attestations: AttestationRecord[];
   meta: PaginationMeta;
 }
 
 export interface HealthResponse {
   status: 'ok' | 'error';
   agentsIndexed: number;
+  staleAgents?: number;
   totalTransactions: number;
   lastUpdate: number;
+  scoringAgeSec?: number | null;
+  scoringStale?: boolean;
   uptime: number;
   schemaVersion: number;
   expectedSchemaVersion: number;
   dbStatus: 'ok' | 'error';
+  lndStatus?: 'ok' | 'degraded' | 'unknown' | 'disabled';
+  lndLastProbeAgeSec?: number | null;
+  features?: {
+    depositInvoiceGeneration: boolean;
+    nostrPublishing: boolean;
+    pathfindingProbe: boolean;
+    nodeChannelHint: boolean;
+  };
+  cacheHealth?: {
+    degraded: boolean;
+    critical: Array<{ key: string; ageSec: number; consecutiveFailures: number }>;
+  };
 }
 
 export interface NetworkStats {
@@ -163,9 +206,9 @@ export interface NetworkStats {
   totalChannels: number;
   nodesWithRatings: number;
   networkCapacityBtc: number;
-  avgScore: number;
   totalVolumeBuckets: Record<AmountBucket, number>;
-  trends: NetworkTrends;
+  serviceSources?: { '402index': number; 'self_registered': number; 'ad_hoc': number };
+  trends?: NetworkTrends;
 }
 
 export interface VersionResponse {
@@ -174,13 +217,16 @@ export interface VersionResponse {
   version: string;
 }
 
-// Temporal delta types
+// --- Trends ---
+
 export type TrendDirection = 'rising' | 'stable' | 'falling';
 
+/** Delta of the Bayesian p_success over rolling windows (range [-1, +1]). */
 export interface ScoreDelta {
   delta24h: number | null;
   delta7d: number | null;
   delta30d: number | null;
+  deltaValid: boolean;
   trend: TrendDirection;
 }
 
@@ -193,19 +239,28 @@ export interface AgentAlert {
 export interface TopMover {
   publicKeyHash: string;
   alias: string | null;
-  score: number;
+  /** Bayesian posterior mean p_success ∈ [0, 1]. */
+  pSuccess: number;
+  /** 7d delta on p_success ∈ [-1, +1]. */
   delta7d: number;
+  deltaValid: boolean;
   trend: TrendDirection;
 }
 
 export interface NetworkTrends {
-  avgScoreDelta7d: number;
+  avgPSuccessDelta7d: number;
   topMoversUp: TopMover[];
   topMoversDown: TopMover[];
 }
 
-// Verdict types
-export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN';
+/** Posterior-delta movers land with the aggregate tables landing — until then,
+ *  the server returns stable empty arrays so the envelope never shifts. */
+export interface MoversResponse {
+  gainers: TopMover[];
+  losers: TopMover[];
+}
+
+// --- Verdict ---
 
 export type VerdictFlag =
   | 'new_agent'
@@ -247,24 +302,19 @@ export interface RiskProfile {
   description: string;
 }
 
-// Personalized pathfinding — real-time route query from caller to target
 export interface PathfindingResult {
   reachable: boolean;
   hops: number | null;
   estimatedFeeMsat: number | null;
   alternatives: number;
   latencyMs: number;
-  /** Pathfinding engine used. Always 'lnd_queryroutes' today. */
   source: 'lnd_queryroutes';
-  /** Raw pubkey of the node used as pathfinding origin, or 'satrank' for default. */
   sourceNode?: string;
-  /** Wallet provider label when walletProvider= was supplied. Absent otherwise. */
   sourceProvider?: WalletProvider;
 }
 
-export interface VerdictResponse {
-  verdict: Verdict;
-  confidence: number;
+/** VerdictResponse inherits the canonical BayesianScoreBlock. */
+export interface VerdictResponse extends BayesianScoreBlock {
   reason: string;
   flags: VerdictFlag[];
   personalTrust: PersonalTrust | null;
@@ -299,44 +349,33 @@ export interface BatchVerdictItem extends VerdictResponse {
   publicKeyHash: string;
 }
 
-export interface MoversResponse {
-  gainers: TopMover[];
-  losers: TopMover[];
-}
-
-// --- Deposit types ---
+// --- Deposit ---
 
 export interface DepositInvoiceResponse {
   invoice: string;
   paymentHash: string;
-  /** Amount in sats to pay. Maps 1:1 to requests granted. */
   amountSats: number;
-  /** Number of paid requests credited once the invoice settles. */
   quotaGranted: number;
-  /** Absolute Unix timestamp (seconds) when the invoice expires. */
   expiresAt: number;
-  /** Human-readable next step for the caller. */
   instructions: string;
 }
 
 export interface DepositVerifyResponse {
   balance: number;
   paymentHash: string;
-  /** Token string to use in Authorization header, or already-redeemed indicator. */
   token?: string;
-  /** Present when the paymentHash was already settled in a prior call. */
   alreadyRedeemed?: boolean;
   instructions: string;
 }
 
-// --- Service discovery types ---
+// --- Service discovery ---
 
 export interface ServiceSearchParams {
   q?: string;
   category?: string;
   minScore?: number;
   minUptime?: number;
-  sort?: 'score' | 'price' | 'uptime';
+  sort?: 'p_success' | 'price' | 'uptime';
   limit?: number;
   offset?: number;
 }
@@ -355,8 +394,7 @@ export interface ServiceResult {
   node: {
     publicKeyHash: string;
     alias: string | null;
-    score: number | null;
-    verdict: Verdict | null;
+    bayesian: BayesianScoreBlock | null;
   } | null;
 }
 
@@ -375,11 +413,8 @@ export interface DecideRequest {
   target: string;
   caller: string;
   amountSats?: number;
-  /** Wallet provider name. SatRank computes P_path from the provider's hub node. */
   walletProvider?: WalletProvider;
-  /** Lightning pubkey to use as pathfinding source. Overrides walletProvider. */
   callerNodePubkey?: string;
-  /** URL of the L402 service. SatRank checks HTTP health and returns serviceHealth. */
   serviceUrl?: string;
 }
 
@@ -413,50 +448,38 @@ export interface FeeVolatility {
   changesLast7d: number;
 }
 
-export interface DecideResponse {
+export interface ServiceHealth {
+  url: string;
+  status: 'healthy' | 'degraded' | 'down' | 'checking' | 'unknown';
+  httpCode: number | null;
+  latencyMs: number | null;
+  uptimeRatio: number | null;
+  lastCheckedAt: number | null;
+  servicePriceSats: number | null;
+}
+
+/** DecideResponse inherits the canonical BayesianScoreBlock and adds
+ *  operational fields (pathfinding, survival, serviceHealth, …). `components`
+ *  here is the decide-specific axis (routable/available/pathQuality), not the
+ *  retired composite components. */
+export interface DecideResponse extends BayesianScoreBlock {
   go: boolean;
   successRate: number;
   components: {
-    trustScore: number;
     routable: number;
     available: number;
-    empirical: number;
     pathQuality: number;
   };
-  /** Raw score breakdown for audit trail — mirrors `/api/profile/:id.score`.
-   *  Added after sim #5 so agents can answer "why did this decision flip?"
-   *  from a single /decide call (no extra /profile request needed). */
-  scoreBreakdown: {
-    total: number;
-    components: ScoreComponents;
-  };
-  basis: 'proxy' | 'empirical';
-  /** Confidence 0-1. API returns number (0.1 very_low → 0.9 very_high),
-   *  not a ConfidenceLevel string. See src/utils/confidence.ts. */
-  confidence: number;
-  verdict: Verdict;
   flags: VerdictFlag[];
   pathfinding: PathfindingResult | null;
   riskProfile: RiskProfile;
   reason: string;
   survival: SurvivalResult;
-  /** Fee stability of the target node (not the full route). 0 = volatile, 1 = stable, null = no fee data */
   targetFeeStability: number | null;
-  /** Highest amount (sats) with a known route. null = no multi-amount data */
   maxRoutableAmount: number | null;
-  /** Raw empirical success rate from reports (0-1). null = insufficient data */
-  reportedSuccessRate: number | null;
+  reportedSuccessRate?: number | null;
   lastProbeAgeMs: number | null;
-  /** HTTP health of the service behind this node. null when serviceUrl not provided. */
-  serviceHealth: {
-    url: string;
-    status: 'healthy' | 'degraded' | 'down' | 'checking' | 'unknown';
-    httpCode: number | null;
-    latencyMs: number | null;
-    uptimeRatio: number | null;
-    lastCheckedAt: number | null;
-    servicePriceSats: number | null;
-  } | null;
+  serviceHealth: ServiceHealth | null;
   latencyMs: number;
 }
 
@@ -475,13 +498,9 @@ export interface ReportResponse {
   verified: boolean;
   weight: number;
   timestamp: number;
-  /** Tier 2 reporter-bonus outcome. `null` when REPORT_BONUS_ENABLED=false
-   *  or the reporter service is not wired. Always present when the flag is on. */
-  bonus: {
+  bonus?: {
     credited: boolean;
-    /** Sats credited to the reporter's deposit balance when `credited=true`. */
     sats?: number;
-    /** Gate code explaining the decision (eligibility check or payout reason). */
     gate?: string;
   } | null;
 }
@@ -495,12 +514,8 @@ export interface ProfileResponse {
     lastSeen: number;
     source: AgentSource;
   };
-  score: {
-    total: number;
-    components: ScoreComponents;
-    confidence: ConfidenceLevel;
-    rank: number | null;
-  };
+  bayesian: BayesianScoreBlock;
+  rank: number | null;
   reports: {
     total: number;
     successes: number;
@@ -508,12 +523,17 @@ export interface ProfileResponse {
     timeouts: number;
     successRate: number;
   };
+  reporterStats?: {
+    badge: 'novice' | 'reporter' | 'active_reporter' | 'trusted_reporter';
+    submitted30d: number;
+    verified30d: number;
+    breakdown: { successes: number; failures: number; timeouts: number };
+  };
   probeUptime: number | null;
   survival: SurvivalResult;
   channelFlow: ChannelFlow | null;
   capacityHealth: CapacityHealth | null;
   feeVolatility: FeeVolatility | null;
-  delta: ScoreDelta;
   riskProfile: RiskProfile;
   evidence: ScoreEvidence;
   flags: VerdictFlag[];
@@ -525,19 +545,15 @@ export interface BestRouteRequest {
   targets: string[];
   caller: string;
   amountSats?: number;
-  /** Wallet provider name. SatRank computes P_path from the provider's hub node. */
   walletProvider?: WalletProvider;
-  /** Lightning pubkey to use as pathfinding source. Overrides walletProvider. */
   callerNodePubkey?: string;
-  /** Map of targetHash → L402 service URL. SSRF-protected. */
   serviceUrls?: Record<string, string>;
 }
 
 export interface BestRouteCandidate {
   publicKeyHash: string;
   alias: string | null;
-  score: number;
-  verdict: Verdict;
+  bayesian: BayesianScoreBlock;
   pathfinding: PathfindingResult;
 }
 
@@ -546,12 +562,11 @@ export interface BestRouteResponse {
   totalQueried: number;
   reachableCount: number;
   unreachableCount: number;
-  /** Explains that reachability depends on SatRank's graph position, not target quality */
   pathfindingContext: string;
   latencyMs: number;
 }
 
-// --- Transact (decide → pay → report in one call) ---
+// --- Transact ---
 
 export interface PaymentResult {
   success: boolean;
@@ -562,10 +577,5 @@ export interface PaymentResult {
 export interface TransactResult {
   paid: boolean;
   decision: DecideResponse;
-  /** Populated when the report submission succeeded. `null` when the report
-   *  step failed (auth / rate-limit / duplicate); `undefined` when `go=false`
-   *  and no payment attempt was made, so there is nothing to report. The
-   *  SDK intentionally does not throw on report failures — the caller's
-   *  payment outcome must not be invalidated by a reporting-side issue. */
   report?: ReportResponse | null;
 }
