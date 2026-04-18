@@ -1,13 +1,20 @@
-// Nostr publisher — publishes SatRank scores as NIP-85 kind 30382 events
-// Each active Lightning node gets a signed assertion with score, verdict, components, and reachability.
+// Nostr publisher — publishes SatRank Bayesian verdicts as NIP-85 kind 30382 events.
+//
+// Phase 3 (C10): le shape publié repose désormais sur le moteur bayésien :
+// chaque event expose p_success / CI95 / n_obs / verdict / convergence / prior_source
+// au lieu du composite 0-100 et de ses sous-scores. Le tag legacy `score` est retiré
+// (brief : « NO legacy_composite_score exposed publicly »).
+//
 // nostr-tools is ESM-only — all imports are dynamic to work in both tsx (dev) and node CJS (production).
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoringService } from '../services/scoringService';
 import type { SurvivalService } from '../services/survivalService';
+import type { BayesianVerdictService } from '../services/bayesianVerdictService';
+import type { Verdict } from '../services/bayesianScoringService';
+import type { BayesianWindow } from '../config/bayesianConfig';
 import { logger } from '../logger';
-import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import {
   nostrPublishTotal,
   nostrRelayAckTotal,
@@ -34,24 +41,36 @@ const PUBLISH_TIMEOUT_MS = 1_000;
 export interface NostrPublisherOptions {
   privateKeyHex: string;
   relays: string[];
+  /** Seuil legacy (avg_score) utilisé uniquement pour la pré-sélection de la population
+   *  publiée. Le verdict final et les tags publiés sont 100 % bayésiens. */
   minScore: number;
 }
 
+/** Payload canonique Phase 3 pour chaque event kind 30382. */
 interface ScoreEvent {
   lnPubkey: string;
   alias: string;
-  score: number;
-  verdict: string;
+  verdict: Verdict;
+  pSuccess: number;
+  ci95Low: number;
+  ci95High: number;
+  nObs: number;
+  converged: boolean;
+  priorSource: 'operator' | 'service' | 'flat';
+  window: BayesianWindow;
   reachable: boolean;
-  components: Record<string, number>;
   survival: string;
 }
 
 // Fingerprint of a published event — used for delta detection. Two events
 // with the same fingerprint are semantically identical and don't need to
-// be re-published.
+// be re-published. Inclut les champs bayésiens arrondis pour que de
+// micro-variations de p_success ne triggerent pas un republish.
 function fingerprint(ev: ScoreEvent): string {
-  return `${ev.score}|${ev.verdict}|${ev.reachable ? 1 : 0}|${ev.survival}|${ev.components.volume ?? 0}|${ev.components.reputation ?? 0}|${ev.components.seniority ?? 0}|${ev.components.regularity ?? 0}|${ev.components.diversity ?? 0}`;
+  const p = ev.pSuccess.toFixed(3);
+  const lo = ev.ci95Low.toFixed(3);
+  const hi = ev.ci95High.toFixed(3);
+  return `${ev.verdict}|${p}|${lo}|${hi}|${ev.nObs}|${ev.converged ? 1 : 0}|${ev.priorSource}|${ev.window}|${ev.reachable ? 1 : 0}|${ev.survival}`;
 }
 
 export class NostrPublisher {
@@ -73,11 +92,70 @@ export class NostrPublisher {
     private snapshotRepo: SnapshotRepository,
     private scoringService: ScoringService,
     private survivalService: SurvivalService,
+    private bayesianVerdictService: BayesianVerdictService,
     options: NostrPublisherOptions,
   ) {
     this.skHex = options.privateKeyHex;
     this.relays = options.relays;
     this.minScore = options.minScore;
+  }
+
+  /** Construit le payload bayésien pour un agent donné. Exposé pour les tests. */
+  buildScoreEvent(agent: { public_key: string | null; public_key_hash: string; alias: string | null }): ScoreEvent | null {
+    if (!agent.public_key) return null;
+
+    const verdict = this.bayesianVerdictService.buildVerdict({
+      targetHash: agent.public_key_hash,
+    });
+
+    // Agents sans aucune observation bayésienne exploitable → on ne publie pas :
+    // inutile de polluer les relais avec du INSUFFICIENT pour chaque node du graph.
+    if (verdict.verdict === 'INSUFFICIENT') return null;
+
+    const reachable = this.probeRepo
+      ? this.getReachableHashes().includes(agent.public_key_hash)
+      : false;
+
+    // Agent complet requis pour survivalService.compute → on va chercher l'objet
+    // complet. Pour les tests légers on tolère un fallback 'unknown'.
+    const fullAgent = this.agentRepo.findByHash(agent.public_key_hash);
+    const survival = fullAgent
+      ? this.survivalService.compute(fullAgent).prediction
+      : 'unknown';
+
+    return {
+      lnPubkey: agent.public_key,
+      alias: agent.alias ?? agent.public_key.slice(0, 16),
+      verdict: verdict.verdict,
+      pSuccess: verdict.p_success,
+      ci95Low: verdict.ci95_low,
+      ci95High: verdict.ci95_high,
+      nObs: verdict.n_obs,
+      converged: verdict.convergence.converged,
+      priorSource: verdict.prior_source,
+      window: verdict.window,
+      reachable,
+      survival,
+    };
+  }
+
+  /** Construit les tags NIP-85 kind 30382 à partir d'un ScoreEvent. Exposé pour les tests. */
+  buildTags(ev: ScoreEvent): string[][] {
+    return [
+      ['d', ev.lnPubkey],
+      ['n', 'lightning'],
+      ['alias', ev.alias],
+      ['verdict', ev.verdict],
+      ['p_success', ev.pSuccess.toFixed(4)],
+      ['ci95_low', ev.ci95Low.toFixed(4)],
+      ['ci95_high', ev.ci95High.toFixed(4)],
+      ['n_obs', String(Math.round(ev.nObs))],
+      ['converged', ev.converged ? 'true' : 'false'],
+      ['prior_source', ev.priorSource],
+      ['window', ev.window],
+      ['reachable', ev.reachable ? 'true' : 'false'],
+      ['survival', ev.survival],
+    ];
   }
 
   async publishScores(): Promise<{ published: number; errors: number; skipped: number; total: number }> {
@@ -90,39 +168,14 @@ export class NostrPublisher {
     const sk = hexToBytes(this.skHex);
 
     const agents = this.agentRepo.findScoredAbove(this.minScore);
-    const reachableSet = new Set(
-      this.probeRepo ? this.getReachableHashes() : [],
-    );
 
     const allEvents: ScoreEvent[] = [];
     for (const agent of agents) {
-      if (!agent.public_key) continue;
-
-      const snap = this.snapshotRepo.findLatestByAgent(agent.public_key_hash);
-      if (!snap) continue;
-
-      let components: Record<string, number>;
-      try {
-        components = JSON.parse(snap.components);
-      } catch { continue; }
-
-      const survival = this.survivalService.compute(agent);
-      const reachable = reachableSet.has(agent.public_key_hash);
-
-      const verdict = snap.score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : snap.score >= 30 ? 'UNKNOWN' : 'RISKY';
-
-      allEvents.push({
-        lnPubkey: agent.public_key,
-        alias: agent.alias ?? agent.public_key.slice(0, 16),
-        score: Math.round(snap.score),
-        verdict,
-        reachable,
-        components,
-        survival: survival.prediction,
-      });
+      const ev = this.buildScoreEvent(agent);
+      if (ev) allEvents.push(ev);
     }
 
-    // Delta filtering: only publish events whose score/verdict/components
+    // Delta filtering: only publish events whose bayesian fingerprint
     // actually changed since the last cycle. On cold start (empty map),
     // everything is "new" and gets published.
     const isFirstCycle = this.lastPublished.size === 0;
@@ -148,11 +201,11 @@ export class NostrPublisher {
         minScore: this.minScore,
         relays: this.relays,
       },
-      'Publishing scores to Nostr (delta mode)',
+      'Publishing bayesian verdicts to Nostr (delta mode)',
     );
 
     if (toPublish.length === 0) {
-      logger.info('No score changes since last cycle — nothing to publish');
+      logger.info('No verdict changes since last cycle — nothing to publish');
       return { published: 0, errors: 0, skipped, total: allEvents.length };
     }
 
@@ -190,21 +243,7 @@ export class NostrPublisher {
         const template = {
           kind: KIND_TRUSTED_ASSERTION,
           created_at: Math.floor(Date.now() / 1000),
-          tags: [
-            ['d', ev.lnPubkey],
-            ['n', 'lightning'],
-            ['rank', String(ev.score)],
-            ['alias', ev.alias],
-            ['score', String(ev.score)],
-            ['verdict', ev.verdict],
-            ['reachable', ev.reachable ? 'true' : 'false'],
-            ['survival', ev.survival],
-            ['volume', String(ev.components.volume ?? 0)],
-            ['reputation', String(ev.components.reputation ?? 0)],
-            ['seniority', String(ev.components.seniority ?? 0)],
-            ['regularity', String(ev.components.regularity ?? 0)],
-            ['diversity', String(ev.components.diversity ?? 0)],
-          ],
+          tags: this.buildTags(ev),
           content: '',
         };
 
@@ -287,7 +326,7 @@ export class NostrPublisher {
 
     logger.info(
       { published, errors, skipped, total: allEvents.length, relays: connections.length },
-      'Nostr score publish complete',
+      'Nostr bayesian verdict publish complete',
     );
     return { published, errors, skipped, total: allEvents.length };
   }

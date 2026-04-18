@@ -28,6 +28,15 @@ import { ChannelSnapshotRepository } from '../repositories/channelSnapshotReposi
 import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
 import { SurvivalService } from '../services/survivalService';
+import {
+  EndpointAggregateRepository,
+  ServiceAggregateRepository,
+  OperatorAggregateRepository,
+  NodeAggregateRepository,
+  RouteAggregateRepository,
+} from '../repositories/aggregatesRepository';
+import { BayesianScoringService } from '../services/bayesianScoringService';
+import { BayesianVerdictService } from '../services/bayesianVerdictService';
 import { runRetentionCleanup } from '../database/retention';
 import { RETENTION_INTERVAL_MS } from '../config/retention';
 import { DualWriteLogger } from '../utils/dualWriteLogger';
@@ -457,12 +466,35 @@ async function main(): Promise<void> {
         const { NostrPublisher } = await import('../nostr/publisher');
         logger.info('Nostr publisher module loaded successfully');
         const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
+        // Bayesian verdict service — C10 branchement dans le pipeline Nostr :
+        // les tags publiés sont 100 % bayésiens (plus de composite legacy).
+        const endpointAggRepoNostr = new EndpointAggregateRepository(db);
+        const serviceAggRepoNostr = new ServiceAggregateRepository(db);
+        const operatorAggRepoNostr = new OperatorAggregateRepository(db);
+        const nodeAggRepoNostr = new NodeAggregateRepository(db);
+        const routeAggRepoNostr = new RouteAggregateRepository(db);
+        const bayesianScoringServiceNostr = new BayesianScoringService(
+          endpointAggRepoNostr,
+          serviceAggRepoNostr,
+          operatorAggRepoNostr,
+          nodeAggRepoNostr,
+          routeAggRepoNostr,
+        );
+        const bayesianVerdictServiceNostr = new BayesianVerdictService(db, bayesianScoringServiceNostr);
         const nostrRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim());
-        const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
-          privateKeyHex: config.NOSTR_PRIVATE_KEY,
-          relays: nostrRelays,
-          minScore: config.NOSTR_MIN_SCORE,
-        });
+        const nostrPublisher = new NostrPublisher(
+          agentRepo,
+          probeRepo,
+          snapshotRepo,
+          scoringService,
+          survivalService,
+          bayesianVerdictServiceNostr,
+          {
+            privateKeyHex: config.NOSTR_PRIVATE_KEY,
+            relays: nostrRelays,
+            minScore: config.NOSTR_MIN_SCORE,
+          },
+        );
 
         // Stream B — zap-receipt mining + nostr-indexed publishing
         const mappingsPath = join(dirname(config.DB_PATH), 'nostr-mappings.json');
