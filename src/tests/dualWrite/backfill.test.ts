@@ -177,6 +177,9 @@ describe('backfillTransactionsV31', () => {
 
     expect(res.service_probes.updated).toBe(1);
     expect(res.attestations.updated).toBe(1);
+    // Voie #3 dry-run must exclude rows already claimed by #1/#2 in this
+    // pass; otherwise it would over-report by the #1+#2 hit count.
+    expect(res.observer.updated).toBe(0);
     const rowProbe = readTx(db, 'tx-dry-1');
     const rowReport = readTx(db, 'tx-dry-2');
     expect(rowProbe.endpoint_hash).toBeNull();
@@ -198,7 +201,7 @@ describe('backfillTransactionsV31', () => {
 
     // Rewind the checkpoint so the probe row is scanned again; the guard
     // must still prevent a second write.
-    saveCheckpoint(checkpointPath, { service_probes_last_id: 0, attestations_last_id: 0 });
+    saveCheckpoint(checkpointPath, { service_probes_last_id: 0, attestations_last_id: 0, transactions_last_id: 0 });
     const second = runBackfill({ db, checkpointPath });
     expect(second.service_probes.scanned).toBe(1);
     expect(second.service_probes.updated).toBe(0);
@@ -283,16 +286,16 @@ describe('backfillTransactionsV31', () => {
   it('saveCheckpoint / loadCheckpoint round-trip; missing file → zeroed checkpoint', () => {
     const missing = path.join(tmpDir, 'missing.json');
     const empty = loadCheckpoint(missing);
-    expect(empty).toEqual({ service_probes_last_id: 0, attestations_last_id: 0 });
+    expect(empty).toEqual({ service_probes_last_id: 0, attestations_last_id: 0, transactions_last_id: 0 });
 
-    saveCheckpoint(missing, { service_probes_last_id: 42, attestations_last_id: 7 });
+    saveCheckpoint(missing, { service_probes_last_id: 42, attestations_last_id: 7, transactions_last_id: 13 });
     const loaded = loadCheckpoint(missing);
-    expect(loaded).toEqual({ service_probes_last_id: 42, attestations_last_id: 7 });
+    expect(loaded).toEqual({ service_probes_last_id: 42, attestations_last_id: 7, transactions_last_id: 13 });
 
     // Corrupt the file — loader must degrade to zero rather than crash.
     fs.writeFileSync(missing, '{"service_probes_last_id": "not-a-number"');
     const fallback = loadCheckpoint(missing);
-    expect(fallback).toEqual({ service_probes_last_id: 0, attestations_last_id: 0 });
+    expect(fallback).toEqual({ service_probes_last_id: 0, attestations_last_id: 0, transactions_last_id: 0 });
   });
 
   it('service_probes rows with NULL payment_hash are excluded at the SELECT level', () => {
@@ -301,5 +304,78 @@ describe('backfillTransactionsV31', () => {
     // prevent the probe from being scanned at all.
     const res = runBackfill({ db, checkpointPath });
     expect(res.service_probes.scanned).toBe(0);
+  });
+
+  it('voie #3 observer fallback enriches orphan tx rows (source=observer, operator_id=receiver_hash, window_bucket=UTC date); endpoint_hash stays NULL', () => {
+    seedLegacyTx(db, { tx_id: 'tx-obs-1', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-obs-1', protocol: 'l402' });
+    seedLegacyTx(db, { tx_id: 'tx-obs-2', sender: senderHash, receiver: operatorHash, payment_hash: 'ph-obs-2', protocol: 'keysend' });
+
+    const res = runBackfill({ db, checkpointPath });
+
+    expect(res.observer.scanned).toBe(2);
+    expect(res.observer.updated).toBe(2);
+
+    const r1 = readTx(db, 'tx-obs-1');
+    expect(r1.endpoint_hash).toBeNull();
+    expect(r1.operator_id).toBe(receiverHash);
+    expect(r1.source).toBe('observer');
+    expect(r1.window_bucket).toBe(EXPECTED_BUCKET);
+
+    const r2 = readTx(db, 'tx-obs-2');
+    expect(r2.endpoint_hash).toBeNull();
+    expect(r2.operator_id).toBe(operatorHash);
+    expect(r2.source).toBe('observer');
+    expect(r2.window_bucket).toBe(EXPECTED_BUCKET);
+  });
+
+  it('voie #3 second run is a no-op on observer-tagged rows (WHERE source IS NULL guard)', () => {
+    seedLegacyTx(db, { tx_id: 'tx-obs-idem', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-obs-idem' });
+
+    const first = runBackfill({ db, checkpointPath });
+    expect(first.observer.updated).toBe(1);
+    const originalRow = readTx(db, 'tx-obs-idem');
+
+    // Rewind the checkpoint — the SELECT guard `source IS NULL` must still
+    // exclude the already-tagged row, so scanned=0 and updated=0.
+    saveCheckpoint(checkpointPath, { service_probes_last_id: 0, attestations_last_id: 0, transactions_last_id: 0 });
+    const second = runBackfill({ db, checkpointPath });
+    expect(second.observer.scanned).toBe(0);
+    expect(second.observer.updated).toBe(0);
+
+    // Row unchanged after the second pass.
+    const afterRow = readTx(db, 'tx-obs-idem');
+    expect(afterRow).toEqual(originalRow);
+  });
+
+  it('voie #3 does NOT overwrite rows already tagged by probe (#1) or report (#2)', () => {
+    // Probe row — voie #1 should claim it; voie #3 must leave it alone.
+    const url = 'https://svc.example.com/priority';
+    seedServiceProbe(db, { url, agent_hash: operatorHash, payment_hash: 'ph-pri-1' });
+    seedLegacyTx(db, { tx_id: 'tx-pri-probe', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-pri-1' });
+
+    // Report row — voie #2 should claim it; voie #3 must leave it alone.
+    seedLegacyTx(db, { tx_id: 'tx-pri-report', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-pri-2' });
+    seedAttestation(db, { attestation_id: 'att-pri', tx_id: 'tx-pri-report', attester: senderHash, subject: operatorHash });
+
+    // Orphan row — voie #3 claims this one.
+    seedLegacyTx(db, { tx_id: 'tx-pri-orphan', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-pri-3' });
+
+    const res = runBackfill({ db, checkpointPath });
+
+    expect(res.service_probes.updated).toBe(1);
+    expect(res.attestations.updated).toBe(1);
+    expect(res.observer.updated).toBe(1);
+
+    const probeRow = readTx(db, 'tx-pri-probe');
+    expect(probeRow.source).toBe('probe');
+    expect(probeRow.endpoint_hash).toBe(endpointHash(url));
+
+    const reportRow = readTx(db, 'tx-pri-report');
+    expect(reportRow.source).toBe('report');
+    expect(reportRow.operator_id).toBe(operatorHash);
+
+    const orphanRow = readTx(db, 'tx-pri-orphan');
+    expect(orphanRow.source).toBe('observer');
+    expect(orphanRow.operator_id).toBe(receiverHash);
   });
 });

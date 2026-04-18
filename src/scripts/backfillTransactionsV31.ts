@@ -9,7 +9,8 @@
 // that correlate with those auxiliary tables, we derive the enrichment
 // values and fill in the 4 new columns.
 //
-// Sources scanned (order matters — service_probes is most URL-rich):
+// Sources scanned (order matters — service_probes is most URL-rich; observer
+// fallback runs last so probe/report wins when available):
 //   1. service_probes.payment_hash ↔ transactions.payment_hash
 //      → endpoint_hash = sha256(canonicalize(url))
 //        operator_id   = service_probes.agent_hash
@@ -20,12 +21,27 @@
 //        operator_id   = attestations.subject_hash
 //        source        = 'report'
 //        window_bucket = UTC date of transactions.timestamp
+//   3. observer fallback: transactions rows with source IS NULL after #1/#2
+//      → endpoint_hash = NULL (no URL derivable from a bare tx row)
+//        operator_id   = transactions.receiver_hash
+//          (receiver, not sender: in L402/keysend/bolt11 the party credited
+//          with the invoice is the service operator being paid — the party
+//          whose reputation the enrichment attributes observation to. Sender
+//          is the client, which may be a one-shot anonymous agent.)
+//        source        = 'observer'
+//        window_bucket = UTC date of transactions.timestamp
 //
-// Idempotence is enforced by the `WHERE endpoint_hash IS NULL` guard on
-// every UPDATE: a re-run after a partial failure never overwrites a row
-// that's already enriched. The checkpoint file carries the last scanned
-// rowid per source so a long run can resume without rescanning billions
-// of rows on restart.
+// Idempotence is enforced by source-specific guards on every UPDATE:
+//   - voies #1 & #2: `WHERE endpoint_hash IS NULL` — safe because only #1 sets
+//     endpoint_hash, so #2/#3 never touch a probe-enriched row.
+//   - voie #3: `WHERE source IS NULL` — required because #2 also leaves
+//     endpoint_hash NULL; guarding on endpoint_hash would cause #3 to
+//     re-overwrite report rows as observer on every run.
+// The ordering (#1 → #2 → #3) also means probe/report naturally upgrade an
+// observer-tagged row on the NEXT run when new probe/attestation data
+// arrives, since their NULL-endpoint_hash guard still matches.
+// The checkpoint file carries the last scanned rowid per source so a long
+// run can resume without rescanning billions of rows on restart.
 //
 // --dry-run: the script counts how many rows *would* be updated per source
 // without issuing any write. Emits the same counters under the `wouldUpdate`
@@ -43,6 +59,7 @@ import { windowBucket } from '../utils/dualWriteLogger';
 export interface BackfillCheckpoint {
   service_probes_last_id: number;
   attestations_last_id: number;
+  transactions_last_id: number;
 }
 
 export interface BackfillOptions {
@@ -60,13 +77,14 @@ export interface BackfillOptions {
 export interface BackfillResult {
   service_probes: { scanned: number; updated: number };
   attestations: { scanned: number; updated: number };
+  observer: { scanned: number; updated: number };
   checkpoint: BackfillCheckpoint;
 }
 
 const DEFAULT_CHUNK = 1000;
 
 function emptyCheckpoint(): BackfillCheckpoint {
-  return { service_probes_last_id: 0, attestations_last_id: 0 };
+  return { service_probes_last_id: 0, attestations_last_id: 0, transactions_last_id: 0 };
 }
 
 export function loadCheckpoint(checkpointPath: string): BackfillCheckpoint {
@@ -79,6 +97,7 @@ export function loadCheckpoint(checkpointPath: string): BackfillCheckpoint {
     return {
       service_probes_last_id: Number(parsed.service_probes_last_id) || 0,
       attestations_last_id: Number(parsed.attestations_last_id) || 0,
+      transactions_last_id: Number(parsed.transactions_last_id) || 0,
     };
   } catch {
     return emptyCheckpoint();
@@ -106,8 +125,16 @@ export function runBackfillChunk(opts: BackfillOptions): BackfillResult {
   const result: BackfillResult = {
     service_probes: { scanned: 0, updated: 0 },
     attestations: { scanned: 0, updated: 0 },
+    observer: { scanned: 0, updated: 0 },
     checkpoint: cp,
   };
+
+  // Dry-run fidelity: voie #3 scans the SAME set of rows that voies #1 and #2
+  // would update, because in dry-run no UPDATE fires first. Without tracking,
+  // dry-run would over-count observer rows by the #1+#2 hit count. Real mode
+  // is unaffected — the UPDATEs in #1/#2 flip `source` before #3's SELECT, so
+  // the source-IS-NULL filter excludes them naturally.
+  const claimedInDryRun = new Set<string>();
 
   // ---- Phase 1: service_probes → transactions ----
   // service_probes without a payment_hash cannot be joined back to any tx
@@ -155,12 +182,13 @@ export function runBackfillChunk(opts: BackfillOptions): BackfillResult {
       );
       result.service_probes.updated += info.changes;
     } else {
-      // Dry-run: count rows that WOULD update. A SELECT COUNT with the
-      // same predicate matches reality without mutating.
-      const countRow = opts.db.prepare(
-        'SELECT COUNT(*) as c FROM transactions WHERE payment_hash = ? AND endpoint_hash IS NULL',
-      ).get(row.payment_hash) as { c: number };
-      result.service_probes.updated += countRow.c;
+      // Dry-run: enumerate matching tx_ids rather than just COUNT so voie #3
+      // can exclude them from its own would-update tally.
+      const matches = opts.db.prepare(
+        'SELECT tx_id FROM transactions WHERE payment_hash = ? AND endpoint_hash IS NULL',
+      ).all(row.payment_hash) as Array<{ tx_id: string }>;
+      result.service_probes.updated += matches.length;
+      for (const m of matches) claimedInDryRun.add(m.tx_id);
     }
     cp.service_probes_last_id = row.id;
   }
@@ -198,9 +226,59 @@ export function runBackfillChunk(opts: BackfillOptions): BackfillResult {
       const countRow = opts.db.prepare(
         'SELECT COUNT(*) as c FROM transactions WHERE tx_id = ? AND endpoint_hash IS NULL',
       ).get(row.tx_id) as { c: number };
+      if (countRow.c > 0) claimedInDryRun.add(row.tx_id);
       result.attestations.updated += countRow.c;
     }
     cp.attestations_last_id = row.rid;
+  }
+
+  // ---- Phase 3: observer fallback on orphan transactions ----
+  // Any row still carrying source=NULL after #1 and #2 is a passively-observed
+  // tx: seen on-chain / in logs but never correlated with a URL probe or a
+  // report. The guard is `source IS NULL` (not `endpoint_hash IS NULL`), see
+  // the file-level comment for the rationale.
+  const orphansStmt = opts.db.prepare(`
+    SELECT rowid as rid, tx_id, receiver_hash, timestamp
+    FROM transactions
+    WHERE rowid > ? AND source IS NULL
+    ORDER BY rowid
+    LIMIT ?
+  `);
+  const updateObserverStmt = opts.db.prepare(`
+    UPDATE transactions
+    SET operator_id = ?, source = ?, window_bucket = ?
+    WHERE tx_id = ? AND source IS NULL
+  `);
+
+  const orphanRows = orphansStmt.all(cp.transactions_last_id, chunk) as Array<{
+    rid: number;
+    tx_id: string;
+    receiver_hash: string;
+    timestamp: number;
+  }>;
+
+  for (const row of orphanRows) {
+    // Skip rows that voies #1/#2 will claim in the same real-mode pass (dry-run
+    // only — in real mode #1/#2 already ran UPDATEs so the SELECT above
+    // wouldn't have returned those rows).
+    if (dryRun && claimedInDryRun.has(row.tx_id)) {
+      cp.transactions_last_id = row.rid;
+      continue;
+    }
+
+    result.observer.scanned++;
+    const bucket = windowBucket(row.timestamp);
+
+    if (!dryRun) {
+      const info = updateObserverStmt.run(row.receiver_hash, 'observer', bucket, row.tx_id);
+      result.observer.updated += info.changes;
+    } else {
+      const countRow = opts.db.prepare(
+        'SELECT COUNT(*) as c FROM transactions WHERE tx_id = ? AND source IS NULL',
+      ).get(row.tx_id) as { c: number };
+      result.observer.updated += countRow.c;
+    }
+    cp.transactions_last_id = row.rid;
   }
 
   if (!dryRun && checkpointPath) {
@@ -220,6 +298,7 @@ export function runBackfill(opts: BackfillOptions): BackfillResult {
   const aggregate: BackfillResult = {
     service_probes: { scanned: 0, updated: 0 },
     attestations: { scanned: 0, updated: 0 },
+    observer: { scanned: 0, updated: 0 },
     checkpoint: starting,
   };
   let working: BackfillCheckpoint = { ...starting };
@@ -233,21 +312,39 @@ export function runBackfill(opts: BackfillOptions): BackfillResult {
     aggregate.service_probes.updated += chunk.service_probes.updated;
     aggregate.attestations.scanned += chunk.attestations.scanned;
     aggregate.attestations.updated += chunk.attestations.updated;
+    aggregate.observer.scanned += chunk.observer.scanned;
+    aggregate.observer.updated += chunk.observer.updated;
     working = { ...chunk.checkpoint };
     aggregate.checkpoint = working;
-    if (chunk.service_probes.scanned === 0 && chunk.attestations.scanned === 0) break;
+    if (
+      chunk.service_probes.scanned === 0
+      && chunk.attestations.scanned === 0
+      && chunk.observer.scanned === 0
+    ) break;
   }
   return aggregate;
 }
 
 // ---- CLI entry point ----
+
+/** Default checkpoint location. Picks XDG_STATE_HOME when the env var is set
+ *  (Linux desktop / systemd convention), otherwise /tmp — which is writable
+ *  in every sane container, including our read_only: true rootfs where the
+ *  app's working dir is RO but /tmp is a tmpfs mount. Pre-change we wrote to
+ *  process.cwd() + '.backfill-transactions-v31.checkpoint.json' and that
+ *  threw EROFS on prod containers. */
+function defaultCheckpointPath(): string {
+  const base = process.env.XDG_STATE_HOME ?? '/tmp';
+  return path.join(base, 'backfill-transactions-v31.checkpoint.json');
+}
+
 function parseArgs(argv: string[]): {
   db: string;
   dryRun: boolean;
   checkpoint: string;
   chunkSize: number;
 } {
-  const args = { db: '', dryRun: false, checkpoint: '.backfill-transactions-v31.checkpoint.json', chunkSize: DEFAULT_CHUNK };
+  const args = { db: '', dryRun: false, checkpoint: defaultCheckpointPath(), chunkSize: DEFAULT_CHUNK };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
@@ -274,6 +371,7 @@ function main(): void {
       mode: args.dryRun ? 'dry-run' : 'live',
       service_probes: res.service_probes,
       attestations: res.attestations,
+      observer: res.observer,
       checkpoint: res.checkpoint,
     }, null, 2) + '\n');
   } finally {
