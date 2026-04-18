@@ -36,9 +36,11 @@ export interface ServiceMetadata {
 export interface ServiceSearchFilters {
   q?: string;
   category?: string;
-  minScore?: number;
   minUptime?: number;
-  sort?: 'score' | 'price' | 'uptime';
+  /** SQL-level sort axis. `activity` is the default (ORDER BY check_count DESC).
+   *  `p_success` sort is delegated to the controller (requires per-row agent
+   *  lookup, so it's a post-filter re-sort in JS). */
+  sort?: 'p_success' | 'activity' | 'price' | 'uptime';
   limit?: number;
   offset?: number;
 }
@@ -150,11 +152,14 @@ export class ServiceEndpointRepository {
     const SORT_SQL: Record<string, string> = {
       price: 'se.service_price_sats ASC',
       uptime: '(CAST(se.success_count AS REAL) / MAX(se.check_count, 1)) DESC',
-      score: 'se.check_count DESC',
+      activity: 'se.check_count DESC',
+      // `p_success` at the SQL layer is a no-op fallback to activity; the
+      // controller re-sorts in JS with the per-row Bayesian posterior.
+      p_success: 'se.check_count DESC',
     };
     const sortKey = typeof filters.sort === 'string' && Object.prototype.hasOwnProperty.call(SORT_SQL, filters.sort)
       ? filters.sort
-      : 'score';
+      : 'activity';
     const sortCol = SORT_SQL[sortKey];
 
     const limit = Math.min(filters.limit ?? 20, 100);

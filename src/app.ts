@@ -194,7 +194,7 @@ export function createApp() {
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
-  const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, scoringService);
+  const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
 

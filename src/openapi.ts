@@ -739,6 +739,42 @@ export const openapiSpec = {
           },
         ],
       },
+      BayesianConvergence: {
+        type: 'object',
+        required: ['converged', 'sources_above_threshold', 'threshold'],
+        properties: {
+          converged: { type: 'boolean', description: 'True when ≥2 sources exceed p_success threshold (SAFE-eligible condition).' },
+          sources_above_threshold: {
+            type: 'array',
+            items: { type: 'string', enum: ['probe', 'report', 'paid'] },
+            description: 'Sources whose marginal posterior p_success ≥ threshold.',
+          },
+          threshold: { type: 'number', minimum: 0, maximum: 1, description: 'Per-source p_success threshold (default 0.80).' },
+        },
+      },
+      BayesianScoreBlock: {
+        type: 'object',
+        description: 'Canonical Bayesian posterior block — shared shape across all public endpoints (verdict, decide, profile, best-route, service, endpoint).',
+        required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'window', 'sources', 'convergence'],
+        properties: {
+          p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Hierarchical Beta-Binomial posterior mean.' },
+          ci95_low:  { type: 'number', minimum: 0, maximum: 1, description: 'Lower bound of the 95% credible interval.' },
+          ci95_high: { type: 'number', minimum: 0, maximum: 1, description: 'Upper bound of the 95% credible interval.' },
+          n_obs: { type: 'number', description: 'Weighted sum of successes + failures across all sources.' },
+          verdict: { type: 'string', enum: ['SAFE', 'UNKNOWN', 'RISKY', 'INSUFFICIENT'], description: 'Priority: INSUFFICIENT > RISKY > UNKNOWN > SAFE.' },
+          window: { type: 'string', enum: ['24h', '7d', '30d'], description: 'Temporal window used for aggregation.' },
+          sources: {
+            type: 'object',
+            required: ['probe', 'report', 'paid'],
+            properties: {
+              probe:  { $ref: '#/components/schemas/BayesianSourceBlock' },
+              report: { $ref: '#/components/schemas/BayesianSourceBlock' },
+              paid:   { $ref: '#/components/schemas/BayesianSourceBlock' },
+            },
+          },
+          convergence: { $ref: '#/components/schemas/BayesianConvergence' },
+        },
+      },
       PaginationMeta: {
         type: 'object',
         properties: {
@@ -1310,12 +1346,8 @@ export const openapiSpec = {
             lastSeen: { type: 'integer' },
             source: { type: 'string' },
           } },
-          score: { type: 'object', properties: {
-            total: { type: 'integer' },
-            components: { $ref: '#/components/schemas/ScoreComponents' },
-            confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
-            rank: { type: ['integer', 'null'], description: '1-based rank among all agents by score' },
-          } },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
+          rank: { type: ['integer', 'null'], description: '1-based rank among all agents by p_success (null when no posterior has converged).' },
           reports: { type: 'object', properties: {
             total: { type: 'integer' },
             successes: { type: 'integer' },
@@ -1328,7 +1360,6 @@ export const openapiSpec = {
           channelFlow: { oneOf: [{ type: 'object', properties: { net7d: { type: ['integer', 'null'] }, capacityDelta7d: { type: ['integer', 'null'] }, trend: { type: 'string', enum: ['growing', 'stable', 'declining'] } } }, { type: 'null' }], description: 'Net channel change over 7 days' },
           capacityHealth: { oneOf: [{ type: 'object', properties: { drainRate24h: { type: ['number', 'null'] }, drainRate7d: { type: ['number', 'null'] }, trend: { type: 'string', enum: ['growing', 'stable', 'declining'] } } }, { type: 'null' }], description: 'Capacity drain rate' },
           feeVolatility: { oneOf: [{ type: 'object', properties: { index: { type: 'integer' }, interpretation: { type: 'string', enum: ['stable', 'moderate', 'volatile'] }, changesLast7d: { type: 'integer' } } }, { type: 'null' }], description: 'Fee policy volatility index' },
-          delta: { $ref: '#/components/schemas/ScoreDelta' },
           riskProfile: { $ref: '#/components/schemas/RiskProfile' },
           evidence: { $ref: '#/components/schemas/ScoreEvidence' },
           flags: { type: 'array', items: { type: 'string' } },

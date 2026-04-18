@@ -36,10 +36,9 @@ import { ValidationError, ConflictError } from '../errors';
 import { v4 as uuidv4 } from 'uuid';
 import type { AnonymousReportRequest } from '../middleware/auth';
 import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
-import { confidenceToNumber } from '../utils/confidence';
 import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
-import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
+import { PROBE_FRESHNESS_TTL } from '../config/scoring';
 import { WALLET_PROVIDERS } from '../config/walletProviders';
 import { verdictTotal } from '../middleware/metrics';
 import { logTokenQuery } from '../utils/tokenQueryLog';
@@ -471,6 +470,10 @@ export class V2Controller {
       // "interest in this target" so the caller can later report outcomes.
       logTokenQuery(this.db, req.headers.authorization, hash, req.requestId);
 
+      // Canonical public score is the Bayesian posterior. Composite `scoreResult`
+      // is still computed for internal use (risk classifier, unreachable flag guard)
+      // until Commit 8 retires ScoringService/TrendService entirely.
+      const bayesian = this.agentService.toBayesianBlock(hash);
       const scoreResult = this.scoringService.getScore(hash);
       const delta = this.trendService.computeDeltas(hash, scoreResult.total);
       const rank = this.agentRepo.getRank(hash);
@@ -503,9 +506,9 @@ export class V2Controller {
         // tier-1k probe only — higher tiers surface via maxRoutableAmount
         const probe = this.probeRepo.findLatestAtTier(hash, 1000);
         if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
-          // Same guard as verdictService: fresh gossip + high score = positional failure, not dead node
+          // Same guard as verdictService: fresh gossip + SAFE verdict = positional failure, not dead node
           const gossipFresh = (now - agent.last_seen) < DAY;
-          if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) {
+          if (!gossipFresh || bayesian.verdict !== 'SAFE') {
             flags.push('unreachable');
           }
         }
@@ -550,12 +553,8 @@ export class V2Controller {
             lastSeen: agent.last_seen,
             source: agent.source,
           },
-          score: {
-            total: scoreResult.total,
-            components: scoreResult.components,
-            confidence: confidenceToNumber(scoreResult.confidence),
-            rank,
-          },
+          bayesian,
+          rank,
           reports: {
             total: reports.total,
             successes: reports.successes,
@@ -574,7 +573,6 @@ export class V2Controller {
           channelFlow,
           capacityHealth,
           feeVolatility,
-          delta,
           riskProfile,
           evidence,
           flags,
