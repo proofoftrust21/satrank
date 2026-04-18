@@ -39,6 +39,13 @@ import {
   WEIGHT_REPORT_NIP98,
   CONVERGENCE_MIN_SOURCES,
   CONVERGENCE_P_THRESHOLD,
+  SAFE_P_THRESHOLD,
+  SAFE_CI95_LOW_MIN,
+  SAFE_MIN_N_OBS,
+  RISKY_P_THRESHOLD,
+  RISKY_CI95_HIGH_MAX,
+  UNKNOWN_CI95_INTERVAL_MAX,
+  UNKNOWN_MIN_N_OBS,
   type BayesianWindow,
   type BayesianSource,
 } from '../config/bayesianConfig';
@@ -89,6 +96,27 @@ export interface ConvergenceResult {
   converged: boolean;
   sourcesAboveThreshold: BayesianSource[];
   threshold: number;
+}
+
+/** Verdict dérivé de (posterior combiné, convergence).
+ *  - SAFE : fort signal positif + convergence multi-sources
+ *  - RISKY : signal négatif clair (p bas OU borne haute de l'IC basse)
+ *  - UNKNOWN : IC trop large, verdict indéterminé
+ *  - INSUFFICIENT : pas assez d'observations pour conclure */
+export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT';
+
+export interface VerdictResult {
+  verdict: Verdict;
+  /** Raison lisible du verdict — utile pour debug / explainability dans l'UI. */
+  reason: string;
+}
+
+/** Agrégat combiné (toutes sources) + convergence — entrée de computeVerdict. */
+export interface AggregatePosterior {
+  pSuccess: number;
+  ci95Low: number;
+  ci95High: number;
+  nObs: number;
 }
 
 export class BayesianScoringService {
@@ -249,6 +277,61 @@ export class BayesianScoringService {
       report: build(accumulators.report),
       paid:   build(accumulators.paid),
     };
+  }
+
+  /** Mapping déterministe (posterior combiné, convergence) → verdict.
+   *
+   *  Ordre d'évaluation strict (first-match) :
+   *    1. INSUFFICIENT : n_obs < UNKNOWN_MIN_N_OBS (trop peu pour trancher).
+   *    2. RISKY        : p_success < RISKY_P_THRESHOLD (0.50)
+   *                      OU ci95_high < RISKY_CI95_HIGH_MAX (0.65).
+   *                      Priorité haute — un signal négatif fort ne doit
+   *                      jamais être écrasé par "UNKNOWN".
+   *    3. UNKNOWN      : (ci95_high - ci95_low) > UNKNOWN_CI95_INTERVAL_MAX (0.40).
+   *                      IC trop large = incertitude fondamentale.
+   *    4. SAFE         : p ≥ 0.80 ET ci95_low ≥ 0.65 ET n_obs ≥ 10 ET convergence.
+   *                      Tous les garde-fous alignés.
+   *    5. UNKNOWN      : tout le reste — zone grise "pas assez clair pour SAFE". */
+  computeVerdict(
+    combined: AggregatePosterior,
+    convergence: ConvergenceResult,
+  ): VerdictResult {
+    const { pSuccess, ci95Low, ci95High, nObs } = combined;
+    const interval = ci95High - ci95Low;
+
+    // 1. INSUFFICIENT (prioritaire — ne pas masquer l'incertitude par un verdict)
+    if (nObs < UNKNOWN_MIN_N_OBS) {
+      return { verdict: 'INSUFFICIENT', reason: `n_obs=${nObs} < ${UNKNOWN_MIN_N_OBS}` };
+    }
+
+    // 2. RISKY (prioritaire sur UNKNOWN — signal négatif ne s'efface pas)
+    if (pSuccess < RISKY_P_THRESHOLD) {
+      return { verdict: 'RISKY', reason: `p_success=${pSuccess.toFixed(3)} < ${RISKY_P_THRESHOLD}` };
+    }
+    if (ci95High < RISKY_CI95_HIGH_MAX) {
+      return { verdict: 'RISKY', reason: `ci95_high=${ci95High.toFixed(3)} < ${RISKY_CI95_HIGH_MAX}` };
+    }
+
+    // 3. UNKNOWN par incertitude (IC trop large)
+    if (interval > UNKNOWN_CI95_INTERVAL_MAX) {
+      return { verdict: 'UNKNOWN', reason: `ci95_width=${interval.toFixed(3)} > ${UNKNOWN_CI95_INTERVAL_MAX}` };
+    }
+
+    // 4. SAFE — toutes les conditions alignées
+    if (
+      pSuccess >= SAFE_P_THRESHOLD &&
+      ci95Low >= SAFE_CI95_LOW_MIN &&
+      nObs >= SAFE_MIN_N_OBS &&
+      convergence.converged
+    ) {
+      return { verdict: 'SAFE', reason: `p=${pSuccess.toFixed(3)} ≥ ${SAFE_P_THRESHOLD}, ci95_low=${ci95Low.toFixed(3)} ≥ ${SAFE_CI95_LOW_MIN}, converged (${convergence.sourcesAboveThreshold.length} sources)` };
+    }
+
+    // 5. UNKNOWN (fallback — zone grise : ni franchement positif, ni négatif)
+    if (!convergence.converged) {
+      return { verdict: 'UNKNOWN', reason: `no convergence (${convergence.sourcesAboveThreshold.length}/${CONVERGENCE_MIN_SOURCES} sources ≥ ${CONVERGENCE_P_THRESHOLD})` };
+    }
+    return { verdict: 'UNKNOWN', reason: `p=${pSuccess.toFixed(3)}, ci95=[${ci95Low.toFixed(3)}, ${ci95High.toFixed(3)}] — zone grise` };
   }
 
   /** Vérifie la convergence multi-sources.
