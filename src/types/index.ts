@@ -62,12 +62,22 @@ export interface Attestation {
   weight: number;
 }
 
+/** Bayesian posterior snapshot (Phase 3 C8). The legacy `score` +
+ *  `components` columns were dropped in v34; this shape reflects the new
+ *  bayesian-only schema. Historical rows written before v34 have all
+ *  bayesian fields null — queries in SnapshotRepository filter these out. */
 export interface ScoreSnapshot {
   snapshot_id: string;
   agent_hash: string;
-  score: number;
-  components: string;
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  posterior_alpha: number;
+  posterior_beta: number;
+  window: BayesianWindow;
   computed_at: number;
+  updated_at: number;
 }
 
 // Probe results — stored in probe_results table
@@ -273,15 +283,15 @@ export interface NetworkStats {
 // Temporal delta types
 export type TrendDirection = 'rising' | 'stable' | 'falling';
 
+/** Delta of the Bayesian p_success over rolling windows. Numeric range
+ *  [-1, +1] since p_success ∈ [0, 1]. `deltaValid` is kept on the envelope
+ *  for SDK compat and flips to false only when no 7d comparator exists
+ *  (cold start); it is NOT tied to any methodology cutoff in the bayesian
+ *  world — Phase 3 replaced the composite regime outright. */
 export interface ScoreDelta {
   delta24h: number | null;
   delta7d: number | null;
   delta30d: number | null;
-  /** False when the 7d comparator snapshot predates the Option D methodology
-   *  rollout (METHODOLOGY_CHANGE_AT_UNIX). A visitor seeing -18 on a stable
-   *  hub would otherwise assume degradation; the API instead flags the window
-   *  as incomparable and the UI renders "—" or a badge. Auto-resolves 7 days
-   *  after the cutoff. */
   deltaValid: boolean;
   trend: TrendDirection;
 }
@@ -295,20 +305,18 @@ export interface AgentAlert {
 export interface TopMover {
   publicKeyHash: string;
   alias: string | null;
-  /** Integer score (0-100) — official API value. */
-  score: number;
-  /** 2-decimal float of the same score. Matches the top-list surface so
-   *  compressed 80-82 movers still visually differentiate in the UI. */
-  scoreFine: number;
+  /** Bayesian posterior mean p_success ∈ [0, 1], 3 decimals. */
+  pSuccess: number;
+  /** 7d delta on p_success ∈ [-1, +1], 3 decimals. */
   delta7d: number;
-  /** False when the 7d comparator predates the Option D methodology rollout —
-   *  same semantics as ScoreDelta.deltaValid. UI renders "—" when false. */
+  /** Kept on the envelope for SDK compat — always true post-Phase 3. */
   deltaValid: boolean;
   trend: TrendDirection;
 }
 
 export interface NetworkTrends {
-  avgScoreDelta7d: number;
+  /** 7d delta on the mean p_success across active agents. */
+  avgPSuccessDelta7d: number;
   topMoversUp: TopMover[];
   topMoversDown: TopMover[];
 }

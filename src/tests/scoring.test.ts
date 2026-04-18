@@ -121,18 +121,23 @@ describe('ScoringService', () => {
     expect(result.components.seniority).toBeGreaterThan(0);
   });
 
-  it('persists a snapshot after computation', () => {
+  it('updates agents.avg_score without writing a score_snapshots row (Phase 3 C8)', () => {
+    // Snapshot persistence moved to BayesianVerdictService.snapshotAndPersist.
+    // ScoringService only keeps the denormalized agents.avg_score in sync —
+    // it no longer inserts into score_snapshots.
     const agent = makeAgent('snapshot-agent');
     agentRepo.insert(agent);
 
-    scoring.computeScore(agent.public_key_hash);
+    const result = scoring.computeScore(agent.public_key_hash);
+
+    const updated = agentRepo.findByHash(agent.public_key_hash);
+    expect(updated!.avg_score).toBe(result.totalFine);
 
     const snapshot = snapshotRepo.findLatestByAgent(agent.public_key_hash);
-    expect(snapshot).toBeDefined();
-    expect(snapshot!.agent_hash).toBe(agent.public_key_hash);
+    expect(snapshot).toBeUndefined();
   });
 
-  it('skips snapshot insert when score + components unchanged', () => {
+  it('repeated computeScore calls leave score_snapshots empty', () => {
     const agent = makeAgent('unchanged-agent');
     agentRepo.insert(agent);
 
@@ -142,20 +147,21 @@ describe('ScoringService', () => {
 
     const count = db.prepare('SELECT COUNT(*) AS n FROM score_snapshots WHERE agent_hash = ?')
       .get(agent.public_key_hash) as { n: number };
-    expect(count.n).toBe(1);
+    expect(count.n).toBe(0);
   });
 
-  describe('cache (getScore)', () => {
-    it('returns existing snapshot if recent', () => {
+  describe('getScore', () => {
+    it('always returns a fresh computation (the snapshot cache was removed in Phase 3 C8)', () => {
       const agent = makeAgent('cached-agent');
       agentRepo.insert(agent);
 
-      // First computation
       const first = scoring.computeScore(agent.public_key_hash);
-
-      // Second call via getScore — should return cache
       const second = scoring.getScore(agent.public_key_hash);
-      expect(second.computedAt).toBe(first.computedAt);
+
+      // Both paths compute the same score but each has its own `computedAt`
+      // timestamp — no cache reuse now that score_snapshots is bayesian-only.
+      expect(second.total).toBe(first.total);
+      expect(second.totalFine).toBe(first.totalFine);
     });
   });
 

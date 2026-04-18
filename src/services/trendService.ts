@@ -1,19 +1,22 @@
 // Temporal delta computation — the differentiating product
-// Computes score deltas, alerts, and network trends from snapshot history
+// Computes p_success deltas, alerts, and network trends from bayesian snapshot history.
+// Deltas are on the posterior p_success scale (0..1), calibrated against empirical
+// distribution — see scripts/analyzeDeltaDistribution.ts for threshold derivation.
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ScoreDelta, AgentAlert, TopMover, NetworkTrends, TrendDirection } from '../types';
 import { DAY } from '../utils/constants';
-import { METHODOLOGY_CHANGE_AT_UNIX } from '../config/scoring';
 
-/** Threshold for score drop alert (points) */
-const ALERT_DROP_THRESHOLD = 10;
-/** Threshold for score surge alert (points) */
-const ALERT_SURGE_THRESHOLD = 15;
+/** Threshold for p_success drop alert (absolute, 0..1 scale). Calibrated at p7 of negative-delta distribution. */
+const ALERT_DROP_THRESHOLD = 0.10;
+/** Threshold for p_success surge alert (absolute, 0..1 scale). Calibrated at p93 of positive-delta distribution. */
+const ALERT_SURGE_THRESHOLD = 0.15;
 /** Days since last_seen to consider an agent inactive */
 const INACTIVE_DAYS = 60;
 /** Days since first_seen to consider an agent "new" */
 const NEW_AGENT_DAYS = 7;
+/** Stable band on p_success trend (±0.02 → no change). */
+const STABLE_BAND = 0.02;
 
 export class TrendService {
   constructor(
@@ -21,35 +24,29 @@ export class TrendService {
     private snapshotRepo: SnapshotRepository,
   ) {}
 
-  computeDeltas(agentHash: string, currentScore: number): ScoreDelta {
+  computeDeltas(agentHash: string, currentPSuccess: number): ScoreDelta {
     const now = Math.floor(Date.now() / 1000);
 
     const snap24h = this.snapshotRepo.findSnapshotAt(agentHash, now - DAY);
     const snap7d = this.snapshotRepo.findSnapshotAt(agentHash, now - 7 * DAY);
     const snap30d = this.snapshotRepo.findSnapshotAt(agentHash, now - 30 * DAY);
 
-    // 7d comparator drives the leaderboard badge — invalid when it predates Option D.
-    // When invalid, the numeric delta would mislead (e.g. -18 on ACINQ reflects the
-    // scoring shift, not degradation), so we null out delta7d entirely. The front-end
-    // renders "—" for null deltas; `deltaValid` stays on the envelope for diagnostics.
-    const deltaValid = snap7d === null ? true : snap7d.computed_at >= METHODOLOGY_CHANGE_AT_UNIX;
-
-    const delta24h = snap24h !== null ? currentScore - snap24h.score : null;
-    const delta7d = snap7d !== null && deltaValid ? currentScore - snap7d.score : null;
-    const delta30d = snap30d !== null ? currentScore - snap30d.score : null;
+    const delta24h = snap24h !== null ? round3(currentPSuccess - snap24h.p_success) : null;
+    const delta7d = snap7d !== null ? round3(currentPSuccess - snap7d.p_success) : null;
+    const delta30d = snap30d !== null ? round3(currentPSuccess - snap30d.p_success) : null;
 
     return {
       delta24h,
       delta7d,
       delta30d,
-      deltaValid,
+      deltaValid: true,
       trend: this.deriveTrend(delta7d),
     };
   }
 
   /** Batch version of computeDeltas — 3 SQL queries instead of 3N.
    *  Used by leaderboard and search to avoid N+1 query amplification. */
-  computeDeltasBatch(agents: Array<{ hash: string; score: number }>): Map<string, ScoreDelta> {
+  computeDeltasBatch(agents: Array<{ hash: string; pSuccess: number }>): Map<string, ScoreDelta> {
     const now = Math.floor(Date.now() / 1000);
     const hashes = agents.map(a => a.hash);
 
@@ -63,44 +60,45 @@ export class TrendService {
       const s7d = snaps7d.get(agent.hash);
       const s30d = snaps30d.get(agent.hash);
 
-      const deltaValid = s7d === undefined ? true : s7d.computed_at >= METHODOLOGY_CHANGE_AT_UNIX;
-      const delta24h = s24h !== undefined ? agent.score - s24h.score : null;
-      const delta7d = s7d !== undefined && deltaValid ? agent.score - s7d.score : null;
-      const delta30d = s30d !== undefined ? agent.score - s30d.score : null;
+      const delta24h = s24h !== undefined ? round3(agent.pSuccess - s24h.p_success) : null;
+      const delta7d = s7d !== undefined ? round3(agent.pSuccess - s7d.p_success) : null;
+      const delta30d = s30d !== undefined ? round3(agent.pSuccess - s30d.p_success) : null;
 
       result.set(agent.hash, {
         delta24h,
         delta7d,
         delta30d,
-        deltaValid,
+        deltaValid: true,
         trend: this.deriveTrend(delta7d),
       });
     }
     return result;
   }
 
-  computeAlerts(agentHash: string, currentScore: number, delta: ScoreDelta): AgentAlert[] {
+  computeAlerts(agentHash: string, currentPSuccess: number, delta: ScoreDelta): AgentAlert[] {
     const alerts: AgentAlert[] = [];
     const agent = this.agentRepo.findByHash(agentHash);
     if (!agent) return alerts;
 
     const now = Math.floor(Date.now() / 1000);
 
-    // Score drop alert
+    // p_success drop alert
     if (delta.delta7d !== null && delta.delta7d <= -ALERT_DROP_THRESHOLD) {
-      const severity = delta.delta7d <= -20 ? 'critical' : 'warning';
+      const severity = delta.delta7d <= -0.20 ? 'critical' : 'warning';
+      const priorPSuccess = round3(currentPSuccess - delta.delta7d);
       alerts.push({
         type: 'score_drop',
-        message: `Score dropped ${Math.abs(delta.delta7d)} points in 7 days (${currentScore + Math.abs(delta.delta7d)} → ${currentScore})`,
+        message: `p_success dropped ${formatPSuccess(Math.abs(delta.delta7d))} in 7 days (${formatPSuccess(priorPSuccess)} → ${formatPSuccess(currentPSuccess)})`,
         severity,
       });
     }
 
-    // Score surge alert
+    // p_success surge alert
     if (delta.delta7d !== null && delta.delta7d >= ALERT_SURGE_THRESHOLD) {
+      const priorPSuccess = round3(currentPSuccess - delta.delta7d);
       alerts.push({
         type: 'score_surge',
-        message: `Score surged +${delta.delta7d} points in 7 days (${currentScore - delta.delta7d} → ${currentScore})`,
+        message: `p_success surged +${formatPSuccess(delta.delta7d)} in 7 days (${formatPSuccess(priorPSuccess)} → ${formatPSuccess(currentPSuccess)})`,
         severity: 'info',
       });
     }
@@ -132,43 +130,34 @@ export class TrendService {
     const now = Math.floor(Date.now() / 1000);
     const sevenDaysAgo = now - 7 * DAY;
 
-    // Get all agents with current scores
+    // We still seed the candidate set from agents.avg_score — it's the cheapest
+    // way to restrict to the top 200 without joining the entire snapshot table.
+    // The delta itself comes from the bayesian p_success comparator below.
     const agents = this.agentRepo.findTopByScore(200, 0);
     if (agents.length === 0) return { up: [], down: [] };
 
     const hashes = agents.map(a => a.public_key_hash);
-    // Full snapshots (not bare scores) so we can read computed_at and decide
-    // whether the comparator predates the Option D methodology change.
     const pastSnaps = this.snapshotRepo.findSnapshotsAtForAgents(hashes, sevenDaysAgo);
+    const currentSnaps = this.snapshotRepo.findLatestByAgents(hashes);
 
     const movers: {
       hash: string;
       alias: string | null;
-      scoreFine: number;
+      pSuccess: number;
       delta: number;
-      deltaValid: boolean;
     }[] = [];
 
     for (const agent of agents) {
-      const snap = pastSnaps.get(agent.public_key_hash);
-      if (snap === undefined) continue; // No historical data
-      // Skip movers whose comparator predates Option D. Ranking by a delta that
-      // reflects a methodology shift (not real movement) is exactly the noise
-      // we're trying to suppress; hiding them from the list entirely is cleaner
-      // than surfacing `delta7d: null` in a list that's defined by delta order.
-      // Auto-heals 7 days after the cutoff when all comparators roll forward.
-      if (snap.computed_at < METHODOLOGY_CHANGE_AT_UNIX) continue;
-      const scoreFine = Math.round(agent.avg_score * 100) / 100;
-      // Round delta to 1 decimal — float subtraction emits noise like
-      // -17.439999999999998 which leaks into the JSON surface otherwise.
-      const delta = Math.round((scoreFine - snap.score) * 10) / 10;
+      const past = pastSnaps.get(agent.public_key_hash);
+      const current = currentSnaps.get(agent.public_key_hash);
+      if (past === undefined || current === undefined) continue;
+      const delta = round3(current.p_success - past.p_success);
       if (delta === 0) continue;
       movers.push({
         hash: agent.public_key_hash,
         alias: agent.alias,
-        scoreFine,
+        pSuccess: current.p_success,
         delta,
-        deltaValid: true,
       });
     }
 
@@ -177,10 +166,9 @@ export class TrendService {
     const toTopMover = (m: typeof movers[number], trend: TrendDirection): TopMover => ({
       publicKeyHash: m.hash,
       alias: m.alias,
-      score: Math.round(m.scoreFine),
-      scoreFine: m.scoreFine,
+      pSuccess: m.pSuccess,
       delta7d: m.delta,
-      deltaValid: m.deltaValid,
+      deltaValid: true,
       trend,
     });
 
@@ -200,21 +188,31 @@ export class TrendService {
 
   getNetworkTrends(): NetworkTrends {
     const now = Math.floor(Date.now() / 1000);
-    const currentAvg = this.agentRepo.avgScore();
-    const pastAvg = this.snapshotRepo.findAvgScoreAt(now - 7 * DAY);
-    const avgScoreDelta7d = pastAvg !== null ? Math.round((currentAvg - pastAvg) * 10) / 10 : 0;
+    const currentAvg = this.snapshotRepo.findAvgPSuccessAt(now);
+    const pastAvg = this.snapshotRepo.findAvgPSuccessAt(now - 7 * DAY);
+    const avgPSuccessDelta7d = currentAvg !== null && pastAvg !== null
+      ? round3(currentAvg - pastAvg)
+      : 0;
 
     const { up, down } = this.getTopMovers(5);
 
     return {
-      avgScoreDelta7d,
+      avgPSuccessDelta7d,
       topMoversUp: up,
       topMoversDown: down,
     };
   }
 
   private deriveTrend(delta7d: number | null): TrendDirection {
-    if (delta7d === null || (delta7d >= -2 && delta7d <= 2)) return 'stable';
+    if (delta7d === null || (delta7d >= -STABLE_BAND && delta7d <= STABLE_BAND)) return 'stable';
     return delta7d > 0 ? 'rising' : 'falling';
   }
+}
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+function formatPSuccess(n: number): string {
+  return n.toFixed(3);
 }

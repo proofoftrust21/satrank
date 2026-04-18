@@ -42,10 +42,15 @@ let snapshotCounter = 0;
 function insertScoreSnapshot(db: Database.Database, agentHash: string, computedAt: number): void {
   ensureAgent(db, agentHash);
   snapshotCounter++;
+  // Post-v34 bayesian-only shape: p_success + ci + n_obs + posterior params.
   db.prepare(`
-    INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-    VALUES (?, ?, 50, '{}', ?)
-  `).run(`snap-${snapshotCounter}-${agentHash.slice(0, 6)}`, agentHash, computedAt);
+    INSERT INTO score_snapshots (
+      snapshot_id, agent_hash,
+      p_success, ci95_low, ci95_high, n_obs,
+      posterior_alpha, posterior_beta, window,
+      computed_at, updated_at
+    ) VALUES (?, ?, 0.5, 0.45, 0.55, 10, 6.5, 6.5, '7d', ?, ?)
+  `).run(`snap-${snapshotCounter}-${agentHash.slice(0, 6)}`, agentHash, computedAt, computedAt);
 }
 
 function insertChannelSnapshot(db: Database.Database, agentHash: string, snapshotAt: number): void {

@@ -3,6 +3,7 @@
 import type { LndGraphCrawler } from '../crawler/lndGraphCrawler';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ScoringService } from './scoringService';
+import type { BayesianVerdictService } from './bayesianVerdictService';
 import { sha256 } from '../utils/crypto';
 import { logger } from '../logger';
 
@@ -17,6 +18,7 @@ export class AutoIndexService {
     private agentRepo: AgentRepository,
     private scoringService: ScoringService,
     private maxPerMinute: number,
+    private bayesianVerdict?: BayesianVerdictService,
   ) {}
 
   static isLightningPubkey(value: string): boolean {
@@ -72,9 +74,11 @@ export class AutoIndexService {
       return;
     }
 
-    // Compute initial score
+    // Compute initial score + persist bayesian snapshot so the agent starts
+    // appearing in posterior-driven endpoints immediately after indexation.
     const hash = sha256(pubkey);
     this.scoringService.computeScore(hash);
+    this.bayesianVerdict?.snapshotAndPersist(hash);
 
     logger.info({ pubkey: pubkey.slice(0, 16), result }, 'Auto-indexation completed');
   }

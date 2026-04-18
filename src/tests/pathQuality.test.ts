@@ -113,13 +113,19 @@ describe('decide / pathQuality non-regression', () => {
       VALUES (?, ?, 'ACINQ-test', ?, ?, 'lightning_graph', 2000, 97, 38000000000, 4, 1, 10, 500)
     `).run(testHash, testPubkey, now - 8 * 365 * 86400, now);
 
-    // High-score snapshot
+    // Bayesian posterior snapshot consistent with a high-trust ACINQ-like node.
     snapshotRepo.insert({
       snapshot_id: 'test-snap-1',
       agent_hash: testHash,
-      score: 97,
-      components: JSON.stringify({ volume: 100, reputation: 77, seniority: 98, regularity: 84, diversity: 100 }),
+      p_success: 0.97,
+      ci95_low: 0.92,
+      ci95_high: 0.99,
+      n_obs: 50,
+      posterior_alpha: 1.5 + 50 * 0.97,
+      posterior_beta: 1.5 + 50 * 0.03,
+      window: '7d',
       computed_at: now,
+      updated_at: now,
     });
     // Reachable probe
     probeRepo.insert({

@@ -49,8 +49,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(33);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]);
+    expect(versions.length).toBe(34);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -66,7 +66,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(33);
+    expect(versions.length).toBe(34);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -632,8 +632,8 @@ describe('v32 Phase 2 anonymous-report preimage_pool', () => {
 // Additive migration : 8 nouvelles colonnes sur score_snapshots (posterior_alpha/beta,
 // p_success, ci95_low/high, n_obs, window, updated_at) + 5 nouvelles tables
 // *_aggregates (endpoint, node, service, operator, route) avec compteurs raw
-// n_success/n_failure/n_obs et posterior (α, β). Les colonnes legacy score/components
-// restent en place — leur suppression est reportée en migration v34 (C12).
+// n_success/n_failure/n_obs et posterior (α, β). v34 (Phase 3 C8) drops the
+// legacy score + components columns once every caller reads bayesian shape only.
 describe('v33 Phase 3 bayesian scoring layer', () => {
   let db: Database.Database;
 
@@ -645,15 +645,12 @@ describe('v33 Phase 3 bayesian scoring layer', () => {
 
   afterEach(() => { db.close(); });
 
-  it('adds 8 bayesian columns on score_snapshots (additive, legacy cols preserved)', () => {
+  it('adds 8 bayesian columns on score_snapshots', () => {
     const cols = db.prepare('PRAGMA table_info(score_snapshots)').all() as { name: string; type: string }[];
     const colNames = cols.map(c => c.name);
     for (const col of ['posterior_alpha', 'posterior_beta', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'window', 'updated_at']) {
       expect(colNames).toContain(col);
     }
-    // Legacy columns still present (v34 will drop them in C12).
-    expect(colNames).toContain('score');
-    expect(colNames).toContain('components');
   });
 
   it('creates endpoint_aggregates with expected schema and defaults', () => {
@@ -723,5 +720,55 @@ describe('v33 Phase 3 bayesian scoring layer', () => {
     expect(() => runMigrations(db)).not.toThrow();
     const versions = getAppliedVersions(db);
     expect(versions.filter(v => v.version === 33).length).toBe(1);
+  });
+});
+
+// --- v34: Phase 3 C8 — DROP legacy composite columns from score_snapshots ---
+// Bayesian is the only public surface post-C8. The score + components columns
+// are dropped outright; pre-v34 rows stay in the table with NULL bayesian
+// fields and are filtered out by every repository query (`p_success IS NOT NULL`).
+describe('v34 Phase 3 C8 bayesian-only score_snapshots', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+  });
+
+  afterEach(() => { db.close(); });
+
+  it('drops legacy score and components columns from score_snapshots', () => {
+    const cols = db.prepare('PRAGMA table_info(score_snapshots)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).not.toContain('score');
+    expect(colNames).not.toContain('components');
+  });
+
+  it('retains all 8 bayesian columns after DROP', () => {
+    const cols = db.prepare('PRAGMA table_info(score_snapshots)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    for (const col of ['posterior_alpha', 'posterior_beta', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'window', 'updated_at']) {
+      expect(colNames).toContain(col);
+    }
+  });
+
+  it('rollback v34 restores score and components as nullable', () => {
+    rollbackTo(db, 33);
+    const cols = db.prepare('PRAGMA table_info(score_snapshots)').all() as { name: string; notnull: number }[];
+    const byName = Object.fromEntries(cols.map(c => [c.name, c]));
+    expect(byName.score).toBeDefined();
+    expect(byName.components).toBeDefined();
+    // Post-rollback the legacy columns are nullable (schema-only restore).
+    expect(byName.score!.notnull).toBe(0);
+    expect(byName.components!.notnull).toBe(0);
+    const versions = getAppliedVersions(db);
+    expect(versions.length).toBe(33);
+  });
+
+  it('migration is idempotent — second run leaves exactly one v34 row', () => {
+    expect(() => runMigrations(db)).not.toThrow();
+    const versions = getAppliedVersions(db);
+    expect(versions.filter(v => v.version === 34).length).toBe(1);
   });
 });

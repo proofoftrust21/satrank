@@ -14,12 +14,7 @@ import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types';
-import { METHODOLOGY_CHANGE_AT_UNIX } from '../config/scoring';
-
-// Anchor tests 30 days past the Option D cutoff so 7d snapshots are post-methodology.
-// Without this, any snapshot at `NOW - 7*DAY` would predate the cutoff and trigger
-// `deltaValid=false` → `delta7d=null`, which masks declining_node / rapid_rise profiles.
-const NOW = METHODOLOGY_CHANGE_AT_UNIX + 30 * 86400;
+const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
@@ -106,11 +101,20 @@ describe('Risk profile edge cases', () => {
     });
     agentRepo.insert(agent);
 
-    // Insert snapshot 7 days ago with much lower score
+    // Past p_success=0.20 vs current 0.5 prior → delta=+0.30 > DELTA_RAPID_RISE (0.26)
     db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), agent.public_key_hash, 30, '{"volume":0,"reputation":0,"seniority":10,"regularity":0,"diversity":0}', NOW - 7 * DAY);
+      INSERT INTO score_snapshots (
+        snapshot_id, agent_hash,
+        p_success, ci95_low, ci95_high, n_obs,
+        posterior_alpha, posterior_beta, window,
+        computed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '7d', ?, ?)
+    `).run(
+      uuid(), agent.public_key_hash,
+      0.20, 0.15, 0.25, 10,
+      1.5 + 10 * 0.20, 1.5 + 10 * 0.80,
+      NOW - 7 * DAY, NOW - 7 * DAY,
+    );
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
     // The computed score might differ, but the risk profile logic checks delta
@@ -127,11 +131,20 @@ describe('Risk profile edge cases', () => {
     });
     agentRepo.insert(agent);
 
-    // Insert a higher snapshot 7 days ago
+    // Past p_success=0.70 vs current 0.5 prior → delta=-0.20 < DELTA_DECLINING (-0.13)
     db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), agent.public_key_hash, 70, '{"volume":50,"reputation":50,"seniority":50,"regularity":50,"diversity":50}', NOW - 7 * DAY);
+      INSERT INTO score_snapshots (
+        snapshot_id, agent_hash,
+        p_success, ci95_low, ci95_high, n_obs,
+        posterior_alpha, posterior_beta, window,
+        computed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '7d', ?, ?)
+    `).run(
+      uuid(), agent.public_key_hash,
+      0.70, 0.65, 0.75, 10,
+      1.5 + 10 * 0.70, 1.5 + 10 * 0.30,
+      NOW - 7 * DAY, NOW - 7 * DAY,
+    );
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.riskProfile.name).toBe('declining_node');

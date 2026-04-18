@@ -56,11 +56,13 @@ export class VerdictService {
 
     const bayes = this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
 
-    // Risk classifier + flags still need the composite internally. The value is
-    // not surfaced — it feeds `regularity` for the riskProfile and delta-based
-    // flags. Will be rewired in Commit 8 when the composite columns drop.
+    // Delta is now computed on bayes.p_success — the 7d comparator is read
+    // from score_snapshots.p_success and thresholds are calibrated against the
+    // empirical posterior distribution (see scripts/analyzeDeltaDistribution.ts).
+    // The composite score is still fetched for the internal `regularity` input
+    // to the risk classifier; scoring.avg_score stays as an internal column.
     const scoreResult = precomputedScore ?? this.scoringService.getScore(publicKeyHash);
-    const delta = this.trendService.computeDeltas(publicKeyHash, scoreResult.total);
+    const delta = this.trendService.computeDeltas(publicKeyHash, bayes.p_success);
 
     const now = Math.floor(Date.now() / 1000);
     const ageDays = (now - agent.first_seen) / DAY;

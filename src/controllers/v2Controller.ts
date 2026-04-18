@@ -471,11 +471,12 @@ export class V2Controller {
       logTokenQuery(this.db, req.headers.authorization, hash, req.requestId);
 
       // Canonical public score is the Bayesian posterior. Composite `scoreResult`
-      // is still computed for internal use (risk classifier, unreachable flag guard)
-      // until Commit 8 retires ScoringService/TrendService entirely.
+      // still feeds the internal risk classifier (regularity input); the 7d
+      // delta is now on p_success scale, calibrated against the empirical
+      // posterior distribution (see scripts/analyzeDeltaDistribution.ts).
       const bayesian = this.agentService.toBayesianBlock(hash);
       const scoreResult = this.scoringService.getScore(hash);
-      const delta = this.trendService.computeDeltas(hash, scoreResult.total);
+      const delta = this.trendService.computeDeltas(hash, bayesian.p_success);
       const rank = this.agentRepo.getRank(hash);
       const reports = this.attestationRepo.countReportsByOutcome(hash);
       const successRate = reports.total > 0 ? reports.successes / reports.total : 0;

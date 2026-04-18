@@ -1,14 +1,28 @@
-// Data access for the score_snapshots table
+// Data access for the score_snapshots table — Phase 3 C8 bayesian-only shape.
+//
+// After the v34 migration, score_snapshots holds only bayesian-posterior state
+// (p_success, ci95_low/high, n_obs, posterior_alpha/beta, window). The legacy
+// `score` + `components` columns were dropped; rows written before v34 still
+// exist with all bayesian fields NULL — every query filters on
+// `p_success IS NOT NULL` to skip them.
 import type Database from 'better-sqlite3';
-import type { ScoreSnapshot } from '../types';
+import type { ScoreSnapshot, BayesianWindow } from '../types';
 import { dbQueryDuration } from '../middleware/metrics';
+
+/** Narrow block shape used by TrendService / batch delta queries. Subset of
+ *  ScoreSnapshot — avoids forcing callers to care about posterior_alpha/beta. */
+export interface SnapshotPoint {
+  p_success: number;
+  n_obs: number;
+  computed_at: number;
+}
 
 export class SnapshotRepository {
   constructor(private db: Database.Database) {}
 
   findLatestByAgent(agentHash: string): ScoreSnapshot | undefined {
     return this.db.prepare(
-      'SELECT * FROM score_snapshots WHERE agent_hash = ? ORDER BY computed_at DESC LIMIT 1'
+      'SELECT * FROM score_snapshots WHERE agent_hash = ? AND p_success IS NOT NULL ORDER BY computed_at DESC LIMIT 1'
     ).get(agentHash) as ScoreSnapshot | undefined;
   }
 
@@ -23,7 +37,7 @@ export class SnapshotRepository {
         INNER JOIN (
           SELECT agent_hash, MAX(computed_at) as max_at
           FROM score_snapshots
-          WHERE agent_hash IN (${placeholders})
+          WHERE agent_hash IN (${placeholders}) AND p_success IS NOT NULL
           GROUP BY agent_hash
         ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
       `).all(...agentHashes) as ScoreSnapshot[];
@@ -37,44 +51,65 @@ export class SnapshotRepository {
 
   findHistoryByAgent(agentHash: string, limit: number, offset: number): ScoreSnapshot[] {
     return this.db.prepare(
-      'SELECT * FROM score_snapshots WHERE agent_hash = ? ORDER BY computed_at DESC LIMIT ? OFFSET ?'
+      'SELECT * FROM score_snapshots WHERE agent_hash = ? AND p_success IS NOT NULL ORDER BY computed_at DESC LIMIT ? OFFSET ?'
     ).all(agentHash, limit, offset) as ScoreSnapshot[];
   }
 
   insert(snapshot: ScoreSnapshot): void {
     this.db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(snapshot.snapshot_id, snapshot.agent_hash, snapshot.score, snapshot.components, snapshot.computed_at);
+      INSERT INTO score_snapshots (
+        snapshot_id, agent_hash,
+        p_success, ci95_low, ci95_high, n_obs,
+        posterior_alpha, posterior_beta, window,
+        computed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      snapshot.snapshot_id, snapshot.agent_hash,
+      snapshot.p_success, snapshot.ci95_low, snapshot.ci95_high, snapshot.n_obs,
+      snapshot.posterior_alpha, snapshot.posterior_beta, snapshot.window,
+      snapshot.computed_at, snapshot.updated_at,
+    );
   }
 
-  /** Find the most recent snapshot per agent where the score differs from the previous snapshot,
-   *  filtered to snapshots computed after `since`. Used by GET /api/watchlist. */
-  findChangedSince(agentHashes: string[], since: number): Array<{ agent_hash: string; score: number; previous_score: number | null; components: string; computed_at: number }> {
+  /** Find the most recent snapshot per agent where p_success differs from the
+   *  previous snapshot, filtered to snapshots computed after `since`. Used by
+   *  GET /api/watchlist — surfaces only agents whose posterior has moved. */
+  findChangedSince(agentHashes: string[], since: number): Array<{
+    agent_hash: string;
+    p_success: number;
+    previous_p_success: number | null;
+    n_obs: number;
+    computed_at: number;
+  }> {
     if (agentHashes.length === 0) return [];
     const placeholders = agentHashes.map(() => '?').join(',');
-    // For each target, get the latest snapshot after `since` and compare to the one before it
     return this.db.prepare(`
-      SELECT cur.agent_hash, cur.score, prev.score AS previous_score, cur.components, cur.computed_at
+      SELECT cur.agent_hash, cur.p_success, prev.p_success AS previous_p_success, cur.n_obs, cur.computed_at
       FROM (
-        SELECT agent_hash, score, components, computed_at,
+        SELECT agent_hash, p_success, n_obs, computed_at,
           ROW_NUMBER() OVER (PARTITION BY agent_hash ORDER BY computed_at DESC) AS rn
         FROM score_snapshots
-        WHERE agent_hash IN (${placeholders}) AND computed_at > ?
+        WHERE agent_hash IN (${placeholders}) AND computed_at > ? AND p_success IS NOT NULL
       ) cur
       LEFT JOIN (
-        SELECT agent_hash, score, computed_at,
+        SELECT agent_hash, p_success, computed_at,
           ROW_NUMBER() OVER (PARTITION BY agent_hash ORDER BY computed_at DESC) AS rn
         FROM score_snapshots
-        WHERE agent_hash IN (${placeholders}) AND computed_at <= ?
+        WHERE agent_hash IN (${placeholders}) AND computed_at <= ? AND p_success IS NOT NULL
       ) prev ON prev.agent_hash = cur.agent_hash AND prev.rn = 1
-      WHERE cur.rn = 1 AND (prev.score IS NULL OR cur.score != prev.score)
-    `).all(...agentHashes, since, ...agentHashes, since) as Array<{ agent_hash: string; score: number; previous_score: number | null; components: string; computed_at: number }>;
+      WHERE cur.rn = 1 AND (prev.p_success IS NULL OR ABS(cur.p_success - prev.p_success) >= 0.005)
+    `).all(...agentHashes, since, ...agentHashes, since) as Array<{
+      agent_hash: string;
+      p_success: number;
+      previous_p_success: number | null;
+      n_obs: number;
+      computed_at: number;
+    }>;
   }
 
   countByAgent(agentHash: string): number {
     const row = this.db.prepare(
-      'SELECT COUNT(*) as count FROM score_snapshots WHERE agent_hash = ?'
+      'SELECT COUNT(*) as count FROM score_snapshots WHERE agent_hash = ? AND p_success IS NOT NULL'
     ).get(agentHash) as { count: number };
     return row.count;
   }
@@ -143,77 +178,82 @@ export class SnapshotRepository {
         return r.changes ?? 0;
       });
       totalDeleted += txn();
-      // Yield the event loop so concurrent writers (bulk scoring, probe inserts,
-      // transaction inserts) can grab the write lock between chunks.
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     return totalDeleted;
   }
 
-  /** Find the closest snapshot to a target timestamp for an agent (looking backwards) */
-  findScoreAt(agentHash: string, timestamp: number): number | null {
+  /** Closest p_success snapshot to a target timestamp (looking backwards). */
+  findPSuccessAt(agentHash: string, timestamp: number): number | null {
     const row = this.db.prepare(
-      'SELECT score FROM score_snapshots WHERE agent_hash = ? AND computed_at <= ? ORDER BY computed_at DESC LIMIT 1'
-    ).get(agentHash, timestamp) as { score: number } | undefined;
-    return row?.score ?? null;
+      'SELECT p_success FROM score_snapshots WHERE agent_hash = ? AND computed_at <= ? AND p_success IS NOT NULL ORDER BY computed_at DESC LIMIT 1'
+    ).get(agentHash, timestamp) as { p_success: number } | undefined;
+    return row?.p_success ?? null;
   }
 
-  /** Like findScoreAt, but also returns the snapshot's computed_at so callers can
-   *  decide whether the comparator predates a methodology cutoff. */
-  findSnapshotAt(agentHash: string, timestamp: number): { score: number; computed_at: number } | null {
+  /** Like findPSuccessAt, but returns the full snapshot point (p_success +
+   *  n_obs + computed_at) so callers can surface diagnostics. */
+  findSnapshotAt(agentHash: string, timestamp: number): SnapshotPoint | null {
     const row = this.db.prepare(
-      'SELECT score, computed_at FROM score_snapshots WHERE agent_hash = ? AND computed_at <= ? ORDER BY computed_at DESC LIMIT 1'
-    ).get(agentHash, timestamp) as { score: number; computed_at: number } | undefined;
+      'SELECT p_success, n_obs, computed_at FROM score_snapshots WHERE agent_hash = ? AND computed_at <= ? AND p_success IS NOT NULL ORDER BY computed_at DESC LIMIT 1'
+    ).get(agentHash, timestamp) as SnapshotPoint | undefined;
     return row ?? null;
   }
 
-  /** Batch: find scores at a target timestamp for multiple agents */
-  findScoresAtForAgents(agentHashes: string[], timestamp: number): Map<string, number> {
+  /** Batch: find p_success at a target timestamp for multiple agents. */
+  findPSuccessAtForAgents(agentHashes: string[], timestamp: number): Map<string, number> {
     if (agentHashes.length === 0) return new Map();
-    if (agentHashes.length > 500) throw new Error('findScoresAtForAgents: array exceeds 500 elements');
+    if (agentHashes.length > 500) throw new Error('findPSuccessAtForAgents: array exceeds 500 elements');
     const placeholders = agentHashes.map(() => '?').join(',');
     const rows = this.db.prepare(`
-      SELECT s.agent_hash, s.score FROM score_snapshots s
+      SELECT s.agent_hash, s.p_success FROM score_snapshots s
       INNER JOIN (
         SELECT agent_hash, MAX(computed_at) as max_at
         FROM score_snapshots
-        WHERE agent_hash IN (${placeholders}) AND computed_at <= ?
+        WHERE agent_hash IN (${placeholders}) AND computed_at <= ? AND p_success IS NOT NULL
         GROUP BY agent_hash
       ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
-    `).all(...agentHashes, timestamp) as { agent_hash: string; score: number }[];
+    `).all(...agentHashes, timestamp) as { agent_hash: string; p_success: number }[];
     const map = new Map<string, number>();
-    for (const row of rows) map.set(row.agent_hash, row.score);
+    for (const row of rows) map.set(row.agent_hash, row.p_success);
     return map;
   }
 
-  /** Batch version of findSnapshotAt — returns score + computed_at per agent. */
-  findSnapshotsAtForAgents(agentHashes: string[], timestamp: number): Map<string, { score: number; computed_at: number }> {
+  /** Batch version of findSnapshotAt — p_success + n_obs + computed_at per agent. */
+  findSnapshotsAtForAgents(agentHashes: string[], timestamp: number): Map<string, SnapshotPoint> {
     if (agentHashes.length === 0) return new Map();
     if (agentHashes.length > 500) throw new Error('findSnapshotsAtForAgents: array exceeds 500 elements');
     const placeholders = agentHashes.map(() => '?').join(',');
     const rows = this.db.prepare(`
-      SELECT s.agent_hash, s.score, s.computed_at FROM score_snapshots s
+      SELECT s.agent_hash, s.p_success, s.n_obs, s.computed_at FROM score_snapshots s
       INNER JOIN (
         SELECT agent_hash, MAX(computed_at) as max_at
         FROM score_snapshots
-        WHERE agent_hash IN (${placeholders}) AND computed_at <= ?
+        WHERE agent_hash IN (${placeholders}) AND computed_at <= ? AND p_success IS NOT NULL
         GROUP BY agent_hash
       ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
-    `).all(...agentHashes, timestamp) as { agent_hash: string; score: number; computed_at: number }[];
-    const map = new Map<string, { score: number; computed_at: number }>();
-    for (const row of rows) map.set(row.agent_hash, { score: row.score, computed_at: row.computed_at });
+    `).all(...agentHashes, timestamp) as Array<{ agent_hash: string } & SnapshotPoint>;
+    const map = new Map<string, SnapshotPoint>();
+    for (const row of rows) {
+      map.set(row.agent_hash, {
+        p_success: row.p_success,
+        n_obs: row.n_obs,
+        computed_at: row.computed_at,
+      });
+    }
     return map;
   }
 
-  /** Network average score at a given timestamp */
-  findAvgScoreAt(timestamp: number): number | null {
+  /** Network-wide mean p_success at a given timestamp. Averages the latest
+   *  p_success per agent (one row each). */
+  findAvgPSuccessAt(timestamp: number): number | null {
     const row = this.db.prepare(`
-      SELECT ROUND(AVG(sub.score), 1) as avg FROM (
-        SELECT s.agent_hash, s.score FROM score_snapshots s
+      SELECT ROUND(AVG(sub.p_success), 4) as avg FROM (
+        SELECT s.agent_hash, s.p_success FROM score_snapshots s
         INNER JOIN (
           SELECT agent_hash, MAX(computed_at) as max_at
           FROM score_snapshots
-          WHERE computed_at <= ?
+          WHERE computed_at <= ? AND p_success IS NOT NULL
           GROUP BY agent_hash
         ) latest ON s.agent_hash = latest.agent_hash AND s.computed_at = latest.max_at
       ) sub
@@ -223,8 +263,10 @@ export class SnapshotRepository {
 
   getLastUpdateTime(): number {
     const row = this.db.prepare(
-      'SELECT MAX(computed_at) as last FROM score_snapshots'
+      'SELECT MAX(computed_at) as last FROM score_snapshots WHERE p_success IS NOT NULL'
     ).get() as { last: number | null };
     return row.last ?? 0;
   }
 }
+
+export type { BayesianWindow };

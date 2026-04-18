@@ -135,7 +135,7 @@ export function createApp() {
   const bayesianScoringService = new BayesianScoringService(
     endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
   );
-  const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService);
+  const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService, snapshotRepo);
 
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
   const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
@@ -148,6 +148,7 @@ export function createApp() {
     : null;
   const autoIndexService = new AutoIndexService(
     lndGraphCrawler, agentRepo, scoringService, config.AUTO_INDEX_MAX_PER_MINUTE,
+    bayesianVerdictService,
   );
 
   const decideService = new DecideService({

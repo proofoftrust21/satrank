@@ -754,6 +754,25 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 33, 'Phase 3 bayesian — score_snapshots +8 bayesian columns (additive) + 5 aggregates tables (endpoint/node/service/operator/route)');
   }
 
+  // v34: Phase 3 C8 — drop legacy composite columns from score_snapshots.
+  // The table now holds bayesian-only state. Pre-v34 rows are retained with
+  // NULL bayesian fields; every repository query filters `p_success IS NOT NULL`
+  // to skip them, so the cold start of the bayesian time series is clean
+  // without losing forensic history.
+  //
+  // Requires SQLite 3.35+ (DROP COLUMN support). SATRANK prod runs 3.46.
+  if (!hasVersion(db, 34)) {
+    for (const col of ['score', 'components']) {
+      try { db.exec(`ALTER TABLE score_snapshots DROP COLUMN ${col}`); } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Tolerate re-runs: SQLite reports "no such column" if this migration
+        // has already been applied out-of-band (manual ops, dev resets).
+        if (!msg.includes('no such column')) throw err;
+      }
+    }
+    recordVersion(db, 34, 'Phase 3 C8 — DROP score_snapshots.score + score_snapshots.components (bayesian-only)');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -763,6 +782,12 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  34: (db) => {
+    // Restore the legacy composite columns as NULL-able REAL/TEXT. Rollback
+    // recovers schema only — data that was already dropped stays gone.
+    try { db.exec('ALTER TABLE score_snapshots ADD COLUMN score REAL'); } catch { /* already present */ }
+    try { db.exec('ALTER TABLE score_snapshots ADD COLUMN components TEXT'); } catch { /* already present */ }
+  },
   33: (db) => {
     // Rollback Phase 3 additive : drop aggregates + drop bayesian columns.
     // Les colonnes legacy score/components sont intouchées par v33 (restent en place).

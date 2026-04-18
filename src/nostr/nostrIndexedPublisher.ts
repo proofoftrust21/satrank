@@ -23,7 +23,6 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { Agent } from '../types';
 import { logger } from '../logger';
-import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import {
   nostrPublishTotal,
   nostrRelayAckTotal,
@@ -104,8 +103,10 @@ interface PublishCandidate {
   nostrPubkey: string;
   lnPubkey: string;
   alias: string;
-  score: number;
-  components: { volume: number; reputation: number; seniority: number; regularity: number; diversity: number };
+  pSuccess: number;
+  ci95Low: number;
+  ci95High: number;
+  nObs: number;
   zapCount: number;
 }
 
@@ -205,25 +206,15 @@ export class NostrIndexedPublisher {
       if (!this.allowSharedLnpk && mapping.nostr_pubkeys.length > 1) { dropped.shared_ln_pk++; continue; }
       if (this.allowSharedLnpk && mapping.nostr_pubkeys.length > 5) { dropped.shared_ln_pk++; continue; }
 
-      let components = { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 };
-      try {
-        components = JSON.parse(snap.components);
-      } catch (err: unknown) {
-        // Bad JSON in score_snapshots.components means we'd publish a Nostr
-        // event with all-zero components — technically a trust downgrade.
-        // Log so the source row can be inspected and the event skipped
-        // next cycle once the snapshot is regenerated.
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn({ lnPubkey: mapping.ln_pubkey.slice(0, 12), error: msg }, 'Failed to parse components — publishing with default zeros');
-      }
-
       for (const nostrPubkey of mapping.nostr_pubkeys) {
         candidates.push({
           nostrPubkey,
           lnPubkey: mapping.ln_pubkey,
           alias: agent.alias ?? mapping.ln_pubkey.slice(0, 16),
-          score: Math.round(agent.avg_score),
-          components,
+          pSuccess: snap.p_success,
+          ci95Low: snap.ci95_low,
+          ci95High: snap.ci95_high,
+          nObs: snap.n_obs,
           zapCount: mapping.zap_count,
         });
       }
@@ -256,26 +247,25 @@ export class NostrIndexedPublisher {
 
     const events: SignedEvent[] = [];
     for (const c of candidates) {
-      const verdict =
-        c.score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : c.score >= 30 ? 'UNKNOWN' : 'RISKY';
+      // Verdict bands mirror the canonical Bayesian cutoffs: posterior ≥ 0.80 = SAFE,
+      // 0.50–0.80 = UNKNOWN, < 0.50 = RISKY. The old composite-threshold mapping
+      // (score ≥ VERDICT_SAFE_THRESHOLD / 30) is retired alongside the composite.
+      const verdict = c.pSuccess >= 0.80 ? 'SAFE' : c.pSuccess >= 0.50 ? 'UNKNOWN' : 'RISKY';
       const template = {
         kind: KIND_TRUSTED_ASSERTION,
         created_at: Math.floor(Date.now() / 1000),
         tags: [
           ['d', c.nostrPubkey],
-          ['rank', String(c.score)],
           ['ln_pubkey', c.lnPubkey],
           ['subject_type', 'mined_mapping'],
           ['source', 'nip57_zap_receipt'],
           ['zap_count', String(c.zapCount)],
           ['alias', c.alias],
-          ['score', String(c.score)],
+          ['p_success', c.pSuccess.toFixed(3)],
+          ['ci95_low', c.ci95Low.toFixed(3)],
+          ['ci95_high', c.ci95High.toFixed(3)],
+          ['n_obs', String(c.nObs)],
           ['verdict', verdict],
-          ['volume', String(c.components.volume)],
-          ['reputation', String(c.components.reputation)],
-          ['seniority', String(c.components.seniority)],
-          ['regularity', String(c.components.regularity)],
-          ['diversity', String(c.components.diversity)],
         ],
         content: '',
       };

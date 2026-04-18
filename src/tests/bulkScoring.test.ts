@@ -295,7 +295,11 @@ describe('Bulk scoring — LND nodes get scored', () => {
     expect(unscored.map(a => a.alias)).toContain('capacity-only');
   });
 
-  it('snapshot is created for each scored agent', () => {
+  it('computeScore updates agent avg_score but no longer writes a snapshot directly', () => {
+    // Phase 3 C8: snapshot persistence moved out of ScoringService.
+    // The bayesian pipeline (BayesianVerdictService.snapshotAndPersist) is now
+    // responsible for writing score_snapshots rows — ScoringService only
+    // updates agents.avg_score via updateStats.
     agentRepo.insert(makeLndAgent('snap-test', {
       total_transactions: 50,
       capacity_sats: 2_000_000_000,
@@ -305,12 +309,13 @@ describe('Bulk scoring — LND nodes get scored', () => {
 
     const result = scoringService.computeScore(sha256('snap-test'));
 
+    // Agent stats updated in-place.
+    const updated = agentRepo.findByHash(sha256('snap-test'));
+    expect(updated!.avg_score).toBe(result.totalFine);
+
+    // Snapshot table stays empty — bayesian pipeline owns that write.
     const snapshot = snapshotRepo.findLatestByAgent(sha256('snap-test'));
-    expect(snapshot).toBeDefined();
-    // Snapshots store the 2-decimal float — matches totalFine since 2026-04-17.
-    expect(snapshot!.score).toBe(result.totalFine);
-    expect(Math.round(snapshot!.score)).toBe(result.total);
-    expect(JSON.parse(snapshot!.components)).toHaveProperty('volume');
+    expect(snapshot).toBeUndefined();
   });
 
   it('LN reputation formula uses centrality and peer trust; LN+ ratings add bonus', () => {

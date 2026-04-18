@@ -11,6 +11,7 @@
 // operator_id, source). On applique la décroissance exponentielle à la lecture
 // (Option A gravée en C8).
 
+import { randomUUID } from 'crypto';
 import type { Database } from 'better-sqlite3';
 import {
   BayesianScoringService,
@@ -20,6 +21,7 @@ import {
   type SourceObservation,
   type ReportTier,
 } from './bayesianScoringService';
+import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import {
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
@@ -27,6 +29,11 @@ import {
   type BayesianSource,
 } from '../config/bayesianConfig';
 import { computePosterior } from '../utils/betaBinomial';
+
+/** Min p_success delta to trigger a new snapshot row (Phase 3 C8). */
+const SNAPSHOT_CHANGE_THRESHOLD = 0.005;
+/** Heartbeat — force ≥ 1 snapshot/agent/day even if p_success is static. */
+const SNAPSHOT_HEARTBEAT_SEC = 86_400;
 
 /** Contexte d'une requête verdict — clés d'identification de la cible. */
 export interface BayesianVerdictQuery {
@@ -85,7 +92,47 @@ export class BayesianVerdictService {
   constructor(
     private db: Database,
     private bayesian: BayesianScoringService,
+    private snapshotRepo?: SnapshotRepository,
   ) {}
+
+  /** Compute the Bayesian verdict for an agent and persist a snapshot row
+   *  into score_snapshots when the posterior has moved (|Δp_success| ≥ 0.005)
+   *  or the previous snapshot is older than SNAPSHOT_HEARTBEAT_SEC.
+   *
+   *  No-op if snapshotRepo was not wired (e.g. in unit tests that exercise
+   *  buildVerdict() without persistence concerns). Called from the crawler
+   *  after scoringService.computeScore — keeps the composite and bayesian
+   *  update paths side-by-side until v34. */
+  snapshotAndPersist(agentHash: string): BayesianVerdictResponse {
+    const response = this.buildVerdict({ targetHash: agentHash });
+    if (!this.snapshotRepo) return response;
+
+    const now = Math.floor(Date.now() / 1000);
+    const latest = this.snapshotRepo.findLatestByAgent(agentHash);
+    const changed = !latest
+      || Math.abs(latest.p_success - response.p_success) >= SNAPSHOT_CHANGE_THRESHOLD;
+    const stale = !latest
+      || (now - latest.computed_at) >= SNAPSHOT_HEARTBEAT_SEC;
+
+    if (changed || stale) {
+      const posteriorAlpha = DEFAULT_PRIOR_ALPHA + response.n_obs * response.p_success;
+      const posteriorBeta = DEFAULT_PRIOR_BETA + response.n_obs * (1 - response.p_success);
+      this.snapshotRepo.insert({
+        snapshot_id: randomUUID(),
+        agent_hash: agentHash,
+        p_success: response.p_success,
+        ci95_low: response.ci95_low,
+        ci95_high: response.ci95_high,
+        n_obs: response.n_obs,
+        posterior_alpha: posteriorAlpha,
+        posterior_beta: posteriorBeta,
+        window: response.window,
+        computed_at: now,
+        updated_at: now,
+      });
+    }
+    return response;
+  }
 
   /** Point d'entrée public — retourne la réponse complète pour une cible. */
   buildVerdict(query: BayesianVerdictQuery): BayesianVerdictResponse {

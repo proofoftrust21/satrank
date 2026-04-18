@@ -79,17 +79,16 @@ export class WatchlistController {
       const cacheKey = `watchlist:${crypto.createHmac('sha256', WATCHLIST_HMAC_KEY).update(sortedHashes.join(',')).digest('hex')}:${sinceBucket}`;
 
       const cached = cache.getOrCompute(cacheKey, WATCHLIST_CACHE_TTL_MS, () => {
-        // Snapshot table still drives change-detection triggers; posterior
-        // projection is computed fresh so the emitted block is canonical.
-        // Commit 8 will swap the trigger to posterior-delta snapshots.
+        // Change-detection is now on the posterior: findChangedSince surfaces
+        // agents whose p_success moved by ≥ 0.005 since the watcher's last sync.
         const snapshots = this.snapshotRepo.findChangedSince(hashes, since);
         let up = 0, down = 0, fresh = 0;
         const changes = snapshots.map(snap => {
           const agent = this.agentRepo.findByHash(snap.agent_hash);
           const bayesian = this.agentService.toBayesianBlock(snap.agent_hash);
-          if (snap.previous_score === null) fresh++;
-          else if (snap.score > snap.previous_score) up++;
-          else if (snap.score < snap.previous_score) down++;
+          if (snap.previous_p_success === null) fresh++;
+          else if (snap.p_success > snap.previous_p_success) up++;
+          else if (snap.p_success < snap.previous_p_success) down++;
           return {
             publicKeyHash: snap.agent_hash,
             alias: agent?.alias ?? null,
