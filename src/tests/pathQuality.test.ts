@@ -12,7 +12,7 @@ import { RiskService } from '../services/riskService';
 import { VerdictService } from '../services/verdictService';
 import { SurvivalService } from '../services/survivalService';
 import { DecideService } from '../services/decideService';
-import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
+import { createBayesianVerdictService, seedSafeBayesianObservations } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 
 // --- computePathQuality unit tests (exported for direct testing) ---
@@ -131,6 +131,9 @@ describe('decide / pathQuality non-regression', () => {
       estimated_fee_msat: null,
       failure_reason: null,
     });
+    // Bayesian posterior: seed converging observations so verdict is SAFE.
+    // Under the new decide semantics, go=true requires verdict=SAFE.
+    seedSafeBayesianObservations(db, testHash, { now });
   });
 
   afterAll(() => db.close());
@@ -145,11 +148,11 @@ describe('decide / pathQuality non-regression', () => {
     expect(result.components.pathQuality).toBe(0.5);
   });
 
-  it('response includes all 5 components as numbers in [0,1]', async () => {
+  it('response includes all 3 components as numbers in [0,1]', async () => {
     const callerHash = sha256('test-caller');
     const result = await decideService.decide(testHash, callerHash);
 
-    for (const key of ['trustScore', 'routable', 'available', 'empirical', 'pathQuality'] as const) {
+    for (const key of ['routable', 'available', 'pathQuality'] as const) {
       expect(typeof result.components[key]).toBe('number');
       expect(result.components[key]).toBeGreaterThanOrEqual(0);
       expect(result.components[key]).toBeLessThanOrEqual(1);

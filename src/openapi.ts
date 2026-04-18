@@ -1207,31 +1207,26 @@ export const openapiSpec = {
       },
       DecideResponse: {
         type: 'object',
-        description: 'GO / NO-GO decision with success probability components.',
+        description: 'GO / NO-GO decision. Embeds the canonical Bayesian posterior (p_success, ci95, sources, convergence) plus operational overlays (path, flags, riskProfile).',
         properties: {
           go: { type: 'boolean', description: 'true = proceed with transaction, false = abort' },
-          successRate: { type: 'number', minimum: 0, maximum: 1, description: 'Combined success probability (0-1)' },
+          successRate: { type: 'number', minimum: 0, maximum: 1, description: 'Caller-personalised success probability (0-1). Anchors on Bayesian p_success and adjusts for caller path/availability.' },
           components: {
             type: 'object',
             properties: {
-              trustScore: { type: 'number', description: 'P_trust — sigmoid of the SatRank score' },
               routable: { type: 'number', description: 'P_routable — route exists from caller to target (0 or 1)' },
               available: { type: 'number', description: 'P_available — probe uptime over 7 days' },
-              empirical: { type: 'number', description: 'P_empirical — historical success rate from reports' },
               pathQuality: { type: 'number', description: 'P_path — personalized path quality from caller to target (0-1, based on hops, fee, alternatives)' },
             },
           },
-          scoreBreakdown: {
-            type: 'object',
-            description: 'Raw score breakdown — mirrors /api/profile/:id.score. Lets agents audit a decision without a second request.',
-            properties: {
-              total: { type: 'integer', minimum: 0, maximum: 100 },
-              components: { $ref: '#/components/schemas/ScoreComponents' },
-            },
-          },
-          basis: { type: 'string', enum: ['proxy', 'empirical'], description: 'proxy = <10 reports (using trust score), empirical = >=10 reports' },
-          confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
-          verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
+          p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Bayesian posterior success probability (hierarchical Beta-Binomial).' },
+          ci95_low: { type: 'number', minimum: 0, maximum: 1, description: '95% credible interval lower bound.' },
+          ci95_high: { type: 'number', minimum: 0, maximum: 1, description: '95% credible interval upper bound.' },
+          n_obs: { type: 'integer', minimum: 0, description: 'Total weighted observations feeding the posterior (active window).' },
+          window: { type: 'string', enum: ['24h', '7d', '30d'], description: 'Active observation window used to compute the posterior.' },
+          sources: { type: 'object', description: 'Per-source breakdown (probe / report / paid). Null when no data for that source.' },
+          convergence: { type: 'object', description: 'Whether ≥2 independent sources converge on p ≥ threshold.' },
+          verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT'] },
           flags: { type: 'array', items: { type: 'string' } },
           pathfinding: { oneOf: [{ $ref: '#/components/schemas/PathfindingResult' }, { type: 'null' }] },
           riskProfile: { $ref: '#/components/schemas/RiskProfile' },
@@ -1239,7 +1234,6 @@ export const openapiSpec = {
           survival: { $ref: '#/components/schemas/SurvivalResult' },
           targetFeeStability: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Fee stability of the target node only, not the full route (0 = highly volatile, 1 = perfectly stable). Null when no fee data is available.' },
           maxRoutableAmount: { type: ['integer', 'null'], description: 'Highest amount in sats for which a route was found in recent multi-amount probes (1k/10k/100k/1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.' },
-          reportedSuccessRate: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Raw empirical success rate from payment reports (0-1). Null when insufficient data (< 10 reports or < 5 unique reporters). Distinct from successRate which blends proxies.' },
           lastProbeAgeMs: { type: ['integer', 'null'], description: 'Milliseconds since the last probe for this node. Null if never probed.' },
           serviceHealth: { oneOf: [{ type: 'object', properties: {
             url: { type: 'string' }, status: { type: 'string', enum: ['healthy', 'degraded', 'down', 'checking', 'unknown'] },
@@ -1249,7 +1243,7 @@ export const openapiSpec = {
           } }, { type: 'null' }], description: 'HTTP health of the service behind this node. Null when serviceUrl not provided.' },
           latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },
         },
-        required: ['go', 'successRate', 'components', 'basis', 'confidence', 'verdict', 'flags', 'reason', 'survival', 'latencyMs'],
+        required: ['go', 'successRate', 'components', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'window', 'sources', 'convergence', 'verdict', 'flags', 'reason', 'survival', 'latencyMs'],
       },
       SurvivalResult: {
         type: 'object',

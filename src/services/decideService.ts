@@ -10,11 +10,9 @@ import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { VerdictService } from './verdictService';
 import type { SurvivalService } from './survivalService';
-import type { DecideResponse, ServiceHealth, VerdictFlag, Verdict, ConfidenceLevel, PathfindingResult } from '../types';
+import type { DecideResponse, ServiceHealth, PathfindingResult } from '../types';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
-import { confidenceToNumber } from '../utils/confidence';
 import { logger } from '../logger';
-const EMPIRICAL_THRESHOLD = 10; // min data points before using empirical basis
 
 // If the most recent probe for the target is older than this, fire a live
 // queryRoutes before answering. Default: 30 minutes (matches the probe
@@ -29,11 +27,6 @@ const REPROBE_RATE_LIMIT_SEC = 300;
 const recentReprobes = new Map<string, number>(); // targetHash → timestamp
 // Fee budget as fraction of the payment amount — fees above this cap P_path.feeScore to 0
 const FEE_BUDGET_RATIO = 0.01; // 1%
-
-// Sigmoid function: maps score (0-100) to probability (0-1), centered at 50
-function sigmoid(score: number, midpoint: number = 50, steepness: number = 0.1): number {
-  return 1 / (1 + Math.exp(-steepness * (score - midpoint)));
-}
 
 // P_path — quality of the Lightning path from caller to target.
 // Continuous 0-1 signal derived from the pathfinding result. Captures HOW WELL
@@ -97,7 +90,6 @@ function classifyHttp(status: number): 'healthy' | 'degraded' | 'down' {
 
 export class DecideService {
   private agentRepo: AgentRepository;
-  private attestationRepo: AttestationRepository;
   private scoringService: ScoringService;
   private verdictService: VerdictService;
   private probeRepo?: ProbeRepository;
@@ -107,7 +99,6 @@ export class DecideService {
 
   constructor(opts: DecideServiceOptions) {
     this.agentRepo = opts.agentRepo;
-    this.attestationRepo = opts.attestationRepo;
     this.scoringService = opts.scoringService;
     this.verdictService = opts.verdictService;
     this.probeRepo = opts.probeRepo;
@@ -129,16 +120,9 @@ export class DecideService {
     // Mark as hot node for priority probing
     this.agentRepo.touchLastQueried(targetHash);
 
-    // Single getScore() per request. Sim #5 found ±1 drift when the cache
-    // TTL boundary fell between two getScore() calls; /decide and /profile
-    // could return slightly different totals. Thread the same result through.
-    const scoreResult = this.scoringService.getScore(targetHash);
-
-    // Get the full verdict (reuses pathfinding, personal trust, flags, risk profile)
-    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash, pathfindingSourcePubkey, 'decide', scoreResult);
-
-    // P_trust — sigmoid of the trust score, centered at 50
-    const pTrust = sigmoid(scoreResult.total);
+    // Get the full verdict (reuses pathfinding, personal trust, flags, risk profile).
+    // Bayesian posterior drives the decision — no legacy composite score.
+    const verdictResult = await this.verdictService.getVerdict(targetHash, callerHash, pathfindingSourcePubkey, 'decide');
 
     // P_routable — is there a Lightning route from caller to target?
     let pRoutable = 0.5; // default when no pathfinding data
@@ -222,28 +206,18 @@ export class DecideService {
       ? this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC)
       : null;
 
-    // P_empirical — historical success rate from reports
-    const { rate: empiricalRate, dataPoints, uniqueReporters } = this.attestationRepo.weightedSuccessRate(targetHash);
-    // Require both sufficient data points AND diverse reporters to avoid single-agent self-reporting
-    const hasEmpirical = dataPoints >= EMPIRICAL_THRESHOLD && uniqueReporters >= 5;
-    const pEmpirical = hasEmpirical ? empiricalRate : pTrust; // fallback to proxy
-
     // P_path — path quality from the caller's position in the graph
     const pPath = computePathQuality(verdictResult.pathfinding, amountSats);
 
-    // Composite success rate
-    const basis: 'proxy' | 'empirical' = hasEmpirical ? 'empirical' : 'proxy';
-    let successRate: number;
-    if (hasEmpirical) {
-      // Empirical mode: P_empirical dominates, P_path personalises, P_trust is safety net
-      successRate = pEmpirical * 0.40 + pPath * 0.25 + pAvailable * 0.15 + pTrust * 0.10 + pRoutable * 0.10;
-    } else {
-      // Proxy mode: trust score + path quality drive the decision
-      successRate = pTrust * 0.30 + pPath * 0.30 + pAvailable * 0.20 + pRoutable * 0.20;
-    }
-
-    // Clamp to [0, 1]
-    successRate = Math.max(0, Math.min(1, successRate));
+    // Bayesian-anchored successRate: posterior p_success drives the decision,
+    // personalised by path/availability/routability from the caller's vantage.
+    // No empirical/proxy split — the Bayesian layer already weighs reports,
+    // probes, and paid observations under a single posterior.
+    const successRateRaw = verdictResult.p_success * 0.50
+      + pPath * 0.20
+      + pAvailable * 0.15
+      + pRoutable * 0.15;
+    const successRate = Math.max(0, Math.min(1, successRateRaw));
 
     // Service health check (non-blocking) — resolve DNS once, pin IP to prevent rebinding
     let serviceHealth: ServiceHealth | null = null;
@@ -254,14 +228,17 @@ export class DecideService {
       }
     }
 
-    // GO decision: successRate >= 0.5 AND no critical flags AND service not down
+    // GO decision — under Bayesian semantics, SAFE is the only green light.
+    // INSUFFICIENT ("we don't know") and UNKNOWN (high posterior uncertainty)
+    // both fail defensively; RISKY is a hard no. Service health and critical
+    // flags can still veto a SAFE verdict.
     const hasCritical = verdictResult.flags.includes('fraud_reported') ||
       verdictResult.flags.includes('negative_reputation');
     const serviceDown = serviceHealth?.status === 'down';
-    const go = successRate >= 0.5 && !hasCritical && !serviceDown;
-
-    // reportedSuccessRate — raw empirical rate, null when insufficient data
-    const reportedSuccessRate = hasEmpirical ? Math.round(empiricalRate * 1000) / 1000 : null;
+    const go = verdictResult.verdict === 'SAFE'
+      && successRate >= 0.5
+      && !hasCritical
+      && !serviceDown;
 
     const survival = this.survivalService
       ? this.survivalService.compute(targetHash)
@@ -290,19 +267,19 @@ export class DecideService {
       go,
       successRate: Math.round(successRate * 1000) / 1000,
       components: {
-        trustScore: Math.round(pTrust * 1000) / 1000,
         routable: Math.round(pRoutable * 1000) / 1000,
         available: Math.round(pAvailable * 1000) / 1000,
-        empirical: Math.round(pEmpirical * 1000) / 1000,
         pathQuality: Math.round(pPath * 1000) / 1000,
       },
-      scoreBreakdown: {
-        total: scoreResult.total,
-        components: scoreResult.components,
-      },
-      basis,
-      confidence: confidenceToNumber(scoreResult.confidence),
+      // Bayesian block — canonical shape shared with /verdict, /profile, etc.
+      p_success: verdictResult.p_success,
+      ci95_low: verdictResult.ci95_low,
+      ci95_high: verdictResult.ci95_high,
+      n_obs: verdictResult.n_obs,
       verdict: verdictResult.verdict,
+      window: verdictResult.window,
+      sources: verdictResult.sources,
+      convergence: verdictResult.convergence,
       flags: verdictResult.flags,
       pathfinding,
       riskProfile: verdictResult.riskProfile,
@@ -310,7 +287,6 @@ export class DecideService {
       survival,
       targetFeeStability,
       maxRoutableAmount,
-      reportedSuccessRate,
       lastProbeAgeMs,
       serviceHealth,
       latencyMs,

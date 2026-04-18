@@ -133,8 +133,8 @@ describe('POST /api/decide', () => {
     expect(res.body.data.successRate).toBeGreaterThanOrEqual(0);
     expect(res.body.data.successRate).toBeLessThanOrEqual(1);
     expect(res.body.data.components).toBeDefined();
-    expect(res.body.data.components.trustScore).toBeGreaterThan(0);
-    expect(['proxy', 'empirical']).toContain(res.body.data.basis);
+    expect(res.body.data.components.pathQuality).toBeGreaterThanOrEqual(0);
+    expect(typeof res.body.data.p_success).toBe('number');
     expect(res.body.data.verdict).toBeDefined();
     expect(res.body.data.latencyMs).toBeGreaterThanOrEqual(0);
   });
@@ -433,7 +433,7 @@ describe('GET /api/profile/:id', () => {
 // --- DecideService unit tests ---
 
 describe('DecideService', () => {
-  it('uses proxy basis when < 10 reports', async () => {
+  it('returns Bayesian block + successRate in [0,1]', async () => {
     const snapshotRepo = new SnapshotRepository(db);
     const probeRepo = new ProbeRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
@@ -443,34 +443,15 @@ describe('DecideService', () => {
     const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
 
     const result = await decideService.decide(sha256('bob'), sha256('alice'));
-    expect(result.basis).toBe('proxy');
+    expect(typeof result.p_success).toBe('number');
+    expect(result.p_success).toBeGreaterThanOrEqual(0);
+    expect(result.p_success).toBeLessThanOrEqual(1);
+    expect(typeof result.n_obs).toBe('number');
+    expect(['24h', '7d', '30d']).toContain(result.window);
+    expect(result.sources).toBeDefined();
+    expect(result.convergence).toBeDefined();
     expect(result.successRate).toBeGreaterThanOrEqual(0);
     expect(result.successRate).toBeLessThanOrEqual(1);
-  });
-
-  // Sim #5 finding #2 — reputationBreakdown must be surfaced in /decide so
-  // agents can audit a flip without a second paid /profile call.
-  it('exposes scoreBreakdown with components including reputationBreakdown', async () => {
-    const snapshotRepo = new SnapshotRepository(db);
-    const probeRepo = new ProbeRepository(db);
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    const riskService = new RiskService();
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
-    const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
-
-    const result = await decideService.decide(sha256('bob'), sha256('alice'));
-    expect(result.scoreBreakdown).toBeDefined();
-    expect(result.scoreBreakdown.total).toBeGreaterThanOrEqual(0);
-    expect(result.scoreBreakdown.total).toBeLessThanOrEqual(100);
-    expect(result.scoreBreakdown.components).toHaveProperty('volume');
-    expect(result.scoreBreakdown.components).toHaveProperty('reputation');
-    expect(result.scoreBreakdown.components).toHaveProperty('seniority');
-    expect(result.scoreBreakdown.components).toHaveProperty('regularity');
-    expect(result.scoreBreakdown.components).toHaveProperty('diversity');
-    // reputationBreakdown is optional on old snapshots but must be populated
-    // on a fresh score computation.
-    expect(result.scoreBreakdown.components.reputationBreakdown).toBeDefined();
   });
 });
 

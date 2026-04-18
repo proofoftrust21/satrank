@@ -509,27 +509,17 @@ export interface FeeVolatility {
   changesLast7d: number;
 }
 
-export interface DecideResponse {
+/** `extends BayesianScoreBlock` → inherits {p_success, ci95_low, ci95_high, n_obs,
+ *  verdict, window, sources, convergence} — the canonical public shape shared
+ *  with /verdict, /profile, /best-route, /service, /endpoint. */
+export interface DecideResponse extends BayesianScoreBlock {
   go: boolean;
   successRate: number;
   components: {
-    trustScore: number;
     routable: number;
     available: number;
-    empirical: number;
     pathQuality: number;
   };
-  /** Raw score breakdown for audit trail — mirrors `/api/profile/:id.score`.
-   *  `components.reputationBreakdown` exposes the sub-signal contributions so
-   *  an agent can answer "why did this decision flip?" from a single /decide
-   *  call (no extra /profile request needed). Added after sim #5. */
-  scoreBreakdown: {
-    total: number;
-    components: ScoreComponents;
-  };
-  basis: 'proxy' | 'empirical';
-  confidence: number;
-  verdict: Verdict;
   flags: VerdictFlag[];
   pathfinding: PathfindingResult | null;
   riskProfile: RiskProfile;
@@ -539,8 +529,6 @@ export interface DecideResponse {
   targetFeeStability: number | null;
   /** Highest amount (sats) for which a route was found in recent probes. null if no multi-amount data. */
   maxRoutableAmount: number | null;
-  /** Raw empirical success rate from payment reports (0-1). null when insufficient reports (<10 data points or <5 unique reporters). */
-  reportedSuccessRate: number | null;
   lastProbeAgeMs: number | null;
   /** HTTP health of the service behind this node. null when no serviceUrl provided or no data available. */
   serviceHealth: ServiceHealth | null;
