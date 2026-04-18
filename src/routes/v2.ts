@@ -4,12 +4,16 @@ import rateLimit from 'express-rate-limit';
 import type { RequestHandler } from 'express';
 import type { V2Controller } from '../controllers/v2Controller';
 import type { DepositController } from '../controllers/depositController';
-import { apiKeyAuth, apertureGateAuth } from '../middleware/auth';
+import { apiKeyAuth, apertureGateAuth, createReportDispatchAuth } from '../middleware/auth';
 import { rateLimitHits } from '../middleware/metrics';
 
+// Phase 2 : bump à 20/min/IP. L'ancien 5/min/IP était trop conservatif pour
+// cohabiter avec le chemin anonyme (voie 3) sans gêner les clients légitimes.
+// Le rate limit par reporter (20/min) de ReportService reste actif pour le
+// chemin authentifié ; la garantie one-shot des anonymes vient de consumed_at.
 const reportRateLimit = rateLimit({
   windowMs: 60_000,
-  max: 5,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.ip ?? '0.0.0.0',
@@ -46,7 +50,9 @@ export function createV2Routes(
 
   router.post('/decide', apertureGateAuth, balanceAuth, controller.decide);
   router.post('/best-route', apertureGateAuth, balanceAuth, controller.bestRoute);
-  router.post('/report', reportRateLimit, reportAuth, controller.report);
+  // Phase 2 : dispatch anonyme (X-L402-Preimage ou body.preimage sans reporter)
+  // bypass reportAuth ; chemin legacy délègue au middleware fourni.
+  router.post('/report', reportRateLimit, createReportDispatchAuth(reportAuth), controller.report);
   router.get('/profile/:id', apertureGateAuth, balanceAuth, controller.profile);
 
   // Deposit: variable-amount L402 token purchase (bypasses Aperture, free endpoint)

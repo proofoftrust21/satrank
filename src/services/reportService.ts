@@ -13,6 +13,18 @@ import { windowBucket } from '../utils/dualWriteLogger';
 import { NotFoundError, ValidationError, DuplicateReportError } from '../errors';
 import { logger } from '../logger';
 import { reportSubmittedTotal } from '../middleware/metrics';
+import { sha256 } from '../utils/crypto';
+import type { PreimagePoolTier } from '../repositories/preimagePoolRepository';
+import { tierToReporterWeight } from '../repositories/preimagePoolRepository';
+
+// Dérive l'agent_hash d'un reporter anonyme à partir du payment_hash de la
+// preimage pool. Stable, déterministe, unique par preimage. Utilisé pour :
+//   - attester_hash dans attestations (FK agents.public_key_hash)
+//   - sender_hash dans transactions (FK agents.public_key_hash)
+//   - reporter_identity retourné dans la réponse (préfixé "preimage_pool:")
+export function anonymousReporterHash(paymentHash: string): string {
+  return sha256(`preimage_pool:${paymentHash}`);
+}
 
 const OUTCOME_SCORE: Record<ReportOutcome, number> = {
   success: 85,
@@ -222,6 +234,167 @@ export class ReportService {
       verified,
       weight: Math.round(weight * 1000) / 1000,
       timestamp: now,
+    };
+  }
+
+  /** Phase 2 voie 3 — report anonyme depuis preimage_pool.
+   *
+   *  Pré-condition : le caller a déjà :
+   *    1. vérifié que sha256(preimage) === paymentHash,
+   *    2. trouvé l'entrée dans preimage_pool via findByPaymentHash,
+   *    3. consommé l'entrée via consumeAtomic (UPDATE WHERE consumed_at IS NULL).
+   *  Ces trois étapes restent au niveau du controller parce qu'elles conditionnent
+   *  les codes HTTP (400 PREIMAGE_UNKNOWN, 409 DUPLICATE_REPORT) que le service
+   *  ne doit pas émettre directement.
+   *
+   *  Cette méthode crée/upsert l'agent synthétique (source='manual',
+   *  hash=sha256('preimage_pool:' + paymentHash)), insère la transaction avec
+   *  source='report' + status='verified', puis attache l'attestation pondérée
+   *  par tierToReporterWeight(tier). Renvoie le même shape que submit() plus
+   *  reporter_identity, confidence_tier et reporter_weight_applied. */
+  submitAnonymous(input: {
+    reportId: string;
+    target: string;
+    paymentHash: string;
+    tier: PreimagePoolTier;
+    outcome: ReportOutcome;
+    amountBucket?: 'micro' | 'small' | 'medium' | 'large';
+    memo?: string;
+  }): {
+    reportId: string;
+    verified: boolean;
+    weight: number;
+    timestamp: number;
+    reporter_identity: string;
+    confidence_tier: PreimagePoolTier;
+    reporter_weight_applied: number;
+  } {
+    const now = Math.floor(Date.now() / 1000);
+
+    const target = this.agentRepo.findByHash(input.target);
+    if (!target) throw new NotFoundError('Agent (target)', input.target);
+
+    const reporterHash = anonymousReporterHash(input.paymentHash);
+
+    // Self-report via pool : impossible en pratique (payer = receiver ne peut
+    // pas être son propre agent synthétique — hash dérivé de paymentHash), mais
+    // on garde la vérif par cohérence.
+    if (reporterHash === input.target) {
+      throw new ValidationError('An agent cannot report on itself');
+    }
+
+    const weight = tierToReporterWeight(input.tier);
+    const score = OUTCOME_SCORE[input.outcome];
+    const category = OUTCOME_CATEGORY[input.outcome];
+
+    // tx_id déterministe — une preimage = un report anonyme (consumeAtomic
+    // garantit déjà l'unicité mais on double-garde avec le PRIMARY KEY tx_id).
+    const txId = `preimage_pool:${input.paymentHash}`;
+
+    const attestation: Attestation = {
+      attestation_id: input.reportId,
+      tx_id: txId,
+      attester_hash: reporterHash,
+      subject_hash: input.target,
+      score,
+      tags: input.memo ? JSON.stringify([input.memo.slice(0, 280)]) : null,
+      evidence_hash: input.paymentHash,
+      timestamp: now,
+      category,
+      verified: 1,
+      weight,
+    };
+
+    const doInsert = () => {
+      // Upsert synthetic agent pour satisfaire la FK attester_hash/sender_hash
+      const existingReporter = this.agentRepo.findByHash(reporterHash);
+      if (!existingReporter) {
+        this.agentRepo.insert({
+          public_key_hash: reporterHash,
+          public_key: null,
+          alias: `anon:${input.paymentHash.slice(0, 8)}`,
+          first_seen: now,
+          last_seen: now,
+          source: 'manual',
+          total_transactions: 0,
+          total_attestations_received: 0,
+          avg_score: 0,
+          capacity_sats: null,
+          positive_ratings: 0,
+          negative_ratings: 0,
+          lnplus_rank: 0,
+          hubness_rank: 0,
+          betweenness_rank: 0,
+          hopness_rank: 0,
+          query_count: 0,
+          unique_peers: null,
+          last_queried_at: null,
+        });
+      }
+
+      // Synthetic transaction — preimage=null (S2), status='verified' car la
+      // preimage vient d'une pool entry prouvée, source='report' systématique.
+      const existingTx = this.txRepo.findById(txId);
+      if (!existingTx) {
+        const reportTx = {
+          tx_id: txId,
+          sender_hash: reporterHash,
+          receiver_hash: input.target,
+          amount_bucket: input.amountBucket ?? 'micro',
+          timestamp: now,
+          payment_hash: input.paymentHash,
+          preimage: null,
+          status: 'verified' as const,
+          protocol: 'bolt11' as const,
+        };
+        const enrichment: DualWriteEnrichment = {
+          endpoint_hash: null,
+          operator_id: input.target,
+          source: 'report',
+          window_bucket: windowBucket(now),
+        };
+        // Phase 2 anonyme : always write the 4 v31 columns. Le chemin anonyme
+        // est né en v32 et n'a pas à participer au rollout dual-write du chemin
+        // legacy — on force mode='active' pour garantir source='report'.
+        this.txRepo.insertWithDualWrite(
+          reportTx,
+          enrichment,
+          'active',
+          'reportService',
+          this.dualWriteLogger,
+        );
+      }
+
+      this.attestationRepo.insert(attestation);
+
+      if (!existingTx) {
+        this.agentRepo.incrementTotalTransactions(input.target);
+      }
+      this.agentRepo.updateAttestationCount(
+        input.target,
+        this.attestationRepo.countBySubject(input.target),
+      );
+    };
+
+    if (this.db) {
+      this.db.transaction(doInsert)();
+    } else {
+      doInsert();
+    }
+
+    reportSubmittedTotal.inc({
+      verified: '1',
+      outcome: input.outcome,
+    });
+
+    return {
+      reportId: input.reportId,
+      verified: true,
+      weight: Math.round(weight * 1000) / 1000,
+      timestamp: now,
+      reporter_identity: `preimage_pool:${input.paymentHash}`,
+      confidence_tier: input.tier,
+      reporter_weight_applied: weight,
     };
   }
 }

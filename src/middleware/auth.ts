@@ -122,6 +122,39 @@ export function createReportAuth(db: Database.Database) {
   };
 }
 
+// Phase 2 voie 3 — dispatch between legacy authenticated report and anonymous
+// report. Détecte le chemin anonyme via :
+//   - header X-L402-Preimage, ou
+//   - body.preimage présent sans body.reporter
+// Si anonyme, marque `req.isAnonymousReport=true` + `req.anonymousPreimage` et
+// continue sans auth. Sinon, délègue au middleware d'auth legacy (apiKeyAuth ou
+// createReportAuth). Ça laisse les deux chemins cohabiter sur /api/report.
+export interface AnonymousReportRequest extends Request {
+  isAnonymousReport?: boolean;
+  anonymousPreimage?: string;
+}
+export function createReportDispatchAuth(legacyAuth: (req: Request, res: Response, next: NextFunction) => void) {
+  return function reportDispatch(req: Request, res: Response, next: NextFunction): void {
+    const body = (req.body as Record<string, unknown> | undefined) ?? undefined;
+    const headerPreimageRaw = req.headers['x-l402-preimage'];
+    const headerPreimage = typeof headerPreimageRaw === 'string' ? headerPreimageRaw : undefined;
+    const bodyPreimage = typeof body?.preimage === 'string' ? (body.preimage as string) : undefined;
+    const hasReporter = typeof body?.reporter === 'string';
+    const preimage = headerPreimage ?? bodyPreimage;
+
+    // Anonyme = preimage présent ET pas de reporter explicite. Si reporter est
+    // fourni, on reste sur le chemin legacy (API-key/L402 + reporter field).
+    if (preimage && !hasReporter) {
+      (req as AnonymousReportRequest).isAnonymousReport = true;
+      (req as AnonymousReportRequest).anonymousPreimage = preimage;
+      next();
+      return;
+    }
+
+    legacyAuth(req, res, next);
+  };
+}
+
 // L402 gate — Aperture handles payment verification and forwards valid requests.
 // In production, Express is behind Hetzner firewall (port 3000 blocked externally).
 // The only path to paid endpoints is: Internet → Nginx → Aperture → Express (localhost).
