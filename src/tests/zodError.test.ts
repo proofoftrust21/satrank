@@ -162,8 +162,8 @@ describe('formatZodError — array and query schemas', () => {
   it('reports a topQuery sort_by enum mismatch', () => {
     const msg = runAndFormat(topQuerySchema, { sort_by: 'popularity' });
     expect(msg).toContain('sort_by');
-    expect(msg).toContain('"score"');
-    expect(msg).toContain('"reputation"');
+    expect(msg).toContain('"p_success"');
+    expect(msg).toContain('"n_obs"');
     expect(msg).toContain('got "popularity"');
   });
 

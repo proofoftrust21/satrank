@@ -39,12 +39,13 @@ function buildTestApp() {
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+  const bayesianVerdictService = createBayesianVerdictService(db);
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+  const agentController = new AgentController(agentService, agentRepo, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
 

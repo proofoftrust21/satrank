@@ -143,6 +143,8 @@ export interface SubSignalContribution {
 export type ConfidenceLevel = 'very_low' | 'low' | 'medium' | 'high' | 'very_high';
 
 // API responses
+/** Agent profile: identity + stats + evidence overlay + canonical Bayesian
+ *  block. No composite score surface — `bayesian` is the source of truth. */
 export interface AgentScoreResponse {
   agent: {
     publicKeyHash: string;
@@ -151,19 +153,7 @@ export interface AgentScoreResponse {
     lastSeen: number;
     source: AgentSource;
   };
-  score: {
-    total: number;
-    /** 2-decimal float of the same score. Use in UI to break visual ties when
-     *  many nodes sit in the same integer band (the 80-82 compression observed
-     *  2026-04-17). API consumers that expect an integer continue to read
-     *  `total`. */
-    totalFine: number;
-    components: ScoreComponents;
-    /** Confidence 0-1 (sigmoid-derived). Uniform across /decide, /profile,
-     *  /verdicts — sim #5 found the shape diverged between endpoints. */
-    confidence: number;
-    computedAt: number;
-  };
+  bayesian: BayesianScoreBlock;
   stats: {
     totalTransactions: number;
     verifiedTransactions: number;
@@ -172,7 +162,6 @@ export interface AgentScoreResponse {
     avgAttestationScore: number;
   };
   evidence: ScoreEvidence;
-  delta: ScoreDelta;
   alerts: AgentAlert[];
 }
 

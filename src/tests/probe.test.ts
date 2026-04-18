@@ -412,9 +412,7 @@ describe('Probe verdict integration', () => {
       failure_reason: null,
     });
 
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db), probeRepo);
 
     const result = agentService.getAgentScore(agent.public_key_hash);
     expect(result.evidence.probe).not.toBeNull();
@@ -429,9 +427,7 @@ describe('Probe verdict integration', () => {
     const agent = makeAgent({ public_key_hash: sha256('no-probe-evidence') });
     agentRepo.insert(agent);
 
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db), probeRepo);
 
     const result = agentService.getAgentScore(agent.public_key_hash);
     expect(result.evidence.probe).toBeNull();

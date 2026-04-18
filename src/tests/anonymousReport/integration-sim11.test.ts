@@ -98,10 +98,11 @@ function buildContext(db: Database.Database) {
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const riskService = new RiskService();
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
+  const bayesianVerdictService = createBayesianVerdictService(db);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo);
   const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db, 'off');
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
 
   const v2 = new V2Controller(
     decideService, reportService, agentService, agentRepo, attestationRepo, scoringService,

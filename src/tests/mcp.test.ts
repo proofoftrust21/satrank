@@ -6,11 +6,11 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
-import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
 import { StatsService } from '../services/statsService';
 import { TrendService } from '../services/trendService';
 import { sha256 } from '../utils/crypto';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import type { Agent } from '../types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -56,9 +56,8 @@ describe('MCP tool response shapes', () => {
     const txRepo = new TransactionRepository(db);
     const attestationRepo = new AttestationRepository(db);
     const snapshotRepo = new SnapshotRepository(db);
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+    agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db));
     statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
   });
 
@@ -84,11 +83,13 @@ describe('MCP tool response shapes', () => {
 
     const result = agentService.getAgentScore(agent.public_key_hash);
 
-    // Score structure
-    expect(result.score.total).toBeGreaterThan(0);
-    expect(result.score.components).toHaveProperty('volume');
-    expect(result.score.components).toHaveProperty('reputation');
-    expect(result.score.confidence).toBeDefined();
+    // Bayesian structure
+    expect(typeof result.bayesian.p_success).toBe('number');
+    expect(result.bayesian.p_success).toBeGreaterThanOrEqual(0);
+    expect(result.bayesian.p_success).toBeLessThanOrEqual(1);
+    expect(typeof result.bayesian.n_obs).toBe('number');
+    expect(['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT']).toContain(result.bayesian.verdict);
+    expect(['24h', '7d', '30d']).toContain(result.bayesian.window);
 
     // Evidence structure
     expect(result.evidence).toBeDefined();
@@ -106,7 +107,7 @@ describe('MCP tool response shapes', () => {
     expect(result.evidence.popularity.bonusApplied).toBeGreaterThan(0);
   });
 
-  it('get_top_agents returns agents with components', () => {
+  it('get_top_agents returns agents with Bayesian block', () => {
     const agent = makeAgent({
       public_key_hash: sha256('top-mcp'),
       alias: 'TopNode',
@@ -123,10 +124,10 @@ describe('MCP tool response shapes', () => {
 
     const a = agents[0];
     expect(a.publicKeyHash).toBe(sha256('top-mcp'));
-    expect(a.score).toBe(80);
-    expect(a.components).toBeDefined();
-    expect(typeof a.components.volume).toBe('number');
-    expect(typeof a.components.reputation).toBe('number');
+    expect(a.bayesian).toBeDefined();
+    expect(typeof a.bayesian.p_success).toBe('number');
+    expect(typeof a.bayesian.n_obs).toBe('number');
+    expect(['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT']).toContain(a.bayesian.verdict);
   });
 
   it('search_agents returns agents with LN+ fields', () => {

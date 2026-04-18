@@ -117,16 +117,6 @@ const { FeeSnapshotRepository } = require('../repositories/feeSnapshotRepository
 const feeSnapshotRepo = new FeeSnapshotRepository(db);
 const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
 const trendService = new TrendService(agentRepo, snapshotRepo);
-const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
-const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService, probeRepo);
-const riskService = new RiskService();
-
-const lndClient = new HttpLndGraphClient({
-  restUrl: config.LND_REST_URL,
-  macaroonPath: config.LND_MACAROON_PATH,
-  timeoutMs: config.LND_TIMEOUT_MS,
-});
 const endpointAggRepo = new EndpointAggregateRepository(db);
 const serviceAggRepo = new ServiceAggregateRepository(db);
 const operatorAggRepo = new OperatorAggregateRepository(db);
@@ -136,6 +126,16 @@ const bayesianScoringService = new BayesianScoringService(
   endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
 );
 const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService);
+const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
+const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
+const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService, probeRepo);
+const riskService = new RiskService();
+
+const lndClient = new HttpLndGraphClient({
+  restUrl: config.LND_REST_URL,
+  macaroonPath: config.LND_MACAROON_PATH,
+  timeoutMs: config.LND_TIMEOUT_MS,
+});
 const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
 const decideService = new DecideService({
   agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService,
@@ -325,10 +325,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = agents.map(a => ({
           publicKeyHash: a.publicKeyHash,
           alias: a.alias,
-          score: a.score,
           totalTransactions: a.totalTransactions,
           source: a.source,
-          components: a.components,
+          bayesian: a.bayesian,
         }));
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }

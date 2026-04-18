@@ -102,7 +102,6 @@ export function createApp() {
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const serviceEndpointRepo = new ServiceEndpointRepository(db);
   const preimagePoolRepo = new PreimagePoolRepository(db);
@@ -137,6 +136,7 @@ export function createApp() {
   );
   const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService);
 
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
   const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
   const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
   const channelFlowService = new ChannelFlowService(channelSnapshotRepo);
@@ -188,7 +188,7 @@ export function createApp() {
   });
   reportBonusService.startGuard();
 
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService, db);
+  const agentController = new AgentController(agentService, agentRepo, verdictService, autoIndexService, db);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService, preimagePoolRepo);
@@ -501,21 +501,16 @@ function runWarmUp(
 
   for (const limit of [5, 10, 20]) {
     try {
-      const response = agentController.buildTopResponse(limit, 0, 'score');
-      cacheSet(`agents:top:${limit}:0:score`, response, 5 * 60_000);
+      const response = agentController.buildTopResponse(limit, 0, 'p_success');
+      cacheSet(`agents:top:${limit}:0:p_success`, response, 5 * 60_000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ error: msg, limit }, 'Cache warm-up: buildTopResponse failed');
     }
   }
-
-  try {
-    const { up, down } = trendService.getTopMovers(5);
-    cacheSet('agents:movers', { data: { gainers: up, losers: down } }, 5 * 60_000);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: msg }, 'Cache warm-up: getTopMovers failed');
-  }
+  // Movers cache is served from the controller (empty envelope in Phase 3)
+  // — no warm-up needed until Commit 8 lands posterior deltas.
+  void trendService;
 
   if (initial) {
     logger.info({ durationMs: Date.now() - start }, 'Cache warm-up complete');
