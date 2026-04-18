@@ -305,13 +305,21 @@ async function runFullCrawl(
   // Score immediately after LND crawl — don't wait for LN+ or probes
   await bulkScoreAll(agentRepo, scoringService, snapshotRepo);
 
-  // Publish scores to Nostr right after scoring — before LN+ (2.5h) and probes (35min)
+  // Publish scores to Nostr right after scoring — before LN+ (2.5h) and probes (35min).
+  // SKIP_INITIAL_NOSTR_PUBLISH short-circuits the initial publish (can block the
+  // boot-time arming of per-source timers by ~25min on prod with 4k+ scores).
+  // The periodic NostrPublisher timer still runs and will publish on its next
+  // cycle — this escape hatch only affects the kick-at-boot pass.
   if (nostrPublishFn) {
-    try {
-      await nostrPublishFn();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ error: msg }, 'Nostr publish in runFullCrawl failed');
+    if (process.env.SKIP_INITIAL_NOSTR_PUBLISH === 'true') {
+      logger.info('Initial Nostr publish skipped (SKIP_INITIAL_NOSTR_PUBLISH=true)');
+    } else {
+      try {
+        await nostrPublishFn();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ error: msg }, 'Nostr publish in runFullCrawl failed');
+      }
     }
   }
 
