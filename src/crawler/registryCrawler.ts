@@ -1,10 +1,17 @@
 // Registry crawler -- discovers L402 endpoints from 402index.io,
 // extracts payee_node_key from BOLT11 invoices, maps URL -> LN node.
 // Populates service_endpoints without paying any invoices.
+//
+// Phase 2 — voie 1 : quand un BOLT11 est extrait du WWW-Authenticate,
+// on alimente preimage_pool (tier='medium', source='crawler') via
+// insertIfAbsent. L'agent qui paiera plus tard un endpoint scrapé par
+// 402index pourra alors reporter anonymement en fournissant sa preimage.
 import { logger } from '../logger';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { PreimagePoolRepository } from '../repositories/preimagePoolRepository';
 import { sha256 } from '../utils/crypto';
 import { isSafeUrl } from '../utils/ssrf';
+import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
 
 interface IndexService {
   url: string;
@@ -59,6 +66,7 @@ export class RegistryCrawler {
   constructor(
     private serviceEndpointRepo: ServiceEndpointRepository,
     private decodeBolt11?: (invoice: string) => Promise<{ destination: string; num_satoshis?: string } | null>,
+    private preimagePoolRepo?: PreimagePoolRepository,
   ) {}
 
   async run(): Promise<{ discovered: number; updated: number; errors: number }> {
@@ -188,6 +196,25 @@ export class RegistryCrawler {
       if (!invoiceMatch) return null;
 
       const invoice = invoiceMatch[1];
+
+      // Phase 2 voie 1 : alimente preimage_pool dès qu'on voit un BOLT11.
+      // Idempotent (INSERT OR IGNORE) ; errors non-fatales (log only).
+      if (this.preimagePoolRepo) {
+        try {
+          const parsed = parseBolt11(invoice);
+          this.preimagePoolRepo.insertIfAbsent({
+            paymentHash: parsed.paymentHash,
+            bolt11Raw: invoice,
+            firstSeen: Math.floor(Date.now() / 1000),
+            confidenceTier: 'medium',
+            source: 'crawler',
+          });
+        } catch (err) {
+          if (!(err instanceof InvalidBolt11Error)) {
+            logger.warn({ error: err instanceof Error ? err.message : String(err) }, 'Registry: preimage_pool insert failed');
+          }
+        }
+      }
 
       // Use the provided BOLT11 decoder (LND decodepayreq) if available
       if (this.decodeBolt11) {

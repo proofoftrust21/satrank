@@ -58,6 +58,7 @@ import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
+import { PreimagePoolRepository } from './repositories/preimagePoolRepository';
 
 // Routes
 import { createAgentRoutes } from './routes/agent';
@@ -95,6 +96,7 @@ export function createApp() {
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const serviceEndpointRepo = new ServiceEndpointRepository(db);
+  const preimagePoolRepo = new PreimagePoolRepository(db);
   const riskService = new RiskService();
 
   // LND graph client — shared between auto-indexation, pathfinding, and verdict
@@ -167,7 +169,7 @@ export function createApp() {
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService, db);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
-  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService);
+  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, scoringService);
@@ -178,7 +180,7 @@ export function createApp() {
   const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq
     ? (invoice: string) => lndClient.decodePayReq!(invoice).then(r => r ? { destination: r.destination, num_satoshis: undefined } : null)
     : undefined;
-  const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11) : null;
+  const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11, preimagePoolRepo) : null;
   const serviceRegisterController = new ServiceRegisterController(registryCrawler);
 
   // Cache warm-up — fills the stats and leaderboard caches before the first

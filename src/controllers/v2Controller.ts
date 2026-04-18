@@ -19,6 +19,9 @@ import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { PreimagePoolRepository } from '../repositories/preimagePoolRepository';
+import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
+import { logger } from '../logger';
 import type { ScoringService } from '../services/scoringService';
 import type { TrendService } from '../services/trendService';
 import type { RiskService } from '../services/riskService';
@@ -61,6 +64,10 @@ export class V2Controller {
     // the controller never attempts to credit bonuses (identical to
     // REPORT_BONUS_ENABLED=false behavior).
     private reportBonusService?: ReportBonusService,
+    // Phase 2 voie 2 : pool d'autorisation des reports anonymes. Optional
+    // pour rester backwards-compatible — sans lui, bolt11Raw dans /api/decide
+    // est validé mais pas stocké.
+    private preimagePoolRepo?: PreimagePoolRepository,
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -83,6 +90,27 @@ export class V2Controller {
         parsed.data.serviceUrl,
         parsed.data.walletProvider as WalletProvider | undefined,
       );
+
+      // Phase 2 voie 2 — si l'agent fournit bolt11Raw (l'invoice qu'il va
+      // payer), pré-alimente le pool pour autoriser un report anonyme
+      // ultérieur via la preimage correspondante. Non-fatal : un BOLT11
+      // malformé n'échoue pas /api/decide (validé par zod en amont).
+      if (parsed.data.bolt11Raw && this.preimagePoolRepo) {
+        try {
+          const parsedInvoice = parseBolt11(parsed.data.bolt11Raw);
+          this.preimagePoolRepo.insertIfAbsent({
+            paymentHash: parsedInvoice.paymentHash,
+            bolt11Raw: parsed.data.bolt11Raw,
+            firstSeen: Math.floor(Date.now() / 1000),
+            confidenceTier: 'medium',
+            source: 'intent',
+          });
+        } catch (err) {
+          if (!(err instanceof InvalidBolt11Error)) {
+            logger.warn({ error: err instanceof Error ? err.message : String(err) }, 'decide: preimage_pool insert failed');
+          }
+        }
+      }
 
       // Log this target query for /api/report auth. See utils/tokenQueryLog.ts
       // for why every paid target-query path writes here, not just /api/decide.
