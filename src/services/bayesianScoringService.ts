@@ -21,6 +21,7 @@ import type {
   ServiceAggregateRepository,
   OperatorAggregateRepository,
   NodeAggregateRepository,
+  RouteAggregateRepository,
   SimpleAggregate,
 } from '../repositories/aggregatesRepository';
 import {
@@ -119,12 +120,37 @@ export interface AggregatePosterior {
   nObs: number;
 }
 
+/** Outcome d'une transaction prêt à être ingéré dans les aggregates.
+ *  Tous les champs sauf `success`, `timestamp` sont optionnels — on met à
+ *  jour uniquement les niveaux hiérarchiques pour lesquels on a une clé. */
+export interface TransactionOutcome {
+  success: boolean;
+  /** Unix seconds — sert à dater updated_at */
+  timestamp: number;
+  endpointHash?: string | null;
+  serviceHash?: string | null;
+  operatorId?: string | null;
+  /** Pour route_aggregates : caller qui a lancé la transaction. */
+  callerHash?: string | null;
+  /** Pour route_aggregates : target reçu. */
+  targetHash?: string | null;
+}
+
+/** Résumé de l'ingestion — combien d'agrégats ont été touchés. Utile en test. */
+export interface IngestionResult {
+  endpointUpdates: number;
+  serviceUpdates: number;
+  operatorUpdates: number;
+  routeUpdates: number;
+}
+
 export class BayesianScoringService {
   constructor(
     private endpointRepo: EndpointAggregateRepository,
     private serviceRepo: ServiceAggregateRepository,
     private operatorRepo: OperatorAggregateRepository,
     private nodeRepo: NodeAggregateRepository,
+    private routeRepo?: RouteAggregateRepository,
   ) {}
 
   /** Résout le prior hiérarchique pour une cible donnée.
@@ -332,6 +358,59 @@ export class BayesianScoringService {
       return { verdict: 'UNKNOWN', reason: `no convergence (${convergence.sourcesAboveThreshold.length}/${CONVERGENCE_MIN_SOURCES} sources ≥ ${CONVERGENCE_P_THRESHOLD})` };
     }
     return { verdict: 'UNKNOWN', reason: `p=${pSuccess.toFixed(3)}, ci95=[${ci95Low.toFixed(3)}, ${ci95High.toFixed(3)}] — zone grise` };
+  }
+
+  /** Ingestion incrémentale : met à jour TOUS les niveaux hiérarchiques
+   *  (endpoint, service, operator, route) sur les 3 fenêtres (24h/7d/30d)
+   *  pour refléter une nouvelle transaction.
+   *
+   *  **Stratégie Option A (gravée dans le design)** :
+   *  Les compteurs raw (n_success, n_failure) dans les aggregates sont
+   *  NON-DÉCROISSANTS. Chaque observation compte pour son poids plein
+   *  dans chacune des 3 fenêtres, quelle que soit l'ancienneté. La
+   *  décroissance exponentielle est appliquée UNIQUEMENT à la LECTURE
+   *  par computePerSourcePosteriors/computeDecayedPosterior, en relisant
+   *  la table transactions et en pondérant par exp(-age/τ).
+   *
+   *  Rationale : INSERT O(nb_niveaux × 3_fenêtres) = ~12-15 UPDATE au pire.
+   *  Si on voulait appliquer la décroissance à l'INSERT, il faudrait
+   *  recalculer depuis 0 toute la fenêtre à chaque observation (O(n)
+   *  par update) — impensable en prod. Au pire le posterior raw surestime
+   *  légèrement la confiance d'une entité ancienne ; le read-path corrige.
+   *
+   *  Pour les 3 fenêtres on applique exactement le même delta — elles
+   *  divergent naturellement par pruneStale() (exécuté par un job de purge). */
+  ingestTransactionOutcome(outcome: TransactionOutcome): IngestionResult {
+    const delta = {
+      successDelta: outcome.success ? 1 : 0,
+      failureDelta: outcome.success ? 0 : 1,
+      updatedAt: outcome.timestamp,
+    };
+    const result: IngestionResult = {
+      endpointUpdates: 0, serviceUpdates: 0, operatorUpdates: 0, routeUpdates: 0,
+    };
+
+    for (const window of BAYESIAN_WINDOWS) {
+      if (outcome.endpointHash) {
+        this.endpointRepo.upsert(outcome.endpointHash, window, delta);
+        result.endpointUpdates++;
+      }
+      if (outcome.serviceHash) {
+        this.serviceRepo.upsert(outcome.serviceHash, window, delta);
+        result.serviceUpdates++;
+      }
+      if (outcome.operatorId) {
+        this.operatorRepo.upsert(outcome.operatorId, window, delta);
+        result.operatorUpdates++;
+      }
+      if (this.routeRepo && outcome.callerHash && outcome.targetHash) {
+        const routeKey = `${outcome.callerHash}:${outcome.targetHash}`;
+        this.routeRepo.upsertRoute(routeKey, outcome.callerHash, outcome.targetHash, window, delta);
+        result.routeUpdates++;
+      }
+    }
+
+    return result;
   }
 
   /** Vérifie la convergence multi-sources.
