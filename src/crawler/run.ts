@@ -619,6 +619,7 @@ async function main(): Promise<void> {
       txRepo,
       config.TRANSACTIONS_DUAL_WRITE_MODE,
       dualWriteLogger,
+      agentRepo,
     );
     const timerServiceHealth = setInterval(() => {
       serviceHealthCrawler.run()

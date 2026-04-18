@@ -196,6 +196,53 @@ describe('ServiceHealthCrawler idempotence × dual-write modes', () => {
     expect(row.sender_hash).toBe(opHash);
   });
 
+  it('skips dual-write when endpoint.agent_hash points to a purged agent', async () => {
+    // Simulate a stale-sweep that removed the operator row after the endpoint
+    // was registered. endpoint.agent_hash is non-null but the referenced agent
+    // no longer exists, so a naive INSERT would throw FOREIGN KEY constraint
+    // failed. The crawler must skip silently and keep probing other endpoints.
+    const purgedHash = sha256('purged-op');
+    const purgedUrl = 'https://purged.example/svc';
+    endpointRepo.upsert(purgedHash, purgedUrl, 200, 10, 'self_registered');
+    endpointRepo.upsert(purgedHash, purgedUrl, 200, 10, 'self_registered');
+    endpointRepo.upsert(purgedHash, purgedUrl, 200, 10, 'self_registered');
+    makeStale(db, purgedUrl);
+    // opHash endpoint stays valid — assert the crawler doesn't abort the loop.
+    makeStale(db, PROBE_URL);
+
+    const crawler = new ServiceHealthCrawler(endpointRepo, txRepo, 'active', undefined, agentRepo);
+    const res = await crawler.run();
+
+    // Both endpoints probed HTTP-wise (check_count incremented on each),
+    // only the live-agent one wrote a tx row.
+    expect(res.checked).toBe(2);
+    const count = (db.prepare('SELECT COUNT(*) as c FROM transactions').get() as { c: number }).c;
+    expect(count).toBe(1);
+    const row = db.prepare('SELECT sender_hash FROM transactions').get() as { sender_hash: string };
+    expect(row.sender_hash).toBe(opHash);
+  });
+
+  it('falls back to legacy FK throw when agentRepo is not injected (back-compat)', async () => {
+    // When agentRepo is undefined, the crawler retains pre-fix behavior:
+    // the INSERT throws inside the try/catch and no tx row is written.
+    // Guards against accidental signature breakage in consumers that don't
+    // wire the new dep (e.g. ad-hoc scripts, older tests).
+    const purgedHash = sha256('purged-op-2');
+    const purgedUrl = 'https://purged2.example/svc';
+    endpointRepo.upsert(purgedHash, purgedUrl, 200, 10, 'self_registered');
+    endpointRepo.upsert(purgedHash, purgedUrl, 200, 10, 'self_registered');
+    endpointRepo.upsert(purgedHash, purgedUrl, 200, 10, 'self_registered');
+    makeStale(db, purgedUrl);
+
+    const crawler = new ServiceHealthCrawler(endpointRepo, txRepo, 'active');
+    await crawler.run();
+
+    // Only the opHash endpoint writes; the purged-agent INSERT throws and is
+    // swallowed by dualWriteProbeTx's catch, leaving no row.
+    const count = (db.prepare('SELECT COUNT(*) as c FROM transactions').get() as { c: number }).c;
+    expect(count).toBe(1);
+  });
+
   it('failed probe yields status=failed on the dual-write tx', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ status: 500 })));
     const crawler = new ServiceHealthCrawler(endpointRepo, txRepo, 'active');
