@@ -54,7 +54,6 @@ import { ServiceController } from './controllers/serviceController';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
 import { WatchlistController } from './controllers/watchlistController';
 import { ReportStatsController } from './controllers/reportStatsController';
-import { BayesianController } from './controllers/bayesianController';
 import { BayesianScoringService } from './services/bayesianScoringService';
 import { BayesianVerdictService } from './services/bayesianVerdictService';
 import {
@@ -76,7 +75,6 @@ import { createAttestationRoutes } from './routes/attestation';
 import { createHealthRoutes } from './routes/health';
 import { createV2Routes } from './routes/v2';
 import { createPingRoutes } from './routes/ping';
-import { createBayesianRoutes } from './routes/bayesian';
 
 // OpenAPI spec
 import { openapiSpec } from './openapi';
@@ -197,7 +195,6 @@ export function createApp() {
     endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
   );
   const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService);
-  const bayesianController = new BayesianController(bayesianVerdictService);
 
   // Self-registration — uses LND BOLT11 decoder if available
   const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq
@@ -409,7 +406,6 @@ export function createApp() {
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
-  api.use(createBayesianRoutes(bayesianController));                   // bayesian/:target — canonical Phase 3 verdict shape
   // Dedicated tight limiter on /api/version — the response is a thin build-info
   // document with commit hash + build time, so probing it at rate for
   // deploy-detection has no legitimate use. 60/min/IP keeps monitoring happy
