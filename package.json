@@ -22,6 +22,7 @@
     "calibrate": "tsx src/scripts/calibrationReport.ts",
     "bayesian:kendall": "tsx src/scripts/compareLegacyVsBayesian.ts",
     "bayesian:benchmark": "tsx src/scripts/benchmarkBayesian.ts",
+    "bayesian:backfill-probe": "tsx src/scripts/backfillProbeResultsToTransactions.ts",
     "demo": "tsx src/scripts/attestationDemo.ts",
     "nostr:verify": "tsx scripts/nostr-verify.ts",
     "nostr:publish-10040": "tsx scripts/nostr-publish-10040.ts",
