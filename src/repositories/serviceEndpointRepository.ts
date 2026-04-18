@@ -1,5 +1,6 @@
 // Repository for HTTP service endpoint health tracking
 import type Database from 'better-sqlite3';
+import { endpointHash } from '../utils/urlCanonical';
 
 export type ServiceSource = '402index' | 'self_registered' | 'ad_hoc';
 
@@ -100,6 +101,26 @@ export class ServiceEndpointRepository {
 
   findByUrl(url: string): ServiceEndpoint | undefined {
     return this.stmtFindByUrl.get(url) as ServiceEndpoint | undefined;
+  }
+
+  /** Best-effort metadata lookup by url_hash (sha256 of canonicalized URL).
+   *  SQLite has no native sha256, and `service_endpoints` stores only the
+   *  literal URL, so we scan trusted rows and compare hashes in-process. The
+   *  table is small (low thousands at most today) so the O(N) scan is fine
+   *  for a detail view. A dedicated column / index can be added in a later
+   *  migration if this endpoint ever gets hot. */
+  findByUrlHash(urlHash: string): ServiceEndpoint | undefined {
+    const rows = this.db
+      .prepare("SELECT * FROM service_endpoints WHERE source IN ('402index', 'self_registered')")
+      .all() as ServiceEndpoint[];
+    for (const row of rows) {
+      try {
+        if (endpointHash(row.url) === urlHash) return row;
+      } catch {
+        // Malformed URL in DB — skip, do not abort the lookup.
+      }
+    }
+    return undefined;
   }
 
   findByAgent(agentHash: string): ServiceEndpoint[] {

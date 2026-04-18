@@ -683,6 +683,30 @@ export const openapiSpec = {
         },
       },
     },
+    '/endpoint/{url_hash}': {
+      get: {
+        summary: 'Bayesian detail for a single HTTP endpoint',
+        operationId: 'getEndpointByUrlHash',
+        description: 'Returns the canonical Bayesian block for an HTTP endpoint, keyed by the sha256 hex of its canonicalized URL (endpoint_hash). Metadata and HTTP health are included when a matching service_endpoints row is known; they are null otherwise so the Bayesian view works even before discovery has ingested the URL.',
+        tags: ['Discovery'],
+        parameters: [
+          {
+            name: 'url_hash',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            description: 'sha256 hex of the canonicalized URL (endpoint_hash).',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Endpoint Bayesian block + optional metadata',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/EndpointResponse' } } },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
     '/openapi.json': {
       get: {
         summary: 'OpenAPI specification',
@@ -1333,6 +1357,57 @@ export const openapiSpec = {
           },
         },
         required: ['reportId', 'verified', 'weight', 'timestamp'],
+      },
+      EndpointResponse: {
+        type: 'object',
+        description: 'Bayesian view of a single HTTP endpoint keyed by url_hash (sha256 of the canonical URL).',
+        properties: {
+          data: {
+            type: 'object',
+            required: ['urlHash', 'bayesian'],
+            properties: {
+              urlHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+              bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
+              metadata: {
+                oneOf: [
+                  { type: 'null' },
+                  { type: 'object', properties: {
+                    url: { type: 'string' },
+                    name: { type: ['string', 'null'] },
+                    description: { type: ['string', 'null'] },
+                    category: { type: ['string', 'null'] },
+                    provider: { type: ['string', 'null'] },
+                    priceSats: { type: ['integer', 'null'] },
+                    source: { type: 'string', enum: ['402index', 'self_registered', 'ad_hoc'] },
+                  } },
+                ],
+                description: 'Light metadata pulled from service_endpoints when the url_hash matches a known row.',
+              },
+              http: {
+                oneOf: [
+                  { type: 'null' },
+                  { type: 'object', properties: {
+                    status: { type: ['integer', 'null'] },
+                    latencyMs: { type: ['integer', 'null'] },
+                    uptimeRatio: { type: ['number', 'null'] },
+                    checkCount: { type: 'integer' },
+                    lastCheckedAt: { type: ['integer', 'null'] },
+                  } },
+                ],
+              },
+              node: {
+                oneOf: [
+                  { type: 'null' },
+                  { type: 'object', properties: {
+                    publicKeyHash: { type: 'string' },
+                    alias: { type: ['string', 'null'] },
+                  } },
+                ],
+              },
+            },
+          },
+          meta: { type: 'object', properties: { computedAt: { type: 'integer' } } },
+        },
       },
       ProfileResponse: {
         type: 'object',

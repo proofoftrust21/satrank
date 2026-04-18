@@ -437,6 +437,18 @@ export function runMigrations(db: Database.Database): void {
     `);
     db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_url ON service_endpoints(url)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_checked ON service_endpoints(last_checked_at)');
+    // Re-apply v24/v26/v27 ALTERs idempotently: on a fresh DB those blocks
+    // ran above before the table existed and their try/catch swallowed the
+    // "no such table" error, so the columns were never added. On prod the
+    // table was already present when those versions landed, so this is a
+    // pure no-op there.
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN service_price_sats INTEGER DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN name TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN description TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN category TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN provider TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec("ALTER TABLE service_endpoints ADD COLUMN source TEXT NOT NULL DEFAULT 'ad_hoc'"); } catch { /* exists */ }
+    try { db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_source ON service_endpoints(source)'); } catch { /* exists */ }
     recordVersion(db, 22, 'service_endpoints table for HTTP health tracking');
   }
 

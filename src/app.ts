@@ -52,6 +52,7 @@ import { PingController } from './controllers/pingController';
 import { DepositController } from './controllers/depositController';
 import { ServiceController } from './controllers/serviceController';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
+import { EndpointController } from './controllers/endpointController';
 import { WatchlistController } from './controllers/watchlistController';
 import { ReportStatsController } from './controllers/reportStatsController';
 import { BayesianScoringService } from './services/bayesianScoringService';
@@ -195,6 +196,7 @@ export function createApp() {
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
+  const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
 
@@ -437,6 +439,7 @@ export function createApp() {
   api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
+  api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
   api.get('/stats/reports', discoveryRateLimit, reportStatsController.getStats);
