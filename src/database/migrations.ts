@@ -621,6 +621,127 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 32, 'preimage_pool table for anonymous permissionless reports — Phase 2');
   }
 
+  // v33: Phase 3 bayesian scoring layer — additive migration pour la
+  // couche bayésienne Beta-Binomial. Cinq nouvelles tables *_aggregates
+  // (endpoint/node/service/operator/route) stockent les compteurs raw
+  // non-décroissants, et score_snapshots reçoit 8 colonnes bayésiennes
+  // (posterior_alpha/beta, p_success, ci95_low/high, n_obs, window,
+  // updated_at). Les colonnes legacy score/components restent en place
+  // dans cette migration — leur suppression se fait dans la migration
+  // v34 (finale de Phase 3), après que tous les callers soient migrés
+  // vers le champ p_success. Raison : DROP atomique casse trop de
+  // consommateurs en un seul commit ; la suppression est reportée en C12
+  // après la migration de tous les services (scoringService, trendService,
+  // survivalService, controllers, openapi). En attendant, le code
+  // bayésien n'écrit jamais dans score/components — cohabitation DB
+  // transitoire uniquement, cohabitation API jamais.
+  //
+  // Aggregates stockent raw counts (n_success, n_failure, n_obs) + posterior
+  // courant (α, β). La décroissance exponentielle est appliquée à la
+  // lecture (Option A) par re-agrégation sur timestamps — voir
+  // bayesianScoringService.ts.
+  if (!hasVersion(db, 33)) {
+    for (const colDef of [
+      'posterior_alpha REAL',
+      'posterior_beta REAL',
+      'p_success REAL',
+      'ci95_low REAL',
+      'ci95_high REAL',
+      'n_obs INTEGER',
+      'window TEXT',
+      'updated_at INTEGER',
+    ]) {
+      try { db.exec(`ALTER TABLE score_snapshots ADD COLUMN ${colDef}`); } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('duplicate column name')) throw err;
+      }
+    }
+
+    // --- 2. Aggregates tables — PK composite (id_hash, window) ---
+    // Cinq tables partagent la même forme de base ; node_aggregates a deux
+    // posteriors distincts (routing et delivery) pour capturer la
+    // différence entre "peut router" et "a livré le service".
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS endpoint_aggregates (
+        url_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        median_latency_ms INTEGER,
+        median_price_msat INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (url_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_window ON endpoint_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_updated ON endpoint_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS node_aggregates (
+        pubkey TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_observations INTEGER NOT NULL DEFAULT 0,
+        n_routable INTEGER NOT NULL DEFAULT 0,
+        n_delivered INTEGER NOT NULL DEFAULT 0,
+        n_reported_success INTEGER NOT NULL DEFAULT 0,
+        n_reported_failure INTEGER NOT NULL DEFAULT 0,
+        routing_alpha REAL NOT NULL DEFAULT 1.5,
+        routing_beta REAL NOT NULL DEFAULT 1.5,
+        delivery_alpha REAL NOT NULL DEFAULT 1.5,
+        delivery_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (pubkey, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_node_agg_window ON node_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_node_agg_updated ON node_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS service_aggregates (
+        service_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (service_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_service_agg_window ON service_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS operator_aggregates (
+        operator_id TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (operator_id, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_agg_window ON operator_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS route_aggregates (
+        route_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (route_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_route_agg_window ON route_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_caller ON route_aggregates(caller_hash);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_target ON route_aggregates(target_hash);
+    `);
+    recordVersion(db, 33, 'Phase 3 bayesian — score_snapshots +8 bayesian columns (additive) + 5 aggregates tables (endpoint/node/service/operator/route)');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -630,6 +751,27 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  33: (db) => {
+    // Rollback Phase 3 additive : drop aggregates + drop bayesian columns.
+    // Les colonnes legacy score/components sont intouchées par v33 (restent en place).
+    db.exec('DROP INDEX IF EXISTS idx_route_agg_target');
+    db.exec('DROP INDEX IF EXISTS idx_route_agg_caller');
+    db.exec('DROP INDEX IF EXISTS idx_route_agg_window');
+    db.exec('DROP TABLE IF EXISTS route_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_operator_agg_window');
+    db.exec('DROP TABLE IF EXISTS operator_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_service_agg_window');
+    db.exec('DROP TABLE IF EXISTS service_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_node_agg_updated');
+    db.exec('DROP INDEX IF EXISTS idx_node_agg_window');
+    db.exec('DROP TABLE IF EXISTS node_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_agg_updated');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_agg_window');
+    db.exec('DROP TABLE IF EXISTS endpoint_aggregates');
+    for (const col of ['posterior_alpha', 'posterior_beta', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'window', 'updated_at']) {
+      try { db.exec(`ALTER TABLE score_snapshots DROP COLUMN ${col}`); } catch { /* SQLite < 3.35 */ }
+    }
+  },
   32: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_preimage_pool_consumed');
     db.exec('DROP INDEX IF EXISTS idx_preimage_pool_confidence');

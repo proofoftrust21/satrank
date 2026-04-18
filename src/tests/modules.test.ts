@@ -24,7 +24,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { metricsMiddleware, metricsRegistry } from '../middleware/metrics';
 import { errorHandler } from '../middleware/errorHandler';
-const EXPECTED_SCHEMA_VERSION = 32;
+const EXPECTED_SCHEMA_VERSION = 33;
 
 function buildTestApp() {
   const db = new Database(':memory:');

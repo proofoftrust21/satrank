@@ -49,8 +49,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(32);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]);
+    expect(versions.length).toBe(33);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -62,11 +62,11 @@ describe('Schema versioning', () => {
     }
   });
 
-  it('is idempotent — running twice does not duplicate versions', () => {
+  it('is idempotent across two full runs (baseline)', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(32);
+    expect(versions.length).toBe(33);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -625,5 +625,103 @@ describe('v32 Phase 2 anonymous-report preimage_pool', () => {
     expect(() => runMigrations(db)).not.toThrow();
     const versions = getAppliedVersions(db);
     expect(versions.filter(v => v.version === 32).length).toBe(1);
+  });
+});
+
+// --- v33: Phase 3 bayesian scoring layer ---
+// Additive migration : 8 nouvelles colonnes sur score_snapshots (posterior_alpha/beta,
+// p_success, ci95_low/high, n_obs, window, updated_at) + 5 nouvelles tables
+// *_aggregates (endpoint, node, service, operator, route) avec compteurs raw
+// n_success/n_failure/n_obs et posterior (α, β). Les colonnes legacy score/components
+// restent en place — leur suppression est reportée en migration v34 (C12).
+describe('v33 Phase 3 bayesian scoring layer', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+  });
+
+  afterEach(() => { db.close(); });
+
+  it('adds 8 bayesian columns on score_snapshots (additive, legacy cols preserved)', () => {
+    const cols = db.prepare('PRAGMA table_info(score_snapshots)').all() as { name: string; type: string }[];
+    const colNames = cols.map(c => c.name);
+    for (const col of ['posterior_alpha', 'posterior_beta', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'window', 'updated_at']) {
+      expect(colNames).toContain(col);
+    }
+    // Legacy columns still present (v34 will drop them in C12).
+    expect(colNames).toContain('score');
+    expect(colNames).toContain('components');
+  });
+
+  it('creates endpoint_aggregates with expected schema and defaults', () => {
+    const cols = db.prepare('PRAGMA table_info(endpoint_aggregates)').all() as { name: string; dflt_value: string | null }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toEqual([
+      'url_hash', 'window', 'n_success', 'n_failure', 'n_obs',
+      'posterior_alpha', 'posterior_beta',
+      'median_latency_ms', 'median_price_msat', 'updated_at',
+    ]);
+    const byName = Object.fromEntries(cols.map(c => [c.name, c.dflt_value]));
+    expect(byName.posterior_alpha).toBe('1.5');
+    expect(byName.posterior_beta).toBe('1.5');
+    expect(byName.n_obs).toBe('0');
+  });
+
+  it('creates node_aggregates with dual posteriors (routing + delivery)', () => {
+    const cols = db.prepare('PRAGMA table_info(node_aggregates)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    for (const col of ['routing_alpha', 'routing_beta', 'delivery_alpha', 'delivery_beta', 'n_routable', 'n_delivered']) {
+      expect(colNames).toContain(col);
+    }
+  });
+
+  it('creates service_aggregates, operator_aggregates, route_aggregates', () => {
+    for (const table of ['service_aggregates', 'operator_aggregates', 'route_aggregates']) {
+      const exists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(table);
+      expect(exists).toBeDefined();
+    }
+  });
+
+  it('enforces CHECK on window column (24h|7d|30d) for all aggregates', () => {
+    const insert = db.prepare(`INSERT INTO endpoint_aggregates (url_hash, window, updated_at) VALUES (?, ?, ?)`);
+    for (const w of ['24h', '7d', '30d']) {
+      expect(() => insert.run(`hash-${w}`, w, NOW)).not.toThrow();
+    }
+    expect(() => insert.run('hash-bogus', '1y', NOW)).toThrow(/CHECK constraint/);
+  });
+
+  it('PRIMARY KEY (id, window) allows same id across three windows', () => {
+    const hash = 'abc123';
+    const insert = db.prepare(`INSERT INTO endpoint_aggregates (url_hash, window, updated_at) VALUES (?, ?, ?)`);
+    insert.run(hash, '24h', NOW);
+    insert.run(hash, '7d', NOW);
+    insert.run(hash, '30d', NOW);
+    const count = db.prepare('SELECT COUNT(*) as c FROM endpoint_aggregates WHERE url_hash = ?').get(hash) as { c: number };
+    expect(count.c).toBe(3);
+    // Same (hash, window) violates PK.
+    expect(() => insert.run(hash, '24h', NOW)).toThrow(/UNIQUE|PRIMARY KEY/);
+  });
+
+  it('rollback v33 drops all 5 aggregates tables and bayesian columns', () => {
+    rollbackTo(db, 32);
+    for (const table of ['endpoint_aggregates', 'node_aggregates', 'service_aggregates', 'operator_aggregates', 'route_aggregates']) {
+      const exists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(table);
+      expect(exists).toBeUndefined();
+    }
+    const cols = db.prepare('PRAGMA table_info(score_snapshots)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).not.toContain('posterior_alpha');
+    expect(colNames).toContain('score');
+    const versions = getAppliedVersions(db);
+    expect(versions.length).toBe(32);
+  });
+
+  it('migration is idempotent — second run leaves exactly one v33 row', () => {
+    expect(() => runMigrations(db)).not.toThrow();
+    const versions = getAppliedVersions(db);
+    expect(versions.filter(v => v.version === 33).length).toBe(1);
   });
 });
