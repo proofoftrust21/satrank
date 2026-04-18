@@ -432,10 +432,20 @@ async function main(): Promise<void> {
   const lnplusCrawlerInstance = new LnplusCrawler(lnplusClient, agentRepo);
 
   const probeCrawlerInstance = lndClient.isConfigured()
-    ? new ProbeCrawler(lndClient, agentRepo, probeRepo, {
-        maxPerSecond: config.PROBE_MAX_PER_SECOND,
-        amountSats: config.PROBE_AMOUNT_SATS,
-      })
+    ? new ProbeCrawler(
+        lndClient, agentRepo, probeRepo,
+        {
+          maxPerSecond: config.PROBE_MAX_PER_SECOND,
+          amountSats: config.PROBE_AMOUNT_SATS,
+          dualWriteMode: config.TRANSACTIONS_DUAL_WRITE_MODE,
+        },
+        {
+          txRepo,
+          bayesian: bayesianScoringServiceMain,
+          db,
+          dualWriteLogger,
+        },
+      )
     : null;
 
   if (probeCrawlerInstance) {

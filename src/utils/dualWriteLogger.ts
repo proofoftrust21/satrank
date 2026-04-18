@@ -33,7 +33,7 @@ export interface DualWriteEnrichment {
 /** Logical origin of the shadow emit — used by the audit script (§6) to
  *  distribute observed traffic by code-path. Distinct from the DB-level
  *  `source` column inside `would_insert` which tags the tx provenance. */
-export type DualWriteSourceModule = 'crawler' | 'reportService' | 'decideService' | 'serviceProbes';
+export type DualWriteSourceModule = 'crawler' | 'reportService' | 'decideService' | 'serviceProbes' | 'probeCrawler';
 
 /** NDJSON line format defined by docs/PHASE-1-DESIGN.md §3. Each line is a
  *  self-contained JSON object so a batch can be streamed / grepped / fed to
