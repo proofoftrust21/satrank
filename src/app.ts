@@ -124,7 +124,20 @@ export function createApp() {
     lndClient.isConfigured() ? lndClient : undefined,
   );
 
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+  // Phase 3 : Bayesian scoring stack — built before VerdictService so it can
+  // be injected. BayesianVerdictService is a read-side composer that owns the
+  // canonical Bayesian shape consumed across all public endpoints.
+  const endpointAggRepo = new EndpointAggregateRepository(db);
+  const serviceAggRepo = new ServiceAggregateRepository(db);
+  const operatorAggRepo = new OperatorAggregateRepository(db);
+  const nodeAggRepo = new NodeAggregateRepository(db);
+  const routeAggRepo = new RouteAggregateRepository(db);
+  const bayesianScoringService = new BayesianScoringService(
+    endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
+  );
+  const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService);
+
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
   const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
   const channelFlowService = new ChannelFlowService(channelSnapshotRepo);
   const feeVolatilityService = new FeeVolatilityService(feeSnapshotRepo, agentRepo);
@@ -184,17 +197,6 @@ export function createApp() {
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, scoringService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
-
-  // Phase 3 : Bayesian scoring stack
-  const endpointAggRepo = new EndpointAggregateRepository(db);
-  const serviceAggRepo = new ServiceAggregateRepository(db);
-  const operatorAggRepo = new OperatorAggregateRepository(db);
-  const nodeAggRepo = new NodeAggregateRepository(db);
-  const routeAggRepo = new RouteAggregateRepository(db);
-  const bayesianScoringService = new BayesianScoringService(
-    endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
-  );
-  const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService);
 
   // Self-registration — uses LND BOLT11 decoder if available
   const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq

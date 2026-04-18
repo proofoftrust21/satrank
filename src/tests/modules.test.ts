@@ -24,6 +24,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { metricsMiddleware, metricsRegistry } from '../middleware/metrics';
 import { errorHandler } from '../middleware/errorHandler';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 const EXPECTED_SCHEMA_VERSION = 33;
 
 function buildTestApp() {
@@ -42,7 +43,7 @@ function buildTestApp() {
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);

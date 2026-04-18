@@ -12,6 +12,7 @@ import { RiskService } from '../services/riskService';
 import { VerdictService } from '../services/verdictService';
 import { SurvivalService } from '../services/survivalService';
 import { DecideService } from '../services/decideService';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 
 // --- computePathQuality unit tests (exported for direct testing) ---
@@ -96,7 +97,7 @@ describe('decide / pathQuality non-regression', () => {
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
     const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
     decideService = new DecideService({
       agentRepo, attestationRepo, scoringService, trendService, riskService,

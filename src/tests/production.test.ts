@@ -24,6 +24,7 @@ import { createHealthRoutes } from '../routes/health';
 import { createAttestationRoutes } from '../routes/attestation';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { errorHandler } from '../middleware/errorHandler';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 
 function buildProdTestApp() {
   const db = new Database(':memory:');
@@ -39,7 +40,7 @@ function buildProdTestApp() {
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);

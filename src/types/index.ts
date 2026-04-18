@@ -336,8 +336,42 @@ export interface CreateAttestationInput {
   category?: AttestationCategory;
 }
 
-// Verdict types
-export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN';
+// Verdict types — Bayesian (Phase 3)
+export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT';
+export type BayesianWindow = '24h' | '7d' | '30d';
+export type BayesianSource = 'probe' | 'report' | 'paid';
+
+/** Per-source Bayesian posterior block — null when no observation for that source. */
+export interface BayesianSourceBlock {
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  weight_total: number;
+}
+
+export interface BayesianConvergence {
+  converged: boolean;
+  sources_above_threshold: BayesianSource[];
+  threshold: number;
+}
+
+/** Canonical Bayesian scoring block — shared shape across all public endpoints
+ *  (verdict, decide, profile, best-route, service, endpoint). */
+export interface BayesianScoreBlock {
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  verdict: Verdict;
+  window: BayesianWindow;
+  sources: {
+    probe:  BayesianSourceBlock | null;
+    report: BayesianSourceBlock | null;
+    paid:   BayesianSourceBlock | null;
+  };
+  convergence: BayesianConvergence;
+}
 
 export type VerdictFlag =
   | 'new_agent'
@@ -394,9 +428,7 @@ export interface PathfindingResult {
   sourceProvider?: WalletProvider;
 }
 
-export interface VerdictResponse {
-  verdict: Verdict;
-  confidence: number;
+export interface VerdictResponse extends BayesianScoreBlock {
   reason: string;
   flags: VerdictFlag[];
   personalTrust: PersonalTrust | null;

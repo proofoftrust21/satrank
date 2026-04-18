@@ -15,6 +15,7 @@ import { StatsService } from '../services/statsService';
 import { TrendService } from '../services/trendService';
 import { VerdictService } from '../services/verdictService';
 import { RiskService } from '../services/riskService';
+import { createBayesianVerdictService, seedSafeBayesianObservations } from './helpers/bayesianTestFactory';
 import { AgentController } from '../controllers/agentController';
 import { AttestationController } from '../controllers/attestationController';
 import { HealthController } from '../controllers/healthController';
@@ -72,16 +73,16 @@ describe('VerdictService', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   });
 
   afterEach(() => { db.close(); });
 
-  it('returns UNKNOWN for non-existent agent', async () => {
+  it('returns INSUFFICIENT for non-existent agent', async () => {
     const hash = sha256('nonexistent');
     const result = await verdictService.getVerdict(hash);
-    expect(result.verdict).toBe('UNKNOWN');
-    expect(result.confidence).toBe(0);
+    expect(result.verdict).toBe('INSUFFICIENT');
+    expect(result.n_obs).toBe(0);
     expect(result.flags).toEqual([]);
     expect(result.reason).toContain('not found');
   });
@@ -117,10 +118,11 @@ describe('VerdictService', () => {
         VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
       `).run(txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId));
     }
+    seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.verdict).toBe('SAFE');
-    expect(result.confidence).toBeGreaterThanOrEqual(0.5);
+    expect(result.p_success).toBeGreaterThanOrEqual(0.5);
     expect(result.reason).toContain('200 tx completed');
     expect(result.flags).toContain('high_demand');
   });
@@ -254,7 +256,7 @@ describe('VerdictService — personalTrust', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   });
 
   afterEach(() => { db.close(); });
@@ -367,9 +369,9 @@ describe('VerdictService — personalTrust', () => {
     expect(result.personalTrust!.strongestConnection).toBeNull();
   });
 
-  it('returns personalTrust stub for UNKNOWN agent when callerPubkey provided', async () => {
+  it('returns personalTrust stub for INSUFFICIENT (missing) agent when callerPubkey provided', async () => {
     const result = await verdictService.getVerdict(sha256('nonexistent'), sha256('some-caller'));
-    expect(result.verdict).toBe('UNKNOWN');
+    expect(result.verdict).toBe('INSUFFICIENT');
     expect(result.personalTrust).not.toBeNull();
     expect(result.personalTrust!.distance).toBeNull();
     expect(result.personalTrust!.sharedConnections).toBe(0);
@@ -392,7 +394,7 @@ describe('VerdictService — riskProfile', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   });
 
   afterEach(() => { db.close(); });
@@ -450,7 +452,7 @@ describe('Verdict endpoint integration', () => {
     const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
     const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
     const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
@@ -469,12 +471,12 @@ describe('Verdict endpoint integration', () => {
 
   afterEach(() => { db.close(); });
 
-  it('GET /api/agent/:hash/verdict returns UNKNOWN for missing agent', async () => {
+  it('GET /api/agent/:hash/verdict returns INSUFFICIENT for missing agent', async () => {
     const hash = sha256('unknown-agent');
     const res = await request(app).get(`/api/agent/${hash}/verdict`);
     expect(res.status).toBe(200);
-    expect(res.body.data.verdict).toBe('UNKNOWN');
-    expect(res.body.data.confidence).toBe(0);
+    expect(res.body.data.verdict).toBe('INSUFFICIENT');
+    expect(res.body.data.n_obs).toBe(0);
     expect(res.body.data.flags).toEqual([]);
   });
 
@@ -508,11 +510,12 @@ describe('Verdict endpoint integration', () => {
         VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
       `).run(txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId));
     }
+    seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
 
     const res = await request(app).get(`/api/agent/${agent.public_key_hash}/verdict`);
     expect(res.status).toBe(200);
     expect(res.body.data.verdict).toBe('SAFE');
-    expect(res.body.data.confidence).toBeGreaterThan(0);
+    expect(res.body.data.p_success).toBeGreaterThan(0);
     expect(res.body.data.reason).toBeTruthy();
     expect(Array.isArray(res.body.data.flags)).toBe(true);
   });

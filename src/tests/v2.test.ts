@@ -17,6 +17,7 @@ import { RiskService } from '../services/riskService';
 import { DecideService } from '../services/decideService';
 import { ReportService } from '../services/reportService';
 import { V2Controller } from '../controllers/v2Controller';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 // createV2Routes not imported — routes mounted directly to avoid IP rate limiter in tests
 import { errorHandler } from '../middleware/errorHandler';
 import { sha256 } from '../utils/crypto';
@@ -85,7 +86,7 @@ function buildTestApp() {
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const riskService = new RiskService();
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
   const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
@@ -145,9 +146,9 @@ describe('POST /api/decide', () => {
       .set('Content-Type', 'application/json');
 
     expect(res.status).toBe(200);
-    // Unknown agent → UNKNOWN verdict → low success rate → go=false
+    // Unknown agent → INSUFFICIENT verdict → low success rate → go=false
     expect(res.body.data.go).toBe(false);
-    expect(res.body.data.verdict).toBe('UNKNOWN');
+    expect(res.body.data.verdict).toBe('INSUFFICIENT');
   });
 
   it('validates input — rejects missing target', async () => {
@@ -438,7 +439,7 @@ describe('DecideService', () => {
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
     const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
 
     const result = await decideService.decide(sha256('bob'), sha256('alice'));
@@ -455,7 +456,7 @@ describe('DecideService', () => {
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
     const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
 
     const result = await decideService.decide(sha256('bob'), sha256('alice'));

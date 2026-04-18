@@ -25,6 +25,15 @@ import { VerdictService } from '../services/verdictService';
 import { RiskService } from '../services/riskService';
 import { DecideService } from '../services/decideService';
 import { ReportService } from '../services/reportService';
+import { BayesianScoringService } from '../services/bayesianScoringService';
+import { BayesianVerdictService } from '../services/bayesianVerdictService';
+import {
+  EndpointAggregateRepository,
+  ServiceAggregateRepository,
+  OperatorAggregateRepository,
+  NodeAggregateRepository,
+  RouteAggregateRepository,
+} from '../repositories/aggregatesRepository';
 import { attestationCategoryValues } from '../middleware/validation';
 import { logger } from '../logger';
 
@@ -118,7 +127,16 @@ const lndClient = new HttpLndGraphClient({
   macaroonPath: config.LND_MACAROON_PATH,
   timeoutMs: config.LND_TIMEOUT_MS,
 });
-const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+const endpointAggRepo = new EndpointAggregateRepository(db);
+const serviceAggRepo = new ServiceAggregateRepository(db);
+const operatorAggRepo = new OperatorAggregateRepository(db);
+const nodeAggRepo = new NodeAggregateRepository(db);
+const routeAggRepo = new RouteAggregateRepository(db);
+const bayesianScoringService = new BayesianScoringService(
+  endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
+);
+const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService);
+const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
 const decideService = new DecideService({
   agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService,
   probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined,

@@ -24,6 +24,7 @@ import { ReportService } from '../../services/reportService';
 import { AgentService } from '../../services/agentService';
 import { sha256 } from '../../utils/crypto';
 import { errorHandler } from '../../middleware/errorHandler';
+import { createBayesianVerdictService } from '../helpers/bayesianTestFactory';
 import type { Agent } from '../../types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -144,7 +145,7 @@ describe('Voie 2 — /api/decide avec bolt11Raw alimente preimage_pool (tier=med
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
     const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
     const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db, 'off');
     const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);

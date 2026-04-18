@@ -1,31 +1,26 @@
-// Verdict engine — SAFE / RISKY / UNKNOWN in < 200ms
-// The binary decision an agent needs before accepting a transaction
+// Verdict engine — Bayesian shape (Phase 3).
+// Returns canonical Bayesian posterior (p_success, ci95, sources, convergence)
+// plus operational overlays (flags, pathfinding, riskProfile) that agents need
+// to act on the verdict. The composite score is retired from public responses.
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
-import type { ScoringService } from './scoringService';
+import type { ScoringService, ScoreResult } from './scoringService';
 import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
-import type { VerdictResponse, VerdictFlag, Verdict, ConfidenceLevel, PersonalTrust, PathfindingResult } from '../types';
-import type { ScoreResult } from './scoringService';
+import type { BayesianVerdictService } from './bayesianVerdictService';
+import type { VerdictResponse, VerdictFlag, Verdict, PersonalTrust, PathfindingResult } from '../types';
 import { DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
-import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
+import { PROBE_FRESHNESS_TTL } from '../config/scoring';
 import { config } from '../config';
 import { logger } from '../logger';
 import { verdictTotal } from '../middleware/metrics';
-const POSITIVE_ATTESTATION_MIN_SCORE = 70;
-const PATH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const PATH_CACHE_MAX_SIZE = 1000;
 
-const CONFIDENCE_MAP: Record<ConfidenceLevel, number> = {
-  very_low: 0.1,
-  low: 0.25,
-  medium: 0.5,
-  high: 0.75,
-  very_high: 0.9,
-};
+const POSITIVE_ATTESTATION_MIN_SCORE = 70;
+const PATH_CACHE_TTL_MS = 5 * 60 * 1000;
+const PATH_CACHE_MAX_SIZE = 1000;
 
 export class VerdictService {
   private pathCache = new Map<string, { result: PathfindingResult; expiresAt: number; lastAccess: number }>();
@@ -36,6 +31,7 @@ export class VerdictService {
     private scoringService: ScoringService,
     private trendService: TrendService,
     private riskService: RiskService,
+    private bayesianVerdict: BayesianVerdictService,
     private probeRepo?: ProbeRepository,
     private lndClient?: LndGraphClient,
   ) {}
@@ -44,69 +40,51 @@ export class VerdictService {
     publicKeyHash: string,
     callerPubkey?: string,
     pathfindingSourcePubkey?: string,
-    // `source` tags the call path for the verdictTotal counter. Defaults to
-    // 'unknown' so test cases and legacy callers don't need to thread it.
     source: string = 'unknown',
-    // Sim #5: callers that already ran getScore() pass it here to eliminate
-    // in-request score drift. If the SCORE_CACHE_TTL boundary fell between
-    // two getScore() calls, /decide and /profile could see a ±1 spread.
+    // Kept for signature compatibility with callers that already ran getScore()
+    // (v2Controller etc.). Used for the internal risk overlay only — never
+    // exposed in the public response.
     precomputedScore?: ScoreResult,
   ): Promise<VerdictResponse> {
     const agent = this.agentRepo.findByHash(publicKeyHash);
     if (!agent) {
-      verdictTotal.inc({ verdict: 'UNKNOWN', source });
-      return {
-        verdict: 'UNKNOWN',
-        confidence: 0,
-        reason: 'Agent not found in the SatRank index',
-        flags: [],
-        personalTrust: callerPubkey ? { distance: null, sharedConnections: 0, strongestConnection: null } : null,
-        riskProfile: { name: 'unrated', riskLevel: 'unknown', description: 'Agent not found in the SatRank index.' },
-        pathfinding: null,
-      };
+      verdictTotal.inc({ verdict: 'INSUFFICIENT', source });
+      return buildMissingAgentResponse(callerPubkey);
     }
 
-    // Increment query count — demand signal
     this.agentRepo.incrementQueryCount(publicKeyHash);
 
+    const bayes = this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
+
+    // Risk classifier + flags still need the composite internally. The value is
+    // not surfaced — it feeds `regularity` for the riskProfile and delta-based
+    // flags. Will be rewired in Commit 8 when the composite columns drop.
     const scoreResult = precomputedScore ?? this.scoringService.getScore(publicKeyHash);
     const delta = this.trendService.computeDeltas(publicKeyHash, scoreResult.total);
 
     const now = Math.floor(Date.now() / 1000);
     const ageDays = (now - agent.first_seen) / DAY;
 
-    // Compute flags — M2: shared base flags to avoid drift with v2Controller
     const flags: VerdictFlag[] = computeBaseFlags(agent, delta, now);
 
-    // Check structured negative attestations (fraud / dispute)
     const fraudCount = this.attestationRepo.countByCategoryForSubject(publicKeyHash, ['fraud']);
     const disputeCount = this.attestationRepo.countByCategoryForSubject(publicKeyHash, ['dispute']);
     if (fraudCount > 0) flags.push('fraud_reported');
     if (disputeCount > 0) flags.push('dispute_reported');
 
-    // Check probe reachability — unreachable node is a risk signal (fresh probes only).
-    // Guard against false positives: a node with fresh gossip (< 24h) and a strong
-    // score (>= SAFE threshold) is still alive on the network — the probe failure
-    // is positional (no route from SatRank), not terminal. Without this guard,
-    // /api/verdicts (which has no live pathfinding) marks these nodes RISKY while
-    // /api/decide (which has live pathfinding) correctly marks them SAFE.
     if (this.probeRepo) {
-      // Use tier-1k probe for "unreachable" flag. A high-tier (1M) failure is a
-      // liquidity signal (exposed via maxRoutableAmount), not an unreachability
-      // signal. Only tier-1k failure means "can't route even a trivial amount".
       const probe = this.probeRepo.findLatestAtTier(publicKeyHash, 1000);
       if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
+        // Keep the same guard as v30: gossip-fresh nodes with a strong posterior
+        // are still alive on the network. The probe failure is positional.
         const gossipFresh = (now - agent.last_seen) < DAY;
-        if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) {
+        const bayesStrong = bayes.verdict === 'SAFE';
+        if (!gossipFresh || !bayesStrong) {
           flags.push('unreachable');
         }
       }
     }
 
-    // Personalized pathfinding — computed BEFORE verdict so live results
-    // can override stale probe data. A node the cached probe marks as
-    // unreachable may have come back online since the last probe cycle.
-    // Source priority: pathfindingSourcePubkey (walletProvider/callerNodePubkey) > caller's own LN pubkey.
     let pathfinding: PathfindingResult | null = null;
     if (this.lndClient) {
       const targetLnPubkey = agent.public_key ?? null;
@@ -123,52 +101,47 @@ export class VerdictService {
       }
     }
 
-    // Live pathfinding overrides stale probe: if queryRoutes just confirmed
-    // the node is reachable, the cached probe is outdated — drop the flag.
     if (pathfinding?.reachable) {
       const idx = flags.indexOf('unreachable');
       if (idx !== -1) flags.splice(idx, 1);
     }
 
-    // Determine verdict
-    const confidenceNum = CONFIDENCE_MAP[scoreResult.confidence];
-    const hasCriticalFlags = flags.includes('fraud_reported') || flags.includes('negative_reputation');
-
-    let verdict: Verdict;
-    // RISKY requires evidence of risk, not just absence of data.
-    // Low score + very_low confidence = UNKNOWN (insufficient data), not RISKY.
-    const hasRiskEvidence = hasCriticalFlags ||
-      flags.includes('unreachable') ||
-      (delta.delta7d !== null && delta.delta7d < -15) ||
-      (scoreResult.total < 30 && confidenceNum >= CONFIDENCE_MAP.low);
-    if (hasRiskEvidence) {
+    // Verdict overlay: fraud / dispute / negative_reputation evidence escalates
+    // the Bayesian verdict to at least RISKY. Evidence-based risk cannot be
+    // masked by posterior uncertainty.
+    const hasCriticalFlags = flags.includes('fraud_reported')
+      || flags.includes('negative_reputation');
+    let verdict: Verdict = bayes.verdict;
+    if (hasCriticalFlags && verdict !== 'RISKY') {
       verdict = 'RISKY';
-    } else if (
-      scoreResult.total >= VERDICT_SAFE_THRESHOLD &&
-      !hasCriticalFlags &&
-      confidenceNum >= CONFIDENCE_MAP.medium
-    ) {
-      verdict = 'SAFE';
-    } else {
-      // Score below SAFE threshold but above RISKY evidence — insufficient signal
-      verdict = 'UNKNOWN';
     }
 
-    // Personal trust graph
     const personalTrust = callerPubkey
       ? this.computePersonalTrust(callerPubkey, publicKeyHash)
       : null;
 
-    // Risk profile
     const riskProfile = this.riskService.classifyAgent(
       agent, delta, { regularity: scoreResult.components.regularity },
     );
 
-    // Build human-readable reason
-    const reason = this.buildReason(agent, scoreResult.total, delta.delta7d, ageDays, flags);
+    const reason = this.buildReason(agent, bayes, flags, ageDays);
 
     verdictTotal.inc({ verdict, source });
-    return { verdict, confidence: confidenceNum, reason, flags, personalTrust, riskProfile, pathfinding };
+    return {
+      verdict,
+      p_success: bayes.p_success,
+      ci95_low: bayes.ci95_low,
+      ci95_high: bayes.ci95_high,
+      n_obs: bayes.n_obs,
+      window: bayes.window,
+      sources: bayes.sources,
+      convergence: bayes.convergence,
+      reason,
+      flags,
+      personalTrust,
+      riskProfile,
+      pathfinding,
+    };
   }
 
   async computePathfinding(
@@ -179,7 +152,6 @@ export class VerdictService {
   ): Promise<PathfindingResult | null> {
     if (!this.lndClient) return null;
 
-    // Check cache
     const cacheKey = `${callerHash}:${targetHash}`;
     const cached = this.pathCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -208,16 +180,13 @@ export class VerdictService {
         source: 'lnd_queryroutes',
       };
 
-      // Cache result — enforce max size with LRU eviction
       const now = Date.now();
       this.pathCache.set(cacheKey, { result, expiresAt: now + PATH_CACHE_TTL_MS, lastAccess: now });
 
       if (this.pathCache.size > PATH_CACHE_MAX_SIZE) {
-        // Purge expired first
         for (const [key, entry] of this.pathCache) {
           if (entry.expiresAt <= now) this.pathCache.delete(key);
         }
-        // LRU eviction: remove least-recently-accessed entries
         if (this.pathCache.size > PATH_CACHE_MAX_SIZE) {
           const sorted = [...this.pathCache.entries()].sort((a, b) => a[1].lastAccess - b[1].lastAccess);
           const excess = sorted.length - PATH_CACHE_MAX_SIZE;
@@ -236,7 +205,6 @@ export class VerdictService {
   }
 
   private computePersonalTrust(callerPubkey: string, targetHash: string): PersonalTrust {
-    // Distance 0 — caller directly attested the target
     const callerAttested = this.attestationRepo.findPositivelyAttestedBy(callerPubkey, POSITIVE_ATTESTATION_MIN_SCORE);
     if (callerAttested.includes(targetHash)) {
       const callerAgent = this.agentRepo.findByHash(callerPubkey);
@@ -247,14 +215,12 @@ export class VerdictService {
       };
     }
 
-    // Distance 1 — find agents attested by caller who also attested target
     const targetAttesters = this.attestationRepo.findPositiveAttestersOf(targetHash, POSITIVE_ATTESTATION_MIN_SCORE);
     const targetAttesterHashes = new Set(targetAttesters.map(a => a.attester_hash));
 
     const sharedAtDistance1 = callerAttested.filter(h => targetAttesterHashes.has(h));
 
     if (sharedAtDistance1.length > 0) {
-      // Find strongest connection (highest score attester among shared)
       let strongest: { hash: string; score: number } | null = null;
       for (const hash of sharedAtDistance1) {
         const attesterEntry = targetAttesters.find(a => a.attester_hash === hash);
@@ -271,8 +237,6 @@ export class VerdictService {
       };
     }
 
-    // Distance 2 — agents attested by caller → agents they attested → did any of those attest target?
-    // Cap intermediaries to prevent unbounded N+1 DB queries
     const MAX_INTERMEDIARIES = 20;
     const distance2Connections: string[] = [];
     for (const intermediary of callerAttested.slice(0, MAX_INTERMEDIARIES)) {
@@ -294,16 +258,14 @@ export class VerdictService {
       };
     }
 
-    // No connection found
     return { distance: null, sharedConnections: 0, strongestConnection: null };
   }
 
   private buildReason(
-    agent: { total_transactions: number; positive_ratings: number; negative_ratings: number },
-    score: number,
-    delta7d: number | null,
-    ageDays: number,
+    agent: { total_transactions: number; negative_ratings: number },
+    bayes: { verdict: Verdict; verdict_reason: string; p_success: number; n_obs: number; window: string },
     flags: VerdictFlag[],
+    ageDays: number,
   ): string {
     const parts: string[] = [];
     parts.push(`${agent.total_transactions} tx completed`);
@@ -314,16 +276,28 @@ export class VerdictService {
     } else if (flags.includes('unreachable')) {
       parts.push('unreachable via route probe');
     } else {
-      const disputes = agent.negative_ratings;
-      parts.push(`${disputes} disputes`);
+      parts.push(`${agent.negative_ratings} disputes`);
     }
     parts.push(`${Math.round(ageDays)}d history`);
-    if (delta7d !== null && delta7d !== 0) {
-      const dir = delta7d > 0 ? '+' : '';
-      parts.push(`score ${dir}${delta7d} in 7d`);
-    } else {
-      parts.push('score stable');
-    }
+    parts.push(`p_success=${bayes.p_success.toFixed(3)} (n=${bayes.n_obs}, ${bayes.window})`);
     return parts.join(', ');
   }
+}
+
+function buildMissingAgentResponse(callerPubkey: string | undefined): VerdictResponse {
+  return {
+    verdict: 'INSUFFICIENT',
+    p_success: 0.5,
+    ci95_low: 0,
+    ci95_high: 1,
+    n_obs: 0,
+    window: '30d',
+    sources: { probe: null, report: null, paid: null },
+    convergence: { converged: false, sources_above_threshold: [], threshold: 0.8 },
+    reason: 'Agent not found in the SatRank index',
+    flags: [],
+    personalTrust: callerPubkey ? { distance: null, sharedConnections: 0, strongestConnection: null } : null,
+    riskProfile: { name: 'unrated', riskLevel: 'unknown', description: 'Agent not found in the SatRank index.' },
+    pathfinding: null,
+  };
 }

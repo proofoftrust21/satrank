@@ -27,6 +27,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { errorHandler } from '../middleware/errorHandler';
 import { openapiSpec } from '../openapi';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
 
@@ -50,7 +51,7 @@ function buildTestApp() {
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
@@ -421,7 +422,7 @@ describe('Integration — L402 perimeter (production mode)', () => {
     const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
     const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
     const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
@@ -536,7 +537,7 @@ describe('Integration — Security headers and Content-Type', () => {
     const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
     const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
     const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
