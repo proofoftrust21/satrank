@@ -21,6 +21,11 @@ services:
       - BUILD_DATE=${BUILD_DATE:-unknown}
     volumes:
       - satrank-data:/app/data
+      # Phase 1 dry_run shadow-log directory. Bind-mounted writable even under
+      # read_only:true (Docker leaves explicit mounts RW by default). Host dir
+      # must be owned by uid 1001 (satrank user in Dockerfile). If missing,
+      # DualWriteLogger falls back to /app/logs and WARNs at boot.
+      - /var/log/satrank:/var/log/satrank
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>r.json()).then(j=>{process.exit(j.data.status==='ok'?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s
@@ -71,6 +76,9 @@ services:
       # docker-compose.yml directory, so the path on the host is wherever
       # you deploy (no hardcoded server path in the public repo).
       - ./readonly.macaroon:/app/data/readonly.macaroon:ro
+      # Phase 1 dry_run shadow-log directory (crawler is the main producer
+      # via observer + serviceProbes modules). Shared with api container.
+      - /var/log/satrank:/var/log/satrank
     depends_on:
       api:
         condition: service_healthy
