@@ -5,8 +5,8 @@
 SatRank is a trust oracle for the Lightning Network. Before each payment, an agent queries SatRank for a GO/NO-GO decision: one request, one answer, 1 sat via L402 (21 requests) or deposit (up to 10,000 requests).
 
 - Backed by a full **bitcoind v28.1** node + **LND**, not Neutrino or gossip. Every channel capacity is UTXO-validated.
-- Tracks **~13,900 active Lightning nodes** (schema v25, post-migration), probes them every 30 minutes at multiple amount tiers, publishes trust assertions on Nostr every 6 hours.
-- **62 %** of the Lightning graph is unreachable in routing ("phantom nodes"). The exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
+- Tracks **~13,964 active Lightning nodes** (schema v29, post-migration), probes them every 30 minutes at multiple amount tiers, publishes trust assertions on Nostr every 6 hours.
+- **63 %** of the Lightning graph is unreachable in routing ("phantom nodes"). The exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
 - First **NIP-85** provider bridging the Lightning payment graph into the Web of Trust. Every other NIP-85 implementation scores the Nostr social graph. SatRank scores who you can actually pay.
 
 ## Quick Start: consume SatRank trust assertions in 3 steps
@@ -107,12 +107,12 @@ flowchart LR
   LND --> LP[LN+ crawler<br/>daily]
   OBS[Observer Protocol<br/>5 min] --> SE
 
-  GC --> DB[(SQLite<br/>schema v25)]
+  GC --> DB[(SQLite<br/>schema v29)]
   PC --> DB
   LP --> DB
 
   DB --> SE[Scoring engine<br/>5 components + anti-gaming]
-  SE --> API[REST API<br/>20 endpoints]
+  SE --> API[REST API<br/>27 endpoints]
   SE --> NP[NIP-85 publisher<br/>kind 30382:rank<br/>every 6h]
   SE --> DVM[DVM<br/>kind 5900 → 6900]
 
@@ -135,23 +135,23 @@ flowchart LR
 
 The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP-85 publisher + L402 API + DVM → 3 relays / HTTP clients / autonomous agents.** Every layer is reproducible from the code in this repo.
 
-## Current network snapshot (2026-04-15)
+## Current network snapshot (2026-04-16)
 
 | Metric | Value | Source |
 |---|---|---|
-| Active Lightning nodes indexed | **~13,900** | `/api/stats` `totalAgents` |
-| Stale (not seen 90+ days, excluded from scoring) | **~4,250** | `/api/stats` |
-| Phantom rate (unreachable in routing) | **62 %** (live) | `/api/stats` `phantomRate` |
-| Verified reachable | **~5,300-5,500** (live) | `/api/stats` `verifiedReachable` |
-| Total channels | **~88,300** (live) | `/api/stats` `totalChannels` |
-| Network capacity (validated) | **~9,570 BTC** (live) | `/api/stats` `networkCapacityBtc` |
-| Probes executed / 24 h | **~650,000** (live · 24 h rolling) | `/api/stats` `probes24h` |
+| Active Lightning nodes indexed | **13,964** | `/api/stats` `totalAgents` |
+| Stale (not seen 90+ days, excluded from scoring) | **4,260** | `/api/health` `staleAgents` |
+| Phantom rate (unreachable in routing) | **63 %** (live) | `/api/stats` `phantomRate` |
+| Verified reachable | **5,219** (live) | `/api/stats` `verifiedReachable` |
+| Total channels | **88,377** (live) | `/api/stats` `totalChannels` |
+| Network capacity (validated) | **9,540.6 BTC** (live) | `/api/stats` `networkCapacityBtc` |
+| Probes executed / 24 h | **~149,500** (live · 24 h rolling) | `/api/stats` `probes24h` |
+| Paid L402 services indexed (402index) | **94** | `/api/stats` `serviceSources.402index` |
 | NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
-| Score snapshots stored | **921,968** | `sqlite3 … 'SELECT COUNT(*) FROM score_snapshots'` |
-| Tests (vitest) | **539 / 42 files** green | `npm test` |
-| Schema version | **v25** | `SELECT * FROM schema_version` |
+| Tests (vitest) | **573 / 45 files** green | `npm test` |
+| Schema version | **v29** | `/api/health` `schemaVersion` |
 
-Numbers are pulled live from `/api/stats` (free endpoint, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
+Numbers are pulled live from `/api/stats` and `/api/health` (free endpoints, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
 
 ## Scoring Algorithm
 
@@ -160,12 +160,12 @@ Composite score 0-100 computed from 5 weighted components:
 | Component | Weight | Measures |
 |---|---|---|
 | **Volume** | **25 %** | Channels x capacity blend (50/50 log scale, ref 500 ch / 50 BTC) or verified transactions (log) |
-| **Reputation** | **30 %** | 5 sub-signals: sovereign PageRank (100% coverage), peer trust, routing quality, capacity trend, fee stability |
+| **Reputation** | **30 %** | 5 sub-signals (weighted to 100): sovereign PageRank centrality 20, peer trust 30, routing quality 20, capacity trend 15, fee stability 15. LN+ positive deprecated since v19. |
 | **Seniority** | **15 %** | Days since first seen, exponential growth with 2-year half-life |
 | **Regularity** | **15 %** | Multi-axis consistency over 7 d (uptime 70 % + latency stability 20 % + hop stability 10 %) |
 | **Diversity** | **15 %** | Unique peers (log, ref 500) or unique counterparties (log) |
 
-Multiplicative modifiers: verified-tx x1.0-1.10, LN+ ratings x1.0-1.05, probe penalty x0.65-0.90 (graduated by cause). Popularity bonus removed (gameable).
+Multiplicative modifiers: verified-tx x1.0-1.10, probe penalty x0.65-0.90 (graduated by cause: dead/zombie/liquidity). Popularity bonus removed (gameable). LN+ positive modifier retired in v19 — the sovereign-PageRank centrality signal inside the Reputation composite replaces it with 100 % coverage.
 
 **Anti-gaming:**
 - Mutual attestation loop detection (A↔B) with 95 % penalty
@@ -175,7 +175,9 @@ Multiplicative modifiers: verified-tx x1.0-1.10, LN+ ratings x1.0-1.05, probe pe
 - Attester score weighting (PageRank-like recursion)
 - Attestation source concentration penalty
 
-**Verdict thresholds** (`GET /api/agent/{hash}/verdict`): SAFE >= 47 (post-v19 recalibration, unchanged in v20), UNKNOWN 30-46, RISKY < 30 or critical flags. See `public/methodology.html` for the full rationale.
+**Verdict thresholds** (`GET /api/agent/{hash}/verdict`): SAFE >= 47 (post-v19 recalibration, stable through v29), UNKNOWN 30-46, RISKY < 30 or critical flags. The verdict response also includes `riskProfile` (low/medium/high, from score + 7-day volatility) and `survival` (stable/at_risk/likely_dead, from uptime + capacity trend). See `public/methodology.html` for the full rationale.
+
+**Reporter badge tiers.** Every `/api/report` submission carries a reporter weight derived from the reporter's agent score and their badge tier (`novice` → `contributor` → `trusted`). Preimage-verified reports double the weight. Tiers come from historical accuracy and recency of the reporter's own submissions. See `methodology.html#data-validation` for the exact calibration.
 
 ## API
 
@@ -187,11 +189,12 @@ curl -X POST https://satrank.dev/api/decide \
   -H "Content-Type: application/json" \
   -d '{"target": "<hash>", "caller": "<your-hash>"}'
 
-# Report transaction outcome (free -- no L402)
+# Report transaction outcome (authenticated, no quota consumed)
+# Accepts X-API-Key OR an L402 deposit token scoped to this target via decide_log
 curl -X POST https://satrank.dev/api/report \
   -H "Content-Type: application/json" \
   -H "X-API-Key: <key>" \
-  -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success"}'
+  -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success", "preimage": "<64-hex optional, 2x weight>"}'
 
 # Agent profile with reports, uptime, rank
 curl https://satrank.dev/api/profile/<hash>
@@ -214,7 +217,7 @@ curl https://satrank.dev/api/agent/<hash>/verdict
 |---|---|---|---|
 | POST | `/api/decide` | GO/NO-GO with success probability + pathfinding + fee volatility + max routable amount | 1 req |
 | POST | `/api/best-route` | Batch pathfinding for up to 50 targets, returns top 3 by composite rank | 1 req |
-| POST | `/api/report` | Report transaction outcome (weighted by reporter score) | free (API key) |
+| POST | `/api/report` | Report transaction outcome (weighted by reporter score + badge tier; preimage 2x) | free (API key or decide-scoped L402 token) |
 | GET | `/api/profile/:id` | Full agent profile with reports, uptime, rank | 1 req |
 | GET | `/api/ping/:pubkey` | Real-time reachability (QueryRoutes live) | free |
 | GET | `/api/agent/:hash` | Detailed score + evidence | 1 req |
@@ -465,7 +468,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 ## Tech Stack
 
 - **TypeScript** strict mode, Node 22
-- **Express** for the REST API (20 endpoints)
+- **Express** for the REST API (27 endpoints)
 - **better-sqlite3** for the embedded database, WAL mode, chunked retention cron
 - **bitcoind v28.1 + LND** as trust root, gossip ingestion, QueryRoutes probing
 - **nostr-tools** for NIP-85 publishing, NIP-90 DVM, NIP-01 event signing
@@ -473,7 +476,7 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - **pino** for structured logging
 - **Aperture / L402 + deposit** as Lightning paywall for `/api/decide` and scored endpoints (1 sat/request, up to 10k via deposit)
 - **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only FS, tmpfs, healthchecks
-- **vitest** for 539 unit + integration tests across 42 files, all green on the submission commit
+- **vitest** for 573 unit + integration tests across 45 files, all green on the submission commit
 
 ## Scripts
 
@@ -518,14 +521,15 @@ Every curl is preceded by a plain-English banner explaining what the step is and
 - [x] v19 scoring calibration: sovereign PageRank, 5 reputation sub-signals, multiplicative modifiers
 - [x] v20: multi-amount probing (1k/10k/100k/1M sats), re-probe on-demand for stale data, best-route batch pathfinding, targetFeeStability, maxRoutableAmount
 - [x] v21: L402 balance system (21 sats = 21 requests), positional pathfinding (walletProvider + callerNodePubkey), reportedSuccessRate
-- [x] v22-v25: Sovereign Oracle -- HTTP service health check (serviceUrl in /decide, serviceHealth in response), autonomous endpoint registry (100 endpoints, 16 LN nodes from 402index + L402Apps), composite best-route 3D ranking (route + trust + health), service pricing from BOLT11, report via L402 token, decide_log for report auth, SSRF protection with DNS resolution
+- [x] v22-v25: Sovereign Oracle -- HTTP service health check (serviceUrl in /decide, serviceHealth in response), autonomous endpoint registry (94 endpoints indexed from 402index + L402Apps), composite best-route 3D ranking (route + trust + health), service pricing from BOLT11, report via L402 token scoped through decide_log, SSRF protection with DNS resolution
+- [x] v26-v29: Risk profiles (low/medium/high from score + 7d volatility), survival predictor (stable/at_risk/likely_dead published in kind 30382), reporter badge tiers (novice → contributor → trusted), reporter bonus economic loop (shipped behind `REPORT_BONUS_ENABLED=false` flag), security hardening (NIP-98 rawBody digest, safe constant-time comparison, windowed deposit guard, full-digest auth), 573/45 test coverage, reputation sub-signal audit v26+
 - [ ] 4tress connector: verified attestations
 - [ ] Trust network visualization dashboard
 - [ ] Per-component NIP-85 keys (`30382:volume`, `30382:reputation`, …)
 
 ## Vision
 
-SatRank is the reliability check before every Lightning payment. **61 %** of the Lightning graph is phantom nodes. We tell you which endpoints are alive, score them on Nostr, and gate the personalized decision behind a single satoshi.
+SatRank is the reliability check before every Lightning payment. **63 %** of the Lightning graph is phantom nodes. We tell you which endpoints are alive, score them on Nostr, and gate the personalized decision behind a single satoshi.
 
 ---
 

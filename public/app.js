@@ -70,13 +70,6 @@
     return div.innerHTML;
   }
 
-  function safeUrl(url) {
-    try {
-      var u = new URL(String(url));
-      return u.protocol === 'https:' ? url : '#';
-    } catch (e) { return '#'; }
-  }
-
   // Fade-update: fade out element, change content, fade back in
   function fadeUpdate(el, newContent) {
     if (!el || el.textContent === newContent) return;
@@ -388,4 +381,37 @@
       });
     }
   }
+})();
+
+(function () {
+  var boot = window.__SATRANK_BOOT__;
+  if (!boot || !boot.stats) return;
+  var s = boot.stats;
+  var fmtHero = function (n) { return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n); };
+  var set = function (id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+  if (typeof s.totalAgents === 'number') set('hero-nodes', s.totalAgents.toLocaleString('en-US'));
+  if (typeof s.probes24h === 'number') set('hero-probes', fmtHero(s.probes24h));
+  if (typeof s.phantomRate === 'number') {
+    set('hero-phantom', s.phantomRate + '%');
+    // Sim #9 LOW 1: keep the "Why" card number in sync with live stats so the
+    // narrative copy stops drifting from reality.
+    set('why-phantom-rate', s.phantomRate + '%');
+  }
+  if (typeof s.verifiedReachable === 'number') set('hero-reachable', s.verifiedReachable.toLocaleString('en-US'));
+})();
+
+(function () {
+  function wireCopy(btnId) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText('npm install @satrank/sdk').then(function () {
+        var prev = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = prev; }, 1500);
+      });
+    });
+  }
+  wireCopy('copy-install');
+  wireCopy('copy-install-2');
 })();
