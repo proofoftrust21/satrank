@@ -261,14 +261,21 @@ export class BayesianVerdictService {
 
 /** Mapping transaction.source (v31) → BayesianSource.
  *  - probe     → probe  (sovereign probe que SatRank a exécuté)
- *  - observer  → probe  (tx observée sur-LN, preuve équivalente)
+ *  - paid      → paid   (probe payé via L402 — preuve stricte)
  *  - report    → report (rapport d'agent, pondéré par tier)
+ *  - observer  → null   (Q3 Phase 3 : rows écrites pour stats/catalogue mais
+ *                        PAS utilisées comme observation de succès/échec.
+ *                        Les données Observer Protocol sont pollution-prone
+ *                        — bruit de broadcast, pas de preuve d'exécution.
+ *                        On préserve l'écriture côté crawler pour ne pas
+ *                        casser les stats historiques, mais verdict strict.)
  *  - intent    → null   (decide_log, pas une observation de succès/échec)
  *  - null/autre → null */
 function mapTransactionSourceToBayesian(source: string | null): BayesianSource | null {
-  if (source === 'probe' || source === 'observer') return 'probe';
+  if (source === 'probe') return 'probe';
+  if (source === 'paid') return 'paid';
   if (source === 'report') return 'report';
-  return null; // intent ou rows legacy
+  return null; // observer, intent, ou rows legacy
 }
 
 function toSourceBlock(p: PerSourceResult['probe']): BayesianSourceBlock | null {
