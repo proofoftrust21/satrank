@@ -165,7 +165,7 @@ describe('ReportService idempotence × dual-write modes', () => {
     expect(row.legacy_inserted).toBe(true);
     expect(typeof row.emitted_at).toBe('number');
     expect(row.would_insert.source).toBe('report');
-    expect(row.would_insert.endpoint_hash).toBeNull();
+    expect(row.would_insert.endpoint_hash).toBe(targetHash);
     expect(row.would_insert.operator_id).toBe(targetHash);
     expect(row.would_insert.window_bucket).toBe(EXPECTED_BUCKET);
     expect(row.would_insert.status).toBe('verified');
@@ -186,7 +186,7 @@ describe('ReportService idempotence × dual-write modes', () => {
       'SELECT endpoint_hash, operator_id, source, window_bucket, status FROM transactions',
     ).all() as Array<Record<string, unknown>>;
     expect(rows).toHaveLength(1);
-    expect(rows[0].endpoint_hash).toBeNull();
+    expect(rows[0].endpoint_hash).toBe(targetHash);
     expect(rows[0].operator_id).toBe(targetHash);
     expect(rows[0].source).toBe('report');
     expect(rows[0].window_bucket).toBe(EXPECTED_BUCKET);

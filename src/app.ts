@@ -167,6 +167,7 @@ export function createApp() {
     attestationRepo, agentRepo, txRepo, scoringService, db,
     config.TRANSACTIONS_DUAL_WRITE_MODE,
     dualWriteLogger,
+    bayesianScoringService,
   );
 
   // Tier 2 report bonus — gated by REPORT_BONUS_ENABLED env (off by default).
