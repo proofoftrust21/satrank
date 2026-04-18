@@ -151,7 +151,6 @@ describe('MCP tool response shapes', () => {
     expect(stats).toHaveProperty('totalChannels');
     expect(stats).toHaveProperty('nodesWithRatings');
     expect(stats).toHaveProperty('networkCapacityBtc');
-    expect(stats).toHaveProperty('avgScore');
     expect(stats).toHaveProperty('totalVolumeBuckets');
   });
 });

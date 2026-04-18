@@ -200,3 +200,84 @@ fait, bump majeur du SDK à prévoir avec guide de migration.
    `X-Scoring-Version`.
 
 Romain décide du timing et de la stratégie de mise en production.
+
+---
+
+## 8. Addendum 2026-04-19 — brief « NO cohabitation » tranché
+
+Brief reçu post-rapport §5/§7 : **aucune cohabitation**. Bayésien remplace
+directement le composite dans l'API publique. Pas de flag `BAYESIAN_CANONICAL`,
+pas de header `X-Scoring-Version`, pas de 2e source de vérité. `rank` est le
+seul nom legacy conservé, promu en champ top-level standalone.
+
+### 8.1 Chaîne de migration (9 commits sur la même branche)
+
+| # | Scope | Statut |
+|---|-------|--------|
+| 1 | DELETE `/api/bayesian/:target` (plus d'endpoint parallèle) | ✅ |
+| 2 | `VerdictService` → shape Bayesian canonique | ✅ |
+| 3 | `DecideService` → shape Bayesian canonique | ✅ |
+| 4 | `AgentController` — 7 handlers migrés | ✅ |
+| 5 | `V2Controller.profile` + `ServiceController` migrés | ✅ |
+| 6 | Nouvel endpoint `/api/endpoint/:url_hash` sur le shape canonique | ✅ |
+| 7 | Grep final + `NetworkStats` (`avgScore`, `trends` retirés) + OpenAPI purge + `WatchlistController` rewire + MCP handlers (`search_agents`, `get_top_movers`, `get_profile`) | ✅ |
+| 7b | DVM (NIP-90 kind 6900) migré — `dvm.ts` drop `ScoringService` + `SnapshotRepository`, `crawler/run.ts` instancie son propre `BayesianVerdictService` | ✅ |
+| 8 | Migration v34 : `DROP COLUMN score_snapshots.score, .components` + retrait interne de `ScoringService` / `TrendService` / `RiskService` | ⏳ |
+| 9 | SDK `1.0.0-rc.1` rewiré sur le shape Bayesian | ⏳ |
+
+### 8.2 Shape public final — `BayesianScoreBlock`
+
+```ts
+{
+  verdict: 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT',
+  p_success: number,           // posterior mean [0, 1]
+  ci95_low: number,
+  ci95_high: number,
+  n_obs: number,                // decayed observation count
+  window: '24h' | '7d' | '30d',
+  sources: { probe: number, paid: number, report: number },
+  convergence: boolean,
+}
+```
+
+Émis **identique** par chaque surface publique : `/api/agent/:id/*`,
+`/api/agents/top`, `/api/agents/search`, `/api/agents/movers` (envelope vide),
+`/api/decide`, `/api/best-route`, `/api/services/*`, `/api/endpoint/:url_hash`,
+DVM kind 6900, MCP `search_agents` / `get_top_agents` / `get_profile`.
+
+### 8.3 Axes de tri leaderboard
+
+`/api/agents/top` accepte : `p_success` (default DESC), `n_obs` DESC,
+`ci95_width` ASC, `window_freshness`. Tout axe legacy (`score`, `score_desc`,
+`rank`, etc.) → HTTP 400.
+
+### 8.4 Validation post-migration (2026-04-19)
+
+- `npx tsc --noEmit` → clean.
+- `npm test -- --run` → **836 / 836 passed**, 70 files, ~18 s wall.
+- `npx tsx src/scripts/compareLegacyVsBayesian.ts` → **`[PASS] Kendall τ = 0.9049`**
+  (seed 42, n=60, txPerAgent=80, seuil 0.90).
+
+### 8.5 Surfaces internes restantes (Commit 8)
+
+Plus aucune fuite publique. Ces références tombent avec Commit 8 :
+
+- `ScoringService` : encore appelé par `V2Controller.profile` pour alimenter le
+  classifieur `risk` interne + le guard `unreachable`.
+- `TrendService` : encore appelé par `V2Controller.profile` pour
+  `computeBaseFlags` (`rapid_rise` / `rapid_decline`). Commit 8 bascule ces
+  flags sur des deltas de posterior.
+- `SnapshotRepository.findChangedSince` lit encore la colonne `components`
+  (utilisée comme trigger de change-detection par `WatchlistController` ;
+  le payload émis est déjà Bayesian).
+- Types `ScoreComponents`, `ScoreDelta`, `NetworkTrends`, `TopMover`,
+  `ScoreSnapshot.components` dans `src/types/index.ts` — exportés seulement
+  pour les services internes ci-dessus.
+- Colonne SQL `score_snapshots.components TEXT NOT NULL` + `score_snapshots.score`
+  — dropées par la migration v34.
+
+### 8.6 Stratégie de merge
+
+Chaîner Commit 8 puis Commit 9 sur la même branche avant de demander le merge
+`phase-3-bayesian-scoring → main`. Aucun push avant validation finale côté
+utilisateur (CI verte + τ re-validé après 8 & 9).

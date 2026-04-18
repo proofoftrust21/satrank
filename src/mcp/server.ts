@@ -154,7 +154,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'get_agent_score',
-      description: 'Returns the detailed trust score of an agent including score components, evidence (transactions, Lightning graph, LN+ reputation, popularity), and verification URLs',
+      description: 'Returns the canonical Bayesian trust block of an agent (verdict, p_success, ci95, n_obs, sources, convergence) plus evidence (transactions, Lightning graph, LN+ reputation, popularity) and verification URLs.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -165,7 +165,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'get_top_agents',
-      description: 'Returns the agent leaderboard ranked by trust score, including LN+ ratings and popularity data',
+      description: 'Returns the agent leaderboard ranked by the canonical Bayesian block (p_success default, n_obs, ci95_width, window_freshness axes). Includes evidence overlays such as LN+ ratings and popularity data.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -247,7 +247,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'decide',
-      description: 'GO / NO-GO decision with success probability. The primary tool for pre-transaction decisions. Returns a boolean go, success_rate (0-1), and the 4 probability components (trust, routable, available, empirical).',
+      description: 'GO / NO-GO decision with success probability. The primary tool for pre-transaction decisions. Returns a boolean go plus the canonical Bayesian block (verdict, p_success, ci95, n_obs, sources, convergence, window) and the multi-signal probability breakdown (trust, routable, available, empirical).',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -341,11 +341,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = agents.map(a => ({
           publicKeyHash: a.public_key_hash,
           alias: a.alias,
-          score: a.avg_score,
           source: a.source,
-          positiveRatings: a.positive_ratings,
-          negativeRatings: a.negative_ratings,
-          lnplusRank: a.lnplus_rank,
+          bayesian: agentService.toBayesianBlock(a.public_key_hash),
         }));
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
@@ -386,7 +383,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!parsed.success) {
           return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
         }
-        const movers = trendService.getTopMovers(parsed.data.limit);
+        // Posterior-delta movers land with the Commit 8 aggregate tables;
+        // composite-score movers are retired along with ScoringService.
+        const movers = { up: [], down: [], note: 'Posterior-delta movers pending Commit 8 aggregate tables.' };
         return { content: [{ type: 'text', text: JSON.stringify(movers, null, 2) }] };
       }
 
@@ -430,36 +429,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!agent) {
           return { content: [{ type: 'text', text: `Agent not found: ${id}` }], isError: true };
         }
-        const scoreResult = scoringService.getScore(id);
-        const delta = trendService.computeDeltas(id, scoreResult.total);
+        const bayesian = agentService.toBayesianBlock(id);
         const rank = agentRepo.getRank(id);
         const reports = attestationRepo.countReportsByOutcome(id);
         const successRate = reports.total > 0 ? reports.successes / reports.total : 0;
         const probeUptime = probeRepo.computeUptime(id, 7 * 86400);
-        const riskProfile = riskService.classifyAgent(agent, delta, { regularity: scoreResult.components.regularity });
         const evidence = agentService.buildEvidence(agent);
-        const { computeBaseFlags } = await import('../utils/flags');
-        const { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } = await import('../config/scoring');
+        const { PROBE_FRESHNESS_TTL } = await import('../config/scoring');
         const { DAY } = await import('../utils/constants');
-        const { confidenceToNumber } = await import('../utils/confidence');
         const now = Math.floor(Date.now() / 1000);
-        const flags = computeBaseFlags(agent, delta, now);
+        const flags: string[] = [];
         const fraudCount = attestationRepo.countByCategoryForSubject(id, ['fraud']);
         const disputeCount = attestationRepo.countByCategoryForSubject(id, ['dispute']);
         if (fraudCount > 0) flags.push('fraud_reported');
         if (disputeCount > 0) flags.push('dispute_reported');
-        // tier-1k probe only (higher-tier failures are liquidity, not unreachability)
         const probe = probeRepo.findLatestAtTier(id, 1000);
         if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
           const gossipFresh = (now - agent.last_seen) < DAY;
-          if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) flags.push('unreachable');
+          if (!gossipFresh || bayesian.verdict !== 'SAFE') flags.push('unreachable');
         }
         const profile = {
           agent: { publicKeyHash: agent.public_key_hash, alias: agent.alias, publicKey: agent.public_key, firstSeen: agent.first_seen, lastSeen: agent.last_seen, source: agent.source },
-          score: { total: scoreResult.total, components: scoreResult.components, confidence: confidenceToNumber(scoreResult.confidence), rank },
+          bayesian,
+          rank,
           reports: { total: reports.total, successes: reports.successes, failures: reports.failures, timeouts: reports.timeouts, successRate: Math.round(successRate * 1000) / 1000 },
           probeUptime: probeUptime !== null ? Math.round(probeUptime * 1000) / 1000 : null,
-          delta, riskProfile, evidence, flags,
+          evidence,
+          flags,
         };
         return { content: [{ type: 'text', text: JSON.stringify(profile, null, 2) }] };
       }

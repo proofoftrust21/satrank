@@ -152,12 +152,11 @@ export class V2Controller {
         const candidates = targetInfos
           .filter(t => t.agent)
           .map(t => {
-            const scoreResult = this.scoringService.getScore(t.hash);
-            const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
-            verdictTotal.inc({ verdict, source: 'best-route' });
-            return { publicKeyHash: t.hash, alias: t.agent!.alias, score: scoreResult.total, verdict, pathfinding: null };
+            const bayesian = this.agentService.toBayesianBlock(t.hash);
+            verdictTotal.inc({ verdict: bayesian.verdict, source: 'best-route' });
+            return { publicKeyHash: t.hash, alias: t.agent!.alias, bayesian, pathfinding: null };
           })
-          .sort((a, b) => b.score - a.score)
+          .sort((a, b) => b.bayesian.p_success - a.bayesian.p_success)
           .slice(0, 3);
         // Token→target binding for /api/report (degraded path)
         for (const t of targetInfos) {
@@ -219,8 +218,8 @@ export class V2Controller {
         .filter(r => r.pathfinding?.reachable && r.agent)
         .map(r => {
           const scoreResult = this.scoringService.getScore(r.hash);
-          const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
-          verdictTotal.inc({ verdict, source: 'best-route' });
+          const bayesian = this.agentService.toBayesianBlock(r.hash);
+          verdictTotal.inc({ verdict: bayesian.verdict, source: 'best-route' });
 
           // Route quality (0-100) from pathfinding
           const hops = r.pathfinding!.hops ?? 99;
@@ -229,7 +228,9 @@ export class V2Controller {
           const altBonus = Math.min(100, 80 + alternatives * 10);
           const routeQuality = hopPenalty * 0.6 + altBonus * 0.4;
 
-          // Trust score (0-100)
+          // Trust axis of the composite rank — still sourced from the
+          // composite score internally (retired in Commit 8 along with
+          // ScoringService); the PUBLIC candidate exposes `bayesian` only.
           const trust = scoreResult.total;
 
           // HTTP health: only use when we have ≥3 checks on a trusted-source endpoint.
@@ -248,8 +249,7 @@ export class V2Controller {
           return {
             publicKeyHash: r.hash,
             alias: r.agent!.alias,
-            score: scoreResult.total,
-            verdict,
+            bayesian,
             pathfinding: r.pathfinding!,
             _routeQuality: routeQuality,
             _trust: trust,

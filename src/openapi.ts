@@ -115,8 +115,9 @@ export const openapiSpec = {
     },
     '/agent/{publicKeyHash}/history': {
       get: {
-        summary: 'Get agent score history',
+        summary: 'Get agent posterior history',
         operationId: 'getAgentHistory',
+        description: 'Returns the current Bayesian posterior. Posterior-history samples (data[]) land with the Commit 8 aggregate tables; the response shape is stable.',
         tags: ['Agents'],
         security: [{ l402: [] }],
         parameters: [
@@ -126,15 +127,15 @@ export const openapiSpec = {
         ],
         responses: {
           '200': {
-            description: 'Paginated score history enriched with deltas',
+            description: 'Current posterior + paginated history samples',
             content: { 'application/json': { schema: {
               type: 'object',
               properties: {
                 data: {
                   type: 'array',
-                  items: { $ref: '#/components/schemas/EnrichedSnapshot' },
+                  items: { type: 'object', description: 'Posterior history sample (populated in Commit 8).' },
                 },
-                delta: { $ref: '#/components/schemas/ScoreDelta' },
+                bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
                 meta: { $ref: '#/components/schemas/PaginationMeta' },
               },
             } } },
@@ -177,22 +178,24 @@ export const openapiSpec = {
     },
     '/agents/movers': {
       get: {
-        summary: 'Top movers (7-day score change)',
+        summary: 'Top posterior movers (Commit 8)',
         operationId: 'getTopMovers',
+        description: 'Returns agents with the biggest posterior shifts. Posterior-delta movers require the Commit 8 aggregate tables; the response returns an empty envelope until those land.',
         tags: ['Agents'],
         responses: {
           '200': {
-            description: 'Agents with biggest score changes in the last 7 days',
+            description: 'Empty until Commit 8 aggregate tables ship',
             content: { 'application/json': { schema: {
               type: 'object',
               properties: {
                 data: {
                   type: 'object',
                   properties: {
-                    gainers: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
-                    losers: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+                    gainers: { type: 'array', items: { $ref: '#/components/schemas/AgentSummary' } },
+                    losers: { type: 'array', items: { $ref: '#/components/schemas/AgentSummary' } },
                   },
                 },
+                meta: { type: 'object', properties: { note: { type: 'string' } } },
               },
             } } },
           },
@@ -212,10 +215,10 @@ export const openapiSpec = {
             in: 'query',
             schema: {
               type: 'string',
-              enum: ['score', 'volume', 'reputation', 'seniority', 'regularity', 'diversity'],
-              default: 'score',
+              enum: ['p_success', 'n_obs', 'ci95_width', 'window_freshness'],
+              default: 'p_success',
             },
-            description: 'Sort leaderboard by total score (default) or individual component. Use reputation to find reliable small nodes.',
+            description: 'Bayesian sort axis. `p_success` (posterior mean, DESC) is the default; `n_obs` (observation count, DESC), `ci95_width` (tighter posterior, ASC), and `window_freshness` (more recent window, DESC) are supported. Legacy composite axes (score, volume, reputation, seniority, regularity, diversity) return 400.',
           },
         ],
         responses: {
@@ -393,7 +396,7 @@ export const openapiSpec = {
               data: { type: 'object', properties: {
                 candidates: { type: 'array', items: { type: 'object', properties: {
                   publicKeyHash: { type: 'string' }, alias: { type: ['string', 'null'] },
-                  score: { type: 'integer' }, verdict: { type: 'string', enum: ['SAFE','RISKY','UNKNOWN'] },
+                  bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
                   pathfinding: { $ref: '#/components/schemas/PathfindingResult' },
                 } } },
                 totalQueried: { type: 'integer', description: 'Number of targets submitted' },
@@ -551,14 +554,11 @@ export const openapiSpec = {
         ],
         responses: {
           '200': { description: 'Changed verdicts since the given timestamp', content: { 'application/json': { schema: { type: 'object', properties: {
-            data: { type: 'array', items: { type: 'object', properties: {
+            data: { type: 'array', items: { type: 'object', required: ['publicKeyHash', 'alias', 'bayesian', 'changedAt'], properties: {
               publicKeyHash: { type: 'string' },
               alias: { type: ['string', 'null'] },
-              score: { type: 'integer' },
-              previousScore: { type: ['integer', 'null'] },
-              verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
-              components: { type: ['object', 'null'] },
-              changedAt: { type: 'integer' },
+              bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
+              changedAt: { type: 'integer', description: 'Unix timestamp of the posterior change.' },
             } } },
             meta: { type: 'object', properties: {
               since: { type: 'integer' },
@@ -575,14 +575,14 @@ export const openapiSpec = {
       get: {
         summary: 'Discover L402 services by category or keyword',
         operationId: 'searchServices',
-        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with SatRank trust data (node score, verdict, uptime). Free endpoint — no L402 required. Data sourced from 402index.io, refreshed every 24h.',
+        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with the SatRank canonical Bayesian block for the backing Lightning node. Free endpoint — no L402 required. Data sourced from 402index.io, refreshed every 24h.',
         tags: ['Discovery'],
         parameters: [
           { name: 'q', in: 'query', required: false, schema: { type: 'string', maxLength: 100 }, description: 'Fulltext search across name, description, category, and provider' },
           { name: 'category', in: 'query', required: false, schema: { type: 'string' }, description: 'Filter by normalized category (ai, data, tools, bitcoin, media, social, earn)' },
-          { name: 'minScore', in: 'query', required: false, schema: { type: 'integer', minimum: 0, maximum: 100 }, description: 'Minimum SatRank trust score of the backing Lightning node' },
+          { name: 'minPSuccess', in: 'query', required: false, schema: { type: 'number', minimum: 0, maximum: 1 }, description: 'Minimum posterior p_success (0-1) of the backing Lightning node. Replaces legacy `minScore`; composite axes return 400.' },
           { name: 'minUptime', in: 'query', required: false, schema: { type: 'number', minimum: 0, maximum: 1 }, description: 'Minimum HTTP uptime ratio (0-1). Requires at least 3 health checks.' },
-          { name: 'sort', in: 'query', required: false, schema: { type: 'string', enum: ['score', 'price', 'uptime'] }, description: 'Sort order (default: most-checked first)' },
+          { name: 'sort', in: 'query', required: false, schema: { type: 'string', enum: ['p_success', 'price', 'uptime'] }, description: 'Sort order (default: most-checked first). `p_success` replaces legacy `score` axis.' },
           { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 } },
           { name: 'offset', in: 'query', required: false, schema: { type: 'integer', minimum: 0, default: 0 } },
         ],
@@ -601,8 +601,7 @@ export const openapiSpec = {
               node: { type: ['object', 'null'], properties: {
                 publicKeyHash: { type: 'string' },
                 alias: { type: ['string', 'null'] },
-                score: { type: ['integer', 'null'] },
-                verdict: { type: ['string', 'null'], enum: ['SAFE', 'RISKY', 'UNKNOWN', null] },
+                bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
               } },
             } } },
             meta: { $ref: '#/components/schemas/PaginationMeta' },
@@ -827,18 +826,10 @@ export const openapiSpec = {
           requestId: { type: 'string' },
         },
       },
-      ScoreComponents: {
-        type: 'object',
-        properties: {
-          volume: { type: 'number' },
-          reputation: { type: 'number' },
-          seniority: { type: 'number' },
-          regularity: { type: 'number' },
-          diversity: { type: 'number' },
-        },
-      },
       AgentScoreResponse: {
         type: 'object',
+        description: 'Agent profile: identity + stats + evidence overlay + canonical Bayesian block. No composite score surface — `bayesian` is the source of truth.',
+        required: ['agent', 'bayesian', 'stats', 'evidence', 'alerts'],
         properties: {
           agent: {
             type: 'object',
@@ -850,16 +841,7 @@ export const openapiSpec = {
               source: { type: 'string', enum: ['observer_protocol', '4tress', 'lightning_graph', 'manual'] },
             },
           },
-          score: {
-            type: 'object',
-            properties: {
-              total: { type: 'integer', minimum: 0, maximum: 100 },
-              totalFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float version of the score. Used to break visual ties when many nodes compress into the same integer band.' },
-              components: { $ref: '#/components/schemas/ScoreComponents' },
-              confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
-              computedAt: { type: 'integer' },
-            },
-          },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
           stats: {
             type: 'object',
             properties: {
@@ -871,7 +853,6 @@ export const openapiSpec = {
             },
           },
           evidence: { $ref: '#/components/schemas/ScoreEvidence' },
-          delta: { $ref: '#/components/schemas/ScoreDelta' },
           alerts: { type: 'array', items: { $ref: '#/components/schemas/AgentAlert' } },
         },
       },
@@ -956,34 +937,6 @@ export const openapiSpec = {
           },
         },
       },
-      ScoreSnapshot: {
-        type: 'object',
-        properties: {
-          score: { type: 'integer' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          computedAt: { type: 'integer' },
-        },
-      },
-      EnrichedSnapshot: {
-        type: 'object',
-        properties: {
-          score: { type: 'integer' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          computedAt: { type: 'integer' },
-          delta: { type: ['integer', 'null'], description: 'Score change vs previous snapshot' },
-        },
-      },
-      ScoreDelta: {
-        type: 'object',
-        description: 'Temporal score deltas — the core differentiating product',
-        properties: {
-          delta24h: { type: ['number', 'null'], description: 'Score change over 24 hours' },
-          delta7d: { type: ['number', 'null'], description: 'Score change over 7 days' },
-          delta30d: { type: ['number', 'null'], description: 'Score change over 30 days' },
-          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16). UI should render "—" or a "methodology change" badge instead of the numeric delta. Auto-resolves 7 days after the cutoff.' },
-          trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
-        },
-      },
       AgentAlert: {
         type: 'object',
         properties: {
@@ -992,55 +945,30 @@ export const openapiSpec = {
           severity: { type: 'string', enum: ['info', 'warning', 'critical'] },
         },
       },
-      TopMover: {
-        type: 'object',
-        properties: {
-          publicKeyHash: { type: 'string' },
-          alias: { type: ['string', 'null'] },
-          score: { type: 'integer' },
-          scoreFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float score; matches top-list `scoreFine`.' },
-          delta7d: { type: 'number', description: '7-day score change (1-decimal float). Read with `deltaValid`.' },
-          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16).' },
-          trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
-        },
-      },
-      NetworkTrends: {
-        type: 'object',
-        description: 'Network-wide temporal trends',
-        properties: {
-          avgScoreDelta7d: { type: 'number', description: 'Average score change over 7 days' },
-          topMoversUp: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
-          topMoversDown: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
-        },
-      },
       AgentSummary: {
         type: 'object',
+        description: 'Leaderboard row — identity + canonical Bayesian block.',
+        required: ['publicKeyHash', 'alias', 'rank', 'totalTransactions', 'source', 'bayesian'],
         properties: {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
-          score: { type: 'integer' },
-          scoreFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float score. Breaks visual ties when many nodes sit in the same integer band (the 80-82 compression observed 2026-04-17).' },
           rank: { type: ['integer', 'null'] },
           totalTransactions: { type: 'integer' },
           source: { type: 'string' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          delta7d: { type: ['number', 'null'], description: '7-day score change (1-decimal float). Read with `deltaValid`: when false, render a methodology-change badge instead of the numeric value.' },
-          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16). Auto-resolves 7 days after the cutoff.' },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
         },
       },
       AgentSearchResult: {
         type: 'object',
+        description: 'Search result — identity + canonical Bayesian block.',
+        required: ['publicKeyHash', 'alias', 'rank', 'totalTransactions', 'source', 'bayesian'],
         properties: {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
-          score: { type: 'integer' },
-          scoreFine: { type: 'number', minimum: 0, maximum: 100 },
           rank: { type: ['integer', 'null'] },
           totalTransactions: { type: 'integer' },
           source: { type: 'string' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          delta7d: { type: ['number', 'null'] },
-          deltaValid: { type: 'boolean' },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
         },
       },
       Attestation: {
@@ -1177,7 +1105,6 @@ export const openapiSpec = {
           totalChannels: { type: 'integer', description: 'Sum of Lightning channels across all lightning_graph agents' },
           nodesWithRatings: { type: 'integer', description: 'Number of agents with non-zero sovereign reputation (PageRank > 0 on SatRank peer-trust graph; LN+ has been deprecated since v19)' },
           networkCapacityBtc: { type: 'number', description: 'Total network capacity in BTC (sum of all validated channel capacities)' },
-          avgScore: { type: 'number', description: 'Average score across all scored agents' },
           totalVolumeBuckets: {
             type: 'object',
             properties: {
@@ -1187,7 +1114,6 @@ export const openapiSpec = {
               large: { type: 'integer' },
             },
           },
-          trends: { $ref: '#/components/schemas/NetworkTrends' },
           serviceSources: {
             type: 'object',
             description: 'Breakdown of service_endpoints by discovery source. Exposes SatRank\'s sovereign oracle coverage of the L402 paid-service landscape.',

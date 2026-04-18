@@ -70,12 +70,17 @@ function makeRng(seed: number): () => number {
   };
 }
 
+/** Monotone counter for tx_id uniqueness — `Math.random()` collisions at
+ *  ~5000 inserts caused intermittent UNIQUE failures on repeat runs. A
+ *  process-scoped counter is deterministic and collision-free. */
+let txIdCounter = 0;
+
 /** Insère une transaction vérifiée / failed dans la table `transactions`. */
 function insertTx(
   db: Database.Database,
   opts: { endpointHash: string; success: boolean; ts: number; source?: string },
 ): void {
-  const id = 'tx-' + opts.endpointHash.slice(0, 8) + '-' + Math.floor(Math.random() * 1e9).toString(36);
+  const id = 'tx-' + opts.endpointHash.slice(0, 12) + '-' + (txIdCounter++).toString(36);
   db.prepare(`
     INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
                               payment_hash, preimage, status, protocol,

@@ -286,7 +286,6 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       totalChannels: 'number',
       nodesWithRatings: 'number',
       networkCapacityBtc: 'number',
-      avgScore: 'number',
       totalVolumeBuckets: 'object',
     });
     assertShape(res.body.data.totalVolumeBuckets, {

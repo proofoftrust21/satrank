@@ -1,14 +1,14 @@
 // NIP-90 Data Vending Machine — responds to trust-check job requests on Nostr
 // Agents publish kind 5900 with tag ["j", "trust-check"] and ["i", "<ln_pubkey>", "text"]
-// SatRank responds with kind 6900 containing score, verdict, reachability
+// SatRank responds with kind 6900 containing the canonical Bayesian block +
+// reachability. Composite score + scoreBreakdown retired in Phase 3.
 // nostr-tools is ESM-only — all imports are dynamic
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
-import type { SnapshotRepository } from '../repositories/snapshotRepository';
-import type { ScoringService } from '../services/scoringService';
+import type { BayesianVerdictService } from '../services/bayesianVerdictService';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
+import type { BayesianScoreBlock } from '../types';
 import { logger } from '../logger';
-import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 import { verdictTotal } from '../middleware/metrics';
 
 const KIND_JOB_REQUEST = 5900;
@@ -91,13 +91,30 @@ export class SatRankDvm {
   constructor(
     private agentRepo: AgentRepository,
     private probeRepo: ProbeRepository,
-    private snapshotRepo: SnapshotRepository,
-    private scoringService: ScoringService,
+    private bayesianVerdict: BayesianVerdictService,
     private lndClient: LndGraphClient | undefined,
     options: DvmOptions,
   ) {
     this.skHex = options.privateKeyHex;
     this.relays = options.relays;
+  }
+
+  /** Canonical public Bayesian block for the given pubkey hash.
+   *  Mirrors AgentService.toBayesianBlock — duplicated here to keep the DVM
+   *  self-contained in the Nostr module (no dependency back onto the HTTP
+   *  service layer). */
+  private toBayesianBlock(publicKeyHash: string): BayesianScoreBlock {
+    const v = this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
+    return {
+      p_success: v.p_success,
+      ci95_low: v.ci95_low,
+      ci95_high: v.ci95_high,
+      n_obs: v.n_obs,
+      verdict: v.verdict,
+      window: v.window,
+      sources: v.sources,
+      convergence: v.convergence,
+    };
   }
 
   async start(): Promise<void> {
@@ -126,7 +143,7 @@ export class SatRankDvm {
       ],
       content: JSON.stringify({
         name: 'SatRank Trust Check',
-        about: 'Lightning node trust scoring. Returns verdict, score, and reachability for any Lightning node pubkey.',
+        about: 'Lightning node trust scoring. Returns a Bayesian Beta-Binomial posterior (verdict + p_success + ci95 + n_obs) and reachability for any Lightning node pubkey.',
         website: 'https://satrank.dev',
       }),
     }, sk);
@@ -382,8 +399,10 @@ export class SatRankDvm {
         {
           eventId: event.id.slice(0, 12),
           pubkey: lnPubkey.slice(0, 12),
-          score: result.score,
           verdict: result.verdict,
+          pSuccess: result.bayesian?.p_success ?? null,
+          nObs: result.bayesian?.n_obs ?? null,
+          source: result.source,
           publishedTo: published,
           rejectedBy: rejected.length ? rejected : undefined,
           skippedRelays: skipped.length ? skipped : undefined,
@@ -403,97 +422,74 @@ export class SatRankDvm {
 
   private async processRequest(lnPubkey: string): Promise<{
     pubkey: string;
-    score: number | null;
-    verdict: string;
-    reachable: boolean | null;
-    successRate: number | null;
     alias: string | null;
+    // bayesian is null only on the live_ping fallback (unknown pubkey, no
+    // posterior data at all — synthesizing one would misrepresent evidence).
+    bayesian: BayesianScoreBlock | null;
+    reachable: boolean | null;
     source: 'index' | 'live_ping';
-    scoreBreakdown: { total: number; components: { volume: number; reputation: number; seniority: number; regularity: number; diversity: number } } | null;
+    // Surfaces the verdict on the live_ping branch where `bayesian` is null
+    // (route probe result). Duplicates `bayesian.verdict` on the index branch.
+    verdict: BayesianScoreBlock['verdict'];
   }> {
-    // Check if the node is in our index
     const { sha256 } = await import('../utils/crypto');
     const hash = sha256(lnPubkey);
     const agent = this.agentRepo.findByHash(hash);
 
-    if (agent && agent.avg_score > 0) {
-      // Known node — return score from index
-      const scoreResult = this.scoringService.getScore(hash);
-      // tier-1k for base reachability (higher tiers surface via other fields)
+    if (agent) {
+      const bayesian = this.toBayesianBlock(hash);
       const probe = this.probeRepo.findLatestAtTier(hash, 1000);
       const reachable = probe ? probe.reachable === 1 : null;
-      const verdict = scoreResult.total >= VERDICT_SAFE_THRESHOLD ? 'SAFE' : scoreResult.total >= 30 ? 'UNKNOWN' : 'RISKY';
-      verdictTotal.inc({ verdict, source: 'dvm' });
+      verdictTotal.inc({ verdict: bayesian.verdict, source: 'dvm' });
 
       return {
         pubkey: lnPubkey,
-        score: scoreResult.total,
-        verdict,
-        reachable,
-        successRate: null, // no reports yet
         alias: agent.alias,
+        bayesian,
+        reachable,
         source: 'index',
-        // Sim #9 M3: audit trail on the Nostr surface. Mirrors the HTTP
-        // /api/decide response shape so DVM consumers can verify how the
-        // total breaks down across the 5 weighted factors.
-        scoreBreakdown: {
-          total: scoreResult.total,
-          components: {
-            volume: scoreResult.components.volume,
-            reputation: scoreResult.components.reputation,
-            seniority: scoreResult.components.seniority,
-            regularity: scoreResult.components.regularity,
-            diversity: scoreResult.components.diversity,
-          },
-        },
+        verdict: bayesian.verdict,
       };
     }
 
-    // Unknown node — live ping via QueryRoutes
+    // Unknown node — live ping via QueryRoutes. No posterior data to emit.
     if (this.lndClient) {
       try {
         const response = await this.lndClient.queryRoutes(lnPubkey, 1000);
         const routes = response.routes ?? [];
         const hasRoute = routes.length > 0;
-        const verdict = hasRoute ? 'UNKNOWN' as const : 'RISKY' as const;
+        const verdict: BayesianScoreBlock['verdict'] = hasRoute ? 'UNKNOWN' : 'RISKY';
         verdictTotal.inc({ verdict, source: 'dvm' });
 
         return {
           pubkey: lnPubkey,
-          score: null,
-          verdict,
-          reachable: hasRoute,
-          successRate: null,
           alias: null,
+          bayesian: null,
+          reachable: hasRoute,
           source: 'live_ping',
-          scoreBreakdown: null,
+          verdict,
         };
       } catch {
         verdictTotal.inc({ verdict: 'RISKY', source: 'dvm' });
         return {
           pubkey: lnPubkey,
-          score: null,
-          verdict: 'RISKY',
-          reachable: false,
-          successRate: null,
           alias: null,
+          bayesian: null,
+          reachable: false,
           source: 'live_ping',
-          scoreBreakdown: null,
+          verdict: 'RISKY',
         };
       }
     }
 
-    // No LND — can't check
     verdictTotal.inc({ verdict: 'UNKNOWN', source: 'dvm' });
     return {
       pubkey: lnPubkey,
-      score: null,
-      verdict: 'UNKNOWN',
-      reachable: null,
-      successRate: null,
       alias: null,
+      bayesian: null,
+      reachable: null,
       source: 'live_ping',
-      scoreBreakdown: null,
+      verdict: 'UNKNOWN',
     };
   }
 

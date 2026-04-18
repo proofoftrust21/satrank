@@ -197,7 +197,7 @@ export function createApp() {
   const depositController = new DepositController(db);
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo);
-  const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
+  const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
 
   // Self-registration — uses LND BOLT11 decoder if available

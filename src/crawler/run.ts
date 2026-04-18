@@ -567,10 +567,26 @@ async function main(): Promise<void> {
         const stack = err instanceof Error ? err.stack : '';
         logger.error({ error: msg, stack }, 'Failed to load Nostr publisher');
       }
-      // Start DVM (NIP-90) — listens for trust-check job requests in background
+      // Start DVM (NIP-90) — listens for trust-check job requests in background.
+      // DVM publishes the canonical Bayesian block as its kind 6900 payload;
+      // spin up its own BayesianVerdictService instance since the one above
+      // lives inside the Nostr-publisher try-block scope.
       try {
         const { SatRankDvm } = await import('../nostr/dvm');
-        const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService,
+        const endpointAggRepoDvm = new EndpointAggregateRepository(db);
+        const serviceAggRepoDvm = new ServiceAggregateRepository(db);
+        const operatorAggRepoDvm = new OperatorAggregateRepository(db);
+        const nodeAggRepoDvm = new NodeAggregateRepository(db);
+        const routeAggRepoDvm = new RouteAggregateRepository(db);
+        const bayesianScoringServiceDvm = new BayesianScoringService(
+          endpointAggRepoDvm,
+          serviceAggRepoDvm,
+          operatorAggRepoDvm,
+          nodeAggRepoDvm,
+          routeAggRepoDvm,
+        );
+        const bayesianVerdictServiceDvm = new BayesianVerdictService(db, bayesianScoringServiceDvm);
+        const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdictServiceDvm,
           lndClient.isConfigured() ? lndClient : undefined, {
             privateKeyHex: config.NOSTR_PRIVATE_KEY,
             relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),

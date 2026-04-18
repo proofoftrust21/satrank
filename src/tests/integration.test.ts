@@ -196,7 +196,6 @@ describe('Integration — HTTP endpoints', () => {
     expect(res.body.data).toHaveProperty('totalChannels');
     expect(res.body.data).toHaveProperty('nodesWithRatings');
     expect(res.body.data).toHaveProperty('networkCapacityBtc');
-    expect(res.body.data).toHaveProperty('avgScore');
     expect(res.body.data).toHaveProperty('totalVolumeBuckets');
   });
 

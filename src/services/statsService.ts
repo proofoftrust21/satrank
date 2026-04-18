@@ -217,14 +217,12 @@ export class StatsService {
         totalChannels: this.agentRepo.sumChannels(),
         nodesWithRatings: this.agentRepo.countWithRatings(),
         networkCapacityBtc: this.agentRepo.networkCapacityBtc(),
-        avgScore: this.agentRepo.avgScore(),
         totalVolumeBuckets: {
           micro: buckets['micro'] ?? 0,
           small: buckets['small'] ?? 0,
           medium: buckets['medium'] ?? 0,
           large: buckets['large'] ?? 0,
         },
-        trends: this.trendService.getNetworkTrends(),
         serviceSources: this.serviceEndpointRepo?.countBySource() ?? { '402index': 0, 'self_registered': 0, 'ad_hoc': 0 },
       };
     });
