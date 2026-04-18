@@ -9,10 +9,12 @@
 //      Plus courte fenêtre avec n_obs ≥ MIN_N_OBS_FOR_WINDOW (20). Fallback 30d.
 //   3. applyTemporalDecay(ageSec, windowSec) → poids ∈ [0, 1]
 //      τ = windowSec × DECAY_TAU_FRACTION (1/3). Wrapping de l'util exponentialDecay.
-//
-// Les étapes 4-6 (source-aware weighting, convergence, verdict mapping)
-// viennent en C6 et C7. Ce commit expose le squelette minimal et les
-// dépendances d'injection.
+//   4. weightForSource(source, tier) → poids multiplicatif par observation
+//      probe=1.0, paid=2.0, report selon tier (low/medium/high/NIP-98=0.3/0.5/0.7/1.0)
+//   5. computePerSourcePosteriors(prior, observations) → { probe, report, paid }
+//      Posteriors Beta séparés par source — indispensable pour la convergence
+//   6. checkConvergence(posteriors) → { converged, sources_above_threshold }
+//      SAFE exige ≥ CONVERGENCE_MIN_SOURCES sources avec p ≥ CONVERGENCE_P_THRESHOLD
 
 import type {
   EndpointAggregateRepository,
@@ -29,9 +31,18 @@ import {
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
   DECAY_TAU_FRACTION,
+  WEIGHT_SOVEREIGN_PROBE,
+  WEIGHT_PAID_PROBE,
+  WEIGHT_REPORT_LOW,
+  WEIGHT_REPORT_MEDIUM,
+  WEIGHT_REPORT_HIGH,
+  WEIGHT_REPORT_NIP98,
+  CONVERGENCE_MIN_SOURCES,
+  CONVERGENCE_P_THRESHOLD,
   type BayesianWindow,
+  type BayesianSource,
 } from '../config/bayesianConfig';
-import { exponentialDecay } from '../utils/betaBinomial';
+import { exponentialDecay, computePosterior, type Posterior } from '../utils/betaBinomial';
 
 export interface PriorContext {
   /** operator_id (hash pubkey opérateur) si connu — couche la plus fine non-locale. */
@@ -45,6 +56,39 @@ export interface ResolvedPrior {
   beta: number;
   /** Nom de la couche d'où le prior a été hérité : 'operator' | 'service' | 'flat'. Pratique pour diagnostic/logs. */
   source: 'operator' | 'service' | 'flat';
+}
+
+/** Tier de confiance du reporter pour un agent_report — pondère l'observation.
+ *  Mappé depuis le reporter_badge calculé en controller (novice→low, etc.) ou
+ *  forcé à 'nip98' si la requête était signée NIP-98. */
+export type ReportTier = 'low' | 'medium' | 'high' | 'nip98';
+
+/** Observation brute pondérable — unité d'entrée pour computePerSourcePosteriors. */
+export interface SourceObservation {
+  /** true = succès, false = échec */
+  success: boolean;
+  /** source du signal */
+  source: BayesianSource;
+  /** tier du reporter (uniquement si source='report'). Ignoré sinon. */
+  tier?: ReportTier;
+  /** age en secondes pour la décroissance exponentielle (0 = maintenant). */
+  ageSec?: number;
+  /** window pour calculer tau = windowSec / 3. Si absent, pas de décroissance. */
+  window?: BayesianWindow;
+}
+
+/** Résultat par source. `null` quand aucune observation n'a été reçue. */
+export interface PerSourceResult {
+  probe: (Posterior & { weightTotal: number }) | null;
+  report: (Posterior & { weightTotal: number }) | null;
+  paid: (Posterior & { weightTotal: number }) | null;
+}
+
+/** État de convergence multi-sources — SAFE exige ≥ N sources au-dessus du seuil. */
+export interface ConvergenceResult {
+  converged: boolean;
+  sourcesAboveThreshold: BayesianSource[];
+  threshold: number;
 }
 
 export class BayesianScoringService {
@@ -133,5 +177,97 @@ export class BayesianScoringService {
   aggregateToPosterior(agg: SimpleAggregate | undefined): { alpha: number; beta: number; nObs: number } {
     if (!agg) return { alpha: DEFAULT_PRIOR_ALPHA, beta: DEFAULT_PRIOR_BETA, nObs: 0 };
     return { alpha: agg.posteriorAlpha, beta: agg.posteriorBeta, nObs: agg.nObs };
+  }
+
+  /** Poids multiplicatif d'une observation selon sa source.
+   *
+   *  Philosophie : un sovereign probe (preuve on-LN exécutée par SatRank)
+   *  vaut 1.0 ; un paid probe (double-check économiquement coûteux) vaut
+   *  2.0 ; un agent_report est pondéré par le tier du reporter (0.3 → 1.0)
+   *  pour limiter le gaming par comptes novices. NIP-98 = signature Nostr
+   *  authentifiée → poids plein, équivalent à un probe.
+   *
+   *  Le tier est requis pour source='report' ; ignoré sinon. */
+  weightForSource(source: BayesianSource, tier?: ReportTier): number {
+    switch (source) {
+      case 'probe': return WEIGHT_SOVEREIGN_PROBE;
+      case 'paid':  return WEIGHT_PAID_PROBE;
+      case 'report': {
+        switch (tier ?? 'low') {
+          case 'nip98':  return WEIGHT_REPORT_NIP98;
+          case 'high':   return WEIGHT_REPORT_HIGH;
+          case 'medium': return WEIGHT_REPORT_MEDIUM;
+          case 'low':    return WEIGHT_REPORT_LOW;
+        }
+      }
+    }
+  }
+
+  /** Composition par source : partitionne les observations en 3 flux (probe,
+   *  report, paid), applique le poids de source × la décroissance temporelle,
+   *  puis calcule un posterior Beta par flux en partant du même prior hérité.
+   *
+   *  Pourquoi 3 posteriors séparés plutôt qu'un posterior global pondéré :
+   *  la convergence multi-sources (SAFE exige ≥ 2 sources au-dessus du seuil)
+   *  ne peut se vérifier QUE sur des posteriors distincts. Un pooling global
+   *  perdrait cette information.
+   *
+   *  Renvoie `null` pour une source sans aucune observation — le client le
+   *  traitera comme "source absente" (pas comme "source avec prior pur"). */
+  computePerSourcePosteriors(
+    prior: { alpha: number; beta: number },
+    observations: readonly SourceObservation[],
+  ): PerSourceResult {
+    const accumulators: Record<BayesianSource, { wSuccess: number; wFailure: number; wTotal: number; count: number }> = {
+      probe:  { wSuccess: 0, wFailure: 0, wTotal: 0, count: 0 },
+      report: { wSuccess: 0, wFailure: 0, wTotal: 0, count: 0 },
+      paid:   { wSuccess: 0, wFailure: 0, wTotal: 0, count: 0 },
+    };
+
+    for (const obs of observations) {
+      const sourceWeight = this.weightForSource(obs.source, obs.tier);
+      const decayWeight = (obs.ageSec !== undefined && obs.window !== undefined)
+        ? this.applyTemporalDecay(obs.ageSec, obs.window)
+        : 1;
+      const effectiveWeight = sourceWeight * decayWeight;
+
+      const acc = accumulators[obs.source];
+      if (obs.success) acc.wSuccess += effectiveWeight;
+      else acc.wFailure += effectiveWeight;
+      acc.wTotal += effectiveWeight;
+      acc.count += 1;
+    }
+
+    const build = (acc: { wSuccess: number; wFailure: number; wTotal: number; count: number }) => {
+      if (acc.count === 0) return null;
+      const post = computePosterior(prior.alpha, prior.beta, acc.wSuccess, acc.wFailure);
+      return { ...post, weightTotal: acc.wTotal };
+    };
+
+    return {
+      probe:  build(accumulators.probe),
+      report: build(accumulators.report),
+      paid:   build(accumulators.paid),
+    };
+  }
+
+  /** Vérifie la convergence multi-sources.
+   *
+   *  Définition : une source "converge" si son posterior a p_success ≥
+   *  CONVERGENCE_P_THRESHOLD. SAFE n'est autorisé que si ≥ CONVERGENCE_MIN_SOURCES
+   *  sources convergent indépendamment — garde-fou contre le gaming mono-source
+   *  (un opérateur qui ne fait que des self-reports positifs n'atteindra jamais
+   *  la convergence car aucun probe ne sera d'accord). */
+  checkConvergence(perSource: PerSourceResult): ConvergenceResult {
+    const aboveThreshold: BayesianSource[] = [];
+    for (const source of ['probe', 'report', 'paid'] as const) {
+      const post = perSource[source];
+      if (post && post.pSuccess >= CONVERGENCE_P_THRESHOLD) aboveThreshold.push(source);
+    }
+    return {
+      converged: aboveThreshold.length >= CONVERGENCE_MIN_SOURCES,
+      sourcesAboveThreshold: aboveThreshold,
+      threshold: CONVERGENCE_P_THRESHOLD,
+    };
   }
 }
