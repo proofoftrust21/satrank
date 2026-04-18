@@ -95,7 +95,10 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: 512M
+          # 1024M: the LND graph crawl parses the entire public graph JSON
+          # (~80k nodes / 600k channels as of 2026-04) in a single response.
+          # 512M OOM-killed the container mid-parse. Matches the api's cap.
+          memory: 1024M
 
 volumes:
   satrank-data:

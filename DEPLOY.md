@@ -2,6 +2,24 @@
 
 Production deployment guide for SatRank on a VPS with L402 via Aperture.
 
+## Pre-deploy checklist
+
+Before any production deploy, run the anti-drift guard:
+
+```bash
+npm run check-drift                       # runs against https://satrank.dev
+npm run check-drift -- --api=http://localhost:3000
+npm run check-drift -- --strict           # treat warnings as failures (CI mode)
+```
+
+This single script enforces three invariants that historically drifted between releases (caught in sim #9):
+
+1. **IMPACT-STATEMENT.md numbers** stay within 5% of the live `/api/stats/network` response (phantom rate gated by a 5pp absolute band).
+2. **`sdk/src/types.ts` shape** matches `src/openapi.ts` for every Request/Response schema — any property added on one side without the other triggers a FAIL.
+3. **`sdk/package.json` version** is strictly ahead of the latest `@satrank/sdk` version published on npm — prevents "forgot to bump" before `npm publish`.
+
+A non-zero exit blocks the deploy. Warnings surface caveats (offline npm, missing endpoint) without blocking by default.
+
 ## Architecture
 
 ```
