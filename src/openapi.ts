@@ -477,6 +477,60 @@ export const openapiSpec = {
         },
       },
     },
+    '/bayesian/{target}': {
+      get: {
+        summary: 'Bayesian canonical verdict (Phase 3)',
+        operationId: 'getBayesianVerdict',
+        description: 'Canonical Bayesian scoring shape. Returns the combined posterior (p_success, ci95) computed from three independent sources (sovereign probes, agent reports, paid probes), along with per-source breakdown and multi-source convergence status. Verdict mapping: SAFE / RISKY / UNKNOWN / INSUFFICIENT.',
+        tags: ['Bayesian'],
+        parameters: [
+          { name: 'target', in: 'path', required: true, schema: { type: 'string' }, description: 'Target identifier — endpoint_hash (sha256 of canonicalized URL) or agent public_key_hash.' },
+          { name: 'service_hash', in: 'query', required: false, schema: { type: 'string' }, description: 'Parent service hash (enables hierarchical prior inheritance from the service layer).' },
+          { name: 'operator_id', in: 'query', required: false, schema: { type: 'string' }, description: 'Operator pubkey hash (enables hierarchical prior inheritance from the operator layer).' },
+          { name: 'reporter_tier', in: 'query', required: false, schema: { type: 'string', enum: ['low', 'medium', 'high', 'nip98'] }, description: 'Trust tier of the requesting reporter. Influences report weight in per-source aggregation.' },
+        ],
+        responses: {
+          '200': {
+            description: 'Bayesian verdict with per-source breakdown and convergence',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              required: ['target', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'verdict_reason', 'window', 'sources', 'convergence', 'prior_source', 'computed_at'],
+              properties: {
+                target: { type: 'string' },
+                p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Posterior mean of P(success) over the combined (all-source) Beta distribution.' },
+                ci95_low: { type: 'number', minimum: 0, maximum: 1, description: 'Lower bound of the 95% credibility interval.' },
+                ci95_high: { type: 'number', minimum: 0, maximum: 1, description: 'Upper bound of the 95% credibility interval.' },
+                n_obs: { type: 'number', description: 'Sum of weighted successes + failures across all sources.' },
+                verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT'] },
+                verdict_reason: { type: 'string', description: 'Human-readable reason explaining the verdict (explainability).' },
+                window: { type: 'string', enum: ['24h', '7d', '30d'], description: 'Auto-selected temporal window (shortest with n_obs ≥ 20, fallback 30d).' },
+                sources: {
+                  type: 'object',
+                  description: 'Per-source breakdown. Each field is null when no observation of that source exists.',
+                  properties: {
+                    probe:  { $ref: '#/components/schemas/BayesianSourceBlock' },
+                    report: { $ref: '#/components/schemas/BayesianSourceBlock' },
+                    paid:   { $ref: '#/components/schemas/BayesianSourceBlock' },
+                  },
+                },
+                convergence: {
+                  type: 'object',
+                  required: ['converged', 'sources_above_threshold', 'threshold'],
+                  properties: {
+                    converged: { type: 'boolean', description: 'True when ≥ 2 sources independently pass the p_success ≥ threshold test.' },
+                    sources_above_threshold: { type: 'array', items: { type: 'string', enum: ['probe', 'report', 'paid'] } },
+                    threshold: { type: 'number', minimum: 0, maximum: 1, description: 'The p_success threshold a source must pass to count as converging (default 0.80).' },
+                  },
+                },
+                prior_source: { type: 'string', enum: ['operator', 'service', 'flat'], description: 'Which hierarchical layer supplied the prior Beta(α₀, β₀).' },
+                computed_at: { type: 'integer', description: 'Unix seconds when the response was built.' },
+              },
+            } } },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
     '/ping/{pubkey}': {
       get: {
         summary: 'Real-time reachability check',
@@ -723,6 +777,22 @@ export const openapiSpec = {
       },
     },
     schemas: {
+      BayesianSourceBlock: {
+        oneOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'weight_total'],
+            properties: {
+              p_success: { type: 'number', minimum: 0, maximum: 1 },
+              ci95_low:  { type: 'number', minimum: 0, maximum: 1 },
+              ci95_high: { type: 'number', minimum: 0, maximum: 1 },
+              n_obs: { type: 'number', description: 'Number of raw observations (weighted sum of successes + failures).' },
+              weight_total: { type: 'number', description: 'Sum of per-observation weights (source_weight × temporal_decay).' },
+            },
+          },
+        ],
+      },
       PaginationMeta: {
         type: 'object',
         properties: {
