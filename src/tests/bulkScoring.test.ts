@@ -191,9 +191,11 @@ describe('Bulk scoring — LND nodes get scored', () => {
     expect(result.components.regularity).toBeGreaterThan(0);
     expect(result.components.diversity).toBeGreaterThan(0);
 
-    // avg_score should be updated in DB
+    // avg_score stores the 2-decimal float — matches totalFine, not the
+    // integer total, since 2026-04-17 finegrained scoring.
     const updated = agentRepo.findByHash(topNode.public_key_hash);
-    expect(updated!.avg_score).toBe(result.total);
+    expect(updated!.avg_score).toBe(result.totalFine);
+    expect(Math.round(updated!.avg_score)).toBe(result.total);
   });
 
   it('scoring a small LND node produces score 10-40', () => {
@@ -305,7 +307,9 @@ describe('Bulk scoring — LND nodes get scored', () => {
 
     const snapshot = snapshotRepo.findLatestByAgent(sha256('snap-test'));
     expect(snapshot).toBeDefined();
-    expect(snapshot!.score).toBe(result.total);
+    // Snapshots store the 2-decimal float — matches totalFine since 2026-04-17.
+    expect(snapshot!.score).toBe(result.totalFine);
+    expect(Math.round(snapshot!.score)).toBe(result.total);
     expect(JSON.parse(snapshot!.components)).toHaveProperty('volume');
   });
 
@@ -414,5 +418,67 @@ describe('Bulk scoring — LND nodes get scored', () => {
     // findScoredAgents returns 3, findUnscoredWithData returns 2
     expect(agentRepo.findScoredAgents()).toHaveLength(3);
     expect(agentRepo.findUnscoredWithData()).toHaveLength(2);
+  });
+
+  // --- scoreFineGrained (tie-breaker precision) ---
+  // Context: 9/10 top nodes compressed in the 80-82 band since the Apr 16
+  // Option D rollout. totalFine (2-decimal float) breaks those ties for
+  // sort/display without changing the integer API contract.
+
+  it('computeScore returns totalFine as a 2-decimal float within [0,100]', () => {
+    agentRepo.insert(makeLndAgent('fine-node', {
+      total_transactions: 50,
+      capacity_sats: 2_000_000_000,
+    }));
+
+    const result = scoringService.computeScore(sha256('fine-node'));
+
+    expect(result.totalFine).toBeGreaterThanOrEqual(0);
+    expect(result.totalFine).toBeLessThanOrEqual(100);
+    // 2-decimal precision: `totalFine * 100` should land on an integer modulo
+    // float representation error (e.g. 64.6 × 100 = 6459.999…, not 6460).
+    const scaled = result.totalFine * 100;
+    expect(Math.abs(scaled - Math.round(scaled))).toBeLessThan(1e-6);
+    // Integer total is the rounded float.
+    expect(result.total).toBe(Math.round(result.totalFine));
+  });
+
+  it('totalFine differentiates agents with slightly different inputs even when integer scores tie', () => {
+    // Most LN components are integer-quantised by the time they reach the
+    // weighted sum (each computeX() rounds). The finegrained signal surfaces
+    // in the weighted combination and the probe/bonus multipliers. Force a
+    // large enough capacity delta that the Volume component moves, so we can
+    // reliably show the float carries more precision than the integer.
+    agentRepo.insert(makeLndAgent('tied-low', {
+      total_transactions: 40,
+      capacity_sats: 500_000_000, // 5 BTC
+    }));
+    agentRepo.insert(makeLndAgent('tied-hi', {
+      total_transactions: 40,
+      capacity_sats: 5_000_000_000, // 50 BTC
+    }));
+
+    const low = scoringService.computeScore(sha256('tied-low'));
+    const hi = scoringService.computeScore(sha256('tied-hi'));
+
+    // Higher capacity should produce a higher float score, matching the
+    // direction of the integer score (they don't have to differ by 1+ but
+    // must not contradict).
+    expect(hi.totalFine).toBeGreaterThan(low.totalFine);
+    expect(hi.total).toBeGreaterThanOrEqual(low.total);
+  });
+
+  it('persisted snapshot preserves totalFine across cache hit', () => {
+    agentRepo.insert(makeLndAgent('cache-hit', {
+      total_transactions: 25,
+      capacity_sats: 1_500_000_000,
+    }));
+
+    const first = scoringService.computeScore(sha256('cache-hit'));
+    // Cache hit — getScore reads from snapshot instead of recomputing.
+    const cached = scoringService.getScore(sha256('cache-hit'));
+
+    expect(cached.totalFine).toBe(first.totalFine);
+    expect(cached.total).toBe(first.total);
   });
 });

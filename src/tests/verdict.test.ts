@@ -413,9 +413,9 @@ describe('VerdictService — riskProfile', () => {
     expect(result.riskProfile.riskLevel).toBe('high');
   });
 
-  it('returns default riskProfile for UNKNOWN agent', async () => {
+  it('returns unrated riskProfile for UNKNOWN agent', async () => {
     const result = await verdictService.getVerdict(sha256('nonexistent-risk'));
-    expect(result.riskProfile.name).toBe('default');
+    expect(result.riskProfile.name).toBe('unrated');
     expect(result.riskProfile.riskLevel).toBe('unknown');
   });
 

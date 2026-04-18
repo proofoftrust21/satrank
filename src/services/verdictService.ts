@@ -61,7 +61,7 @@ export class VerdictService {
         reason: 'Agent not found in the SatRank index',
         flags: [],
         personalTrust: callerPubkey ? { distance: null, sharedConnections: 0, strongestConnection: null } : null,
-        riskProfile: { name: 'default', riskLevel: 'unknown', description: 'Agent not found in the SatRank index.' },
+        riskProfile: { name: 'unrated', riskLevel: 'unknown', description: 'Agent not found in the SatRank index.' },
         pathfinding: null,
       };
     }

@@ -398,11 +398,14 @@ export class V2Controller {
       const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * DAY;
       const reporter = this.attestationRepo.reporterStats(hash, thirtyDaysAgo);
       const TRUSTED_REPORTER_THRESHOLD = 20;
+      // Always return a badge string so agents don't have to null-check.
+      // `novice` is the default for agents that have never submitted a report
+      // (sim #9 FINDING #11 — `null` forced a defensive guard on every client).
       const reporterBadge =
         reporter.verified >= TRUSTED_REPORTER_THRESHOLD ? 'trusted_reporter' :
         reporter.submitted >= 5 ? 'active_reporter' :
         reporter.submitted >= 1 ? 'reporter' :
-        null;
+        'novice';
 
       res.json({
         data: {
@@ -432,7 +435,6 @@ export class V2Controller {
             submitted30d: reporter.submitted,
             verified30d: reporter.verified,
             breakdown: { successes: reporter.successes, failures: reporter.failures, timeouts: reporter.timeouts },
-            trustedThreshold: TRUSTED_REPORTER_THRESHOLD,
           },
           probeUptime: probeUptime !== null ? Math.round(probeUptime * 1000) / 1000 : null,
           survival,

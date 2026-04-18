@@ -132,6 +132,19 @@ describe('ScoringService', () => {
     expect(snapshot!.agent_hash).toBe(agent.public_key_hash);
   });
 
+  it('skips snapshot insert when score + components unchanged', () => {
+    const agent = makeAgent('unchanged-agent');
+    agentRepo.insert(agent);
+
+    scoring.computeScore(agent.public_key_hash);
+    scoring.computeScore(agent.public_key_hash);
+    scoring.computeScore(agent.public_key_hash);
+
+    const count = db.prepare('SELECT COUNT(*) AS n FROM score_snapshots WHERE agent_hash = ?')
+      .get(agent.public_key_hash) as { n: number };
+    expect(count.n).toBe(1);
+  });
+
   describe('cache (getScore)', () => {
     it('returns existing snapshot if recent', () => {
       const agent = makeAgent('cached-agent');

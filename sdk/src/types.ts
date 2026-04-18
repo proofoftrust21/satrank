@@ -237,7 +237,7 @@ export type RiskProfileName =
   | 'new_unproven'
   | 'small_reliable'
   | 'suspicious_rapid_rise'
-  | 'default';
+  | 'unrated';
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'unknown';
 
@@ -423,8 +423,17 @@ export interface DecideResponse {
     empirical: number;
     pathQuality: number;
   };
+  /** Raw score breakdown for audit trail — mirrors `/api/profile/:id.score`.
+   *  Added after sim #5 so agents can answer "why did this decision flip?"
+   *  from a single /decide call (no extra /profile request needed). */
+  scoreBreakdown: {
+    total: number;
+    components: ScoreComponents;
+  };
   basis: 'proxy' | 'empirical';
-  confidence: ConfidenceLevel;
+  /** Confidence 0-1. API returns number (0.1 very_low → 0.9 very_high),
+   *  not a ConfidenceLevel string. See src/utils/confidence.ts. */
+  confidence: number;
   verdict: Verdict;
   flags: VerdictFlag[];
   pathfinding: PathfindingResult | null;
@@ -466,6 +475,15 @@ export interface ReportResponse {
   verified: boolean;
   weight: number;
   timestamp: number;
+  /** Tier 2 reporter-bonus outcome. `null` when REPORT_BONUS_ENABLED=false
+   *  or the reporter service is not wired. Always present when the flag is on. */
+  bonus: {
+    credited: boolean;
+    /** Sats credited to the reporter's deposit balance when `credited=true`. */
+    sats?: number;
+    /** Gate code explaining the decision (eligibility check or payout reason). */
+    gate?: string;
+  } | null;
 }
 
 export interface ProfileResponse {
@@ -507,6 +525,12 @@ export interface BestRouteRequest {
   targets: string[];
   caller: string;
   amountSats?: number;
+  /** Wallet provider name. SatRank computes P_path from the provider's hub node. */
+  walletProvider?: WalletProvider;
+  /** Lightning pubkey to use as pathfinding source. Overrides walletProvider. */
+  callerNodePubkey?: string;
+  /** Map of targetHash → L402 service URL. SSRF-protected. */
+  serviceUrls?: Record<string, string>;
 }
 
 export interface BestRouteCandidate {

@@ -153,6 +153,11 @@ export interface AgentScoreResponse {
   };
   score: {
     total: number;
+    /** 2-decimal float of the same score. Use in UI to break visual ties when
+     *  many nodes sit in the same integer band (the 80-82 compression observed
+     *  2026-04-17). API consumers that expect an integer continue to read
+     *  `total`. */
+    totalFine: number;
     components: ScoreComponents;
     /** Confidence 0-1 (sigmoid-derived). Uniform across /decide, /profile,
      *  /verdicts — sim #5 found the shape diverged between endpoints. */
@@ -285,6 +290,12 @@ export interface ScoreDelta {
   delta24h: number | null;
   delta7d: number | null;
   delta30d: number | null;
+  /** False when the 7d comparator snapshot predates the Option D methodology
+   *  rollout (METHODOLOGY_CHANGE_AT_UNIX). A visitor seeing -18 on a stable
+   *  hub would otherwise assume degradation; the API instead flags the window
+   *  as incomparable and the UI renders "—" or a badge. Auto-resolves 7 days
+   *  after the cutoff. */
+  deltaValid: boolean;
   trend: TrendDirection;
 }
 
@@ -297,8 +308,15 @@ export interface AgentAlert {
 export interface TopMover {
   publicKeyHash: string;
   alias: string | null;
+  /** Integer score (0-100) — official API value. */
   score: number;
+  /** 2-decimal float of the same score. Matches the top-list surface so
+   *  compressed 80-82 movers still visually differentiate in the UI. */
+  scoreFine: number;
   delta7d: number;
+  /** False when the 7d comparator predates the Option D methodology rollout —
+   *  same semantics as ScoreDelta.deltaValid. UI renders "—" when false. */
+  deltaValid: boolean;
   trend: TrendDirection;
 }
 
@@ -351,7 +369,7 @@ export type RiskProfileName =
   | 'new_unproven'
   | 'small_reliable'
   | 'suspicious_rapid_rise'
-  | 'default';
+  | 'unrated';
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'unknown';
 
@@ -398,6 +416,24 @@ export interface DecideRequest {
   amountSats?: number;
   walletProvider?: WalletProvider;
   callerNodePubkey?: string;
+  serviceUrl?: string;
+}
+
+export interface BestRouteRequest {
+  targets: string[];
+  caller: string;
+  amountSats?: number;
+  walletProvider?: WalletProvider;
+  callerNodePubkey?: string;
+  serviceUrls?: Record<string, string>;
+}
+
+export interface ReportResponseEnvelope {
+  reportId: string;
+  verified: boolean;
+  weight: number;
+  timestamp: number;
+  bonus: { credited: boolean; sats?: number; gate?: string } | null;
 }
 
 export type SurvivalPrediction = 'stable' | 'at_risk' | 'likely_dead';

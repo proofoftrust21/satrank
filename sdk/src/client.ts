@@ -508,7 +508,7 @@ export class SatRankClient {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
-          'User-Agent': 'SatRank-SDK/0.1',
+          'User-Agent': 'SatRank-SDK/0.2.7',
           ...this.headers,
         },
         signal: controller.signal,
@@ -550,7 +550,7 @@ export class SatRankClient {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
-          'User-Agent': 'SatRank-SDK/0.1',
+          'User-Agent': 'SatRank-SDK/0.2.7',
           ...this.headers,
         },
         body: JSON.stringify(body),

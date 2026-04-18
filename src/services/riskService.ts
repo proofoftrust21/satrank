@@ -82,9 +82,15 @@ export class RiskService {
       }
     }
 
+    // No specific profile matched. Surface a meaningful riskLevel derived from
+    // score instead of opaque "unknown": mid-tier nodes (≥40) are `medium`,
+    // lower scores stay `unknown` since confidence is too low to bucket.
+    // Renamed from "default" → "unrated" per sim #9 FINDING #10 (no business
+    // meaning). Kept in `RiskProfileName` enum for backwards compatibility.
+    const riskLevel: RiskLevel = agent.avg_score >= 40 ? 'medium' : 'unknown';
     return {
-      name: 'default',
-      riskLevel: 'unknown',
+      name: 'unrated',
+      riskLevel,
       description: `Agent does not match any specific risk profile. Score: ${agent.avg_score}, active for ${Math.round(ageDays)} days.`,
     };
   }

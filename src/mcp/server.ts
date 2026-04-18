@@ -466,7 +466,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           amountBucket: parsed.data.amountBucket,
           memo: parsed.data.memo,
         });
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        // Sim #9 M4: expose `preimage_verified` explicitly — the `verified`
+        // boolean alone is ambiguous from an MCP tool caller's perspective
+        // (verified what?). Keep `verified` for backwards compatibility with
+        // existing MCP integrations.
+        const reportPayload = {
+          ...result,
+          preimage_verified: result.verified,
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(reportPayload, null, 2) }] };
       }
 
       case 'ping': {
