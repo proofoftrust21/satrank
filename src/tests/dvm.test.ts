@@ -96,6 +96,19 @@ describe('SatRankDvm', () => {
     expect(result.score).toBeGreaterThan(0);
     expect(result.reachable).toBe(true);
     expect(result.alias).toBe('known-node');
+    // Sim #9 M3: audit trail on the Nostr surface — index branch must expose
+    // the 5-component breakdown so DVM consumers can verify the total.
+    expect(result.scoreBreakdown).not.toBeNull();
+    expect(result.scoreBreakdown.total).toBe(result.score);
+    expect(result.scoreBreakdown.components).toEqual(
+      expect.objectContaining({
+        volume: expect.any(Number),
+        reputation: expect.any(Number),
+        seniority: expect.any(Number),
+        regularity: expect.any(Number),
+        diversity: expect.any(Number),
+      }),
+    );
   });
 
   it('processRequest returns live_ping for unknown node with LND', async () => {
@@ -112,6 +125,7 @@ describe('SatRankDvm', () => {
     expect(result.reachable).toBe(true);
     expect(result.verdict).toBe('UNKNOWN');
     expect(result.score).toBeNull();
+    expect(result.scoreBreakdown).toBeNull();
   });
 
   it('processRequest returns RISKY for unreachable unknown node', async () => {
@@ -127,6 +141,7 @@ describe('SatRankDvm', () => {
     expect(result.source).toBe('live_ping');
     expect(result.reachable).toBe(false);
     expect(result.verdict).toBe('RISKY');
+    expect(result.scoreBreakdown).toBeNull();
   });
 
   it('processRequest returns UNKNOWN when no LND configured', async () => {
@@ -140,5 +155,6 @@ describe('SatRankDvm', () => {
     expect(result.source).toBe('live_ping');
     expect(result.reachable).toBeNull();
     expect(result.verdict).toBe('UNKNOWN');
+    expect(result.scoreBreakdown).toBeNull();
   });
 });
