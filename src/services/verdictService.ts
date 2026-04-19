@@ -132,7 +132,7 @@ export class VerdictService {
 
     const reason = this.buildReason(agent, bayes, flags, ageDays);
 
-    const reachability = this.probeRepo?.computeUptime(publicKeyHash, REACHABILITY_WINDOW_SEC) ?? undefined;
+    const reachability = this.probeRepo?.computeUptime(publicKeyHash, REACHABILITY_WINDOW_SEC) ?? null;
     const advisory = computeAdvisoryReport({
       bayesian: {
         p_success: bayes.p_success,
@@ -166,6 +166,7 @@ export class VerdictService {
       advisory_level: advisory.advisory_level,
       risk_score: advisory.risk_score,
       advisories: advisory.advisories,
+      reachability: reachability != null ? Math.round(reachability * 1000) / 1000 : null,
     };
   }
 
@@ -337,5 +338,6 @@ function buildMissingAgentResponse(callerPubkey: string | undefined): VerdictRes
     advisory_level: advisory.advisory_level,
     risk_score: advisory.risk_score,
     advisories: advisory.advisories,
+    reachability: null,
   };
 }

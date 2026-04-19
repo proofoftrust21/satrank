@@ -249,7 +249,7 @@ export class NostrIndexedPublisher {
     for (const c of candidates) {
       // Verdict bands mirror the canonical Bayesian cutoffs: posterior ≥ 0.80 = SAFE,
       // 0.50–0.80 = UNKNOWN, < 0.50 = RISKY. The old composite-threshold mapping
-      // (score ≥ VERDICT_SAFE_THRESHOLD / 30) is retired alongside the composite.
+      // was retired in Phase 3 alongside the composite score.
       const verdict = c.pSuccess >= 0.80 ? 'SAFE' : c.pSuccess >= 0.50 ? 'UNKNOWN' : 'RISKY';
       const template = {
         kind: KIND_TRUSTED_ASSERTION,

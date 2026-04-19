@@ -453,6 +453,9 @@ export interface VerdictResponse extends BayesianScoreBlock {
   advisory_level: AdvisoryLevel;
   risk_score: number;
   advisories: Advisory[];
+  /** Phase 4 P6 — uptime probe ratio in [0, 1] on the same 7d window the advisory uses.
+   *  null when no probes yet. Complements the binary `unreachable` flag. */
+  reachability: number | null;
 }
 
 // Phase 4 — graduated advisory overlay. `advisory_level` sits alongside
@@ -552,6 +555,14 @@ export interface ServiceHealth {
   lastCheckedAt: number | null;
   /** Price of the service in sats (from BOLT11 invoice), null if unknown */
   servicePriceSats: number | null;
+  /** Phase 4 P6 — graduated HTTP health in [0, 1] derived from status +
+   *  uptimeRatio. 1.0 = fully healthy, 0 = down. Continuous complement to the
+   *  discrete `status`; null when no data (status = 'checking'|'unknown'). */
+  httpHealthScore: number | null;
+  /** Phase 4 P6 — exp(-age/600) decay on lastCheckedAt, null if no check yet.
+   *  1.0 = just checked, ~0.37 at 10 min, ~0.14 at 20 min. Lets agents decay
+   *  their trust in the cached health instead of the old binary 5-min flag. */
+  healthFreshness: number | null;
 }
 
 export interface FeeVolatility {
