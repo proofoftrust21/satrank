@@ -1,12 +1,32 @@
 {
   "name": "@satrank/sdk",
   "version": "1.0.0-rc.1",
-  "description": "Client SDK for the SatRank API — trust scores for AI agents on Bitcoin Lightning",
+  "description": "SatRank SDK 1.0 — sr.fulfill() for AI agents on Bitcoin Lightning",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist/", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./wallet": {
+      "types": "./dist/wallet/index.d.ts",
+      "default": "./dist/wallet/index.js"
+    },
+    "./nlp": {
+      "types": "./dist/nlp/index.d.ts",
+      "default": "./dist/nlp/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "homepage": "https://satrank.dev",
@@ -16,10 +36,22 @@
     "url": "https://github.com/proofoftrust21/satrank",
     "directory": "sdk"
   },
-  "keywords": ["satrank", "lightning", "l402", "trust-score", "agents", "bitcoin", "mcp"],
+  "keywords": [
+    "satrank",
+    "lightning",
+    "l402",
+    "agents",
+    "bitcoin",
+    "mcp",
+    "discovery",
+    "nwc",
+    "lnd"
+  ],
   "license": "AGPL-3.0",
   "devDependencies": {
-    "typescript": "^5.7.3"
+    "@types/node": "^20.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^1.6.0"
   },
   "engines": {
     "node": ">=18.0.0"
