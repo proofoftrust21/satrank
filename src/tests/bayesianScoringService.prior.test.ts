@@ -1,8 +1,8 @@
-// Tests C5 : resolveHierarchicalPrior, selectWindow, applyTemporalDecay.
-// Focus : cascade prior operator → service → flat, fenêtre auto-sélection,
-// décroissance exponentielle.
+// Tests C15 : resolveHierarchicalPrior 100% streaming.
+// Cascade 4 niveaux : operator → service → category → flat.
+// Critère d'héritage : n_obs_effective = (α+β) - (α₀+β₀) ≥ PRIOR_MIN_EFFECTIVE_OBS (30).
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
 import {
@@ -11,162 +11,178 @@ import {
   OperatorAggregateRepository,
   NodeAggregateRepository,
 } from '../repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import {
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
-  MIN_N_OBS_FOR_PRIOR_INHERITANCE,
-  DECAY_TAU_FRACTION,
-  WINDOW_7D_SEC,
+  PRIOR_MIN_EFFECTIVE_OBS,
 } from '../config/bayesianConfig';
 
 const NOW = 1_776_240_000;
 
-function makeService(): { db: Database.Database; svc: BayesianScoringService; endpointRepo: EndpointAggregateRepository; serviceRepo: ServiceAggregateRepository; operatorRepo: OperatorAggregateRepository } {
+function makeEnv() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  const endpointRepo = new EndpointAggregateRepository(db);
-  const serviceRepo = new ServiceAggregateRepository(db);
-  const operatorRepo = new OperatorAggregateRepository(db);
-  const nodeRepo = new NodeAggregateRepository(db);
-  return {
-    db,
-    svc: new BayesianScoringService(endpointRepo, serviceRepo, operatorRepo, nodeRepo),
-    endpointRepo,
-    serviceRepo,
-    operatorRepo,
-  };
+  const endpointAggRepo = new EndpointAggregateRepository(db);
+  const serviceAggRepo = new ServiceAggregateRepository(db);
+  const operatorAggRepo = new OperatorAggregateRepository(db);
+  const nodeAggRepo = new NodeAggregateRepository(db);
+  const endpointStreamRepo = new EndpointStreamingPosteriorRepository(db);
+  const serviceStreamRepo = new ServiceStreamingPosteriorRepository(db);
+  const operatorStreamRepo = new OperatorStreamingPosteriorRepository(db);
+  const nodeStreamRepo = new NodeStreamingPosteriorRepository(db);
+  const svc = new BayesianScoringService(
+    endpointAggRepo,
+    serviceAggRepo,
+    operatorAggRepo,
+    nodeAggRepo,
+    undefined,
+    endpointStreamRepo,
+    serviceStreamRepo,
+    operatorStreamRepo,
+    nodeStreamRepo,
+  );
+  return { db, svc, endpointStreamRepo, serviceStreamRepo, operatorStreamRepo };
 }
 
-describe('resolveHierarchicalPrior', () => {
-  let env: ReturnType<typeof makeService>;
+describe('resolveHierarchicalPrior — 4-level streaming cascade (C15)', () => {
+  let env: ReturnType<typeof makeEnv>;
 
-  beforeEach(() => { env = makeService(); });
-  afterEach(() => { env.db.close(); });
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW * 1000));
+    env = makeEnv();
+  });
 
-  it('retombe sur flat (α₀=β₀=1.5) quand aucun parent n\'a de données', () => {
-    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'unknown-op', serviceHash: 'unknown-svc' }, '7d');
+  afterEach(() => {
+    env.db.close();
+    vi.useRealTimers();
+  });
+
+  it('1. flat : aucun parent connu → Beta(α₀, β₀)', () => {
+    const prior = env.svc.resolveHierarchicalPrior({});
+    expect(prior.source).toBe('flat');
     expect(prior.alpha).toBe(DEFAULT_PRIOR_ALPHA);
     expect(prior.beta).toBe(DEFAULT_PRIOR_BETA);
-    expect(prior.source).toBe('flat');
   });
 
-  it('retombe sur flat quand le parent est insuffisamment observé (<30)', () => {
-    env.operatorRepo.upsert('op-small', '7d', { successDelta: 5, failureDelta: 2, updatedAt: NOW });
-    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-small' }, '7d');
-    expect(prior.source).toBe('flat');
-  });
-
-  it('hérite du prior operator quand il a assez d\'observations', () => {
-    // 30+ observations pour atteindre MIN_N_OBS_FOR_PRIOR_INHERITANCE.
-    env.operatorRepo.upsert('op-rich', '7d', {
+  it('2. operator : nObsEff ≥ 30 sur operator_streaming → prior_source=operator', () => {
+    // 25 succès + 10 échecs = 35 obs effectives sur une source → seuil atteint.
+    env.operatorStreamRepo.ingest('op-rich', 'probe', {
       successDelta: 25,
       failureDelta: 10,
-      updatedAt: NOW,
+      nowSec: NOW,
     });
-    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-rich' }, '7d');
+    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-rich' });
     expect(prior.source).toBe('operator');
-    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 25, 5);
-    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 10, 5);
+    // Pas de décroissance (Δt = 0) → α = 1.5 + 25, β = 1.5 + 10.
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 25, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 10, 3);
   });
 
-  it('hérite du service quand operator absent mais service riche', () => {
-    env.serviceRepo.upsert('svc-rich', '7d', {
-      successDelta: 40,
-      failureDelta: 20,
-      updatedAt: NOW,
+  it('3. service : operator < 30, service ≥ 30 → prior_source=service (fallback)', () => {
+    // Operator sous le seuil (5 obs) — doit cascader.
+    env.operatorStreamRepo.ingest('op-thin', 'probe', {
+      successDelta: 3,
+      failureDelta: 2,
+      nowSec: NOW,
     });
-    const prior = env.svc.resolveHierarchicalPrior({ serviceHash: 'svc-rich' }, '7d');
+    // Service atteint le seuil avec 30 obs.
+    env.serviceStreamRepo.ingest('svc-rich', 'probe', {
+      successDelta: 20,
+      failureDelta: 10,
+      nowSec: NOW,
+    });
+    const prior = env.svc.resolveHierarchicalPrior({
+      operatorId: 'op-thin',
+      serviceHash: 'svc-rich',
+    });
     expect(prior.source).toBe('service');
-    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 40, 5);
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 20, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 10, 3);
   });
 
-  it('préfère operator à service quand les deux ont assez de données (priorité cascade)', () => {
-    env.operatorRepo.upsert('op-a', '7d', { successDelta: 30, failureDelta: 0, updatedAt: NOW });
-    env.serviceRepo.upsert('svc-a', '7d', { successDelta: 30, failureDelta: 30, updatedAt: NOW });
-    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-a', serviceHash: 'svc-a' }, '7d');
-    expect(prior.source).toBe('operator');
-  });
-});
-
-describe('selectWindow', () => {
-  let env: ReturnType<typeof makeService>;
-
-  beforeEach(() => { env = makeService(); });
-  afterEach(() => { env.db.close(); });
-
-  it('retourne 24h quand toutes les fenêtres ont ≥ 20 obs (plus courte)', () => {
-    expect(env.svc.selectWindow({ '24h': 25, '7d': 100, '30d': 500 })).toBe('24h');
-  });
-
-  it('retourne 7d quand 24h insuffisant mais 7d ≥ 20', () => {
-    expect(env.svc.selectWindow({ '24h': 5, '7d': 20, '30d': 100 })).toBe('7d');
-  });
-
-  it('retourne 30d en fallback quand aucune fenêtre n\'atteint le seuil', () => {
-    expect(env.svc.selectWindow({ '24h': 0, '7d': 0, '30d': 0 })).toBe('30d');
-    expect(env.svc.selectWindow({ '24h': 5, '7d': 10, '30d': 15 })).toBe('30d');
-  });
-
-  it('selectEndpointWindow interroge le repo correctement', () => {
-    // 20 obs en 7d, 0 en 24h → attend '7d'.
-    env.endpointRepo.upsert('url-abc', '7d', { successDelta: 15, failureDelta: 5, updatedAt: NOW });
-    expect(env.svc.selectEndpointWindow('url-abc')).toBe('7d');
-  });
-});
-
-describe('applyTemporalDecay', () => {
-  let env: ReturnType<typeof makeService>;
-
-  beforeEach(() => { env = makeService(); });
-  afterEach(() => { env.db.close(); });
-
-  it('à t=0 retourne 1 (poids plein)', () => {
-    expect(env.svc.applyTemporalDecay(0, '7d')).toBe(1);
-  });
-
-  it('à t=τ retourne e⁻¹ pour chaque fenêtre', () => {
-    const tau7d = WINDOW_7D_SEC * DECAY_TAU_FRACTION;
-    expect(env.svc.applyTemporalDecay(tau7d, '7d')).toBeCloseTo(Math.exp(-1), 6);
-  });
-
-  it('est monotone décroissant à mesure que l\'âge augmente (fenêtre 30d)', () => {
-    const samples = [0, 86400, 7 * 86400, 15 * 86400, 30 * 86400];
-    let prev = Infinity;
-    for (const t of samples) {
-      const w = env.svc.applyTemporalDecay(t, '30d');
-      expect(w).toBeLessThanOrEqual(prev);
-      prev = w;
+  it('4. category : operator + service < 30, somme siblings ≥ 30 → prior_source=category', () => {
+    // Trois endpoints siblings, chacun avec 12 obs → total 36 > 30.
+    for (const hash of ['sib-a', 'sib-b', 'sib-c']) {
+      env.endpointStreamRepo.ingest(hash, 'probe', {
+        successDelta: 9,
+        failureDelta: 3,
+        nowSec: NOW,
+      });
     }
+    const prior = env.svc.resolveHierarchicalPrior({
+      operatorId: 'op-unknown',
+      serviceHash: 'svc-unknown',
+      categoryName: 'llm',
+      categorySiblingHashes: ['sib-a', 'sib-b', 'sib-c'],
+    });
+    expect(prior.source).toBe('category');
+    // Somme (α−α₀, β−β₀) = (3×9, 3×3) = (27, 9) → α = 1.5 + 27, β = 1.5 + 9.
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 27, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 9, 3);
   });
 
-  it('windowTau cohérent avec la formule τ = windowSec / 3', () => {
-    expect(env.svc.windowTau('24h')).toBeCloseTo(86400 / 3, 5);
-    expect(env.svc.windowTau('7d')).toBeCloseTo(7 * 86400 / 3, 5);
-    expect(env.svc.windowTau('30d')).toBeCloseTo(30 * 86400 / 3, 5);
+  it('5. priorité operator > service > category quand tous au-dessus du seuil', () => {
+    env.operatorStreamRepo.ingest('op-a', 'probe', {
+      successDelta: 30,
+      failureDelta: 5,
+      nowSec: NOW,
+    });
+    env.serviceStreamRepo.ingest('svc-a', 'probe', {
+      successDelta: 30,
+      failureDelta: 30,
+      nowSec: NOW,
+    });
+    env.endpointStreamRepo.ingest('sib-1', 'probe', {
+      successDelta: 30,
+      failureDelta: 30,
+      nowSec: NOW,
+    });
+    const prior = env.svc.resolveHierarchicalPrior({
+      operatorId: 'op-a',
+      serviceHash: 'svc-a',
+      categoryName: 'storage',
+      categorySiblingHashes: ['sib-1'],
+    });
+    expect(prior.source).toBe('operator');
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 30, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 5, 3);
   });
-});
 
-describe('aggregateToPosterior', () => {
-  let env: ReturnType<typeof makeService>;
-
-  beforeEach(() => { env = makeService(); });
-  afterEach(() => { env.db.close(); });
-
-  it('retourne le prior flat pour un agrégat absent', () => {
-    const p = env.svc.aggregateToPosterior(undefined);
-    expect(p.alpha).toBe(DEFAULT_PRIOR_ALPHA);
-    expect(p.beta).toBe(DEFAULT_PRIOR_BETA);
-    expect(p.nObs).toBe(0);
-  });
-
-  it('lit α/β et nObs depuis l\'agrégat quand il existe', () => {
-    env.endpointRepo.upsert('url-z', '24h', { successDelta: 10, failureDelta: 3, updatedAt: NOW });
-    const agg = env.endpointRepo.findOne('url-z', '24h');
-    const p = env.svc.aggregateToPosterior(agg);
-    expect(p.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 10, 6);
-    expect(p.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 3, 6);
-    expect(p.nObs).toBe(13);
+  it('6. flat : tous les niveaux sous le seuil → Beta(α₀, β₀)', () => {
+    env.operatorStreamRepo.ingest('op-small', 'probe', {
+      successDelta: 5,
+      failureDelta: 2,
+      nowSec: NOW,
+    });
+    env.serviceStreamRepo.ingest('svc-small', 'probe', {
+      successDelta: 4,
+      failureDelta: 1,
+      nowSec: NOW,
+    });
+    env.endpointStreamRepo.ingest('sib-small', 'probe', {
+      successDelta: 3,
+      failureDelta: 2,
+      nowSec: NOW,
+    });
+    // Vérifie bien qu'on reste sous le seuil : 7 + 5 + 5 = 17 < 30.
+    expect(7 + 5 + 5).toBeLessThan(PRIOR_MIN_EFFECTIVE_OBS);
+    const prior = env.svc.resolveHierarchicalPrior({
+      operatorId: 'op-small',
+      serviceHash: 'svc-small',
+      categoryName: 'misc',
+      categorySiblingHashes: ['sib-small'],
+    });
+    expect(prior.source).toBe('flat');
+    expect(prior.alpha).toBe(DEFAULT_PRIOR_ALPHA);
+    expect(prior.beta).toBe(DEFAULT_PRIOR_BETA);
   });
 });

@@ -13,9 +13,13 @@
 export const DEFAULT_PRIOR_ALPHA = 1.5;
 export const DEFAULT_PRIOR_BETA = 1.5;
 
-/** Minimum n_obs qu'un niveau hiérarchique doit avoir pour qu'on l'adopte
- *  comme prior au niveau enfant. Sous ce seuil, on remonte d'un cran. */
-export const MIN_N_OBS_FOR_PRIOR_INHERITANCE = 30;
+/** Seuil sur `n_obs_effective = (α + β) − (α₀ + β₀)` au-dessus duquel un
+ *  niveau hiérarchique (operator / service / category) est adopté comme
+ *  prior pour son enfant. Sous ce seuil, la cascade remonte d'un cran et
+ *  finit sur le prior flat `Beta(α₀, β₀)`. 30 est le threshold classique
+ *  d'approximation normale pour une Beta — il garantit que l'IC95% est
+ *  assez serré pour être un prior informatif. */
+export const PRIOR_MIN_EFFECTIVE_OBS = 30;
 
 // --- Fenêtres temporelles (LEGACY — à supprimer en fin de chaîne Phase 3) ---
 // Trois horizons parallèles. L'auto-sélection prend la plus courte qui a

@@ -30,6 +30,7 @@ import type {
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
   RouteStreamingPosteriorRepository,
+  DecayedPosterior,
 } from '../repositories/streamingPosteriorRepository';
 import type {
   EndpointDailyBucketsRepository,
@@ -44,7 +45,7 @@ import {
   BAYESIAN_WINDOWS,
   MIN_N_OBS_FOR_WINDOW,
   WINDOW_SECONDS,
-  MIN_N_OBS_FOR_PRIOR_INHERITANCE,
+  PRIOR_MIN_EFFECTIVE_OBS,
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
   DECAY_TAU_FRACTION,
@@ -73,18 +74,49 @@ import {
 } from '../config/bayesianConfig';
 import { exponentialDecay, computePosterior, type Posterior } from '../utils/betaBinomial';
 
+/** Somme les 3 sources d'un `readAllSourcesDecayed(id)` en un unique posterior :
+ *  chaque source contribue `(α − α₀, β − β₀)` d'évidence excédentaire, et on
+ *  rajoute une seule fois le prior flat. `nObsEffective` est la somme des
+ *  excédents — mesure agnostique à la décroissance. */
+function sumDecayedAcrossSources(
+  perSource: Record<BayesianSource, DecayedPosterior>,
+): { alpha: number; beta: number; nObsEffective: number } {
+  let excessAlpha = 0;
+  let excessBeta = 0;
+  for (const src of ['probe', 'report', 'paid'] as const) {
+    excessAlpha += perSource[src].posteriorAlpha - DEFAULT_PRIOR_ALPHA;
+    excessBeta += perSource[src].posteriorBeta - DEFAULT_PRIOR_BETA;
+  }
+  return {
+    alpha: DEFAULT_PRIOR_ALPHA + excessAlpha,
+    beta: DEFAULT_PRIOR_BETA + excessBeta,
+    nObsEffective: excessAlpha + excessBeta,
+  };
+}
+
 export interface PriorContext {
   /** operator_id (hash pubkey opérateur) si connu — couche la plus fine non-locale. */
   operatorId?: string | null;
   /** service_hash (hash URL service parent) si connu. */
   serviceHash?: string | null;
+  /** Nom de la catégorie (ex. 'llm', 'image', 'storage') — activé uniquement
+   *  quand `categorySiblingHashes` est aussi fourni. Sert uniquement à remplir
+   *  le diagnostic `prior_source = 'category'`. */
+  categoryName?: string | null;
+  /** Liste des url_hash d'endpoints appartenant à la même catégorie que la
+   *  cible. Quand renseigné + non vide, le service somme leurs streaming
+   *  posteriors décroissants pour construire un prior de catégorie. Le caller
+   *  (verdictService) fait la résolution `category → endpoints` car elle
+   *  dépend du catalogue `service_endpoints` qui n'est pas un domaine du
+   *  moteur de scoring. */
+  categorySiblingHashes?: string[] | null;
 }
 
 export interface ResolvedPrior {
   alpha: number;
   beta: number;
-  /** Nom de la couche d'où le prior a été hérité : 'operator' | 'service' | 'flat'. Pratique pour diagnostic/logs. */
-  source: 'operator' | 'service' | 'flat';
+  /** Nom de la couche d'où le prior a été hérité. Diagnostic/logs. */
+  source: 'operator' | 'service' | 'category' | 'flat';
 }
 
 /** Tier de confiance du reporter pour un agent_report — pondère l'observation.
@@ -238,27 +270,65 @@ export class BayesianScoringService {
 
   /** Résout le prior hiérarchique pour une cible donnée.
    *
-   *  Cascade : operator (n≥30) → service (n≥30) → flat(1.5, 1.5).
-   *  Le posterior du parent devient le prior de l'enfant. MIN_N_OBS_FOR_PRIOR_INHERITANCE
-   *  évite d'hériter d'un parent trop peu observé. */
-  resolveHierarchicalPrior(ctx: PriorContext, window: BayesianWindow): ResolvedPrior {
-    // Niveau 1 : operator (le plus fin, si disponible)
-    if (ctx.operatorId) {
-      const operator = this.operatorRepo.findOne(ctx.operatorId, window);
-      if (operator && operator.nObs >= MIN_N_OBS_FOR_PRIOR_INHERITANCE) {
-        return { alpha: operator.posteriorAlpha, beta: operator.posteriorBeta, source: 'operator' };
+   *  Cascade (C15 — 100% streaming, zéro fallback aggregates) :
+   *    1. operator_streaming_posteriors — somme des 3 sources
+   *    2. service_streaming_posteriors — somme des 3 sources
+   *    3. category global — somme (α−α₀, β−β₀) sur les streaming posteriors
+   *       des `categorySiblingHashes` (endpoints de la même catégorie que
+   *       la cible). Le caller fournit la liste car la résolution
+   *       `category → endpoints` vit dans `serviceEndpointRepository`.
+   *    4. flat(α₀, β₀)
+   *
+   *  Critère d'héritage pour chaque niveau :
+   *    `n_obs_effective = (α + β) − (α₀ + β₀) ≥ PRIOR_MIN_EFFECTIVE_OBS`.
+   *  Sous ce seuil, on remonte d'un cran dans la cascade. */
+  resolveHierarchicalPrior(ctx: PriorContext): ResolvedPrior {
+    const now = Math.floor(Date.now() / 1000);
+
+    // Niveau 1 : operator — somme des 3 sources sur le streaming opérateur.
+    if (ctx.operatorId && this.operatorStreamingRepo) {
+      const summed = sumDecayedAcrossSources(
+        this.operatorStreamingRepo.readAllSourcesDecayed(ctx.operatorId, now),
+      );
+      if (summed.nObsEffective >= PRIOR_MIN_EFFECTIVE_OBS) {
+        return { alpha: summed.alpha, beta: summed.beta, source: 'operator' };
       }
     }
 
-    // Niveau 2 : service
-    if (ctx.serviceHash) {
-      const service = this.serviceRepo.findOne(ctx.serviceHash, window);
-      if (service && service.nObs >= MIN_N_OBS_FOR_PRIOR_INHERITANCE) {
-        return { alpha: service.posteriorAlpha, beta: service.posteriorBeta, source: 'service' };
+    // Niveau 2 : service — somme des 3 sources sur le streaming service.
+    if (ctx.serviceHash && this.serviceStreamingRepo) {
+      const summed = sumDecayedAcrossSources(
+        this.serviceStreamingRepo.readAllSourcesDecayed(ctx.serviceHash, now),
+      );
+      if (summed.nObsEffective >= PRIOR_MIN_EFFECTIVE_OBS) {
+        return { alpha: summed.alpha, beta: summed.beta, source: 'service' };
       }
     }
 
-    // Niveau 3 : flat (fallback final).
+    // Niveau 3 : category global — somme l'excédent d'évidence de chaque
+    // sibling endpoint (toutes sources cumulées). L'équivalent intuitif :
+    //   prior_category = flat + (évidence cumulée dans la catégorie)
+    if (ctx.categorySiblingHashes && ctx.categorySiblingHashes.length > 0 && this.endpointStreamingRepo) {
+      let excessAlpha = 0;
+      let excessBeta = 0;
+      for (const hash of ctx.categorySiblingHashes) {
+        const d = this.endpointStreamingRepo.readAllSourcesDecayed(hash, now);
+        for (const src of ['probe', 'report', 'paid'] as const) {
+          excessAlpha += d[src].posteriorAlpha - DEFAULT_PRIOR_ALPHA;
+          excessBeta += d[src].posteriorBeta - DEFAULT_PRIOR_BETA;
+        }
+      }
+      const nObsEff = excessAlpha + excessBeta;
+      if (nObsEff >= PRIOR_MIN_EFFECTIVE_OBS) {
+        return {
+          alpha: DEFAULT_PRIOR_ALPHA + excessAlpha,
+          beta: DEFAULT_PRIOR_BETA + excessBeta,
+          source: 'category',
+        };
+      }
+    }
+
+    // Niveau 4 : flat (fallback final).
     return { alpha: DEFAULT_PRIOR_ALPHA, beta: DEFAULT_PRIOR_BETA, source: 'flat' };
   }
 

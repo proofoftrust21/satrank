@@ -29,6 +29,7 @@ import type {
 } from '../repositories/streamingPosteriorRepository';
 import type { EndpointDailyBucketsRepository, RecentActivity } from '../repositories/dailyBucketsRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
+import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import {
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
@@ -85,8 +86,8 @@ export interface BayesianVerdictResponse {
     sources_above_threshold: BayesianSource[];
     threshold: number;
   };
-  /** Source du prior (diagnostic : operator / service / flat). */
-  prior_source: 'operator' | 'service' | 'flat';
+  /** Source du prior (diagnostic : operator / service / category / flat). */
+  prior_source: 'operator' | 'service' | 'category' | 'flat';
   /** n_obs cumulé par fenêtre d'affichage — daily_buckets, observer inclus. */
   recent_activity: RecentActivity;
   /** Trend delta success_rate (low/medium/high/unknown) — Option B. */
@@ -106,6 +107,9 @@ export class BayesianVerdictService {
     private endpointStreamingRepo: EndpointStreamingPosteriorRepository,
     private endpointBucketsRepo: EndpointDailyBucketsRepository,
     private snapshotRepo?: SnapshotRepository,
+    /** Optional — activates the category level of `resolveHierarchicalPrior`.
+     *  When absent, the cascade skips category and falls through to flat. */
+    private serviceEndpointRepo?: ServiceEndpointRepository,
   ) {}
 
   /** Compute the Bayesian verdict for an agent and persist a snapshot row
@@ -193,10 +197,29 @@ export class BayesianVerdictService {
     );
 
     // 6. Overlays display : prior_source, recent_activity (buckets), risk_profile.
-    const prior = this.bayesian.resolveHierarchicalPrior(
-      { operatorId: query.operatorId, serviceHash: query.serviceHash },
-      '7d', // fenêtre héritée conservée le temps de migrer les aggregates tables.
-    );
+    //
+    // Résolution category : si on connaît serviceHash et qu'il est enregistré
+    // dans service_endpoints avec une catégorie, on récupère les siblings
+    // pour que le scoringService puisse sommer leurs streaming posteriors et
+    // construire un prior de catégorie. Aucun effet sur le verdict lui-même
+    // (déjà calculé étape 5) — c'est un overlay diagnostic + un meilleur prior
+    // pour les futurs re-calculs sur des endpoints cousins.
+    let categoryName: string | null = null;
+    let categorySiblingHashes: string[] | null = null;
+    if (query.serviceHash && this.serviceEndpointRepo) {
+      categoryName = this.serviceEndpointRepo.findCategoryByUrlHash(query.serviceHash);
+      if (categoryName) {
+        categorySiblingHashes = this.serviceEndpointRepo
+          .listUrlHashesByCategory(categoryName)
+          .filter(h => h !== query.serviceHash);
+      }
+    }
+    const prior = this.bayesian.resolveHierarchicalPrior({
+      operatorId: query.operatorId,
+      serviceHash: query.serviceHash,
+      categoryName,
+      categorySiblingHashes,
+    });
     const recent_activity = this.endpointBucketsRepo.recentActivity(query.targetHash, now);
     const riskProfileResult = this.bayesian.computeRiskProfile(
       this.endpointBucketsRepo,

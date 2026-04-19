@@ -198,4 +198,27 @@ export class ServiceEndpointRepository {
       "SELECT category, COUNT(*) as count FROM service_endpoints WHERE category IS NOT NULL AND agent_hash IS NOT NULL AND source IN ('402index', 'self_registered') GROUP BY category ORDER BY count DESC",
     ).all() as Array<{ category: string; count: number }>;
   }
+
+  /** Scan live des URLs pour matcher un url_hash → category. La table n'a pas
+   *  de colonne `url_hash` stockée ; pour ~100 endpoints le coût est
+   *  négligeable (microsecondes). Ne trust que les sources trusted (pas ad_hoc). */
+  findCategoryByUrlHash(targetHash: string): string | null {
+    const rows = this.db.prepare(
+      "SELECT url, category FROM service_endpoints WHERE category IS NOT NULL AND source IN ('402index', 'self_registered')",
+    ).all() as Array<{ url: string; category: string }>;
+    for (const r of rows) {
+      if (endpointHash(r.url) === targetHash) return r.category;
+    }
+    return null;
+  }
+
+  /** Retourne tous les url_hash appartenant à une catégorie. Utilisé par le
+   *  bayesian verdict service pour alimenter le niveau `category` du prior
+   *  hiérarchique (somme des streaming posteriors des siblings). */
+  listUrlHashesByCategory(category: string): string[] {
+    const rows = this.db.prepare(
+      "SELECT url FROM service_endpoints WHERE category = ? AND source IN ('402index', 'self_registered')",
+    ).all(category) as Array<{ url: string }>;
+    return rows.map(r => endpointHash(r.url));
+  }
 }
