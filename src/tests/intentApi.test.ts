@@ -209,6 +209,48 @@ describe('/api/intent integration', () => {
       expect(res.body.candidates[0].service_name).toBe('paris-forecast');
     });
 
+    it('strictness=relaxed avec FALLBACK_RELAXED quand aucun SAFE', async () => {
+      // Endpoint cold (pas de seedSafe) → verdict INSUFFICIENT → relaxed.
+      seed(db, sha256('cold-api'), 'https://cold.example/api', { name: 'cold', category: 'tools', priceSats: 5 });
+
+      const res = await request(app)
+        .post('/api/intent')
+        .send({ category: 'tools' });
+      expect(res.status).toBe(200);
+      expect(res.body.meta.strictness).toBe('relaxed');
+      expect(res.body.meta.warnings).toContain('FALLBACK_RELAXED');
+      expect(res.body.candidates).toHaveLength(1);
+    });
+
+    it('strictness=degraded avec NO_CANDIDATES quand pool vide', async () => {
+      seed(db, sha256('other'), 'https://other.example/x', { name: 'other', category: 'weather', priceSats: 5, safe: true });
+
+      const res = await request(app)
+        .post('/api/intent')
+        .send({ category: 'weather', budget_sats: 1 }); // budget trop bas → vide
+      expect(res.status).toBe(200);
+      expect(res.body.meta.strictness).toBe('degraded');
+      expect(res.body.meta.warnings).toContain('NO_CANDIDATES');
+      expect(res.body.candidates).toEqual([]);
+      expect(res.body.meta.total_matched).toBe(0);
+    });
+
+    it('tri p_success DESC puis price_sats ASC', async () => {
+      // Deux endpoints également SAFE (seedSafe) → tri tertiaire sur price.
+      seed(db, sha256('srt-a'), 'https://s.example/a', { name: 'srt-a', category: 'tools', priceSats: 20, safe: true });
+      seed(db, sha256('srt-b'), 'https://s.example/b', { name: 'srt-b', category: 'tools', priceSats: 3, safe: true });
+
+      const res = await request(app)
+        .post('/api/intent')
+        .send({ category: 'tools' });
+      expect(res.status).toBe(200);
+      expect(res.body.candidates).toHaveLength(2);
+      expect(res.body.candidates[0].service_name).toBe('srt-b');
+      expect(res.body.candidates[0].rank).toBe(1);
+      expect(res.body.candidates[1].service_name).toBe('srt-a');
+      expect(res.body.candidates[1].rank).toBe(2);
+    });
+
     it('meta contient total_matched + returned + strictness + warnings', async () => {
       for (let i = 0; i < 3; i++) {
         seed(db, sha256(`x-${i}`), `https://x.example/${i}`, { name: `x-${i}`, category: 'tools', priceSats: i + 1, safe: true });
