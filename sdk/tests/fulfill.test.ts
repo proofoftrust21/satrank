@@ -710,6 +710,233 @@ describe('SatRank.fulfill — auto_report', () => {
   });
 });
 
+describe('SatRank.fulfill — edge behavior', () => {
+  it('aborts remaining candidates when the wall-clock deadline is hit', async () => {
+    const c1 = 'https://slow.test/svc';
+    const c2 = 'https://unreached.test/svc';
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([
+                { endpoint_url: c1 },
+                { endpoint_url: c2 },
+              ]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === c1,
+        // Never responds on its own — resolves only on AbortSignal, mirroring
+        // real fetch semantics where AbortController.abort() rejects the promise.
+        response: (_u, init) =>
+          new Promise<Response>((_, reject) => {
+            const signal = init.signal as AbortSignal | undefined;
+            if (!signal) return;
+            signal.addEventListener('abort', () => {
+              const err = new Error('aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }),
+      },
+      {
+        match: (u) => u === c2,
+        response: () => new Response('{}', { status: 200 }),
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+      timeout_ms: 30,
+    });
+    expect(res.success).toBe(false);
+    // c1 attempted and aborted, c2 never tried (deadline already passed).
+    expect(res.candidates_tried.length).toBeGreaterThanOrEqual(1);
+    expect(res.candidates_tried[0].outcome).toBe('abort_timeout');
+  });
+
+  it('passes max_fee_sats through to wallet.payInvoice', async () => {
+    const candidateUrl = 'https://svc.test/x';
+    let seenMaxFee = -1;
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: candidateUrl }]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === candidateUrl,
+        response: (_u, init) => {
+          const h = (init.headers ?? {}) as Record<string, string>;
+          return h.Authorization
+            ? new Response('{}', { status: 200 })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+    ]);
+    const wallet = stubWallet({
+      payInvoice: async (_bolt11, maxFee) => {
+        seenMaxFee = maxFee;
+        return { preimage: 'ab'.repeat(32), feePaidSats: 0 };
+      },
+    });
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet,
+    });
+    await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+      max_fee_sats: 42,
+    });
+    expect(seenMaxFee).toBe(42);
+  });
+
+  it('propagates request.method / body / headers / query to the candidate call', async () => {
+    const candidateUrl = 'https://svc.test/action';
+    const seen: Array<{
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body: unknown;
+    }> = [];
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: candidateUrl }]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u.startsWith(candidateUrl),
+        response: (url, init) => {
+          const headers = (init.headers ?? {}) as Record<string, string>;
+          seen.push({
+            url,
+            method: init.method ?? 'GET',
+            headers,
+            body: init.body ? JSON.parse(init.body as string) : undefined,
+          });
+          return headers.Authorization
+            ? new Response(JSON.stringify({ done: true }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+      request: {
+        method: 'POST',
+        body: { prompt: 'hello' },
+        headers: { 'X-Agent-Id': 'agent-42' },
+        query: { lang: 'en' },
+      },
+    });
+    expect(res.success).toBe(true);
+    // Both attempts (unauth + auth) saw the same POST body, same custom headers.
+    expect(seen).toHaveLength(2);
+    expect(seen[0].method).toBe('POST');
+    expect(seen[0].body).toEqual({ prompt: 'hello' });
+    expect(seen[0].headers['X-Agent-Id']).toBe('agent-42');
+    expect(seen[0].url).toContain('lang=en');
+    expect(seen[1].headers.Authorization).toMatch(/^L402 t:/);
+  });
+
+  it('forwards constructor caller to /api/intent when opts.caller is missing', async () => {
+    let capturedCaller: string | undefined;
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: (_u, init) => {
+          const body = JSON.parse(init.body as string);
+          capturedCaller = body.caller;
+          return new Response(
+            JSON.stringify(makeIntentPayload([])),
+            { status: 200 },
+          );
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+      caller: 'agent-from-ctor',
+    });
+    await sr.fulfill({ intent: { category: 'data' }, budget_sats: 10 });
+    expect(capturedCaller).toBe('agent-from-ctor');
+  });
+
+  it('per-call caller overrides constructor caller', async () => {
+    let capturedCaller: string | undefined;
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: (_u, init) => {
+          const body = JSON.parse(init.body as string);
+          capturedCaller = body.caller;
+          return new Response(
+            JSON.stringify(makeIntentPayload([])),
+            { status: 200 },
+          );
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+      caller: 'agent-from-ctor',
+    });
+    await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 10,
+      caller: 'agent-from-call',
+    });
+    expect(capturedCaller).toBe('agent-from-call');
+  });
+});
+
 describe('SatRank.fulfill — failure surfaces', () => {
   it('NO_CANDIDATES when the API returns an empty list', async () => {
     const fetchMock = fetchRouter([
