@@ -374,10 +374,11 @@ export const openapiSpec = {
     // --- Decision endpoints ---
     '/best-route': {
       post: {
-        summary: 'Find the best route among N candidates',
+        summary: 'Find the best route among N candidates (deprecated — use /api/intent)',
         operationId: 'bestRoute',
-        description: 'Takes up to 50 target hashes and a caller pubkey. Runs queryRoutes in parallel for each target from the caller position. Returns the top 3 reachable candidates sorted by a composite of score, hops, and fee.',
+        description: 'DEPRECATED (Phase 5). Use POST /api/intent for structured discovery. Responses include header `Deprecation: true`, `Link: </api/intent>; rel="successor-version"`, and `meta.deprecated_use`. Endpoint remains functional for migration.\n\nTakes up to 50 target hashes and a caller pubkey. Runs queryRoutes in parallel for each target from the caller position. Returns the top 3 reachable candidates sorted by a composite of score, hops, and fee.',
         tags: ['Decision'],
+        deprecated: true,
         security: [{ l402: [] }],
         requestBody: { required: true, content: { 'application/json': { schema: {
           type: 'object', required: ['targets', 'caller'],
@@ -412,10 +413,11 @@ export const openapiSpec = {
     },
     '/decide': {
       post: {
-        summary: 'GO / NO-GO decision with success probability',
+        summary: 'GO / NO-GO decision (deprecated — use /api/intent)',
         operationId: 'decide',
-        description: 'Returns a boolean go/no-go, success rate (0-1), and the 4 probability components. The primary endpoint for pre-transaction decisions.',
+        description: 'DEPRECATED (Phase 5). Use POST /api/intent for structured discovery + ranked candidates. Responses include header `Deprecation: true`, `Link: </api/intent>; rel="successor-version"`, and `meta.deprecated_use`. Endpoint remains functional for migration.\n\nReturns a boolean go/no-go, success rate (0-1), and the 4 probability components.',
         tags: ['Decision'],
+        deprecated: true,
         security: [{ l402: [] }],
         requestBody: {
           required: true,
@@ -568,6 +570,90 @@ export const openapiSpec = {
             } },
           } } } } },
           '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
+    '/intent': {
+      post: {
+        summary: 'Resolve a structured intent to ranked L402 candidates',
+        operationId: 'resolveIntent',
+        description: 'Phase 5 discovery API. The agent provides a structured intent (category + optional keywords + budget + max_latency); SatRank returns up to 20 candidates ranked Bayesian-native (p_success DESC → ci95_low DESC → price_sats ASC) with advisory overlay and health snapshot. Free endpoint, neutral ordering (no paid listing). snake_case convention.\n\nCategory must be a known enum member (see GET /api/intent/categories). Unknown categories → 400 INVALID_CATEGORY. Malformed categories → 400 VALIDATION_ERROR.\n\nStrictness tiers (aligned with /api/services/best): strict (SAFE only) → relaxed (any non-RISKY, warning FALLBACK_RELAXED) → degraded (pool empty, warning NO_CANDIDATES). RISKY candidates are never returned.',
+        tags: ['Discovery'],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: {
+            type: 'object', required: ['category'],
+            properties: {
+              category: { type: 'string', minLength: 1, maxLength: 50, description: 'Canonical category (lowercase, matches /^[a-z][a-z0-9/_-]{1,31}$/). Normalized via aliases (e.g. "lightning" → "bitcoin").' },
+              keywords: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 50 }, maxItems: 10, description: 'AND filter on endpoint name/description/category/provider (case-insensitive LIKE).' },
+              budget_sats: { type: 'integer', minimum: 0, maximum: 1_000_000, description: 'Upper bound on service price. Endpoints without a known price are excluded.' },
+              max_latency_ms: { type: 'integer', minimum: 0, maximum: 60_000, description: 'Upper bound on 7-day median HTTP latency. Endpoints with < 3 probes are excluded.' },
+              caller: { type: 'string', minLength: 1, maxLength: 200, description: 'Free-form identifier for logging. Not stored.' },
+              limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Max candidates returned. Default 5.' },
+            },
+          } } },
+        },
+        responses: {
+          '200': {
+            description: 'Ranked candidates + resolved intent echo + meta',
+            content: { 'application/json': { schema: {
+              type: 'object', properties: {
+                intent: { type: 'object', properties: {
+                  category: { type: 'string' },
+                  keywords: { type: 'array', items: { type: 'string' } },
+                  budget_sats: { type: ['integer', 'null'] },
+                  max_latency_ms: { type: ['integer', 'null'] },
+                  resolved_at: { type: 'integer', description: 'Unix timestamp (seconds) when the server resolved the intent.' },
+                } },
+                candidates: { type: 'array', items: { type: 'object', properties: {
+                  rank: { type: 'integer' },
+                  endpoint_url: { type: 'string', format: 'uri' },
+                  endpoint_hash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+                  operator_pubkey: { type: ['string', 'null'], description: '66-char LN pubkey of the node operator.' },
+                  service_name: { type: ['string', 'null'] },
+                  price_sats: { type: ['integer', 'null'] },
+                  median_latency_ms: { type: ['integer', 'null'], description: 'SQL median over service_probes within 7 days (null if < 3 probes).' },
+                  bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
+                  advisory: { type: 'object', properties: {
+                    advisory_level: { type: 'string', enum: ['green', 'yellow', 'orange', 'red'] },
+                    risk_score: { type: 'number', minimum: 0, maximum: 1 },
+                    advisories: { type: 'array', items: { type: 'object' } },
+                    recommendation: { type: 'string', enum: ['proceed', 'proceed_with_caution', 'consider_alternative', 'avoid'] },
+                  } },
+                  health: { type: 'object', properties: {
+                    reachability: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+                    http_health_score: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+                    health_freshness: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+                    last_probe_age_sec: { type: ['integer', 'null'] },
+                  } },
+                } } },
+                meta: { type: 'object', properties: {
+                  total_matched: { type: 'integer', description: 'Endpoints matching category + keywords + budget + latency (before strictness).' },
+                  returned: { type: 'integer' },
+                  strictness: { type: 'string', enum: ['strict', 'relaxed', 'degraded'] },
+                  warnings: { type: 'array', items: { type: 'string' }, description: 'e.g. FALLBACK_RELAXED, NO_CANDIDATES.' },
+                } },
+              },
+            } } },
+          },
+          '400': { description: 'VALIDATION_ERROR (malformed body) or INVALID_CATEGORY (unknown category)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/intent/categories': {
+      get: {
+        summary: 'List known categories with endpoint count + active count',
+        operationId: 'listIntentCategories',
+        description: 'Returns all non-null categories across trusted service sources (402index + self_registered). `endpoint_count` is the raw total; `active_count` restricts to endpoints with ≥3 probes AND uptime ≥ 0.5. Free endpoint. Use to populate category enums in SDKs before calling POST /api/intent.',
+        tags: ['Discovery'],
+        responses: {
+          '200': { description: 'Category list', content: { 'application/json': { schema: { type: 'object', properties: {
+            categories: { type: 'array', items: { type: 'object', properties: {
+              name: { type: 'string' },
+              endpoint_count: { type: 'integer' },
+              active_count: { type: 'integer' },
+            } } },
+          } } } } },
         },
       },
     },
