@@ -3,19 +3,20 @@ import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { AgentRepository } from '../repositories/agentRepository';
-import type { ScoringService } from '../services/scoringService';
+import type { AgentService } from '../services/agentService';
+import type { BayesianScoreBlock } from '../types';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
-import { VERDICT_SAFE_THRESHOLD } from '../config/scoring';
 
-const VERDICT_UNKNOWN_THRESHOLD = 30;
-
+// Bayesian sort/filter semantics (Phase 3): replace composite 0-100 score
+// with posterior p_success ∈ [0,1]. `minPSuccess` replaces `minScore`; `sort`
+// axis `p_success` replaces `score`. Legacy query params return 400.
 const serviceSearchSchema = z.object({
   q: z.string().max(100).optional(),
   category: z.string().max(50).optional(),
-  minScore: z.coerce.number().int().min(0).max(100).optional(),
+  minPSuccess: z.coerce.number().min(0).max(1).optional(),
   minUptime: z.coerce.number().min(0).max(1).optional(),
-  sort: z.enum(['score', 'price', 'uptime']).optional(),
+  sort: z.enum(['p_success', 'price', 'uptime']).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
@@ -24,8 +25,15 @@ export class ServiceController {
   constructor(
     private serviceEndpointRepo: ServiceEndpointRepository,
     private agentRepo: AgentRepository,
-    private scoringService: ScoringService,
+    private agentService: AgentService,
   ) {}
+
+  /** Canonical Bayesian block for a service's agent; `null` when no agent is
+   *  linked. Centralised so `search` and `best` share identical semantics. */
+  private bayesianFor(agentHash: string | null): BayesianScoreBlock | null {
+    if (!agentHash) return null;
+    return this.agentService.toBayesianBlock(agentHash);
+  }
 
   search = (req: Request, res: Response, next: NextFunction): void => {
     try {
@@ -45,11 +53,7 @@ export class ServiceController {
       // Enrich with SatRank node data
       const enriched = services.map(svc => {
         const agent = svc.agent_hash ? this.agentRepo.findByHash(svc.agent_hash) : null;
-        const scoreResult = svc.agent_hash ? this.scoringService.getScore(svc.agent_hash) : null;
-        const score = scoreResult?.total ?? null;
-        const verdict = score !== null
-          ? (score >= VERDICT_SAFE_THRESHOLD ? 'SAFE' as const : score >= VERDICT_UNKNOWN_THRESHOLD ? 'UNKNOWN' as const : 'RISKY' as const)
-          : null;
+        const bayesian = this.bayesianFor(svc.agent_hash ?? null);
         const uptimeRatio = svc.check_count >= 3
           ? Math.round((svc.success_count / svc.check_count) * 1000) / 1000
           : null;
@@ -70,20 +74,19 @@ export class ServiceController {
           node: agent ? {
             publicKeyHash: agent.public_key_hash,
             alias: agent.alias,
-            score,
-            verdict,
+            bayesian,
           } : null,
         };
       });
 
-      // Post-filter by minScore (requires agent join, can't do in SQL)
-      const filtered = filters.minScore !== undefined
-        ? enriched.filter(s => s.node && s.node.score !== null && s.node.score >= filters.minScore!)
+      // Post-filter by minPSuccess (requires agent join, can't do in SQL)
+      const filtered = filters.minPSuccess !== undefined
+        ? enriched.filter(s => s.node && s.node.bayesian !== null && s.node.bayesian.p_success >= filters.minPSuccess!)
         : enriched;
 
-      // Re-sort by score if requested (SQL sorts by check_count, not agent score)
-      const sorted = filters.sort === 'score'
-        ? filtered.sort((a, b) => (b.node?.score ?? 0) - (a.node?.score ?? 0))
+      // Re-sort by posterior p_success if requested (SQL sorts by check_count).
+      const sorted = filters.sort === 'p_success'
+        ? filtered.sort((a, b) => (b.node?.bayesian?.p_success ?? 0) - (a.node?.bayesian?.p_success ?? 0))
         : filtered;
 
       res.json({
@@ -133,21 +136,25 @@ export class ServiceController {
       // unknown / degraded / down) and prefer healthy|unknown. Degraded
       // services are only kept as a fallback pool and are tagged with a
       // DEGRADED_HTTP warning so agents can gate on warnings.length === 0.
+      //
+      // Phase 3: SAFE gating is now Bayesian — `bayesian.verdict === 'SAFE'`
+      // replaces `score >= VERDICT_SAFE_THRESHOLD`. The composite score threshold
+      // is retired along with ScoringService in Commit 8.
       const minUptime = parsed.data.minUptime ?? 0;
       const enriched = services
         .map(svc => {
           const agent = svc.agent_hash ? this.agentRepo.findByHash(svc.agent_hash) : null;
-          const scoreResult = svc.agent_hash ? this.scoringService.getScore(svc.agent_hash) : null;
-          const score = scoreResult?.total ?? 0;
+          const bayesian = this.bayesianFor(svc.agent_hash ?? null);
           const uptimeRatio = svc.check_count >= 3 ? svc.success_count / svc.check_count : 0;
           const price = svc.service_price_sats ?? 0;
           const httpHealth = svc.last_http_status !== null && svc.last_http_status > 0
             ? classifyStatus(svc.last_http_status)
             : 'unknown' as const;
-          return { svc, agent, score, uptimeRatio, price, httpHealth, lastCheckedAt: svc.last_checked_at };
+          return { svc, agent, bayesian, uptimeRatio, price, httpHealth, lastCheckedAt: svc.last_checked_at };
         })
         .filter(s =>
-          s.score >= VERDICT_SAFE_THRESHOLD &&
+          s.bayesian !== null &&
+          s.bayesian.verdict === 'SAFE' &&
           s.uptimeRatio > 0 &&
           s.price > 0 &&
           s.uptimeRatio >= minUptime &&
@@ -167,15 +174,16 @@ export class ServiceController {
         return;
       }
 
-      // bestQuality = max(score × uptime), price ignored
+      // bestQuality = max(p_success × uptime), price ignored
+      const pSuccess = (s: typeof pool[number]): number => s.bayesian?.p_success ?? 0;
       const bestQuality = pool.reduce((best, s) =>
-        (s.score * s.uptimeRatio) > (best.score * best.uptimeRatio) ? s : best,
+        (pSuccess(s) * s.uptimeRatio) > (pSuccess(best) * best.uptimeRatio) ? s : best,
       );
 
-      // bestValue = max((score × uptime) / sqrt(price)) — sqrt softens price impact
+      // bestValue = max((p_success × uptime) / sqrt(price)) — sqrt softens price impact
       const bestValue = pool.reduce((best, s) => {
-        const sValue = (s.score * s.uptimeRatio) / Math.sqrt(s.price);
-        const bValue = (best.score * best.uptimeRatio) / Math.sqrt(best.price);
+        const sValue = (pSuccess(s) * s.uptimeRatio) / Math.sqrt(s.price);
+        const bValue = (pSuccess(best) * best.uptimeRatio) / Math.sqrt(best.price);
         return sValue > bValue ? s : best;
       });
 
@@ -213,7 +221,7 @@ export class ServiceController {
           node: e.agent ? {
             publicKeyHash: e.agent.public_key_hash,
             alias: e.agent.alias,
-            score: e.score,
+            bayesian: e.bayesian,
           } : null,
           warnings,
         };
@@ -229,7 +237,7 @@ export class ServiceController {
           candidates: pool.length,
           healthyCandidates: healthyPool.length,
           usedDegradedFallback,
-          formula: 'bestValue = (score × uptime) / sqrt(priceSats)',
+          formula: 'bestValue = (p_success × uptime) / sqrt(priceSats)',
         },
       });
     } catch (err) {

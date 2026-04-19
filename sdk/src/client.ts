@@ -175,10 +175,11 @@ export class SatRankClient {
     return { agents: envelope.data, meta: envelope.meta! };
   }
 
-  /** Agent score history */
+  /** Agent score history.
+   *  Post-Phase 3 C8, the server returns an empty `data` array with the live
+   *  `bayesian` block; the historical series lands with the aggregate tables. */
   async getHistory(publicKeyHash: string, limit = 20, offset = 0): Promise<HistoryResponse> {
-    const envelope = await this.get<ApiEnvelope<HistoryResponse['snapshots']>>(`/api/agent/${publicKeyHash}/history?limit=${limit}&offset=${offset}`);
-    return { snapshots: envelope.data, meta: envelope.meta! };
+    return this.get<HistoryResponse>(`/api/agent/${publicKeyHash}/history?limit=${limit}&offset=${offset}`);
   }
 
   /** Attestations received by an agent */
@@ -508,7 +509,7 @@ export class SatRankClient {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
-          'User-Agent': 'SatRank-SDK/0.2.7',
+          'User-Agent': 'SatRank-SDK/1.0.0-rc.1',
           ...this.headers,
         },
         signal: controller.signal,
@@ -550,7 +551,7 @@ export class SatRankClient {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
-          'User-Agent': 'SatRank-SDK/0.2.7',
+          'User-Agent': 'SatRank-SDK/1.0.0-rc.1',
           ...this.headers,
         },
         body: JSON.stringify(body),
@@ -612,24 +613,30 @@ async function normalizeTargetForReport(input: string): Promise<string> {
 const SATRANK_NOSTR_PUBKEY = '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4';
 const SATRANK_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
 
+/** Parsed NIP-85 kind 30382 payload — Bayesian shape (Phase 3).
+ *  Tags mirror src/nostr/publisher.ts#buildTags exactly. */
 export interface NostrScoreEvent {
   pubkey: string;
   lnPubkey: string;
   alias: string | null;
-  score: number | null;
-  verdict: string | null;
+  verdict: 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT' | null;
+  pSuccess: number | null;
+  ci95Low: number | null;
+  ci95High: number | null;
+  nObs: number | null;
+  converged: boolean | null;
+  priorSource: 'operator' | 'service' | 'flat' | null;
+  window: '24h' | '7d' | '30d' | null;
   reachable: boolean | null;
-  components: Record<string, number> | null;
+  survival: string | null;
   createdAt: number;
 }
 
 export interface WatchlistChange {
   publicKeyHash: string;
   alias: string | null;
-  score: number;
-  previousScore: number | null;
-  verdict: 'SAFE' | 'RISKY' | 'UNKNOWN';
-  components: Record<string, number> | null;
+  /** Canonical Bayesian block — same shape as every public endpoint. */
+  bayesian: import('./types').BayesianScoreBlock;
   changedAt: number;
 }
 
@@ -659,26 +666,44 @@ function parseNostrScoreEvent(event: { pubkey: string; tags: string[][]; created
   const tags = new Map(event.tags.map(t => [t[0], t[1]]));
   const lnPubkey = tags.get('d');
   if (!lnPubkey) return null;
-  const scoreStr = tags.get('rank');
+
+  const parseFloat1 = (key: string): number | null => {
+    const v = tags.get(key);
+    if (!v) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const parseInt1 = (key: string): number | null => {
+    const v = tags.get(key);
+    if (!v) return null;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const verdictRaw = tags.get('verdict') ?? null;
+  const verdict = verdictRaw === 'SAFE' || verdictRaw === 'RISKY' || verdictRaw === 'UNKNOWN' || verdictRaw === 'INSUFFICIENT'
+    ? verdictRaw : null;
+
+  const priorRaw = tags.get('prior_source') ?? null;
+  const priorSource = priorRaw === 'operator' || priorRaw === 'service' || priorRaw === 'flat' ? priorRaw : null;
+
+  const windowRaw = tags.get('window') ?? null;
+  const window = windowRaw === '24h' || windowRaw === '7d' || windowRaw === '30d' ? windowRaw : null;
+
   return {
     pubkey: event.pubkey,
     lnPubkey,
     alias: tags.get('alias') ?? null,
-    score: scoreStr ? parseInt(scoreStr, 10) : null,
-    verdict: tags.get('verdict') ?? null,
+    verdict,
+    pSuccess: parseFloat1('p_success'),
+    ci95Low: parseFloat1('ci95_low'),
+    ci95High: parseFloat1('ci95_high'),
+    nObs: parseInt1('n_obs'),
+    converged: tags.get('converged') === 'true' ? true : tags.get('converged') === 'false' ? false : null,
+    priorSource,
+    window,
     reachable: tags.get('reachable') === 'true' ? true : tags.get('reachable') === 'false' ? false : null,
-    components: parseComponents(tags),
+    survival: tags.get('survival') ?? null,
     createdAt: event.created_at,
   };
-}
-
-function parseComponents(tags: Map<string, string>): Record<string, number> | null {
-  const keys = ['volume', 'reputation', 'seniority', 'regularity', 'diversity'];
-  const result: Record<string, number> = {};
-  let found = false;
-  for (const k of keys) {
-    const v = tags.get(k);
-    if (v) { result[k] = parseInt(v, 10); found = true; }
-  }
-  return found ? result : null;
 }

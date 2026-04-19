@@ -25,6 +25,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { errorHandler } from '../middleware/errorHandler';
 import { openapiSpec } from '../openapi';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
 
@@ -43,11 +44,12 @@ function buildContractApp() {
   const snapshotRepo = new SnapshotRepository(db);
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+  const bayesianVerdictService = createBayesianVerdictService(db);
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+  const agentController = new AgentController(agentService, agentRepo, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
 
@@ -181,26 +183,25 @@ describe('Contract tests — responses match OpenAPI spec', () => {
     });
     expect(['observer_protocol', '4tress', 'lightning_graph', 'manual']).toContain(data.agent.source);
 
-    // score section
-    assertShape(data.score, {
-      total: 'number',
-      components: 'object',
-      confidence: 'number',
-      computedAt: 'number',
+    // bayesian section (canonical public shape, streaming — Phase 3 C9)
+    assertShape(data.bayesian, {
+      p_success: 'number',
+      ci95_low: 'number',
+      ci95_high: 'number',
+      n_obs: 'number',
+      verdict: 'string',
+      time_constant_days: 'number',
+      last_update: 'number',
+      sources: 'object',
+      convergence: 'object',
+      recent_activity: 'object',
+      risk_profile: 'string',
     });
-    expect(data.score.total).toBeGreaterThanOrEqual(0);
-    expect(data.score.total).toBeLessThanOrEqual(100);
-    expect(data.score.confidence).toBeGreaterThanOrEqual(0);
-    expect(data.score.confidence).toBeLessThanOrEqual(1);
-
-    // components
-    assertShape(data.score.components, {
-      volume: 'number',
-      reputation: 'number',
-      seniority: 'number',
-      regularity: 'number',
-      diversity: 'number',
-    });
+    expect(data.bayesian.p_success).toBeGreaterThanOrEqual(0);
+    expect(data.bayesian.p_success).toBeLessThanOrEqual(1);
+    expect(['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT']).toContain(data.bayesian.verdict);
+    expect(data.bayesian.time_constant_days).toBe(7);
+    expect(['low', 'medium', 'high', 'unknown']).toContain(data.bayesian.risk_profile);
 
     // stats
     assertShape(data.stats, {
@@ -236,10 +237,12 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       assertShape(item, {
         publicKeyHash: 'string',
         alias: 'nullable-string',
-        score: 'number',
+        bayesian: 'object',
         totalTransactions: 'number',
         source: 'string',
       });
+      expect(typeof item.bayesian.p_success).toBe('number');
+      expect(typeof item.bayesian.n_obs).toBe('number');
     }
   });
 
@@ -255,9 +258,10 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       assertShape(item, {
         publicKeyHash: 'string',
         alias: 'nullable-string',
-        score: 'number',
+        bayesian: 'object',
         source: 'string',
       });
+      expect(typeof item.bayesian.p_success).toBe('number');
     }
   });
 
@@ -286,7 +290,6 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       totalChannels: 'number',
       nodesWithRatings: 'number',
       networkCapacityBtc: 'number',
-      avgScore: 'number',
       totalVolumeBuckets: 'object',
     });
     assertShape(res.body.data.totalVolumeBuckets, {

@@ -41,7 +41,7 @@ const NETWORK_STATS_CACHE_KEY = 'stats:network';
 const NETWORK_STATS_TTL_MS = 5 * 60_000;
 
 // Must match the latest migration version in migrations.ts
-const EXPECTED_SCHEMA_VERSION = 32;
+const EXPECTED_SCHEMA_VERSION = 36;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that
@@ -217,14 +217,12 @@ export class StatsService {
         totalChannels: this.agentRepo.sumChannels(),
         nodesWithRatings: this.agentRepo.countWithRatings(),
         networkCapacityBtc: this.agentRepo.networkCapacityBtc(),
-        avgScore: this.agentRepo.avgScore(),
         totalVolumeBuckets: {
           micro: buckets['micro'] ?? 0,
           small: buckets['small'] ?? 0,
           medium: buckets['medium'] ?? 0,
           large: buckets['large'] ?? 0,
         },
-        trends: this.trendService.getNetworkTrends(),
         serviceSources: this.serviceEndpointRepo?.countBySource() ?? { '402index': 0, 'self_registered': 0, 'ad_hoc': 0 },
       };
     });

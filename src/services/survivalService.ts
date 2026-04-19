@@ -25,16 +25,20 @@ export class SurvivalService {
     const now = Math.floor(Date.now() / 1000);
     let adjustment = 0;
 
-    // Signal 1 — Score Trajectory (weight 40%)
-    const scoreNow = agent.avg_score;
-    const score7dAgo = this.snapshotRepo.findScoreAt(agent.public_key_hash, now - SEVEN_DAYS_SEC);
+    // Signal 1 — Posterior Trajectory (weight 40%)
+    // Slope thresholds are on the p_success scale (0..1) and mirror the previous
+    // points-per-day thresholds scaled by 1/100. -0.02/day ≈ -2pt/day on the old
+    // composite — same clinical meaning for the survival classifier.
+    const latestSnap = this.snapshotRepo.findLatestByAgent(agent.public_key_hash);
+    const pSuccessNow = latestSnap?.p_success ?? null;
+    const pSuccess7dAgo = this.snapshotRepo.findPSuccessAt(agent.public_key_hash, now - SEVEN_DAYS_SEC);
     let trajectoryLabel: string;
 
-    if (score7dAgo !== null) {
-      const slope = (scoreNow - score7dAgo) / 7;
-      if (slope < -2) { adjustment -= 40; trajectoryLabel = `declining (${slope.toFixed(1)}/day)`; }
-      else if (slope < -1) { adjustment -= 20; trajectoryLabel = `weakening (${slope.toFixed(1)}/day)`; }
-      else if (slope > 1) { trajectoryLabel = `improving (+${slope.toFixed(1)}/day)`; }
+    if (pSuccessNow !== null && pSuccess7dAgo !== null) {
+      const slope = (pSuccessNow - pSuccess7dAgo) / 7;
+      if (slope < -0.02) { adjustment -= 40; trajectoryLabel = `declining (${slope.toFixed(3)}/day)`; }
+      else if (slope < -0.01) { adjustment -= 20; trajectoryLabel = `weakening (${slope.toFixed(3)}/day)`; }
+      else if (slope > 0.01) { trajectoryLabel = `improving (+${slope.toFixed(3)}/day)`; }
       else { trajectoryLabel = 'stable'; }
     } else {
       trajectoryLabel = 'insufficient data';

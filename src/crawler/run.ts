@@ -28,6 +28,22 @@ import { ChannelSnapshotRepository } from '../repositories/channelSnapshotReposi
 import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
 import { SurvivalService } from '../services/survivalService';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
+import { BayesianScoringService } from '../services/bayesianScoringService';
+import { BayesianVerdictService } from '../services/bayesianVerdictService';
 import { runRetentionCleanup } from '../database/retention';
 import { RETENTION_INTERVAL_MS } from '../config/retention';
 import { DualWriteLogger } from '../utils/dualWriteLogger';
@@ -176,8 +192,10 @@ async function crawlProbe(crawler: ProbeCrawler, probeRepo: ProbeRepository): Pr
     logger.warn({ errors: result.errors }, 'Errors during probe crawl');
   }
 
-  // Purge stale probe results — keep 7 days
-  const purged = await probeRepo.purgeOlderThan(7 * 24 * 3600);
+  // Purge stale probe results — keep 60 days. Streaming τ=7j pondère déjà les
+  // vieilles probes vers zéro, mais on conserve l'historique brut 60j pour le
+  // rebuild streaming et l'audit. Storage ≈ 290k rows, acceptable SQLite.
+  const purged = await probeRepo.purgeOlderThan(60 * 24 * 3600);
   if (purged > 0) {
     logger.info({ purged }, 'Old probe results purged');
   }
@@ -211,7 +229,12 @@ const SCORE_BATCH_SIZE = 50;
 // WebSocket pings (DVM relay subscriptions, heartbeat) can fire during
 // the 5+ minute scoring pipeline. Without this, the event loop was blocked
 // for the entire pipeline and relay subscriptions expired silently.
-async function scoreBatch(agents: { public_key_hash: string }[], scoringService: ScoringService, label: string): Promise<number> {
+async function scoreBatch(
+  agents: { public_key_hash: string }[],
+  scoringService: ScoringService,
+  bayesianVerdict: BayesianVerdictService,
+  label: string,
+): Promise<number> {
   let scored = 0;
   let errors = 0;
   for (let i = 0; i < agents.length; i += SCORE_BATCH_SIZE) {
@@ -219,6 +242,10 @@ async function scoreBatch(agents: { public_key_hash: string }[], scoringService:
     for (const agent of batch) {
       try {
         scoringService.computeScore(agent.public_key_hash);
+        // Phase 3 C8: snapshot persistence is now on the Bayesian side.
+        // scoringService only maintains agents.avg_score; score_snapshots
+        // receives the posterior (p_success, ci95, n_obs) from here.
+        bayesianVerdict.snapshotAndPersist(agent.public_key_hash);
         scored++;
       } catch (err: unknown) {
         errors++;
@@ -228,12 +255,9 @@ async function scoreBatch(agents: { public_key_hash: string }[], scoringService:
         }
       }
     }
-    // Log every 500 scored (not every batch — that would be too verbose at batch=50)
     if (scored % 500 === 0 && scored > 0) {
       logger.info({ scored, total: agents.length, errors }, `Bulk scoring progress (${label})`);
     }
-    // Yield the event loop so WebSocket pings and other async work
-    // (DVM subscriptions, heartbeat, etc.) can process between batches.
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   return scored;
@@ -243,7 +267,12 @@ async function scoreBatch(agents: { public_key_hash: string }[], scoringService:
 // containers (and any manual script running inside either) see the same lock.
 const BULK_RESCORE_LOCK_PATH = join(dirname(config.DB_PATH), '.bulk-rescore.lock');
 
-async function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringService, snapshotRepo: SnapshotRepository): Promise<void> {
+async function bulkScoreAll(
+  agentRepo: AgentRepository,
+  scoringService: ScoringService,
+  bayesianVerdict: BayesianVerdictService,
+  snapshotRepo: SnapshotRepository,
+): Promise<void> {
   // Advisory lock: only one bulk rescore at a time across all processes
   // sharing this DB. If another process holds it, skip — the next cron
   // cycle will pick up whatever this one would have scored. We don't wait
@@ -256,21 +285,19 @@ async function bulkScoreAll(agentRepo: AgentRepository, scoringService: ScoringS
 
   const startMs = Date.now();
   try {
-    // Phase 1: Score all unscored agents that have exploitable data
     const unscoredCount = agentRepo.countUnscoredWithData();
     logger.info({ unscoredCount }, 'Starting bulk scoring: unscored agents with data');
 
     if (unscoredCount > 0) {
       const unscored = agentRepo.findUnscoredWithData();
-      const scored = await scoreBatch(unscored, scoringService, 'unscored');
+      const scored = await scoreBatch(unscored, scoringService, bayesianVerdict, 'unscored');
       logger.info({ scored, total: unscored.length, durationMs: Date.now() - startMs }, 'Bulk scoring complete (unscored agents)');
     }
 
-    // Phase 2: Rescore already-scored agents (refresh with latest data)
     const alreadyScored = agentRepo.findScoredAgents();
     if (alreadyScored.length > 0) {
       const rescoreStart = Date.now();
-      const rescored = await scoreBatch(alreadyScored, scoringService, 'rescore');
+      const rescored = await scoreBatch(alreadyScored, scoringService, bayesianVerdict, 'rescore');
       logger.info({ rescored, total: alreadyScored.length, durationMs: Date.now() - rescoreStart }, 'Bulk rescore complete (existing agents)');
     }
 
@@ -296,6 +323,7 @@ async function runFullCrawl(
   probeRepo: ProbeRepository,
   agentRepo: AgentRepository,
   scoringService: ScoringService,
+  bayesianVerdict: BayesianVerdictService,
   snapshotRepo: SnapshotRepository,
   nostrPublishFn?: () => Promise<void>,
 ): Promise<void> {
@@ -303,7 +331,7 @@ async function runFullCrawl(
   await crawlLightning(lndGraphCrawler, mempoolCrawler);
 
   // Score immediately after LND crawl — don't wait for LN+ or probes
-  await bulkScoreAll(agentRepo, scoringService, snapshotRepo);
+  await bulkScoreAll(agentRepo, scoringService, bayesianVerdict, snapshotRepo);
 
   // Publish scores to Nostr right after scoring — before LN+ (2.5h) and probes (35min).
   // SKIP_INITIAL_NOSTR_PUBLISH short-circuits the initial publish (can block the
@@ -347,7 +375,7 @@ async function runFullCrawl(
   await Promise.all(parallelTasks);
 
   // Rescore with LN+ and probe data
-  await bulkScoreAll(agentRepo, scoringService, snapshotRepo);
+  await bulkScoreAll(agentRepo, scoringService, bayesianVerdict, snapshotRepo);
 }
 
 // --- Main ---
@@ -365,6 +393,27 @@ async function main(): Promise<void> {
   const feeSnapshotRepo = new FeeSnapshotRepository(db);
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
+
+  // Phase 3 C8: crawler-side BayesianVerdictService owns snapshot persistence.
+  // Les streaming/buckets repos sont mutualisés avec l'app — même schéma, même
+  // DB, la cascade hiérarchique lit les mêmes tables côté read et write.
+  const endpointStreamingMain = new EndpointStreamingPosteriorRepository(db);
+  const endpointBucketsMain = new EndpointDailyBucketsRepository(db);
+  const bayesianScoringServiceMain = new BayesianScoringService(
+    endpointStreamingMain,
+    new ServiceStreamingPosteriorRepository(db),
+    new OperatorStreamingPosteriorRepository(db),
+    new NodeStreamingPosteriorRepository(db),
+    new RouteStreamingPosteriorRepository(db),
+    endpointBucketsMain,
+    new ServiceDailyBucketsRepository(db),
+    new OperatorDailyBucketsRepository(db),
+    new NodeDailyBucketsRepository(db),
+    new RouteDailyBucketsRepository(db),
+  );
+  const bayesianVerdictServiceMain = new BayesianVerdictService(
+    db, bayesianScoringServiceMain, endpointStreamingMain, endpointBucketsMain, snapshotRepo,
+  );
 
   const observerClient = new HttpObserverClient({
     baseUrl: config.OBSERVER_BASE_URL,
@@ -384,6 +433,7 @@ async function main(): Promise<void> {
     txRepo,
     config.TRANSACTIONS_DUAL_WRITE_MODE,
     dualWriteLogger,
+    bayesianScoringServiceMain,
   );
 
   const lndClient = new HttpLndGraphClient({
@@ -400,10 +450,20 @@ async function main(): Promise<void> {
   const lnplusCrawlerInstance = new LnplusCrawler(lnplusClient, agentRepo);
 
   const probeCrawlerInstance = lndClient.isConfigured()
-    ? new ProbeCrawler(lndClient, agentRepo, probeRepo, {
-        maxPerSecond: config.PROBE_MAX_PER_SECOND,
-        amountSats: config.PROBE_AMOUNT_SATS,
-      })
+    ? new ProbeCrawler(
+        lndClient, agentRepo, probeRepo,
+        {
+          maxPerSecond: config.PROBE_MAX_PER_SECOND,
+          amountSats: config.PROBE_AMOUNT_SATS,
+          dualWriteMode: config.TRANSACTIONS_DUAL_WRITE_MODE,
+        },
+        {
+          txRepo,
+          bayesian: bayesianScoringServiceMain,
+          db,
+          dualWriteLogger,
+        },
+      )
     : null;
 
   if (probeCrawlerInstance) {
@@ -457,12 +517,39 @@ async function main(): Promise<void> {
         const { NostrPublisher } = await import('../nostr/publisher');
         logger.info('Nostr publisher module loaded successfully');
         const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
+        // Bayesian verdict service — C10 branchement dans le pipeline Nostr :
+        // les tags publiés sont 100 % bayésiens (plus de composite legacy).
+        const endpointStreamingNostr = new EndpointStreamingPosteriorRepository(db);
+        const endpointBucketsNostr = new EndpointDailyBucketsRepository(db);
+        const bayesianScoringServiceNostr = new BayesianScoringService(
+          endpointStreamingNostr,
+          new ServiceStreamingPosteriorRepository(db),
+          new OperatorStreamingPosteriorRepository(db),
+          new NodeStreamingPosteriorRepository(db),
+          new RouteStreamingPosteriorRepository(db),
+          endpointBucketsNostr,
+          new ServiceDailyBucketsRepository(db),
+          new OperatorDailyBucketsRepository(db),
+          new NodeDailyBucketsRepository(db),
+          new RouteDailyBucketsRepository(db),
+        );
+        const bayesianVerdictServiceNostr = new BayesianVerdictService(
+          db, bayesianScoringServiceNostr, endpointStreamingNostr, endpointBucketsNostr,
+        );
         const nostrRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim());
-        const nostrPublisher = new NostrPublisher(agentRepo, probeRepo, snapshotRepo, scoringService, survivalService, {
-          privateKeyHex: config.NOSTR_PRIVATE_KEY,
-          relays: nostrRelays,
-          minScore: config.NOSTR_MIN_SCORE,
-        });
+        const nostrPublisher = new NostrPublisher(
+          agentRepo,
+          probeRepo,
+          snapshotRepo,
+          scoringService,
+          survivalService,
+          bayesianVerdictServiceNostr,
+          {
+            privateKeyHex: config.NOSTR_PRIVATE_KEY,
+            relays: nostrRelays,
+            minScore: config.NOSTR_MIN_SCORE,
+          },
+        );
 
         // Stream B — zap-receipt mining + nostr-indexed publishing
         const mappingsPath = join(dirname(config.DB_PATH), 'nostr-mappings.json');
@@ -535,10 +622,38 @@ async function main(): Promise<void> {
         const stack = err instanceof Error ? err.stack : '';
         logger.error({ error: msg, stack }, 'Failed to load Nostr publisher');
       }
-      // Start DVM (NIP-90) — listens for trust-check job requests in background
+      // Start DVM (NIP-90) — listens for trust-check job requests in background.
+      // DVM publishes the canonical Bayesian block as its kind 6900 payload;
+      // spin up its own BayesianVerdictService instance since the one above
+      // lives inside the Nostr-publisher try-block scope.
       try {
         const { SatRankDvm } = await import('../nostr/dvm');
-        const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService,
+        const endpointStreamingDvm = new EndpointStreamingPosteriorRepository(db);
+        const serviceStreamingDvm = new ServiceStreamingPosteriorRepository(db);
+        const operatorStreamingDvm = new OperatorStreamingPosteriorRepository(db);
+        const nodeStreamingDvm = new NodeStreamingPosteriorRepository(db);
+        const routeStreamingDvm = new RouteStreamingPosteriorRepository(db);
+        const endpointBucketsDvm = new EndpointDailyBucketsRepository(db);
+        const serviceBucketsDvm = new ServiceDailyBucketsRepository(db);
+        const operatorBucketsDvm = new OperatorDailyBucketsRepository(db);
+        const nodeBucketsDvm = new NodeDailyBucketsRepository(db);
+        const routeBucketsDvm = new RouteDailyBucketsRepository(db);
+        const bayesianScoringServiceDvm = new BayesianScoringService(
+          endpointStreamingDvm,
+          serviceStreamingDvm,
+          operatorStreamingDvm,
+          nodeStreamingDvm,
+          routeStreamingDvm,
+          endpointBucketsDvm,
+          serviceBucketsDvm,
+          operatorBucketsDvm,
+          nodeBucketsDvm,
+          routeBucketsDvm,
+        );
+        const bayesianVerdictServiceDvm = new BayesianVerdictService(
+          db, bayesianScoringServiceDvm, endpointStreamingDvm, endpointBucketsDvm,
+        );
+        const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdictServiceDvm,
           lndClient.isConfigured() ? lndClient : undefined, {
             privateKeyHex: config.NOSTR_PRIVATE_KEY,
             relays: config.NOSTR_RELAYS.split(',').map(r => r.trim()),
@@ -568,7 +683,8 @@ async function main(): Promise<void> {
     // Initial full crawl — Nostr publish happens inside, right after bulk scoring
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
-      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService, snapshotRepo,
+      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService,
+      bayesianVerdictServiceMain, snapshotRepo,
       nostrPublishFn,
     );
 
@@ -579,19 +695,19 @@ async function main(): Promise<void> {
     // Per-source timers
     const timerObserver = setInterval(() => {
       crawlObserver(observerCrawler)
-        .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
+        .then(() => bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo))
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Observer crawl error'));
     }, intervals.observer);
 
     const timerLnd = setInterval(() => {
       crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance)
-        .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
+        .then(() => bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo))
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LND graph crawl error'));
     }, intervals.lndGraph);
 
     const timerLnplus = setInterval(() => {
       crawlLnplus(lnplusCrawlerInstance)
-        .then(() => bulkScoreAll(agentRepo, scoringService, snapshotRepo))
+        .then(() => bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo))
         .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
     }, intervals.lnplus);
 
@@ -698,7 +814,8 @@ async function main(): Promise<void> {
     runStaleSweep(agentRepo);
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
-      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService, snapshotRepo,
+      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService,
+      bayesianVerdictServiceMain, snapshotRepo,
     );
     runStaleSweep(agentRepo);
     closeDatabase();

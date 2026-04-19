@@ -36,10 +36,9 @@ import { ValidationError, ConflictError } from '../errors';
 import { v4 as uuidv4 } from 'uuid';
 import type { AnonymousReportRequest } from '../middleware/auth';
 import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
-import { confidenceToNumber } from '../utils/confidence';
 import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
-import { PROBE_FRESHNESS_TTL, VERDICT_SAFE_THRESHOLD } from '../config/scoring';
+import { PROBE_FRESHNESS_TTL } from '../config/scoring';
 import { WALLET_PROVIDERS } from '../config/walletProviders';
 import { verdictTotal } from '../middleware/metrics';
 import { logTokenQuery } from '../utils/tokenQueryLog';
@@ -153,12 +152,11 @@ export class V2Controller {
         const candidates = targetInfos
           .filter(t => t.agent)
           .map(t => {
-            const scoreResult = this.scoringService.getScore(t.hash);
-            const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
-            verdictTotal.inc({ verdict, source: 'best-route' });
-            return { publicKeyHash: t.hash, alias: t.agent!.alias, score: scoreResult.total, verdict, pathfinding: null };
+            const bayesian = this.agentService.toBayesianBlock(t.hash);
+            verdictTotal.inc({ verdict: bayesian.verdict, source: 'best-route' });
+            return { publicKeyHash: t.hash, alias: t.agent!.alias, bayesian, pathfinding: null };
           })
-          .sort((a, b) => b.score - a.score)
+          .sort((a, b) => b.bayesian.p_success - a.bayesian.p_success)
           .slice(0, 3);
         // Token→target binding for /api/report (degraded path)
         for (const t of targetInfos) {
@@ -220,8 +218,8 @@ export class V2Controller {
         .filter(r => r.pathfinding?.reachable && r.agent)
         .map(r => {
           const scoreResult = this.scoringService.getScore(r.hash);
-          const verdict = scoreResult.total >= 47 ? 'SAFE' as const : scoreResult.total >= 30 ? 'UNKNOWN' as const : 'RISKY' as const;
-          verdictTotal.inc({ verdict, source: 'best-route' });
+          const bayesian = this.agentService.toBayesianBlock(r.hash);
+          verdictTotal.inc({ verdict: bayesian.verdict, source: 'best-route' });
 
           // Route quality (0-100) from pathfinding
           const hops = r.pathfinding!.hops ?? 99;
@@ -230,7 +228,9 @@ export class V2Controller {
           const altBonus = Math.min(100, 80 + alternatives * 10);
           const routeQuality = hopPenalty * 0.6 + altBonus * 0.4;
 
-          // Trust score (0-100)
+          // Trust axis of the composite rank — still sourced from the
+          // composite score internally (retired in Commit 8 along with
+          // ScoringService); the PUBLIC candidate exposes `bayesian` only.
           const trust = scoreResult.total;
 
           // HTTP health: only use when we have ≥3 checks on a trusted-source endpoint.
@@ -249,8 +249,7 @@ export class V2Controller {
           return {
             publicKeyHash: r.hash,
             alias: r.agent!.alias,
-            score: scoreResult.total,
-            verdict,
+            bayesian,
             pathfinding: r.pathfinding!,
             _routeQuality: routeQuality,
             _trust: trust,
@@ -471,8 +470,13 @@ export class V2Controller {
       // "interest in this target" so the caller can later report outcomes.
       logTokenQuery(this.db, req.headers.authorization, hash, req.requestId);
 
+      // Canonical public score is the Bayesian posterior. Composite `scoreResult`
+      // still feeds the internal risk classifier (regularity input); the 7d
+      // delta is now on p_success scale, calibrated against the empirical
+      // posterior distribution (see scripts/analyzeDeltaDistribution.ts).
+      const bayesian = this.agentService.toBayesianBlock(hash);
       const scoreResult = this.scoringService.getScore(hash);
-      const delta = this.trendService.computeDeltas(hash, scoreResult.total);
+      const delta = this.trendService.computeDeltas(hash, bayesian.p_success);
       const rank = this.agentRepo.getRank(hash);
       const reports = this.attestationRepo.countReportsByOutcome(hash);
       const successRate = reports.total > 0 ? reports.successes / reports.total : 0;
@@ -503,9 +507,9 @@ export class V2Controller {
         // tier-1k probe only — higher tiers surface via maxRoutableAmount
         const probe = this.probeRepo.findLatestAtTier(hash, 1000);
         if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
-          // Same guard as verdictService: fresh gossip + high score = positional failure, not dead node
+          // Same guard as verdictService: fresh gossip + SAFE verdict = positional failure, not dead node
           const gossipFresh = (now - agent.last_seen) < DAY;
-          if (!gossipFresh || scoreResult.total < VERDICT_SAFE_THRESHOLD) {
+          if (!gossipFresh || bayesian.verdict !== 'SAFE') {
             flags.push('unreachable');
           }
         }
@@ -550,12 +554,8 @@ export class V2Controller {
             lastSeen: agent.last_seen,
             source: agent.source,
           },
-          score: {
-            total: scoreResult.total,
-            components: scoreResult.components,
-            confidence: confidenceToNumber(scoreResult.confidence),
-            rank,
-          },
+          bayesian,
+          rank,
           reports: {
             total: reports.total,
             successes: reports.successes,
@@ -574,7 +574,6 @@ export class V2Controller {
           channelFlow,
           capacityHealth,
           feeVolatility,
-          delta,
           riskProfile,
           evidence,
           flags,

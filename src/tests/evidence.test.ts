@@ -7,9 +7,8 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
-import { ScoringService } from '../services/scoringService';
 import { AgentService } from '../services/agentService';
-import { TrendService } from '../services/trendService';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
 
@@ -74,9 +73,7 @@ describe('Score evidence', () => {
     attestationRepo = new AttestationRepository(db);
     snapshotRepo = new SnapshotRepository(db);
 
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+    agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db));
   });
 
   afterEach(() => {

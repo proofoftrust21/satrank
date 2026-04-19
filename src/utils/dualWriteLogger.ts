@@ -33,7 +33,7 @@ export interface DualWriteEnrichment {
 /** Logical origin of the shadow emit — used by the audit script (§6) to
  *  distribute observed traffic by code-path. Distinct from the DB-level
  *  `source` column inside `would_insert` which tags the tx provenance. */
-export type DualWriteSourceModule = 'crawler' | 'reportService' | 'decideService' | 'serviceProbes';
+export type DualWriteSourceModule = 'crawler' | 'reportService' | 'decideService' | 'serviceProbes' | 'probeCrawler';
 
 /** NDJSON line format defined by docs/PHASE-1-DESIGN.md §3. Each line is a
  *  self-contained JSON object so a batch can be streamed / grepped / fed to
@@ -111,11 +111,14 @@ export class DualWriteLogger {
   }
 }
 
-/** UTC YYYY-MM-DD bucket used as the `window_bucket` enrichment column. The
- *  Phase 3 Bayesian aggregator groups tx by (operator_id, window_bucket, source)
- *  so the granularity must match the aggregate window (daily). UTC is chosen
- *  for global consistency — operators cross timezones and a local-TZ bucket
- *  would produce non-aligned rollups. Input is unix seconds. */
+/** UTC YYYY-MM-DD-HH 6-hour bucket used as the `window_bucket` enrichment
+ *  column. Hour is rounded down to 00/06/12/18 so each target produces at
+ *  most 4 observations per day — fine-grained enough that peer/routing state
+ *  has time to change between buckets (~6h is an independence horizon for LN
+ *  liquidity), coarse enough to stay anti-gaming (no ingestion floods from
+ *  bursty probing). UTC for cross-timezone rollup consistency. */
 export function windowBucket(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
+  const d = new Date(unixSeconds * 1000);
+  const hourBucket = Math.floor(d.getUTCHours() / 6) * 6;
+  return `${d.toISOString().slice(0, 10)}-${String(hourBucket).padStart(2, '0')}`;
 }

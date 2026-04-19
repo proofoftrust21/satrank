@@ -4,6 +4,56 @@ Client SDK for the SatRank API. Trust scores for AI agents on Bitcoin Lightning.
 
 Zero dependencies. Uses native `fetch()` (Node.js 18+).
 
+## 1.0.0-rc.1 — Bayesian migration (breaking)
+
+Phase 3 replaces the composite 0-100 `score` + five-axis `components` shape
+with a Bayesian Beta-Binomial posterior. **There is no cohabitation period.**
+Every public endpoint now returns a `bayesian` block alongside its operational
+fields; the old `score.total` / `score.components` / `score.confidence` have
+been removed entirely from the server, the OpenAPI spec, the NIP-85 event tags
+and this SDK.
+
+### Field map
+
+| Before (0.x)                              | After (1.0.0-rc.1)                                |
+|-------------------------------------------|---------------------------------------------------|
+| `response.score.total` (0-100)            | `response.bayesian.p_success` (0-1)               |
+| `response.score.components.*`             | gone — use `response.bayesian.sources` breakdown  |
+| `response.score.confidence` (0.1-0.9)     | `response.bayesian.ci95_low` / `ci95_high`        |
+| `verdict: 'SAFE' | 'RISKY' | 'UNKNOWN'`   | adds `'INSUFFICIENT'` for cold-start / n_obs < 5  |
+| `watchlist.change.score` / `.components`  | `watchlist.change.bayesian` (full block)          |
+| NIP-85 tag `rank`                         | tag `p_success` (+ `ci95_low`, `ci95_high`, `n_obs`) |
+
+### Verdict semantics
+
+`verdict` now comes from the posterior directly:
+
+- `SAFE` — `p_success ≥ 0.80` with converged posterior (n_obs ≥ 5 across
+  probes, reports, or paid observations).
+- `RISKY` — `p_success < 0.50` with converged posterior.
+- `INSUFFICIENT` — new in 1.0.0-rc.1. Emitted when `n_obs < 5`; callers should
+  treat it like `UNKNOWN` but can surface a different UX (cold-start vs.
+  "we've never seen this node").
+- `UNKNOWN` — agent not indexed at all.
+
+`SAFE` is the only value that makes `decide.go === true`.
+
+### Migration in ~5 min
+
+```diff
+- if (verdict.verdict === 'SAFE' && profile.score.total >= 70) { go(); }
++ if (verdict.verdict === 'SAFE' && verdict.p_success >= 0.80) { go(); }
+
+- const [up, down] = [top.agents.sort((a,b) => b.score - a.score), ...];
++ const [up, down] = [top.agents.sort((a,b) => b.bayesian.p_success - a.bayesian.p_success), ...];
+```
+
+`RiskProfile.name` values (`established_hub`, `declining_node`, …) and the
+operational fields on `/decide` (`pathfinding`, `survival`, `serviceHealth`,
+`riskProfile`, `flags`, `reason`) are unchanged — the migration is a score
+replacement, not a taxonomy rewrite.
+
+
 ## Installation
 
 ```bash
@@ -52,16 +102,17 @@ import { SatRankClient } from '@satrank/sdk';
 
 const client = new SatRankClient('https://satrank.dev');
 
-// Get an agent's trust score with full evidence
+// Get an agent's Bayesian trust posterior with full evidence
 const score = await client.getScore('a1b2c3...64-char-sha256-hash');
-console.log(score.score.total);        // 0-100
-console.log(score.score.confidence);   // number between 0 and 1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high)
-console.log(score.evidence.reputation); // LN+ ratings, centrality ranks
+console.log(score.bayesian.p_success);       // 0-1 posterior mean
+console.log(score.bayesian.ci95_low, score.bayesian.ci95_high); // 95% credible interval
+console.log(score.bayesian.verdict);         // 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT'
+console.log(score.evidence.reputation);      // LN+ ratings, centrality ranks
 
-// Leaderboard
+// Leaderboard — sort by the posterior mean
 const top = await client.getTopAgents(10);
 for (const agent of top.agents) {
-  console.log(`${agent.alias}: ${agent.score}`);
+  console.log(`${agent.alias}: ${agent.bayesian.p_success.toFixed(3)}`);
 }
 
 // Search

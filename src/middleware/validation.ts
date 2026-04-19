@@ -37,12 +37,18 @@ export const batchVerdictsSchema = z.object({
   hashes: z.array(agentIdentifierSchema).min(1).max(100),
 });
 
-const sortByValues = ['score', 'volume', 'reputation', 'seniority', 'regularity', 'diversity'] as const;
+// Phase 3: leaderboard sort axes are Bayesian-only. The legacy composite
+// `score`/components axes return 400 — callers must migrate explicitly.
+//   p_success        — posterior mean, DESC
+//   n_obs            — observation count, DESC
+//   ci95_width       — tighter posterior ranks higher, ASC
+//   window_freshness — more recent observation window ranks higher
+const sortByValues = ['p_success', 'n_obs', 'ci95_width', 'window_freshness'] as const;
 
 export const topQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
-  sort_by: z.enum(sortByValues).default('score'),
+  sort_by: z.enum(sortByValues).default('p_success'),
 });
 
 // --- v2 schemas ---

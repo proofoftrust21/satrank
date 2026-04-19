@@ -39,9 +39,15 @@ function insertSnapshot(agentRepo: AgentRepository, repo: SnapshotRepository, ag
   repo.insert({
     snapshot_id: uuid(),
     agent_hash: agentHash,
-    score: 50,
-    components: JSON.stringify({ volume: 50, reputation: 50, seniority: 50, regularity: 50, diversity: 50 }),
+    p_success: 0.5,
+    ci95_low: 0.45,
+    ci95_high: 0.55,
+    n_obs: 10,
+    posterior_alpha: 6.5,
+    posterior_beta: 6.5,
+    window: '7d',
     computed_at: computedAt,
+    updated_at: computedAt,
   });
 }
 

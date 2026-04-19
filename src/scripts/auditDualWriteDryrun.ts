@@ -67,6 +67,7 @@ function zeroByModule(): Record<DualWriteSourceModule, { count: number; pct: num
     reportService: { count: 0, pct: 0 },
     decideService: { count: 0, pct: 0 },
     serviceProbes: { count: 0, pct: 0 },
+    probeCrawler: { count: 0, pct: 0 },
   };
 }
 

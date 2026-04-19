@@ -2,30 +2,49 @@
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
-import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
-import type { ScoringService } from './scoringService';
-import type { TrendService } from './trendService';
-import type { AgentScoreResponse, ScoreEvidence, ScoreComponents, Agent, ProbeData } from '../types';
+import type { BayesianVerdictService } from './bayesianVerdictService';
+import type { AgentScoreResponse, Agent, ProbeData, BayesianScoreBlock, ScoreEvidence } from '../types';
 import { NotFoundError } from '../errors';
 import { computePopularityBonus } from '../utils/scoring';
-import { confidenceToNumber } from '../utils/confidence';
-import { logger } from '../logger';
 
-export type SortByField = 'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity';
+export type SortByField = 'p_success' | 'n_obs' | 'ci95_width' | 'window_freshness';
 
 export interface TopAgentEntry {
   publicKeyHash: string;
   alias: string | null;
-  /** Integer score (0-100) — the official API value. */
-  score: number;
-  /** 2-decimal float of the same score. Drives leaderboard tie-breaks so the
-   *  nine nodes compressed in the 80-82 band order by actual precision instead
-   *  of by pubkey lexicographically. */
-  scoreFine: number;
   totalTransactions: number;
   source: string;
-  components: ScoreComponents;
+  bayesian: BayesianScoreBlock;
+}
+
+/** Leaderboard ordering. Ties break on p_success DESC so two rows with the
+ *  same primary key still land in a deterministic, user-meaningful order.
+ *  Le `window_freshness` axis devient (C9) un classement par `last_update` DESC
+ *  (unix seconds de la dernière ingestion) — les données les plus fraîches
+ *  remontent. La sémantique API reste : « plus récent en haut ». */
+function compareByAxis(a: TopAgentEntry, b: TopAgentEntry, axis: SortByField): number {
+  const ties = () => b.bayesian.p_success - a.bayesian.p_success;
+  switch (axis) {
+    case 'p_success': {
+      const d = b.bayesian.p_success - a.bayesian.p_success;
+      return d !== 0 ? d : b.bayesian.n_obs - a.bayesian.n_obs;
+    }
+    case 'n_obs': {
+      const d = b.bayesian.n_obs - a.bayesian.n_obs;
+      return d !== 0 ? d : ties();
+    }
+    case 'ci95_width': {
+      const wa = a.bayesian.ci95_high - a.bayesian.ci95_low;
+      const wb = b.bayesian.ci95_high - b.bayesian.ci95_low;
+      const d = wa - wb;
+      return d !== 0 ? d : ties();
+    }
+    case 'window_freshness': {
+      const d = b.bayesian.last_update - a.bayesian.last_update;
+      return d !== 0 ? d : ties();
+    }
+  }
 }
 
 export class AgentService {
@@ -33,9 +52,7 @@ export class AgentService {
     private agentRepo: AgentRepository,
     private txRepo: TransactionRepository,
     private attestationRepo: AttestationRepository,
-    private scoringService: ScoringService,
-    private trendService: TrendService,
-    private snapshotRepo?: SnapshotRepository,
+    private bayesianVerdict: BayesianVerdictService,
     private probeRepo?: ProbeRepository,
   ) {}
 
@@ -43,15 +60,12 @@ export class AgentService {
     const agent = this.agentRepo.findByHash(publicKeyHash);
     if (!agent) throw new NotFoundError('Agent', publicKeyHash);
 
-    const scoreResult = this.scoringService.getScore(publicKeyHash);
     const verifiedTx = this.txRepo.countVerifiedByAgent(publicKeyHash);
     const uniqueCounterparties = this.txRepo.countUniqueCounterparties(publicKeyHash);
     const attestationsCount = this.attestationRepo.countBySubject(publicKeyHash);
     const avgAttestationScore = this.attestationRepo.avgScoreBySubject(publicKeyHash);
 
-    // Deltas use the float score so 80.7 → 82.3 = +1.6 doesn't round-trip to +1.
-    const delta = this.trendService.computeDeltas(publicKeyHash, scoreResult.totalFine);
-    const alerts = this.trendService.computeAlerts(publicKeyHash, scoreResult.total, delta);
+    const bayesian = this.toBayesianBlock(publicKeyHash);
 
     return {
       agent: {
@@ -61,13 +75,7 @@ export class AgentService {
         lastSeen: agent.last_seen,
         source: agent.source,
       },
-      score: {
-        total: scoreResult.total,
-        totalFine: scoreResult.totalFine,
-        components: scoreResult.components,
-        confidence: confidenceToNumber(scoreResult.confidence),
-        computedAt: scoreResult.computedAt,
-      },
+      bayesian,
       stats: {
         totalTransactions: agent.total_transactions,
         verifiedTransactions: verifiedTx,
@@ -76,8 +84,26 @@ export class AgentService {
         avgAttestationScore: Math.round(avgAttestationScore * 10) / 10,
       },
       evidence: this.buildEvidence(agent, verifiedTx),
-      delta,
-      alerts,
+      alerts: [],
+    };
+  }
+
+  /** Project the BayesianVerdictService output onto the canonical public shape
+   *  (BayesianScoreBlock). Source-of-truth adapter for every agent response. */
+  toBayesianBlock(publicKeyHash: string): BayesianScoreBlock {
+    const v = this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
+    return {
+      p_success: v.p_success,
+      ci95_low: v.ci95_low,
+      ci95_high: v.ci95_high,
+      n_obs: v.n_obs,
+      verdict: v.verdict,
+      sources: v.sources,
+      convergence: v.convergence,
+      recent_activity: v.recent_activity,
+      risk_profile: v.risk_profile,
+      time_constant_days: v.time_constant_days,
+      last_update: v.last_update,
     };
   }
 
@@ -149,66 +175,25 @@ export class AgentService {
     };
   }
 
-  getTopAgents(limit: number, offset: number, sortBy: SortByField = 'score'): TopAgentEntry[] {
-    // For component-based sorting, fetch a larger pool, enrich, sort, then slice
-    const fetchLimit = sortBy === 'score' ? limit : Math.min(200, limit + offset + 100);
-    const fetchOffset = sortBy === 'score' ? offset : 0;
-    const agents = this.agentRepo.findTopByScore(fetchLimit, fetchOffset);
-
+  getTopAgents(limit: number, offset: number, sortBy: SortByField = 'p_success'): TopAgentEntry[] {
+    // Candidate pool: every sort axis is Bayesian, so we pull a wider pool and
+    // re-sort in JS. Pre-DB Bayesian aggregation lands in Commit 8; for now
+    // the 5-min leaderboard cache absorbs the O(N) posterior computation.
+    const POOL_CAP = 500;
+    const poolSize = Math.min(POOL_CAP, limit + offset + 100);
+    const agents = this.agentRepo.findTopByScore(poolSize, 0);
     if (agents.length === 0) return [];
 
-    // Batch-fetch latest snapshots for components
-    const hashes = agents.map(a => a.public_key_hash);
-    const snapshotMap = this.snapshotRepo
-      ? this.snapshotRepo.findLatestByAgents(hashes)
-      : new Map();
+    const enriched: TopAgentEntry[] = agents.map(a => ({
+      publicKeyHash: a.public_key_hash,
+      alias: a.alias,
+      totalTransactions: a.total_transactions,
+      source: a.source,
+      bayesian: this.toBayesianBlock(a.public_key_hash),
+    }));
 
-    let entries: TopAgentEntry[] = agents.map(a => {
-      const snap = snapshotMap.get(a.public_key_hash);
-      let components: ScoreComponents = { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 };
-      if (snap) {
-        try {
-          const parsed = JSON.parse(snap.components);
-          if (typeof parsed === 'object' && parsed !== null && typeof parsed.volume === 'number') {
-            components = parsed as ScoreComponents;
-          }
-        } catch (err: unknown) {
-          // Malformed components JSON in score_snapshots — unlikely (we
-          // write it via JSON.stringify) but if it happens the top-list
-          // silently returns zeros for this agent. Log once per occurrence
-          // so the corrupt row can be traced back.
-          const msg = err instanceof Error ? err.message : String(err);
-          logger.warn({ agentHash: a.public_key_hash.slice(0, 12), error: msg }, 'Failed to parse score components — using defaults');
-        }
-      }
-      // agents.avg_score is a REAL column — since Apr 17 it carries the
-      // 2-decimal float. Round for the integer `score` surface, expose the
-      // float as `scoreFine` for display/tie-breaking.
-      const scoreFine = Math.round(a.avg_score * 100) / 100;
-      return {
-        publicKeyHash: a.public_key_hash,
-        alias: a.alias,
-        score: Math.round(scoreFine),
-        scoreFine,
-        totalTransactions: a.total_transactions,
-        source: a.source,
-        components,
-      };
-    });
-
-    // Sort by requested field. For score-sort, ORDER BY avg_score DESC in SQL
-    // already returns the float-precision order — entries are in the right
-    // order. For component-sort, break ties on scoreFine so the deterministic
-    // secondary key is meaningful instead of pubkey lexicographical.
-    if (sortBy !== 'score') {
-      entries.sort((a, b) => {
-        const delta = b.components[sortBy] - a.components[sortBy];
-        return delta !== 0 ? delta : b.scoreFine - a.scoreFine;
-      });
-      entries = entries.slice(offset, offset + limit);
-    }
-
-    return entries;
+    enriched.sort((a, b) => compareByAxis(a, b, sortBy));
+    return enriched.slice(offset, offset + limit);
   }
 
   searchByAlias(alias: string, limit: number, offset: number) {

@@ -3,13 +3,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
-import { TransactionRepository } from '../repositories/transactionRepository';
-import { AttestationRepository } from '../repositories/attestationRepository';
-import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ProbeRepository } from '../repositories/probeRepository';
-import { ScoringService } from '../services/scoringService';
 import { SatRankDvm } from '../nostr/dvm';
 import { sha256 } from '../utils/crypto';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
+import type { BayesianVerdictService } from '../services/bayesianVerdictService';
 import type { Agent } from '../types';
 import type { LndGraphClient, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
 
@@ -54,107 +52,112 @@ describe('SatRankDvm', () => {
   let db: Database.Database;
   let agentRepo: AgentRepository;
   let probeRepo: ProbeRepository;
-  let snapshotRepo: SnapshotRepository;
-  let scoringService: ScoringService;
+  let bayesianVerdict: BayesianVerdictService;
 
   beforeEach(() => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
     agentRepo = new AgentRepository(db);
-    const txRepo = new TransactionRepository(db);
-    const attestationRepo = new AttestationRepository(db);
-    snapshotRepo = new SnapshotRepository(db);
     probeRepo = new ProbeRepository(db);
-    scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
+    bayesianVerdict = createBayesianVerdictService(db);
   });
 
   afterEach(() => db.close());
 
   it('creates a DVM without errors', () => {
-    const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService, undefined, {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
       privateKeyHex: 'aa'.repeat(32),
       relays: [],
     });
     expect(dvm).toBeDefined();
   });
 
-  it('processRequest returns score for known agent', async () => {
+  it('processRequest returns Bayesian block for indexed agent', async () => {
     const agent = makeAgent('known-node');
     agentRepo.insert(agent);
-    scoringService.computeScore(agent.public_key_hash);
     probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 500, failure_reason: null });
 
-    const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService, undefined, {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
       privateKeyHex: 'aa'.repeat(32),
       relays: [],
     });
 
-    // Access private method via type assertion for testing
-    const result = await (dvm as any).processRequest(agent.public_key!);
+    const result = await (dvm as unknown as { processRequest: (p: string) => Promise<unknown> }).processRequest(agent.public_key!) as {
+      source: string;
+      reachable: boolean | null;
+      alias: string | null;
+      bayesian: { verdict: string; p_success: number; n_obs: number } | null;
+      verdict: string;
+    };
     expect(result.source).toBe('index');
-    expect(result.score).toBeGreaterThan(0);
     expect(result.reachable).toBe(true);
     expect(result.alias).toBe('known-node');
-    // Sim #9 M3: audit trail on the Nostr surface — index branch must expose
-    // the 5-component breakdown so DVM consumers can verify the total.
-    expect(result.scoreBreakdown).not.toBeNull();
-    expect(result.scoreBreakdown.total).toBe(result.score);
-    expect(result.scoreBreakdown.components).toEqual(
-      expect.objectContaining({
-        volume: expect.any(Number),
-        reputation: expect.any(Number),
-        seniority: expect.any(Number),
-        regularity: expect.any(Number),
-        diversity: expect.any(Number),
-      }),
-    );
+    expect(result.bayesian).not.toBeNull();
+    expect(typeof result.bayesian!.p_success).toBe('number');
+    expect(typeof result.bayesian!.n_obs).toBe('number');
+    expect(['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT']).toContain(result.bayesian!.verdict);
+    expect(result.verdict).toBe(result.bayesian!.verdict);
   });
 
   it('processRequest returns live_ping for unknown node with LND', async () => {
     const mockLnd = makeMockLnd({ routes: [{ total_time_lock: 100, total_fees: '5', total_fees_msat: '5000', total_amt: '1005', total_amt_msat: '1005000', hops: [{ chan_id: '1', chan_capacity: '1000', amt_to_forward: '1000', fee: '5', fee_msat: '5000', pub_key: '02ccc' }] }] });
 
-    const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService, mockLnd, {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, mockLnd, {
       privateKeyHex: 'aa'.repeat(32),
       relays: [],
     });
 
     const unknownPubkey = '02' + 'ff'.repeat(32);
-    const result = await (dvm as any).processRequest(unknownPubkey);
+    const result = await (dvm as unknown as { processRequest: (p: string) => Promise<unknown> }).processRequest(unknownPubkey) as {
+      source: string;
+      reachable: boolean | null;
+      verdict: string;
+      bayesian: unknown;
+    };
     expect(result.source).toBe('live_ping');
     expect(result.reachable).toBe(true);
     expect(result.verdict).toBe('UNKNOWN');
-    expect(result.score).toBeNull();
-    expect(result.scoreBreakdown).toBeNull();
+    expect(result.bayesian).toBeNull();
   });
 
   it('processRequest returns RISKY for unreachable unknown node', async () => {
     const mockLnd = makeMockLnd({ routes: [] });
 
-    const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService, mockLnd, {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, mockLnd, {
       privateKeyHex: 'aa'.repeat(32),
       relays: [],
     });
 
     const unknownPubkey = '02' + 'ee'.repeat(32);
-    const result = await (dvm as any).processRequest(unknownPubkey);
+    const result = await (dvm as unknown as { processRequest: (p: string) => Promise<unknown> }).processRequest(unknownPubkey) as {
+      source: string;
+      reachable: boolean | null;
+      verdict: string;
+      bayesian: unknown;
+    };
     expect(result.source).toBe('live_ping');
     expect(result.reachable).toBe(false);
     expect(result.verdict).toBe('RISKY');
-    expect(result.scoreBreakdown).toBeNull();
+    expect(result.bayesian).toBeNull();
   });
 
   it('processRequest returns UNKNOWN when no LND configured', async () => {
-    const dvm = new SatRankDvm(agentRepo, probeRepo, snapshotRepo, scoringService, undefined, {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
       privateKeyHex: 'aa'.repeat(32),
       relays: [],
     });
 
     const unknownPubkey = '02' + 'dd'.repeat(32);
-    const result = await (dvm as any).processRequest(unknownPubkey);
+    const result = await (dvm as unknown as { processRequest: (p: string) => Promise<unknown> }).processRequest(unknownPubkey) as {
+      source: string;
+      reachable: boolean | null;
+      verdict: string;
+      bayesian: unknown;
+    };
     expect(result.source).toBe('live_ping');
     expect(result.reachable).toBeNull();
     expect(result.verdict).toBe('UNKNOWN');
-    expect(result.scoreBreakdown).toBeNull();
+    expect(result.bayesian).toBeNull();
   });
 });

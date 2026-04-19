@@ -1,5 +1,12 @@
-// Risk profiling engine — classifies agents into behavioral profiles
-// Complement to the verdict, not a replacement
+// Risk profiling engine — classifies agents into behavioral profiles.
+// Complement to the verdict, not a replacement.
+//
+// Phase 3 C8: delta-dependent profiles (suspicious_rapid_rise, declining_node,
+// growing_node) use thresholds calibrated on the empirical p_success delta
+// distribution (see scripts/analyzeDeltaDistribution.ts). Composite-dependent
+// profiles (established_hub, small_reliable) still read `agent.avg_score` —
+// that column is retained as an internal signal for now; the publicly exposed
+// canonical score is the Bayesian posterior.
 import type { Agent } from '../types';
 import type { RiskProfile, RiskProfileName, RiskLevel } from '../types';
 import type { ScoreDelta } from '../types';
@@ -12,14 +19,22 @@ interface ProfileDefinition {
   describe: (agent: Agent, ageDays: number, delta: ScoreDelta) => string;
 }
 
+// Calibration (see scripts/analyzeDeltaDistribution.ts):
+//   positive p97 ≈ +0.26 → suspicious_rapid_rise (target ~1.5% population)
+//   negative p93 ≈ -0.13 → declining_node (target ~3.3% population)
+//   positive p85 ≈ +0.09 → growing_node (target ~7.9% population)
+const DELTA_RAPID_RISE = 0.26;
+const DELTA_DECLINING = -0.13;
+const DELTA_GROWING = 0.09;
+
 const PROFILES: ProfileDefinition[] = [
   {
     name: 'suspicious_rapid_rise',
     riskLevel: 'high',
     match: (_, ageDays, delta) =>
-      delta.delta7d !== null && delta.delta7d > 20 && ageDays < 60,
+      delta.delta7d !== null && delta.delta7d > DELTA_RAPID_RISE && ageDays < 60,
     describe: (_, ageDays, delta) =>
-      `Active for ${Math.round(ageDays)} days with rapid score increase (+${delta.delta7d} in 7d). Possible gaming — monitor closely.`,
+      `Active for ${Math.round(ageDays)} days with rapid posterior increase (+${delta.delta7d!.toFixed(3)} in 7d). Possible gaming — monitor closely.`,
   },
   {
     name: 'new_unproven',
@@ -33,9 +48,9 @@ const PROFILES: ProfileDefinition[] = [
     name: 'declining_node',
     riskLevel: 'high',
     match: (_, _ageDays, delta) =>
-      delta.delta7d !== null && delta.delta7d < -10 && delta.trend === 'falling',
+      delta.delta7d !== null && delta.delta7d < DELTA_DECLINING && delta.trend === 'falling',
     describe: (_, _ageDays, delta) =>
-      `Score declining (${delta.delta7d} in 7d, trend: falling). Potential reliability or trust issue developing.`,
+      `Posterior declining (${delta.delta7d!.toFixed(3)} in 7d, trend: falling). Potential reliability or trust issue developing.`,
   },
   {
     name: 'established_hub',
@@ -57,9 +72,9 @@ const PROFILES: ProfileDefinition[] = [
     name: 'growing_node',
     riskLevel: 'medium',
     match: (_, ageDays, delta) =>
-      delta.delta7d !== null && delta.delta7d > 10 && ageDays < 180,
+      delta.delta7d !== null && delta.delta7d > DELTA_GROWING && ageDays < 180,
     describe: (_, ageDays, delta) =>
-      `Growing node (${Math.round(ageDays)}d old, +${delta.delta7d} in 7d). Positive trajectory but limited history.`,
+      `Growing node (${Math.round(ageDays)}d old, +${delta.delta7d!.toFixed(3)} in 7d). Positive trajectory but limited history.`,
   },
 ];
 
@@ -82,11 +97,6 @@ export class RiskService {
       }
     }
 
-    // No specific profile matched. Surface a meaningful riskLevel derived from
-    // score instead of opaque "unknown": mid-tier nodes (≥40) are `medium`,
-    // lower scores stay `unknown` since confidence is too low to bucket.
-    // Renamed from "default" → "unrated" per sim #9 FINDING #10 (no business
-    // meaning). Kept in `RiskProfileName` enum for backwards compatibility.
     const riskLevel: RiskLevel = agent.avg_score >= 40 ? 'medium' : 'unknown';
     return {
       name: 'unrated',

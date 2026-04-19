@@ -1,7 +1,11 @@
 // Composite scoring engine — the core of SatRank
 // Score 0-100 computed from 5 weighted components, with reinforced anti-gaming
 // All tunable constants are in src/config/scoring.ts
-import { v4 as uuid } from 'uuid';
+//
+// Phase 3 C8: public API exposes the Bayesian posterior only. This composite
+// stays as an internal signal for the risk classifier, survival predictor,
+// and top-200 mover candidate set — it is no longer snapshotted (table now
+// holds bayesian-only state) and no longer surfaced in responses.
 import type Database from 'better-sqlite3';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
@@ -43,7 +47,6 @@ import {
   CONFIDENCE_LOW,
   CONFIDENCE_MEDIUM,
   CONFIDENCE_HIGH,
-  SCORE_CACHE_TTL,
   MAX_ATTESTATIONS_PER_AGENT,
   PROBE_UNREACHABLE_PENALTY,
   PROBE_FRESHNESS_TTL,
@@ -76,32 +79,11 @@ export class ScoringService {
     private feeSnapshotRepo?: { countFeeChanges: (nodePub: string, afterTimestamp: number) => { changes: number; channels: number } },
   ) {}
 
-  // Returns an agent's score, using cache if the score is recent
+  // Returns an agent's score. Phase 3 C8: the score_snapshots cache is gone
+  // (table now holds bayesian-only state). getScore recomputes on every call.
+  // An in-process memo could be added if profiling shows this as a hotspot;
+  // the call sites (risk classifier, survival trajectory) are already rare.
   getScore(agentHash: string): ScoreResult {
-    const now = Math.floor(Date.now() / 1000);
-
-    // Check if a recent snapshot exists (avoids writes on every GET)
-    const latest = this.snapshotRepo.findLatestByAgent(agentHash);
-    if (latest && (now - latest.computed_at) < SCORE_CACHE_TTL) {
-      const agent = this.agentRepo.findByHash(agentHash);
-      const components = this.safeParseComponents(latest.components);
-      if (components) {
-        // Snapshots store the 2-decimal float (REAL column). Derive the
-        // integer `total` from it so the cache path matches the compute path.
-        const totalFine = Math.round(latest.score * 100) / 100;
-        return {
-          total: Math.round(totalFine),
-          totalFine,
-          components,
-          confidence: agent
-            ? this.deriveConfidence(agent.total_transactions, agent.total_attestations_received)
-            : 'very_low',
-          computedAt: latest.computed_at,
-        };
-      }
-      // Corrupted components -> recompute score
-    }
-
     return this.computeScore(agentHash);
   }
 
@@ -279,32 +261,14 @@ export class ScoringService {
     // persist (both columns are REAL) — the integer is always re-derivable as
     // Math.round(scoreFine) for API consumers that need it.
     const totalFine = Math.round(Math.max(0, Math.min(100, totalFloat)) * 100) / 100;
-    const componentsJson = JSON.stringify(components);
-    const SNAPSHOT_HEARTBEAT_SEC = 86_400; // force ≥1 snapshot/agent/day even if unchanged
 
-    // Persist snapshot + update denormalized agents.avg_score atomically.
-    // Insert the snapshot only when (a) score or components changed since the
-    // previous snapshot, or (b) the previous snapshot is older than
-    // SNAPSHOT_HEARTBEAT_SEC. Static agents then cost ~1 row/day instead of
-    // ~280 (observer cycles every 5 min × 24 h), cutting score_snapshots by
-    // roughly 10× at current 18 k-agent scale.
-    //
-    // Change detection uses a 0.01-point float tolerance — sub-0.01 noise
-    // from re-running the same pipeline on unchanged inputs must not trigger
-    // a new row, otherwise we lose the snapshot-on-change compression.
+    // Phase 3 C8: snapshot persistence moved to BayesianVerdictService — the
+    // score_snapshots table now holds only bayesian-posterior state. Scoring
+    // keeps the denormalized agents.avg_score up to date because riskService,
+    // survivalService, and the top-200 candidate set for topMovers still read
+    // from it. The agents.avg_score column is internal and no longer surfaced
+    // in public API responses.
     const persist = () => {
-      const last = this.snapshotRepo.findLatestByAgent(agentHash);
-      const changed = !last || Math.abs(last.score - totalFine) >= 0.01 || last.components !== componentsJson;
-      const stale = !last || (now - last.computed_at) >= SNAPSHOT_HEARTBEAT_SEC;
-      if (changed || stale) {
-        this.snapshotRepo.insert({
-          snapshot_id: uuid(),
-          agent_hash: agentHash,
-          score: totalFine,
-          components: componentsJson,
-          computed_at: now,
-        });
-      }
       this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, totalFine, agent.first_seen, agent.last_seen);
     };
 
@@ -689,11 +653,13 @@ export class ScoringService {
     // Extended cycle detection — catches 4+ hop cycles (A→B→C→D→A)
     const extendedCycleMembers = new Set(this.attestationRepo.findCycleMembers(agentHash, 4));
 
-    // Batch: load all attesters and their snapshots in 2 queries instead of 2N
+    // Batch: load all attesters in 1 query. Phase 3 C8 dropped the composite
+    // from score_snapshots, so the attester's weighting score reads from the
+    // denormalized `agents.avg_score` column, which scoringService still
+    // maintains on every computeScore pass.
     const attesterHashes = [...new Set(attestations.map(a => a.attester_hash))];
     const attesterAgents = this.agentRepo.findByHashes(attesterHashes);
     const attesterMap = new Map(attesterAgents.map(a => [a.public_key_hash, a]));
-    const snapshotMap = this.snapshotRepo.findLatestByAgents(attesterHashes);
 
     let weightedSum = 0;
     let totalWeight = 0;
@@ -709,8 +675,7 @@ export class ScoringService {
         if (attesterAgeDays < MIN_ATTESTER_AGE_DAYS) {
           weight *= YOUNG_ATTESTER_WEIGHT;
         } else {
-          const latestSnapshot = snapshotMap.get(att.attester_hash);
-          const attesterScore = latestSnapshot ? latestSnapshot.score : attester.avg_score;
+          const attesterScore = attester.avg_score;
           // Anti-sybil: unknown attesters (score 0) get UNKNOWN_ATTESTER_WEIGHT
           weight *= (attesterScore / 100) || UNKNOWN_ATTESTER_WEIGHT;
         }
@@ -828,25 +793,6 @@ export class ScoringService {
     if (count === 0) return 0;
     const score = (Math.log(count + 1) / Math.log(DIVERSITY_LOG_BASE)) * 100;
     return Math.min(100, Math.round(score));
-  }
-
-  private safeParseComponents(json: string): ScoreComponents | null {
-    try {
-      const parsed = JSON.parse(json);
-      if (
-        typeof parsed === 'object' && parsed !== null &&
-        typeof parsed.volume === 'number' && typeof parsed.reputation === 'number' &&
-        typeof parsed.seniority === 'number' && typeof parsed.regularity === 'number' &&
-        typeof parsed.diversity === 'number'
-      ) {
-        return parsed as ScoreComponents;
-      }
-      logger.warn({ json: json.slice(0, 100) }, 'Invalid ScoreComponents');
-      return null;
-    } catch {
-      logger.warn({ json: json.slice(0, 100) }, 'JSON.parse components failed');
-      return null;
-    }
   }
 
   private deriveConfidence(totalTx: number, totalAttestations: number): ConfidenceLevel {

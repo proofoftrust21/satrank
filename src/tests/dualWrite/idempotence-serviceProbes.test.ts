@@ -35,11 +35,11 @@ vi.mock('../../utils/ssrf', async () => {
   return { ...actual, resolveAndPin: async () => '203.0.113.1' };
 });
 
-// 2026-04-18T12:00:00Z → window_bucket must be '2026-04-18' regardless of the
-// host TZ (ISO slice is UTC-anchored).
+// 2026-04-18T12:00:00Z → window_bucket must be '2026-04-18-12' (6h bucket,
+// HH ∈ {00,06,12,18}) regardless of the host TZ (ISO slice is UTC-anchored).
 const FIXED_ISO = '2026-04-18T12:00:00Z';
 const FIXED_UNIX = Math.floor(new Date(FIXED_ISO).getTime() / 1000);
-const EXPECTED_BUCKET = '2026-04-18';
+const EXPECTED_BUCKET = '2026-04-18-12';
 
 const PROBE_URL = 'https://api.example.com/svc';
 
@@ -261,6 +261,6 @@ describe('ServiceHealthCrawler idempotence × dual-write modes', () => {
     await crawler.run();
 
     const row = db.prepare('SELECT window_bucket FROM transactions').get() as { window_bucket: string };
-    expect(row.window_bucket).toBe('2026-04-18');
+    expect(row.window_bucket).toBe('2026-04-18-18');
   });
 });

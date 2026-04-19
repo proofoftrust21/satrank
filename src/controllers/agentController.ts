@@ -5,12 +5,10 @@ import type { AgentService } from '../services/agentService';
 import type { VerdictService } from '../services/verdictService';
 import type { AutoIndexService } from '../services/autoIndexService';
 import type { AgentRepository } from '../repositories/agentRepository';
-import type { SnapshotRepository } from '../repositories/snapshotRepository';
-import type { TrendService } from '../services/trendService';
+import type { BayesianScoreBlock } from '../types';
 import { agentIdentifierSchema, paginationSchema, topQuerySchema, searchQuerySchema, batchVerdictsSchema } from '../middleware/validation';
 import { ValidationError, NotFoundError } from '../errors';
 import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
-import { logger } from '../logger';
 import * as memoryCache from '../cache/memoryCache';
 import { formatZodError } from '../utils/zodError';
 import { logTokenQuery } from '../utils/tokenQueryLog';
@@ -21,44 +19,24 @@ import type Database from 'better-sqlite3';
  *  propagate to the leaderboard within a few minutes. */
 const TOP_CACHE_TTL_MS = 5 * 60_000;
 
+type SortAxis = 'p_success' | 'n_obs' | 'ci95_width' | 'window_freshness';
+
 interface TopResponse {
   data: Array<{
     publicKeyHash: string;
     alias: string | null;
-    /** Integer score (API contract, stable) */
-    score: number;
-    /** 2-decimal float — use for visual tie-breaking when many nodes sit in
-     *  the same integer band (the 80-82 compression observed 2026-04-17). */
-    scoreFine: number;
     rank: number | null;
     totalTransactions: number;
     source: string;
-    components: { volume: number; reputation: number; seniority: number; regularity: number; diversity: number };
-    delta7d: number | null;
-    /** False when the 7d comparator predates the Option D methodology cutoff.
-     *  UI should render "—" or a "methodology change" badge instead of the
-     *  numeric delta, which would mix pre/post-methodology scores. Auto-
-     *  resolves 7 days after the cutoff. */
-    deltaValid: boolean;
+    bayesian: BayesianScoreBlock;
   }>;
-  meta: { total: number; limit: number; offset: number; sort_by: string };
-}
-
-function safeParseJson(value: string, fallback: unknown): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    logger.warn({ len: value.length }, 'JSON.parse failed on snapshot components, using fallback');
-    return fallback;
-  }
+  meta: { total: number; limit: number; offset: number; sort_by: SortAxis };
 }
 
 export class AgentController {
   constructor(
     private agentService: AgentService,
     private agentRepo: AgentRepository,
-    private snapshotRepo: SnapshotRepository,
-    private trendService: TrendService,
     private verdictService: VerdictService,
     private autoIndexService: AutoIndexService | null = null,
     // Optional DB handle — used to write decide_log entries from verdict/batch
@@ -102,71 +80,40 @@ export class AgentController {
       const paginationParsed = paginationSchema.safeParse(req.query);
       if (!paginationParsed.success) throw new ValidationError(formatZodError(paginationParsed.error, req.query));
 
+      // History is composite-score territory; under Bayesian semantics the
+      // current posterior is the only number that matters. Return the live
+      // Bayesian block and keep pagination params for forward compatibility
+      // when posterior history lands in Commit 8.
       const { limit, offset } = paginationParsed.data;
-      const snapshots = this.snapshotRepo.findHistoryByAgent(agentHash, limit, offset);
-      const total = this.snapshotRepo.countByAgent(agentHash);
-
-      // Enrich with deltas: for each snapshot, compute delta vs previous
-      const enriched = snapshots.map((s, i) => {
-        const prev = i < snapshots.length - 1 ? snapshots[i + 1] : null;
-        return {
-          score: s.score,
-          components: safeParseJson(s.components, {}),
-          computedAt: s.computed_at,
-          delta: prev ? s.score - prev.score : null,
-        };
-      });
-
-      // Current agent delta summary
-      const latestScore = snapshots.length > 0 ? snapshots[0].score : 0;
-      const delta = snapshots.length > 0
-        ? this.trendService.computeDeltas(agentHash, latestScore)
-        : { delta24h: null, delta7d: null, delta30d: null, trend: 'stable' as const };
-
+      const bayesian = this.agentService.toBayesianBlock(agentHash);
       res.json({
-        data: enriched,
-        delta,
-        meta: { total, limit, offset },
+        data: [],
+        bayesian,
+        meta: { total: 0, limit, offset, note: 'Posterior history pending Commit 8 aggregate tables.' },
       });
     } catch (err) {
       next(err);
     }
   };
 
-  /** Builds the leaderboard response from the current DB state. Extracted so
-   *  the startup warm-up can reuse the exact same path the controller uses.
-   *  Uses batch queries (3 + 1 instead of 5N) to avoid N+1 amplification. */
-  buildTopResponse(limit: number, offset: number, sort_by: 'score' | 'volume' | 'reputation' | 'seniority' | 'regularity' | 'diversity'): TopResponse {
+  /** Builds the leaderboard response from the current DB state. Every entry
+   *  carries the canonical Bayesian block; sort axes are p_success / n_obs /
+   *  ci95_width / window_freshness. Ranks come from agentRepo for stable
+   *  cross-request numbering.  */
+  buildTopResponse(limit: number, offset: number, sort_by: SortAxis): TopResponse {
     const agents = this.agentService.getTopAgents(limit, offset, sort_by);
     const total = this.agentRepo.count();
-
-    // Batch: compute all deltas and ranks in 4 queries instead of 5N.
-    // Deltas are computed off the float score so the 7d delta reflects real
-    // movement (e.g. 80.7 → 82.3 = +1.6) and not integer-rounding noise.
-    const hashes = agents.map(a => a.publicKeyHash);
-    const deltas = this.trendService.computeDeltasBatch(
-      agents.map(a => ({ hash: a.publicKeyHash, score: a.scoreFine })),
-    );
-    const ranks = this.agentRepo.getRanks(hashes);
+    const ranks = this.agentRepo.getRanks(agents.map(a => a.publicKeyHash));
 
     return {
-      data: agents.map(a => {
-        const d = deltas.get(a.publicKeyHash);
-        const delta7d = d?.delta7d;
-        return {
-          publicKeyHash: a.publicKeyHash,
-          alias: a.alias,
-          score: a.score,
-          scoreFine: a.scoreFine,
-          rank: ranks.get(a.publicKeyHash) ?? null,
-          totalTransactions: a.totalTransactions,
-          source: a.source,
-          components: a.components,
-          // Round delta7d to 1 decimal for display while keeping source precision.
-          delta7d: delta7d != null ? Math.round(delta7d * 10) / 10 : null,
-          deltaValid: d?.deltaValid ?? true,
-        };
-      }),
+      data: agents.map(a => ({
+        publicKeyHash: a.publicKeyHash,
+        alias: a.alias,
+        rank: ranks.get(a.publicKeyHash) ?? null,
+        totalTransactions: a.totalTransactions,
+        source: a.source,
+        bayesian: a.bayesian,
+      })),
       meta: { total, limit, offset, sort_by },
     };
   }
@@ -194,15 +141,14 @@ export class AgentController {
 
   getMovers = (_req: Request, res: Response, next: NextFunction): void => {
     try {
-      const response = memoryCache.getOrCompute(
-        'agents:movers',
-        TOP_CACHE_TTL_MS,
-        () => {
-          const { up, down } = this.trendService.getTopMovers(5);
-          return { data: { gainers: up, losers: down } };
-        },
-      );
-      res.json(response);
+      // Gainers/losers based on composite-score deltas are retired in Phase 3.
+      // Posterior-delta movers require snapshots of {p_success, ci95, window}
+      // that land in Commit 8. Serve a stable empty envelope until then —
+      // clients get the same shape, no legacy score leak.
+      res.json({
+        data: { gainers: [], losers: [] },
+        meta: { note: 'Posterior-delta movers pending Commit 8 aggregate tables.' },
+      });
     } catch (err) {
       next(err);
     }
@@ -300,44 +246,17 @@ export class AgentController {
       const { alias, limit, offset } = searchParsed.data;
       const agents = this.agentService.searchByAlias(alias, limit, offset);
       const total = this.agentRepo.countByAlias(alias);
-
-      // Enrich with components from latest snapshots (same shape as /agents/top)
-      const hashes = agents.map(a => a.public_key_hash);
-      const snapshotMap = this.snapshotRepo.findLatestByAgents(hashes);
-      const defaultComponents = { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 };
-
-      // Batch: compute all deltas and ranks in 4 queries instead of 5N
-      const deltas = this.trendService.computeDeltasBatch(
-        agents.map(a => ({ hash: a.public_key_hash, score: a.avg_score })),
-      );
-      const ranks = this.agentRepo.getRanks(hashes);
+      const ranks = this.agentRepo.getRanks(agents.map(a => a.public_key_hash));
 
       res.json({
-        data: agents.map(a => {
-          const snap = snapshotMap.get(a.public_key_hash);
-          let components = defaultComponents;
-          if (snap) {
-            const parsed = safeParseJson(snap.components, null);
-            if (parsed && typeof parsed === 'object' && 'volume' in parsed) {
-              components = parsed as typeof defaultComponents;
-            }
-          }
-          const scoreFine = Math.round(a.avg_score * 100) / 100;
-          const d = deltas.get(a.public_key_hash);
-          const delta7d = d?.delta7d;
-          return {
-            publicKeyHash: a.public_key_hash,
-            alias: a.alias,
-            score: Math.round(scoreFine),
-            scoreFine,
-            rank: ranks.get(a.public_key_hash) ?? null,
-            totalTransactions: a.total_transactions,
-            source: a.source,
-            components,
-            delta7d: delta7d != null ? Math.round(delta7d * 10) / 10 : null,
-            deltaValid: d?.deltaValid ?? true,
-          };
-        }),
+        data: agents.map(a => ({
+          publicKeyHash: a.public_key_hash,
+          alias: a.alias,
+          rank: ranks.get(a.public_key_hash) ?? null,
+          totalTransactions: a.total_transactions,
+          source: a.source,
+          bayesian: this.agentService.toBayesianBlock(a.public_key_hash),
+        })),
         meta: { total, limit, offset },
       });
     } catch (err) {

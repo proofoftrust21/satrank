@@ -62,12 +62,22 @@ export interface Attestation {
   weight: number;
 }
 
+/** Bayesian posterior snapshot (Phase 3 C8). The legacy `score` +
+ *  `components` columns were dropped in v34; this shape reflects the new
+ *  bayesian-only schema. Historical rows written before v34 have all
+ *  bayesian fields null — queries in SnapshotRepository filter these out. */
 export interface ScoreSnapshot {
   snapshot_id: string;
   agent_hash: string;
-  score: number;
-  components: string;
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  posterior_alpha: number;
+  posterior_beta: number;
+  window: BayesianWindow;
   computed_at: number;
+  updated_at: number;
 }
 
 // Probe results — stored in probe_results table
@@ -143,6 +153,8 @@ export interface SubSignalContribution {
 export type ConfidenceLevel = 'very_low' | 'low' | 'medium' | 'high' | 'very_high';
 
 // API responses
+/** Agent profile: identity + stats + evidence overlay + canonical Bayesian
+ *  block. No composite score surface — `bayesian` is the source of truth. */
 export interface AgentScoreResponse {
   agent: {
     publicKeyHash: string;
@@ -151,19 +163,7 @@ export interface AgentScoreResponse {
     lastSeen: number;
     source: AgentSource;
   };
-  score: {
-    total: number;
-    /** 2-decimal float of the same score. Use in UI to break visual ties when
-     *  many nodes sit in the same integer band (the 80-82 compression observed
-     *  2026-04-17). API consumers that expect an integer continue to read
-     *  `total`. */
-    totalFine: number;
-    components: ScoreComponents;
-    /** Confidence 0-1 (sigmoid-derived). Uniform across /decide, /profile,
-     *  /verdicts — sim #5 found the shape diverged between endpoints. */
-    confidence: number;
-    computedAt: number;
-  };
+  bayesian: BayesianScoreBlock;
   stats: {
     totalTransactions: number;
     verifiedTransactions: number;
@@ -172,7 +172,6 @@ export interface AgentScoreResponse {
     avgAttestationScore: number;
   };
   evidence: ScoreEvidence;
-  delta: ScoreDelta;
   alerts: AgentAlert[];
 }
 
@@ -275,9 +274,7 @@ export interface NetworkStats {
   totalChannels: number;
   nodesWithRatings: number;
   networkCapacityBtc: number;
-  avgScore: number;
   totalVolumeBuckets: Record<AmountBucket, number>;
-  trends: NetworkTrends;
   /** Distribution of service_endpoints entries per source (trust classification).
    *  402index = crawler-verified, self_registered = operator-submitted, ad_hoc = observed via /api/decide. */
   serviceSources: { '402index': number; 'self_registered': number; 'ad_hoc': number };
@@ -286,15 +283,15 @@ export interface NetworkStats {
 // Temporal delta types
 export type TrendDirection = 'rising' | 'stable' | 'falling';
 
+/** Delta of the Bayesian p_success over rolling windows. Numeric range
+ *  [-1, +1] since p_success ∈ [0, 1]. `deltaValid` is kept on the envelope
+ *  for SDK compat and flips to false only when no 7d comparator exists
+ *  (cold start); it is NOT tied to any methodology cutoff in the bayesian
+ *  world — Phase 3 replaced the composite regime outright. */
 export interface ScoreDelta {
   delta24h: number | null;
   delta7d: number | null;
   delta30d: number | null;
-  /** False when the 7d comparator snapshot predates the Option D methodology
-   *  rollout (METHODOLOGY_CHANGE_AT_UNIX). A visitor seeing -18 on a stable
-   *  hub would otherwise assume degradation; the API instead flags the window
-   *  as incomparable and the UI renders "—" or a badge. Auto-resolves 7 days
-   *  after the cutoff. */
   deltaValid: boolean;
   trend: TrendDirection;
 }
@@ -308,20 +305,18 @@ export interface AgentAlert {
 export interface TopMover {
   publicKeyHash: string;
   alias: string | null;
-  /** Integer score (0-100) — official API value. */
-  score: number;
-  /** 2-decimal float of the same score. Matches the top-list surface so
-   *  compressed 80-82 movers still visually differentiate in the UI. */
-  scoreFine: number;
+  /** Bayesian posterior mean p_success ∈ [0, 1], 3 decimals. */
+  pSuccess: number;
+  /** 7d delta on p_success ∈ [-1, +1], 3 decimals. */
   delta7d: number;
-  /** False when the 7d comparator predates the Option D methodology rollout —
-   *  same semantics as ScoreDelta.deltaValid. UI renders "—" when false. */
+  /** Kept on the envelope for SDK compat — always true post-Phase 3. */
   deltaValid: boolean;
   trend: TrendDirection;
 }
 
 export interface NetworkTrends {
-  avgScoreDelta7d: number;
+  /** 7d delta on the mean p_success across active agents. */
+  avgPSuccessDelta7d: number;
   topMoversUp: TopMover[];
   topMoversDown: TopMover[];
 }
@@ -336,8 +331,62 @@ export interface CreateAttestationInput {
   category?: AttestationCategory;
 }
 
-// Verdict types
-export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN';
+// Verdict types — Bayesian (Phase 3)
+export type Verdict = 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT';
+export type BayesianWindow = '24h' | '7d' | '30d';
+export type BayesianSource = 'probe' | 'report' | 'paid';
+
+/** Per-source Bayesian posterior block — null when no observation for that source. */
+export interface BayesianSourceBlock {
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  weight_total: number;
+}
+
+export interface BayesianConvergence {
+  converged: boolean;
+  sources_above_threshold: BayesianSource[];
+  threshold: number;
+}
+
+/** n_obs cumulé sur les 3 fenêtres d'affichage — lu depuis daily_buckets, observer inclus.
+ *  Display-only, indépendant du verdict. */
+export interface BayesianRecentActivity {
+  last_24h: number;
+  last_7d: number;
+  last_30d: number;
+}
+
+/** Trend delta success_rate (low/medium/high/unknown) — Option B. */
+export type BayesianRiskTrend = 'low' | 'medium' | 'high' | 'unknown';
+
+/** Canonical Bayesian scoring block — shared shape across all public endpoints
+ *  (verdict, decide, profile, best-route, service, endpoint). Phase 3 C9 : le
+ *  champ `window` a disparu (streaming, τ=7j implicite), remplacé par
+ *  `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`. */
+export interface BayesianScoreBlock {
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  verdict: Verdict;
+  sources: {
+    probe:  BayesianSourceBlock | null;
+    report: BayesianSourceBlock | null;
+    paid:   BayesianSourceBlock | null;
+  };
+  convergence: BayesianConvergence;
+  /** n_obs cumulé 24h/7d/30d (observer inclus). */
+  recent_activity: BayesianRecentActivity;
+  /** Trend success_rate 7j récents vs 23j antérieurs — Option B. */
+  risk_profile: BayesianRiskTrend;
+  /** Constante τ exposée (décroissance exponentielle, jours). */
+  time_constant_days: number;
+  /** Unix seconds de la dernière ingestion connue — 0 si aucune observation. */
+  last_update: number;
+}
 
 export type VerdictFlag =
   | 'new_agent'
@@ -394,9 +443,7 @@ export interface PathfindingResult {
   sourceProvider?: WalletProvider;
 }
 
-export interface VerdictResponse {
-  verdict: Verdict;
-  confidence: number;
+export interface VerdictResponse extends BayesianScoreBlock {
   reason: string;
   flags: VerdictFlag[];
   personalTrust: PersonalTrust | null;
@@ -477,27 +524,17 @@ export interface FeeVolatility {
   changesLast7d: number;
 }
 
-export interface DecideResponse {
+/** `extends BayesianScoreBlock` → inherits {p_success, ci95_low, ci95_high, n_obs,
+ *  verdict, window, sources, convergence} — the canonical public shape shared
+ *  with /verdict, /profile, /best-route, /service, /endpoint. */
+export interface DecideResponse extends BayesianScoreBlock {
   go: boolean;
   successRate: number;
   components: {
-    trustScore: number;
     routable: number;
     available: number;
-    empirical: number;
     pathQuality: number;
   };
-  /** Raw score breakdown for audit trail — mirrors `/api/profile/:id.score`.
-   *  `components.reputationBreakdown` exposes the sub-signal contributions so
-   *  an agent can answer "why did this decision flip?" from a single /decide
-   *  call (no extra /profile request needed). Added after sim #5. */
-  scoreBreakdown: {
-    total: number;
-    components: ScoreComponents;
-  };
-  basis: 'proxy' | 'empirical';
-  confidence: number;
-  verdict: Verdict;
   flags: VerdictFlag[];
   pathfinding: PathfindingResult | null;
   riskProfile: RiskProfile;
@@ -507,8 +544,6 @@ export interface DecideResponse {
   targetFeeStability: number | null;
   /** Highest amount (sats) for which a route was found in recent probes. null if no multi-amount data. */
   maxRoutableAmount: number | null;
-  /** Raw empirical success rate from payment reports (0-1). null when insufficient reports (<10 data points or <5 unique reporters). */
-  reportedSuccessRate: number | null;
   lastProbeAgeMs: number | null;
   /** HTTP health of the service behind this node. null when no serviceUrl provided or no data available. */
   serviceHealth: ServiceHealth | null;

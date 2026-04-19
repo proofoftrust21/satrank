@@ -12,6 +12,7 @@ import { AgentService } from '../services/agentService';
 import { TrendService } from '../services/trendService';
 import { VerdictService } from '../services/verdictService';
 import { RiskService } from '../services/riskService';
+import { createBayesianVerdictService, seedSafeBayesianObservations } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent } from '../types';
 import type { LndGraphClient, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
@@ -327,7 +328,7 @@ describe('Probe verdict integration', () => {
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
-    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
   });
 
   afterEach(() => db.close());
@@ -348,10 +349,12 @@ describe('Probe verdict integration', () => {
 
     const verdict = await verdictService.getVerdict(agent.public_key_hash);
     expect(verdict.flags).toContain('unreachable');
-    expect(verdict.verdict).toBe('RISKY');
+    // No Bayesian observations → INSUFFICIENT. The unreachable flag is the
+    // actionable signal; the Bayesian verdict does not override it.
+    expect(verdict.verdict).not.toBe('SAFE');
   });
 
-  it('does not flag unreachable when gossip is fresh and score is high', async () => {
+  it('does not flag unreachable when gossip is fresh and Bayesian posterior is SAFE', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('fresh-gossip-unreachable'),
       total_transactions: 500,
@@ -359,6 +362,7 @@ describe('Probe verdict integration', () => {
       last_seen: NOW - 3600, // 1 hour ago — gossip is fresh
     });
     agentRepo.insert(agent);
+    seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
 
     probeRepo.insert({
       target_hash: agent.public_key_hash,
@@ -371,7 +375,7 @@ describe('Probe verdict integration', () => {
     });
 
     const verdict = await verdictService.getVerdict(agent.public_key_hash);
-    // Fresh gossip + high score = positional probe failure, not dead node
+    // Fresh gossip + strong Bayesian posterior = positional probe failure, not dead node
     expect(verdict.flags).not.toContain('unreachable');
     expect(verdict.verdict).not.toBe('RISKY');
   });
@@ -408,9 +412,7 @@ describe('Probe verdict integration', () => {
       failure_reason: null,
     });
 
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db), probeRepo);
 
     const result = agentService.getAgentScore(agent.public_key_hash);
     expect(result.evidence.probe).not.toBeNull();
@@ -425,9 +427,7 @@ describe('Probe verdict integration', () => {
     const agent = makeAgent({ public_key_hash: sha256('no-probe-evidence') });
     agentRepo.insert(agent);
 
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db), probeRepo);
 
     const result = agentService.getAgentScore(agent.public_key_hash);
     expect(result.evidence.probe).toBeNull();
@@ -469,7 +469,7 @@ describe('Personalized pathfinding', () => {
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
-    return new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient);
+    return new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo, lndClient);
   }
 
   it('returns pathfinding result when route exists', async () => {

@@ -437,6 +437,18 @@ export function runMigrations(db: Database.Database): void {
     `);
     db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_url ON service_endpoints(url)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_checked ON service_endpoints(last_checked_at)');
+    // Re-apply v24/v26/v27 ALTERs idempotently: on a fresh DB those blocks
+    // ran above before the table existed and their try/catch swallowed the
+    // "no such table" error, so the columns were never added. On prod the
+    // table was already present when those versions landed, so this is a
+    // pure no-op there.
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN service_price_sats INTEGER DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN name TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN description TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN category TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN provider TEXT DEFAULT NULL'); } catch { /* exists */ }
+    try { db.exec("ALTER TABLE service_endpoints ADD COLUMN source TEXT NOT NULL DEFAULT 'ad_hoc'"); } catch { /* exists */ }
+    try { db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_source ON service_endpoints(source)'); } catch { /* exists */ }
     recordVersion(db, 22, 'service_endpoints table for HTTP health tracking');
   }
 
@@ -621,6 +633,321 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 32, 'preimage_pool table for anonymous permissionless reports — Phase 2');
   }
 
+  // v33: Phase 3 bayesian scoring layer — additive migration pour la
+  // couche bayésienne Beta-Binomial. Cinq nouvelles tables *_aggregates
+  // (endpoint/node/service/operator/route) stockent les compteurs raw
+  // non-décroissants, et score_snapshots reçoit 8 colonnes bayésiennes
+  // (posterior_alpha/beta, p_success, ci95_low/high, n_obs, window,
+  // updated_at). Les colonnes legacy score/components restent en place
+  // dans cette migration — leur suppression se fait dans la migration
+  // v34 (finale de Phase 3), après que tous les callers soient migrés
+  // vers le champ p_success. Raison : DROP atomique casse trop de
+  // consommateurs en un seul commit ; la suppression est reportée en C12
+  // après la migration de tous les services (scoringService, trendService,
+  // survivalService, controllers, openapi). En attendant, le code
+  // bayésien n'écrit jamais dans score/components — cohabitation DB
+  // transitoire uniquement, cohabitation API jamais.
+  //
+  // Aggregates stockent raw counts (n_success, n_failure, n_obs) + posterior
+  // courant (α, β). La décroissance exponentielle est appliquée à la
+  // lecture (Option A) par re-agrégation sur timestamps — voir
+  // bayesianScoringService.ts.
+  if (!hasVersion(db, 33)) {
+    for (const colDef of [
+      'posterior_alpha REAL',
+      'posterior_beta REAL',
+      'p_success REAL',
+      'ci95_low REAL',
+      'ci95_high REAL',
+      'n_obs INTEGER',
+      'window TEXT',
+      'updated_at INTEGER',
+    ]) {
+      try { db.exec(`ALTER TABLE score_snapshots ADD COLUMN ${colDef}`); } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('duplicate column name')) throw err;
+      }
+    }
+
+    // --- 2. Aggregates tables — PK composite (id_hash, window) ---
+    // Cinq tables partagent la même forme de base ; node_aggregates a deux
+    // posteriors distincts (routing et delivery) pour capturer la
+    // différence entre "peut router" et "a livré le service".
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS endpoint_aggregates (
+        url_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        median_latency_ms INTEGER,
+        median_price_msat INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (url_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_window ON endpoint_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_updated ON endpoint_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS node_aggregates (
+        pubkey TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_observations INTEGER NOT NULL DEFAULT 0,
+        n_routable INTEGER NOT NULL DEFAULT 0,
+        n_delivered INTEGER NOT NULL DEFAULT 0,
+        n_reported_success INTEGER NOT NULL DEFAULT 0,
+        n_reported_failure INTEGER NOT NULL DEFAULT 0,
+        routing_alpha REAL NOT NULL DEFAULT 1.5,
+        routing_beta REAL NOT NULL DEFAULT 1.5,
+        delivery_alpha REAL NOT NULL DEFAULT 1.5,
+        delivery_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (pubkey, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_node_agg_window ON node_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_node_agg_updated ON node_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS service_aggregates (
+        service_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (service_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_service_agg_window ON service_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS operator_aggregates (
+        operator_id TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (operator_id, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_agg_window ON operator_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS route_aggregates (
+        route_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (route_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_route_agg_window ON route_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_caller ON route_aggregates(caller_hash);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_target ON route_aggregates(target_hash);
+    `);
+    recordVersion(db, 33, 'Phase 3 bayesian — score_snapshots +8 bayesian columns (additive) + 5 aggregates tables (endpoint/node/service/operator/route)');
+  }
+
+  // v34: Phase 3 C8 — drop legacy composite columns from score_snapshots.
+  // The table now holds bayesian-only state. Pre-v34 rows are retained with
+  // NULL bayesian fields; every repository query filters `p_success IS NOT NULL`
+  // to skip them, so the cold start of the bayesian time series is clean
+  // without losing forensic history.
+  //
+  // Requires SQLite 3.35+ (DROP COLUMN support). SATRANK prod runs 3.46.
+  if (!hasVersion(db, 34)) {
+    for (const col of ['score', 'components']) {
+      try { db.exec(`ALTER TABLE score_snapshots DROP COLUMN ${col}`); } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Tolerate re-runs: SQLite reports "no such column" if this migration
+        // has already been applied out-of-band (manual ops, dev resets).
+        if (!msg.includes('no such column')) throw err;
+      }
+    }
+    recordVersion(db, 34, 'Phase 3 C8 — DROP score_snapshots.score + score_snapshots.components (bayesian-only)');
+  }
+
+  // v35: Phase 3 refactor streaming — suppression du modèle 3-windows et
+  // adoption d'un unique posterior streaming par (target, source) avec
+  // décroissance exponentielle continue (τ = 7 jours). Cinq tables
+  // *_streaming_posteriors remplacent les *_aggregates pour la composante
+  // verdict. Cinq tables *_daily_buckets prennent en charge les compteurs
+  // d'affichage (last_24h/7d/30d). Observer garde sa place dans les buckets
+  // pour l'activité mais reste exclu des streaming posteriors (pas de poids
+  // dans le verdict — contrat Q3 préservé).
+  //
+  // Rationale : les *_aggregates avaient un bug latent — n_obs raw cumulatif
+  // + updated_at frais faisaient que selectWindow piquait toujours 24h même
+  // pour des targets probés quotidiennement, menant à des verdicts toujours
+  // INSUFFICIENT. Le nouveau modèle n'a plus de fenêtre discrète : un seul
+  // (α, β) par source, décroit en continu à la lecture + à l'écriture.
+  if (!hasVersion(db, 35)) {
+    // Note : v35 est purement additive. La suppression des cinq *_aggregates
+    // arrive en v36 une fois tous les callers migrés vers le nouveau modèle
+    // (fin de chaîne du refactor streaming). CI reste verte entre commits.
+
+    // Cinq tables streaming_posteriors. Une row par (id, source). Source
+    // limité aux trois contribuant au verdict : probe / report / paid.
+    // Observer est volontairement absent (contrat Q3).
+    db.exec(`
+      CREATE TABLE endpoint_streaming_posteriors (
+        url_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (url_hash, source)
+      );
+      CREATE INDEX idx_endpoint_streaming_ts ON endpoint_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE node_streaming_posteriors (
+        pubkey TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (pubkey, source)
+      );
+      CREATE INDEX idx_node_streaming_ts ON node_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE service_streaming_posteriors (
+        service_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (service_hash, source)
+      );
+      CREATE INDEX idx_service_streaming_ts ON service_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE operator_streaming_posteriors (
+        operator_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (operator_id, source)
+      );
+      CREATE INDEX idx_operator_streaming_ts ON operator_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE route_streaming_posteriors (
+        route_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (route_hash, source)
+      );
+      CREATE INDEX idx_route_streaming_ts ON route_streaming_posteriors(last_update_ts);
+      CREATE INDEX idx_route_streaming_caller ON route_streaming_posteriors(caller_hash);
+      CREATE INDEX idx_route_streaming_target ON route_streaming_posteriors(target_hash);
+    `);
+
+    // Cinq tables daily_buckets. Observer est autorisé ici (activité visible).
+    db.exec(`
+      CREATE TABLE endpoint_daily_buckets (
+        url_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (url_hash, source, day)
+      );
+      CREATE INDEX idx_endpoint_buckets_day ON endpoint_daily_buckets(day);
+
+      CREATE TABLE node_daily_buckets (
+        pubkey TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (pubkey, source, day)
+      );
+      CREATE INDEX idx_node_buckets_day ON node_daily_buckets(day);
+
+      CREATE TABLE service_daily_buckets (
+        service_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (service_hash, source, day)
+      );
+      CREATE INDEX idx_service_buckets_day ON service_daily_buckets(day);
+
+      CREATE TABLE operator_daily_buckets (
+        operator_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (operator_id, source, day)
+      );
+      CREATE INDEX idx_operator_buckets_day ON operator_daily_buckets(day);
+
+      CREATE TABLE route_daily_buckets (
+        route_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (route_hash, source, day)
+      );
+      CREATE INDEX idx_route_buckets_day ON route_daily_buckets(day);
+    `);
+
+    recordVersion(db, 35, 'Phase 3 refactor — streaming posteriors (5 tables) + daily buckets (5 tables), additive');
+  }
+
+  // v36: Phase 3 refactor — DROP les cinq tables *_aggregates après que tous
+  // les callers ont basculé sur streaming_posteriors + daily_buckets (C16). Le
+  // code applicatif n'y accède plus depuis C16 ; cette migration finalise le
+  // sweep en supprimant physiquement les tables mortes. SQLite 3.46 supporte
+  // DROP TABLE IF EXISTS sans contrainte.
+  if (!hasVersion(db, 36)) {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_route_agg_target;
+      DROP INDEX IF EXISTS idx_route_agg_caller;
+      DROP INDEX IF EXISTS idx_route_agg_window;
+      DROP TABLE IF EXISTS route_aggregates;
+
+      DROP INDEX IF EXISTS idx_operator_agg_window;
+      DROP TABLE IF EXISTS operator_aggregates;
+
+      DROP INDEX IF EXISTS idx_service_agg_window;
+      DROP TABLE IF EXISTS service_aggregates;
+
+      DROP INDEX IF EXISTS idx_node_agg_updated;
+      DROP INDEX IF EXISTS idx_node_agg_window;
+      DROP TABLE IF EXISTS node_aggregates;
+
+      DROP INDEX IF EXISTS idx_endpoint_agg_updated;
+      DROP INDEX IF EXISTS idx_endpoint_agg_window;
+      DROP TABLE IF EXISTS endpoint_aggregates;
+    `);
+    recordVersion(db, 36, 'Phase 3 refactor C17 — DROP 5 *_aggregates tables (streaming-only)');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -630,6 +957,142 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  36: (db) => {
+    // Restore the 5 *_aggregates tables at their v33 schema. Le contenu
+    // applicatif est perdu (plus personne n'écrivait depuis C16) ; un rollback
+    // les recrée vides pour rétablir la forme du schéma.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS endpoint_aggregates (
+        url_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        median_latency_ms INTEGER,
+        median_price_msat INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (url_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_window ON endpoint_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_updated ON endpoint_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS node_aggregates (
+        pubkey TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_observations INTEGER NOT NULL DEFAULT 0,
+        n_routable INTEGER NOT NULL DEFAULT 0,
+        n_delivered INTEGER NOT NULL DEFAULT 0,
+        n_reported_success INTEGER NOT NULL DEFAULT 0,
+        n_reported_failure INTEGER NOT NULL DEFAULT 0,
+        routing_alpha REAL NOT NULL DEFAULT 1.5,
+        routing_beta REAL NOT NULL DEFAULT 1.5,
+        delivery_alpha REAL NOT NULL DEFAULT 1.5,
+        delivery_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (pubkey, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_node_agg_window ON node_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_node_agg_updated ON node_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS service_aggregates (
+        service_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (service_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_service_agg_window ON service_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS operator_aggregates (
+        operator_id TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (operator_id, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_agg_window ON operator_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS route_aggregates (
+        route_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (route_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_route_agg_window ON route_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_caller ON route_aggregates(caller_hash);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_target ON route_aggregates(target_hash);
+    `);
+  },
+  35: (db) => {
+    // Rollback streaming refactor — drop 10 new tables. Les aggregates sont
+    // toujours présents puisque v35 est additive ; rien à restaurer ici.
+    db.exec('DROP INDEX IF EXISTS idx_route_buckets_day');
+    db.exec('DROP TABLE IF EXISTS route_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_operator_buckets_day');
+    db.exec('DROP TABLE IF EXISTS operator_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_service_buckets_day');
+    db.exec('DROP TABLE IF EXISTS service_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_node_buckets_day');
+    db.exec('DROP TABLE IF EXISTS node_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_buckets_day');
+    db.exec('DROP TABLE IF EXISTS endpoint_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_route_streaming_target');
+    db.exec('DROP INDEX IF EXISTS idx_route_streaming_caller');
+    db.exec('DROP INDEX IF EXISTS idx_route_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS route_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_operator_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS operator_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_service_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS service_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_node_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS node_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS endpoint_streaming_posteriors');
+  },
+  34: (db) => {
+    // Restore the legacy composite columns as NULL-able REAL/TEXT. Rollback
+    // recovers schema only — data that was already dropped stays gone.
+    try { db.exec('ALTER TABLE score_snapshots ADD COLUMN score REAL'); } catch { /* already present */ }
+    try { db.exec('ALTER TABLE score_snapshots ADD COLUMN components TEXT'); } catch { /* already present */ }
+  },
+  33: (db) => {
+    // Rollback Phase 3 additive : drop aggregates + drop bayesian columns.
+    // Les colonnes legacy score/components sont intouchées par v33 (restent en place).
+    db.exec('DROP INDEX IF EXISTS idx_route_agg_target');
+    db.exec('DROP INDEX IF EXISTS idx_route_agg_caller');
+    db.exec('DROP INDEX IF EXISTS idx_route_agg_window');
+    db.exec('DROP TABLE IF EXISTS route_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_operator_agg_window');
+    db.exec('DROP TABLE IF EXISTS operator_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_service_agg_window');
+    db.exec('DROP TABLE IF EXISTS service_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_node_agg_updated');
+    db.exec('DROP INDEX IF EXISTS idx_node_agg_window');
+    db.exec('DROP TABLE IF EXISTS node_aggregates');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_agg_updated');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_agg_window');
+    db.exec('DROP TABLE IF EXISTS endpoint_aggregates');
+    for (const col of ['posterior_alpha', 'posterior_beta', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'window', 'updated_at']) {
+      try { db.exec(`ALTER TABLE score_snapshots DROP COLUMN ${col}`); } catch { /* SQLite < 3.35 */ }
+    }
+  },
   32: (db) => {
     db.exec('DROP INDEX IF EXISTS idx_preimage_pool_consumed');
     db.exec('DROP INDEX IF EXISTS idx_preimage_pool_confidence');

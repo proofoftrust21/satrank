@@ -1,4 +1,6 @@
-// Temporal delta and trend tests
+// Temporal delta and trend tests — Phase 3 C8 bayesian shape.
+// Deltas are on the p_success posterior scale (0..1). Alert thresholds:
+//   drop -0.10 warning / -0.20 critical, surge +0.15 info, stable band ±0.02.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
@@ -7,14 +9,10 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { TrendService } from '../services/trendService';
 import { sha256 } from '../utils/crypto';
-import { METHODOLOGY_CHANGE_AT_UNIX } from '../config/scoring';
 import type { Agent, ScoreSnapshot } from '../types';
 
 const DAY = 86400;
-// Anchor the whole suite well past METHODOLOGY_CHANGE_AT_UNIX so tests that
-// insert snapshots at `NOW - 8*DAY` (pre-deltaValid shape) land post-cutoff
-// and keep a numeric delta7d. The cutoff-specific describes override this.
-const NOW = 1_776_240_000 + 30 * DAY; // cutoff + 30 days
+const NOW = 1_776_240_000 + 30 * DAY;
 
 function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
   return {
@@ -41,14 +39,26 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
   };
 }
 
-function insertSnapshot(repo: SnapshotRepository, agentHash: string, score: number, computedAt: number): void {
-  repo.insert({
+function insertSnapshot(
+  repo: SnapshotRepository,
+  agentHash: string,
+  pSuccess: number,
+  computedAt: number,
+): void {
+  const snap: ScoreSnapshot = {
     snapshot_id: uuid(),
     agent_hash: agentHash,
-    score,
-    components: JSON.stringify({ volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 }),
+    p_success: pSuccess,
+    ci95_low: Math.max(0, pSuccess - 0.05),
+    ci95_high: Math.min(1, pSuccess + 0.05),
+    n_obs: 10,
+    posterior_alpha: 1.5 + 10 * pSuccess,
+    posterior_beta: 1.5 + 10 * (1 - pSuccess),
+    window: '7d',
     computed_at: computedAt,
-  });
+    updated_at: computedAt,
+  };
+  repo.insert(snap);
 }
 
 describe('TrendService', () => {
@@ -79,7 +89,7 @@ describe('TrendService', () => {
     const hash = sha256('no-history');
     agentRepo.insert(makeAgent('no-history', { avg_score: 60 }));
 
-    const delta = trendService.computeDeltas(hash, 60);
+    const delta = trendService.computeDeltas(hash, 0.60);
 
     expect(delta.delta24h).toBeNull();
     expect(delta.delta7d).toBeNull();
@@ -87,82 +97,82 @@ describe('TrendService', () => {
     expect(delta.trend).toBe('stable');
   });
 
-  it('computes positive delta when score increased', () => {
+  it('computes positive delta when p_success increased', () => {
     const hash = sha256('rising-agent');
     agentRepo.insert(makeAgent('rising-agent', { avg_score: 70 }));
 
-    // 8 days ago: score was 50
-    insertSnapshot(snapshotRepo, hash, 50, NOW - 8 * DAY);
-    // 2 days ago: score was 60
-    insertSnapshot(snapshotRepo, hash, 60, NOW - 2 * DAY);
+    // 8 days ago: p_success was 0.50
+    insertSnapshot(snapshotRepo, hash, 0.50, NOW - 8 * DAY);
+    // 2 days ago: p_success was 0.60
+    insertSnapshot(snapshotRepo, hash, 0.60, NOW - 2 * DAY);
 
-    const delta = trendService.computeDeltas(hash, 70);
+    const delta = trendService.computeDeltas(hash, 0.70);
 
-    expect(delta.delta24h).toBe(10); // 70 - 60 (closest before 24h ago is 2d ago snap)
-    expect(delta.delta7d).toBe(20);  // 70 - 50 (closest before 7d ago is 8d ago snap)
+    expect(delta.delta24h).toBe(0.1);  // 0.70 - 0.60
+    expect(delta.delta7d).toBe(0.2);   // 0.70 - 0.50
     expect(delta.delta30d).toBeNull(); // no snapshot before 30d ago
     expect(delta.trend).toBe('rising');
   });
 
-  it('computes negative delta when score decreased', () => {
+  it('computes negative delta when p_success decreased', () => {
     const hash = sha256('falling-agent');
     agentRepo.insert(makeAgent('falling-agent', { avg_score: 40 }));
 
-    insertSnapshot(snapshotRepo, hash, 60, NOW - 8 * DAY);
-    insertSnapshot(snapshotRepo, hash, 50, NOW - 2 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.60, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.50, NOW - 2 * DAY);
 
-    const delta = trendService.computeDeltas(hash, 40);
+    const delta = trendService.computeDeltas(hash, 0.40);
 
-    expect(delta.delta7d).toBe(-20); // 40 - 60 (closest before 7d ago is 8d ago snap)
+    expect(delta.delta7d).toBe(-0.2);  // 0.40 - 0.60
     expect(delta.trend).toBe('falling');
   });
 
-  it('trend is stable when delta is within -2..+2', () => {
+  it('trend is stable when delta is within ±0.02', () => {
     const hash = sha256('stable-agent');
     agentRepo.insert(makeAgent('stable-agent', { avg_score: 51 }));
 
-    insertSnapshot(snapshotRepo, hash, 50, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.50, NOW - 8 * DAY);
 
-    const delta = trendService.computeDeltas(hash, 51);
+    const delta = trendService.computeDeltas(hash, 0.51);
 
-    expect(delta.delta7d).toBe(1);
+    expect(delta.delta7d).toBe(0.01);
     expect(delta.trend).toBe('stable');
   });
 
   // --- computeAlerts ---
 
-  it('generates score_drop alert when delta7d <= -10', () => {
+  it('generates score_drop alert when delta7d <= -0.10', () => {
     const hash = sha256('dropping');
     agentRepo.insert(makeAgent('dropping', { avg_score: 40 }));
-    insertSnapshot(snapshotRepo, hash, 55, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.55, NOW - 8 * DAY);
 
-    const delta = trendService.computeDeltas(hash, 40);
-    const alerts = trendService.computeAlerts(hash, 40, delta);
+    const delta = trendService.computeDeltas(hash, 0.40);
+    const alerts = trendService.computeAlerts(hash, 0.40, delta);
 
     expect(alerts.some(a => a.type === 'score_drop')).toBe(true);
     expect(alerts.find(a => a.type === 'score_drop')?.severity).toBe('warning');
   });
 
-  it('generates critical alert when delta7d <= -20', () => {
+  it('generates critical alert when delta7d <= -0.20', () => {
     const hash = sha256('crashing');
     agentRepo.insert(makeAgent('crashing', { avg_score: 30 }));
-    insertSnapshot(snapshotRepo, hash, 55, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.55, NOW - 8 * DAY);
 
-    const delta = trendService.computeDeltas(hash, 30);
-    const alerts = trendService.computeAlerts(hash, 30, delta);
+    const delta = trendService.computeDeltas(hash, 0.30);
+    const alerts = trendService.computeAlerts(hash, 0.30, delta);
 
     const drop = alerts.find(a => a.type === 'score_drop');
     expect(drop).toBeDefined();
     expect(drop?.severity).toBe('critical');
   });
 
-  it('generates score_surge alert when delta7d >= 15', () => {
+  it('generates score_surge alert when delta7d >= 0.15', () => {
     const hash = sha256('surging');
     agentRepo.insert(makeAgent('surging', { avg_score: 75 }));
-    insertSnapshot(snapshotRepo, hash, 55, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.55, NOW - 8 * DAY);
 
-    const delta = trendService.computeDeltas(hash, 75);
-    const alerts = trendService.computeAlerts(hash, 75, delta);
+    const delta = trendService.computeDeltas(hash, 0.75);
+    const alerts = trendService.computeAlerts(hash, 0.75, delta);
 
     expect(alerts.some(a => a.type === 'score_surge')).toBe(true);
     expect(alerts.find(a => a.type === 'score_surge')?.severity).toBe('info');
@@ -175,8 +185,8 @@ describe('TrendService', () => {
       avg_score: 20,
     }));
 
-    const delta = trendService.computeDeltas(hash, 20);
-    const alerts = trendService.computeAlerts(hash, 20, delta);
+    const delta = trendService.computeDeltas(hash, 0.20);
+    const alerts = trendService.computeAlerts(hash, 0.20, delta);
 
     expect(alerts.some(a => a.type === 'new_agent')).toBe(true);
   });
@@ -188,8 +198,8 @@ describe('TrendService', () => {
       avg_score: 30,
     }));
 
-    const delta = trendService.computeDeltas(hash, 30);
-    const alerts = trendService.computeAlerts(hash, 30, delta);
+    const delta = trendService.computeDeltas(hash, 0.30);
+    const alerts = trendService.computeAlerts(hash, 0.30, delta);
 
     expect(alerts.some(a => a.type === 'inactive')).toBe(true);
     expect(alerts.find(a => a.type === 'inactive')?.severity).toBe('warning');
@@ -198,10 +208,10 @@ describe('TrendService', () => {
   it('generates no alerts for normal stable agent', () => {
     const hash = sha256('normal');
     agentRepo.insert(makeAgent('normal', { avg_score: 50 }));
-    insertSnapshot(snapshotRepo, hash, 49, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.49, NOW - 8 * DAY);
 
-    const delta = trendService.computeDeltas(hash, 50);
-    const alerts = trendService.computeAlerts(hash, 50, delta);
+    const delta = trendService.computeDeltas(hash, 0.50);
+    const alerts = trendService.computeAlerts(hash, 0.50, delta);
 
     expect(alerts).toHaveLength(0);
   });
@@ -209,28 +219,34 @@ describe('TrendService', () => {
   // --- getTopMovers ---
 
   it('returns top movers up and down', () => {
-    // Insert several agents with snapshots showing different deltas
+    // Insert several agents with snapshots showing different deltas.
+    // Note: getTopMovers reads the *current* p_success from the latest
+    // snapshot (not agents.avg_score), so we write both the past and
+    // current snapshot.
     const agents = [
-      { alias: 'mover-up', currentScore: 80, pastScore: 50 },
-      { alias: 'mover-down', currentScore: 30, pastScore: 60 },
-      { alias: 'mover-stable', currentScore: 50, pastScore: 50 },
+      { alias: 'mover-up',     avg: 80, current: 0.80, past: 0.50 },
+      { alias: 'mover-down',   avg: 30, current: 0.30, past: 0.60 },
+      { alias: 'mover-stable', avg: 50, current: 0.50, past: 0.50 },
     ];
 
     for (const a of agents) {
       const hash = sha256(a.alias);
-      agentRepo.insert(makeAgent(a.alias, { avg_score: a.currentScore }));
-      insertSnapshot(snapshotRepo, hash, a.pastScore, NOW - 8 * DAY);
+      agentRepo.insert(makeAgent(a.alias, { avg_score: a.avg }));
+      insertSnapshot(snapshotRepo, hash, a.past, NOW - 8 * DAY);
+      insertSnapshot(snapshotRepo, hash, a.current, NOW - 1);
     }
 
     const { up, down } = trendService.getTopMovers(5);
 
     expect(up.length).toBeGreaterThanOrEqual(1);
     expect(up[0].alias).toBe('mover-up');
-    expect(up[0].delta7d).toBe(30); // 80 - 50
+    expect(up[0].delta7d).toBe(0.3);    // 0.80 - 0.50
+    expect(up[0].pSuccess).toBe(0.80);
 
     expect(down.length).toBeGreaterThanOrEqual(1);
     expect(down[0].alias).toBe('mover-down');
-    expect(down[0].delta7d).toBe(-30); // 30 - 60
+    expect(down[0].delta7d).toBe(-0.3); // 0.30 - 0.60
+    expect(down[0].pSuccess).toBe(0.30);
   });
 
   it('returns empty movers when no historical data', () => {
@@ -242,198 +258,107 @@ describe('TrendService', () => {
     expect(down).toHaveLength(0);
   });
 
-  describe('movers float + methodology surface', () => {
-    // Anchor NOW 10 days past the cutoff so `sevenDaysAgo = NOW - 7*DAY` sits
-    // after the cutoff. That lets us craft two cases: a snapshot strictly
-    // before the cutoff (pre-methodology) AND a snapshot in [CUTOFF, NOW-7d]
-    // (post-methodology, still inside the 7d window).
-    const SIM_NOW = METHODOLOGY_CHANGE_AT_UNIX + 10 * DAY;
+  it('top movers surface clean 3-decimal p_success delta', () => {
+    // Guards against float accumulation noise (e.g. -0.17439999... instead of -0.174).
+    const hash = sha256('float-check');
+    agentRepo.insert(makeAgent('float-check', { avg_score: 80 }));
+    insertSnapshot(snapshotRepo, hash, 0.98, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.80, NOW - 1);
 
-    beforeEach(() => {
-      vi.useFakeTimers();
-      vi.setSystemTime(SIM_NOW * 1000);
-    });
-
-    afterEach(() => {
-      vi.useRealTimers();
-    });
-
-    it('movers skip candidates whose 7d comparator predates the cutoff', () => {
-      // A mover ranked by a pre-cutoff comparator is noise: the number reflects
-      // the scoring regime shift, not real movement. Hide them from the list
-      // entirely rather than emitting `delta7d: null` in a delta-ordered list.
-      const hash = sha256('pre-cutoff-mover');
-      agentRepo.insert(makeAgent('pre-cutoff-mover', { avg_score: 82.35 }));
-      insertSnapshot(snapshotRepo, hash, 70, METHODOLOGY_CHANGE_AT_UNIX - 6 * DAY);
-
-      const { up } = trendService.getTopMovers(5);
-      expect(up.find(x => x.alias === 'pre-cutoff-mover')).toBeUndefined();
-    });
-
-    it('movers surface post-cutoff candidates with deltaValid=true and clean float delta', () => {
-      // Guard against the -17.439999999999998 regression and confirm that a
-      // post-cutoff comparator appears in the list with proper surfaces.
-      const hash = sha256('post-cutoff-mover');
-      agentRepo.insert(makeAgent('post-cutoff-mover', { avg_score: 80.56 }));
-      // Snapshot lives after the cutoff but before `sevenDaysAgo` (= cutoff+3d).
-      insertSnapshot(snapshotRepo, hash, 98, METHODOLOGY_CHANGE_AT_UNIX + 1 * DAY);
-
-      const { down } = trendService.getTopMovers(5);
-      const m = down.find(x => x.alias === 'post-cutoff-mover');
-      expect(m).toBeDefined();
-      expect(m!.score).toBe(81);          // Math.round(80.56) = 81 (API contract)
-      expect(m!.scoreFine).toBe(80.56);   // 2-decimal float for display
-      expect(m!.delta7d).toBe(-17.4);     // rounded to 1dp, no -17.4399... noise
-      expect(m!.deltaValid).toBe(true);
-    });
+    const { down } = trendService.getTopMovers(5);
+    const m = down.find(x => x.alias === 'float-check');
+    expect(m).toBeDefined();
+    expect(m!.pSuccess).toBe(0.80);
+    expect(m!.delta7d).toBe(-0.18);
+    expect(m!.deltaValid).toBe(true);
   });
 
   // --- getNetworkTrends ---
 
-  it('returns network trends with avgScoreDelta7d', () => {
-    // Two agents with history
+  it('returns network trends with avgPSuccessDelta7d', () => {
     const hash1 = sha256('trend-a');
     const hash2 = sha256('trend-b');
     agentRepo.insert(makeAgent('trend-a', { avg_score: 70 }));
     agentRepo.insert(makeAgent('trend-b', { avg_score: 60 }));
 
-    insertSnapshot(snapshotRepo, hash1, 50, NOW - 8 * DAY);
-    insertSnapshot(snapshotRepo, hash2, 50, NOW - 8 * DAY);
+    // Past snapshots at 8d, current at now-1s.
+    insertSnapshot(snapshotRepo, hash1, 0.50, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash2, 0.50, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash1, 0.70, NOW - 1);
+    insertSnapshot(snapshotRepo, hash2, 0.60, NOW - 1);
 
     const trends = trendService.getNetworkTrends();
 
-    // Current avg: (70+60)/2 = 65, past avg: (50+50)/2 = 50
-    expect(trends.avgScoreDelta7d).toBe(15);
+    // Current avg: (0.70+0.60)/2 = 0.65, past avg: 0.50 → delta = 0.15
+    expect(trends.avgPSuccessDelta7d).toBe(0.15);
     expect(trends.topMoversUp.length).toBeGreaterThanOrEqual(1);
   });
 
-  // --- Snapshot repo delta methods ---
+  // --- Snapshot repo p_success methods ---
 
-  it('findScoreAt returns closest score at or before timestamp', () => {
-    const hash = sha256('score-at');
-    agentRepo.insert(makeAgent('score-at'));
+  it('findPSuccessAt returns closest p_success at or before timestamp', () => {
+    const hash = sha256('p-at');
+    agentRepo.insert(makeAgent('p-at'));
 
-    insertSnapshot(snapshotRepo, hash, 40, NOW - 10 * DAY);
-    insertSnapshot(snapshotRepo, hash, 50, NOW - 5 * DAY);
-    insertSnapshot(snapshotRepo, hash, 60, NOW - 1 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.40, NOW - 10 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.50, NOW - 5 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.60, NOW - 1 * DAY);
 
-    // 7 days ago should return the 10-day-old snapshot (score 40)
-    const score = snapshotRepo.findScoreAt(hash, NOW - 7 * DAY);
-    expect(score).toBe(40);
-
-    // 3 days ago should return the 5-day-old snapshot (score 50)
-    const score2 = snapshotRepo.findScoreAt(hash, NOW - 3 * DAY);
-    expect(score2).toBe(50);
-
-    // Now should return latest (score 60)
-    const score3 = snapshotRepo.findScoreAt(hash, NOW);
-    expect(score3).toBe(60);
+    expect(snapshotRepo.findPSuccessAt(hash, NOW - 7 * DAY)).toBe(0.40);
+    expect(snapshotRepo.findPSuccessAt(hash, NOW - 3 * DAY)).toBe(0.50);
+    expect(snapshotRepo.findPSuccessAt(hash, NOW)).toBe(0.60);
   });
 
-  it('findScoreAt returns null when no snapshot before timestamp', () => {
+  it('findPSuccessAt returns null when no snapshot before timestamp', () => {
     const hash = sha256('future');
     agentRepo.insert(makeAgent('future'));
-    insertSnapshot(snapshotRepo, hash, 50, NOW - 1 * DAY);
+    insertSnapshot(snapshotRepo, hash, 0.50, NOW - 1 * DAY);
 
-    const score = snapshotRepo.findScoreAt(hash, NOW - 10 * DAY);
-    expect(score).toBeNull();
+    expect(snapshotRepo.findPSuccessAt(hash, NOW - 10 * DAY)).toBeNull();
   });
 
-  it('findAvgScoreAt returns network average at timestamp', () => {
+  it('findAvgPSuccessAt returns network average at timestamp', () => {
     const hash1 = sha256('avg-a');
     const hash2 = sha256('avg-b');
     agentRepo.insert(makeAgent('avg-a'));
     agentRepo.insert(makeAgent('avg-b'));
 
-    insertSnapshot(snapshotRepo, hash1, 60, NOW - 8 * DAY);
-    insertSnapshot(snapshotRepo, hash2, 40, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash1, 0.60, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hash2, 0.40, NOW - 8 * DAY);
 
-    const avg = snapshotRepo.findAvgScoreAt(NOW - 7 * DAY);
-    expect(avg).toBe(50); // (60+40)/2
+    const avg = snapshotRepo.findAvgPSuccessAt(NOW - 7 * DAY);
+    expect(avg).toBe(0.5); // (0.60+0.40)/2
   });
 
-  // --- deltaValid (methodology-change badge) ---
-  // Context: the Option D multi-tier probe regime shipped 2026-04-16. The 7d
-  // window includes pre- and post-methodology snapshots, so the raw numeric
-  // delta would mix two scoring regimes and make stable hubs look like they
-  // crashed (-18 on ACINQ was a scoring shift, not a degradation). `deltaValid`
-  // is the signal the UI uses to render "—" or a methodology-change badge.
+  // --- deltaValid: always true post-Phase 3 (no methodology cutoff) ---
 
-  it('deltaValid is true when no comparator exists (nothing to badge)', () => {
+  it('deltaValid is true when no comparator exists', () => {
     const hash = sha256('fresh-agent');
     agentRepo.insert(makeAgent('fresh-agent', { avg_score: 70 }));
-    // no snapshots at all
 
-    const delta = trendService.computeDeltas(hash, 70);
+    const delta = trendService.computeDeltas(hash, 0.70);
 
     expect(delta.delta7d).toBeNull();
     expect(delta.deltaValid).toBe(true);
   });
 
-  describe('deltaValid — methodology cutoff', () => {
-    // Fake the clock to 8 days after the Option D cutoff so both pre- and
-    // post-cutoff comparator snapshots fit inside the 7-day window. Without
-    // fake time, real-time tests can't exercise the "after cutoff" branch
-    // because NOW < cutoff + 7d until 2026-04-23.
-    const CUTOFF = 1_776_240_000; // METHODOLOGY_CHANGE_AT_UNIX
-    const SIM_NOW = CUTOFF + 8 * DAY; // 8 days after cutoff
+  it('computeDeltasBatch returns delta7d per agent', () => {
+    const hashA = sha256('batch-a');
+    const hashB = sha256('batch-b');
+    agentRepo.insert(makeAgent('batch-a', { avg_score: 80 }));
+    agentRepo.insert(makeAgent('batch-b', { avg_score: 80 }));
 
-    beforeEach(() => {
-      vi.useFakeTimers();
-      vi.setSystemTime(SIM_NOW * 1000);
-    });
+    insertSnapshot(snapshotRepo, hashA, 0.95, NOW - 8 * DAY);
+    insertSnapshot(snapshotRepo, hashB, 0.78, NOW - 8 * DAY);
 
-    afterEach(() => {
-      vi.useRealTimers();
-    });
+    const map = trendService.computeDeltasBatch([
+      { hash: hashA, pSuccess: 0.80 },
+      { hash: hashB, pSuccess: 0.80 },
+    ]);
 
-    it('deltaValid=false nulls out delta7d so the UI renders "—" instead of a misleading number', () => {
-      const hash = sha256('pre-cutoff-agent');
-      agentRepo.insert(makeAgent('pre-cutoff-agent', { avg_score: 80 }));
-      // 8d ago (relative to SIM_NOW) — just before the cutoff
-      insertSnapshot(snapshotRepo, hash, 95, CUTOFF - DAY);
-
-      const delta = trendService.computeDeltas(hash, 80);
-
-      // The numeric delta is suppressed — a -15 badge here would wrongly
-      // suggest the agent degraded, when the drop reflects the scoring
-      // methodology change (Option D). Flag stays on the envelope.
-      expect(delta.delta7d).toBeNull();
-      expect(delta.deltaValid).toBe(false);
-    });
-
-    it('deltaValid is true when 7d comparator is at/after the cutoff', () => {
-      const hash = sha256('post-cutoff-agent');
-      agentRepo.insert(makeAgent('post-cutoff-agent', { avg_score: 80 }));
-      // 7d-8d ago window; snapshot at cutoff itself counts as post-cutoff.
-      insertSnapshot(snapshotRepo, hash, 78, CUTOFF + DAY);
-
-      const delta = trendService.computeDeltas(hash, 80);
-
-      expect(delta.delta7d).toBe(2);
-      expect(delta.deltaValid).toBe(true);
-    });
-
-    it('computeDeltasBatch nulls delta7d for pre-cutoff agents and keeps it for post-cutoff', () => {
-      const preHash = sha256('batch-pre');
-      const postHash = sha256('batch-post');
-      agentRepo.insert(makeAgent('batch-pre', { avg_score: 80 }));
-      agentRepo.insert(makeAgent('batch-post', { avg_score: 80 }));
-
-      insertSnapshot(snapshotRepo, preHash, 95, CUTOFF - DAY);
-      insertSnapshot(snapshotRepo, postHash, 78, CUTOFF + DAY);
-
-      const map = trendService.computeDeltasBatch([
-        { hash: preHash, score: 80 },
-        { hash: postHash, score: 80 },
-      ]);
-
-      // Pre-cutoff: flag off, numeric delta suppressed (would be -15).
-      expect(map.get(preHash)!.deltaValid).toBe(false);
-      expect(map.get(preHash)!.delta7d).toBeNull();
-      // Post-cutoff: flag on, real numeric delta surfaces.
-      expect(map.get(postHash)!.deltaValid).toBe(true);
-      expect(map.get(postHash)!.delta7d).toBe(2);
-    });
+    expect(map.get(hashA)!.deltaValid).toBe(true);
+    expect(map.get(hashA)!.delta7d).toBe(-0.15);
+    expect(map.get(hashB)!.deltaValid).toBe(true);
+    expect(map.get(hashB)!.delta7d).toBe(0.02);
   });
 });

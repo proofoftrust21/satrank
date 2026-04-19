@@ -7,6 +7,7 @@ import type { AttestationRepository } from '../repositories/attestationRepositor
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
 import type { ScoringService } from './scoringService';
+import type { BayesianScoringService } from './bayesianScoringService';
 import type { Attestation, ReportRequest, ReportResponse, ReportOutcome, AttestationCategory } from '../types';
 import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
 import { windowBucket } from '../utils/dualWriteLogger';
@@ -56,6 +57,13 @@ export class ReportService {
     private db?: Database.Database,
     private dualWriteMode: DualWriteMode = 'off',
     private dualWriteLogger?: DualWriteLogger,
+    /** Optionnel — quand fourni, chaque report insère une observation dans les
+     *  aggregates bayesiens (operator + endpoint, 3 fenêtres). Décloisonné du
+     *  dualWriteMode (Q1 Phase 3) : l'ingestion se fait même en mode='off'
+     *  pour que le scoring ait du signal. Fallback silencieux quand absent —
+     *  les tests unitaires qui n'ont pas besoin du pipeline bayésien peuvent
+     *  omettre la dépendance. */
+    private bayesian?: BayesianScoringService,
   ) {}
 
   /** Looks up decide_log to decide the tx source:
@@ -165,13 +173,12 @@ export class ReportService {
       // S2: do NOT store raw preimage — evidence_hash holds the paymentHash
       const existingTx = this.txRepo.findById(txId);
       if (!existingTx) {
-        // operator_id = target agent_hash (already sha256 of the pubkey per
-        // agents schema — matches §1.1's operator_id definition without
-        // re-hashing). endpoint_hash stays NULL: /api/report carries no
-        // target_url today, so we can't derive the URL's canonical hash here.
-        // §5 backfill will not fill it either (source='report' rows have no
-        // URL to reach back to); a future ReportRequest extension can tighten
-        // this when target_url becomes available.
+        // endpoint_hash = operator_id = target agent_hash. Sans target_url
+        // disponible dans /api/report, on utilise le hash de l'agent comme clé
+        // de reachability — cohérent avec probeCrawler (pubkey_hash sert de
+        // double clé endpoint+operator pour les nodes sans URL). Indispensable
+        // pour que `bayesianVerdictService.loadObservations` retrouve les rows
+        // report quand il filtre par endpoint_hash = target.
         const reportTx = {
           tx_id: txId,
           sender_hash: input.reporter,
@@ -188,7 +195,7 @@ export class ReportService {
         // Otherwise it's a standalone observation.
         const source = this.classifySource(input.l402PaymentHash, input.target);
         const enrichment: DualWriteEnrichment = {
-          endpoint_hash: null,
+          endpoint_hash: input.target,
           operator_id: input.target,
           source,
           window_bucket: windowBucket(now),
@@ -200,6 +207,24 @@ export class ReportService {
           source === 'intent' ? 'decideService' : 'reportService',
           this.dualWriteLogger,
         );
+
+        // Bridge report → bayesian streaming. Q1 : ingestion systématique,
+        // ignore le flag dualWriteMode. La pondération par tier est appliquée
+        // à l'ingestion via weightForSource. Les intents (decide_log) ne sont
+        // PAS ingérés — source='intent' n'entre pas dans cette branche.
+        // Tier dérivé du verified flag : preimage-verified → 'nip98' (poids
+        // plein 1.0) ; sans preimage → 'low' (0.3), baseline conservateur.
+        if (this.bayesian && source === 'report') {
+          this.bayesian.ingestStreaming({
+            success: input.outcome === 'success',
+            timestamp: now,
+            source: 'report',
+            tier: verified ? 'nip98' : 'low',
+            endpointHash: input.target,
+            operatorId: input.target,
+            nodePubkey: input.target,
+          });
+        }
       }
 
       this.attestationRepo.insert(attestation);
@@ -348,7 +373,7 @@ export class ReportService {
           protocol: 'bolt11' as const,
         };
         const enrichment: DualWriteEnrichment = {
-          endpoint_hash: null,
+          endpoint_hash: input.target,
           operator_id: input.target,
           source: 'report',
           window_bucket: windowBucket(now),
@@ -363,6 +388,22 @@ export class ReportService {
           'reportService',
           this.dualWriteLogger,
         );
+
+        // Bridge anonymous report → bayesian streaming. Le PreimagePoolTier
+        // (high/medium/low) mappe directement au ReportTier bayesien — la
+        // preimage prouve le paiement mais pas l'authenticité du payeur,
+        // donc jamais 'nip98'.
+        if (this.bayesian) {
+          this.bayesian.ingestStreaming({
+            success: input.outcome === 'success',
+            timestamp: now,
+            source: 'report',
+            tier: input.tier,
+            endpointHash: input.target,
+            operatorId: input.target,
+            nodePubkey: input.target,
+          });
+        }
       }
 
       this.attestationRepo.insert(attestation);

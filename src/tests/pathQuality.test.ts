@@ -12,6 +12,7 @@ import { RiskService } from '../services/riskService';
 import { VerdictService } from '../services/verdictService';
 import { SurvivalService } from '../services/survivalService';
 import { DecideService } from '../services/decideService';
+import { createBayesianVerdictService, seedSafeBayesianObservations } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 
 // --- computePathQuality unit tests (exported for direct testing) ---
@@ -96,7 +97,7 @@ describe('decide / pathQuality non-regression', () => {
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
     const riskService = new RiskService();
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
     const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
     decideService = new DecideService({
       agentRepo, attestationRepo, scoringService, trendService, riskService,
@@ -112,13 +113,19 @@ describe('decide / pathQuality non-regression', () => {
       VALUES (?, ?, 'ACINQ-test', ?, ?, 'lightning_graph', 2000, 97, 38000000000, 4, 1, 10, 500)
     `).run(testHash, testPubkey, now - 8 * 365 * 86400, now);
 
-    // High-score snapshot
+    // Bayesian posterior snapshot consistent with a high-trust ACINQ-like node.
     snapshotRepo.insert({
       snapshot_id: 'test-snap-1',
       agent_hash: testHash,
-      score: 97,
-      components: JSON.stringify({ volume: 100, reputation: 77, seniority: 98, regularity: 84, diversity: 100 }),
+      p_success: 0.97,
+      ci95_low: 0.92,
+      ci95_high: 0.99,
+      n_obs: 50,
+      posterior_alpha: 1.5 + 50 * 0.97,
+      posterior_beta: 1.5 + 50 * 0.03,
+      window: '7d',
       computed_at: now,
+      updated_at: now,
     });
     // Reachable probe
     probeRepo.insert({
@@ -130,6 +137,9 @@ describe('decide / pathQuality non-regression', () => {
       estimated_fee_msat: null,
       failure_reason: null,
     });
+    // Bayesian posterior: seed converging observations so verdict is SAFE.
+    // Under the new decide semantics, go=true requires verdict=SAFE.
+    seedSafeBayesianObservations(db, testHash, { now });
   });
 
   afterAll(() => db.close());
@@ -144,11 +154,11 @@ describe('decide / pathQuality non-regression', () => {
     expect(result.components.pathQuality).toBe(0.5);
   });
 
-  it('response includes all 5 components as numbers in [0,1]', async () => {
+  it('response includes all 3 components as numbers in [0,1]', async () => {
     const callerHash = sha256('test-caller');
     const result = await decideService.decide(testHash, callerHash);
 
-    for (const key of ['trustScore', 'routable', 'available', 'empirical', 'pathQuality'] as const) {
+    for (const key of ['routable', 'available', 'pathQuality'] as const) {
       expect(typeof result.components[key]).toBe('number');
       expect(result.components[key]).toBeGreaterThanOrEqual(0);
       expect(result.components[key]).toBeLessThanOrEqual(1);

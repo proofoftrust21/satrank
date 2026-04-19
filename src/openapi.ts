@@ -115,8 +115,9 @@ export const openapiSpec = {
     },
     '/agent/{publicKeyHash}/history': {
       get: {
-        summary: 'Get agent score history',
+        summary: 'Get agent posterior history',
         operationId: 'getAgentHistory',
+        description: 'Returns the current Bayesian posterior. Posterior-history samples (data[]) land with the Commit 8 aggregate tables; the response shape is stable.',
         tags: ['Agents'],
         security: [{ l402: [] }],
         parameters: [
@@ -126,15 +127,15 @@ export const openapiSpec = {
         ],
         responses: {
           '200': {
-            description: 'Paginated score history enriched with deltas',
+            description: 'Current posterior + paginated history samples',
             content: { 'application/json': { schema: {
               type: 'object',
               properties: {
                 data: {
                   type: 'array',
-                  items: { $ref: '#/components/schemas/EnrichedSnapshot' },
+                  items: { type: 'object', description: 'Posterior history sample (populated in Commit 8).' },
                 },
-                delta: { $ref: '#/components/schemas/ScoreDelta' },
+                bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
                 meta: { $ref: '#/components/schemas/PaginationMeta' },
               },
             } } },
@@ -177,22 +178,24 @@ export const openapiSpec = {
     },
     '/agents/movers': {
       get: {
-        summary: 'Top movers (7-day score change)',
+        summary: 'Top posterior movers (Commit 8)',
         operationId: 'getTopMovers',
+        description: 'Returns agents with the biggest posterior shifts. Posterior-delta movers require the Commit 8 aggregate tables; the response returns an empty envelope until those land.',
         tags: ['Agents'],
         responses: {
           '200': {
-            description: 'Agents with biggest score changes in the last 7 days',
+            description: 'Empty until Commit 8 aggregate tables ship',
             content: { 'application/json': { schema: {
               type: 'object',
               properties: {
                 data: {
                   type: 'object',
                   properties: {
-                    gainers: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
-                    losers: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
+                    gainers: { type: 'array', items: { $ref: '#/components/schemas/AgentSummary' } },
+                    losers: { type: 'array', items: { $ref: '#/components/schemas/AgentSummary' } },
                   },
                 },
+                meta: { type: 'object', properties: { note: { type: 'string' } } },
               },
             } } },
           },
@@ -212,10 +215,10 @@ export const openapiSpec = {
             in: 'query',
             schema: {
               type: 'string',
-              enum: ['score', 'volume', 'reputation', 'seniority', 'regularity', 'diversity'],
-              default: 'score',
+              enum: ['p_success', 'n_obs', 'ci95_width', 'window_freshness'],
+              default: 'p_success',
             },
-            description: 'Sort leaderboard by total score (default) or individual component. Use reputation to find reliable small nodes.',
+            description: 'Bayesian sort axis. `p_success` (posterior mean, DESC) is the default; `n_obs` (observation count, DESC), `ci95_width` (tighter posterior, ASC), and `window_freshness` (more recent window, DESC) are supported. Legacy composite axes (score, volume, reputation, seniority, regularity, diversity) return 400.',
           },
         ],
         responses: {
@@ -393,7 +396,7 @@ export const openapiSpec = {
               data: { type: 'object', properties: {
                 candidates: { type: 'array', items: { type: 'object', properties: {
                   publicKeyHash: { type: 'string' }, alias: { type: ['string', 'null'] },
-                  score: { type: 'integer' }, verdict: { type: 'string', enum: ['SAFE','RISKY','UNKNOWN'] },
+                  bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
                   pathfinding: { $ref: '#/components/schemas/PathfindingResult' },
                 } } },
                 totalQueried: { type: 'integer', description: 'Number of targets submitted' },
@@ -551,14 +554,11 @@ export const openapiSpec = {
         ],
         responses: {
           '200': { description: 'Changed verdicts since the given timestamp', content: { 'application/json': { schema: { type: 'object', properties: {
-            data: { type: 'array', items: { type: 'object', properties: {
+            data: { type: 'array', items: { type: 'object', required: ['publicKeyHash', 'alias', 'bayesian', 'changedAt'], properties: {
               publicKeyHash: { type: 'string' },
               alias: { type: ['string', 'null'] },
-              score: { type: 'integer' },
-              previousScore: { type: ['integer', 'null'] },
-              verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
-              components: { type: ['object', 'null'] },
-              changedAt: { type: 'integer' },
+              bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
+              changedAt: { type: 'integer', description: 'Unix timestamp of the posterior change.' },
             } } },
             meta: { type: 'object', properties: {
               since: { type: 'integer' },
@@ -575,14 +575,14 @@ export const openapiSpec = {
       get: {
         summary: 'Discover L402 services by category or keyword',
         operationId: 'searchServices',
-        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with SatRank trust data (node score, verdict, uptime). Free endpoint — no L402 required. Data sourced from 402index.io, refreshed every 24h.',
+        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with the SatRank canonical Bayesian block for the backing Lightning node. Free endpoint — no L402 required. Data sourced from 402index.io, refreshed every 24h.',
         tags: ['Discovery'],
         parameters: [
           { name: 'q', in: 'query', required: false, schema: { type: 'string', maxLength: 100 }, description: 'Fulltext search across name, description, category, and provider' },
           { name: 'category', in: 'query', required: false, schema: { type: 'string' }, description: 'Filter by normalized category (ai, data, tools, bitcoin, media, social, earn)' },
-          { name: 'minScore', in: 'query', required: false, schema: { type: 'integer', minimum: 0, maximum: 100 }, description: 'Minimum SatRank trust score of the backing Lightning node' },
+          { name: 'minPSuccess', in: 'query', required: false, schema: { type: 'number', minimum: 0, maximum: 1 }, description: 'Minimum posterior p_success (0-1) of the backing Lightning node. Replaces legacy `minScore`; composite axes return 400.' },
           { name: 'minUptime', in: 'query', required: false, schema: { type: 'number', minimum: 0, maximum: 1 }, description: 'Minimum HTTP uptime ratio (0-1). Requires at least 3 health checks.' },
-          { name: 'sort', in: 'query', required: false, schema: { type: 'string', enum: ['score', 'price', 'uptime'] }, description: 'Sort order (default: most-checked first)' },
+          { name: 'sort', in: 'query', required: false, schema: { type: 'string', enum: ['p_success', 'price', 'uptime'] }, description: 'Sort order (default: most-checked first). `p_success` replaces legacy `score` axis.' },
           { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 } },
           { name: 'offset', in: 'query', required: false, schema: { type: 'integer', minimum: 0, default: 0 } },
         ],
@@ -601,8 +601,7 @@ export const openapiSpec = {
               node: { type: ['object', 'null'], properties: {
                 publicKeyHash: { type: 'string' },
                 alias: { type: ['string', 'null'] },
-                score: { type: ['integer', 'null'] },
-                verdict: { type: ['string', 'null'], enum: ['SAFE', 'RISKY', 'UNKNOWN', null] },
+                bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
               } },
             } } },
             meta: { $ref: '#/components/schemas/PaginationMeta' },
@@ -683,6 +682,30 @@ export const openapiSpec = {
         },
       },
     },
+    '/endpoint/{url_hash}': {
+      get: {
+        summary: 'Bayesian detail for a single HTTP endpoint',
+        operationId: 'getEndpointByUrlHash',
+        description: 'Returns the canonical Bayesian block for an HTTP endpoint, keyed by the sha256 hex of its canonicalized URL (endpoint_hash). Metadata and HTTP health are included when a matching service_endpoints row is known; they are null otherwise so the Bayesian view works even before discovery has ingested the URL.',
+        tags: ['Discovery'],
+        parameters: [
+          {
+            name: 'url_hash',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            description: 'sha256 hex of the canonicalized URL (endpoint_hash).',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Endpoint Bayesian block + optional metadata',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/EndpointResponse' } } },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+        },
+      },
+    },
     '/openapi.json': {
       get: {
         summary: 'OpenAPI specification',
@@ -723,6 +746,70 @@ export const openapiSpec = {
       },
     },
     schemas: {
+      BayesianSourceBlock: {
+        oneOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'weight_total'],
+            properties: {
+              p_success: { type: 'number', minimum: 0, maximum: 1 },
+              ci95_low:  { type: 'number', minimum: 0, maximum: 1 },
+              ci95_high: { type: 'number', minimum: 0, maximum: 1 },
+              n_obs: { type: 'number', description: 'Number of raw observations (weighted sum of successes + failures).' },
+              weight_total: { type: 'number', description: 'Sum of per-observation weights (source_weight × temporal_decay).' },
+            },
+          },
+        ],
+      },
+      BayesianConvergence: {
+        type: 'object',
+        required: ['converged', 'sources_above_threshold', 'threshold'],
+        properties: {
+          converged: { type: 'boolean', description: 'True when ≥2 sources exceed p_success threshold (SAFE-eligible condition).' },
+          sources_above_threshold: {
+            type: 'array',
+            items: { type: 'string', enum: ['probe', 'report', 'paid'] },
+            description: 'Sources whose marginal posterior p_success ≥ threshold.',
+          },
+          threshold: { type: 'number', minimum: 0, maximum: 1, description: 'Per-source p_success threshold (default 0.80).' },
+        },
+      },
+      BayesianScoreBlock: {
+        type: 'object',
+        description: 'Canonical Bayesian posterior block — shared shape across all public endpoints (verdict, decide, profile, best-route, service, endpoint). Phase 3 C9 : streaming exponential decay (τ=7d), plus de champ `window` — l\'ancienne fenêtre a été remplacée par `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`.',
+        required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile'],
+        properties: {
+          p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Beta-Binomial posterior mean (streaming, décroissance τ=7j).' },
+          ci95_low:  { type: 'number', minimum: 0, maximum: 1, description: 'Lower bound of the 95% credible interval.' },
+          ci95_high: { type: 'number', minimum: 0, maximum: 1, description: 'Upper bound of the 95% credible interval.' },
+          n_obs: { type: 'number', description: 'Observations effectives (excès d\'évidence au-delà du prior) — somme décayée τ=7j des 3 sources.' },
+          verdict: { type: 'string', enum: ['SAFE', 'UNKNOWN', 'RISKY', 'INSUFFICIENT'], description: 'Priority: INSUFFICIENT > RISKY > UNKNOWN > SAFE.' },
+          time_constant_days: { type: 'number', description: 'Constante τ exposée (décroissance exponentielle, jours). Actuellement 7.' },
+          last_update: { type: 'number', description: 'Unix seconds de la dernière ingestion connue — max sur les 3 sources. 0 si aucune observation.' },
+          sources: {
+            type: 'object',
+            required: ['probe', 'report', 'paid'],
+            properties: {
+              probe:  { $ref: '#/components/schemas/BayesianSourceBlock' },
+              report: { $ref: '#/components/schemas/BayesianSourceBlock' },
+              paid:   { $ref: '#/components/schemas/BayesianSourceBlock' },
+            },
+          },
+          convergence: { $ref: '#/components/schemas/BayesianConvergence' },
+          recent_activity: {
+            type: 'object',
+            required: ['last_24h', 'last_7d', 'last_30d'],
+            description: 'n_obs cumulé sur 24h/7d/30d (daily_buckets, observer inclus) — display-only, indépendant du verdict.',
+            properties: {
+              last_24h: { type: 'integer', minimum: 0 },
+              last_7d:  { type: 'integer', minimum: 0 },
+              last_30d: { type: 'integer', minimum: 0 },
+            },
+          },
+          risk_profile: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'], description: 'Trend delta success_rate 7j récents vs 23j antérieurs — Option B.' },
+        },
+      },
       PaginationMeta: {
         type: 'object',
         properties: {
@@ -751,18 +838,10 @@ export const openapiSpec = {
           requestId: { type: 'string' },
         },
       },
-      ScoreComponents: {
-        type: 'object',
-        properties: {
-          volume: { type: 'number' },
-          reputation: { type: 'number' },
-          seniority: { type: 'number' },
-          regularity: { type: 'number' },
-          diversity: { type: 'number' },
-        },
-      },
       AgentScoreResponse: {
         type: 'object',
+        description: 'Agent profile: identity + stats + evidence overlay + canonical Bayesian block. No composite score surface — `bayesian` is the source of truth.',
+        required: ['agent', 'bayesian', 'stats', 'evidence', 'alerts'],
         properties: {
           agent: {
             type: 'object',
@@ -774,16 +853,7 @@ export const openapiSpec = {
               source: { type: 'string', enum: ['observer_protocol', '4tress', 'lightning_graph', 'manual'] },
             },
           },
-          score: {
-            type: 'object',
-            properties: {
-              total: { type: 'integer', minimum: 0, maximum: 100 },
-              totalFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float version of the score. Used to break visual ties when many nodes compress into the same integer band.' },
-              components: { $ref: '#/components/schemas/ScoreComponents' },
-              confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
-              computedAt: { type: 'integer' },
-            },
-          },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
           stats: {
             type: 'object',
             properties: {
@@ -795,7 +865,6 @@ export const openapiSpec = {
             },
           },
           evidence: { $ref: '#/components/schemas/ScoreEvidence' },
-          delta: { $ref: '#/components/schemas/ScoreDelta' },
           alerts: { type: 'array', items: { $ref: '#/components/schemas/AgentAlert' } },
         },
       },
@@ -880,34 +949,6 @@ export const openapiSpec = {
           },
         },
       },
-      ScoreSnapshot: {
-        type: 'object',
-        properties: {
-          score: { type: 'integer' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          computedAt: { type: 'integer' },
-        },
-      },
-      EnrichedSnapshot: {
-        type: 'object',
-        properties: {
-          score: { type: 'integer' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          computedAt: { type: 'integer' },
-          delta: { type: ['integer', 'null'], description: 'Score change vs previous snapshot' },
-        },
-      },
-      ScoreDelta: {
-        type: 'object',
-        description: 'Temporal score deltas — the core differentiating product',
-        properties: {
-          delta24h: { type: ['number', 'null'], description: 'Score change over 24 hours' },
-          delta7d: { type: ['number', 'null'], description: 'Score change over 7 days' },
-          delta30d: { type: ['number', 'null'], description: 'Score change over 30 days' },
-          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16). UI should render "—" or a "methodology change" badge instead of the numeric delta. Auto-resolves 7 days after the cutoff.' },
-          trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
-        },
-      },
       AgentAlert: {
         type: 'object',
         properties: {
@@ -916,55 +957,30 @@ export const openapiSpec = {
           severity: { type: 'string', enum: ['info', 'warning', 'critical'] },
         },
       },
-      TopMover: {
-        type: 'object',
-        properties: {
-          publicKeyHash: { type: 'string' },
-          alias: { type: ['string', 'null'] },
-          score: { type: 'integer' },
-          scoreFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float score; matches top-list `scoreFine`.' },
-          delta7d: { type: 'number', description: '7-day score change (1-decimal float). Read with `deltaValid`.' },
-          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16).' },
-          trend: { type: 'string', enum: ['rising', 'stable', 'falling'] },
-        },
-      },
-      NetworkTrends: {
-        type: 'object',
-        description: 'Network-wide temporal trends',
-        properties: {
-          avgScoreDelta7d: { type: 'number', description: 'Average score change over 7 days' },
-          topMoversUp: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
-          topMoversDown: { type: 'array', items: { $ref: '#/components/schemas/TopMover' } },
-        },
-      },
       AgentSummary: {
         type: 'object',
+        description: 'Leaderboard row — identity + canonical Bayesian block.',
+        required: ['publicKeyHash', 'alias', 'rank', 'totalTransactions', 'source', 'bayesian'],
         properties: {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
-          score: { type: 'integer' },
-          scoreFine: { type: 'number', minimum: 0, maximum: 100, description: '2-decimal float score. Breaks visual ties when many nodes sit in the same integer band (the 80-82 compression observed 2026-04-17).' },
           rank: { type: ['integer', 'null'] },
           totalTransactions: { type: 'integer' },
           source: { type: 'string' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          delta7d: { type: ['number', 'null'], description: '7-day score change (1-decimal float). Read with `deltaValid`: when false, render a methodology-change badge instead of the numeric value.' },
-          deltaValid: { type: 'boolean', description: 'False when the 7d comparator predates the Option D methodology rollout (2026-04-16). Auto-resolves 7 days after the cutoff.' },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
         },
       },
       AgentSearchResult: {
         type: 'object',
+        description: 'Search result — identity + canonical Bayesian block.',
+        required: ['publicKeyHash', 'alias', 'rank', 'totalTransactions', 'source', 'bayesian'],
         properties: {
           publicKeyHash: { type: 'string' },
           alias: { type: ['string', 'null'] },
-          score: { type: 'integer' },
-          scoreFine: { type: 'number', minimum: 0, maximum: 100 },
           rank: { type: ['integer', 'null'] },
           totalTransactions: { type: 'integer' },
           source: { type: 'string' },
-          components: { $ref: '#/components/schemas/ScoreComponents' },
-          delta7d: { type: ['number', 'null'] },
-          deltaValid: { type: 'boolean' },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
         },
       },
       Attestation: {
@@ -1101,7 +1117,6 @@ export const openapiSpec = {
           totalChannels: { type: 'integer', description: 'Sum of Lightning channels across all lightning_graph agents' },
           nodesWithRatings: { type: 'integer', description: 'Number of agents with non-zero sovereign reputation (PageRank > 0 on SatRank peer-trust graph; LN+ has been deprecated since v19)' },
           networkCapacityBtc: { type: 'number', description: 'Total network capacity in BTC (sum of all validated channel capacities)' },
-          avgScore: { type: 'number', description: 'Average score across all scored agents' },
           totalVolumeBuckets: {
             type: 'object',
             properties: {
@@ -1111,7 +1126,6 @@ export const openapiSpec = {
               large: { type: 'integer' },
             },
           },
-          trends: { $ref: '#/components/schemas/NetworkTrends' },
           serviceSources: {
             type: 'object',
             description: 'Breakdown of service_endpoints by discovery source. Exposes SatRank\'s sovereign oracle coverage of the L402 paid-service landscape.',
@@ -1191,31 +1205,29 @@ export const openapiSpec = {
       },
       DecideResponse: {
         type: 'object',
-        description: 'GO / NO-GO decision with success probability components.',
+        description: 'GO / NO-GO decision. Embeds the canonical Bayesian posterior (p_success, ci95, sources, convergence) plus operational overlays (path, flags, riskProfile).',
         properties: {
           go: { type: 'boolean', description: 'true = proceed with transaction, false = abort' },
-          successRate: { type: 'number', minimum: 0, maximum: 1, description: 'Combined success probability (0-1)' },
+          successRate: { type: 'number', minimum: 0, maximum: 1, description: 'Caller-personalised success probability (0-1). Anchors on Bayesian p_success and adjusts for caller path/availability.' },
           components: {
             type: 'object',
             properties: {
-              trustScore: { type: 'number', description: 'P_trust — sigmoid of the SatRank score' },
               routable: { type: 'number', description: 'P_routable — route exists from caller to target (0 or 1)' },
               available: { type: 'number', description: 'P_available — probe uptime over 7 days' },
-              empirical: { type: 'number', description: 'P_empirical — historical success rate from reports' },
               pathQuality: { type: 'number', description: 'P_path — personalized path quality from caller to target (0-1, based on hops, fee, alternatives)' },
             },
           },
-          scoreBreakdown: {
-            type: 'object',
-            description: 'Raw score breakdown — mirrors /api/profile/:id.score. Lets agents audit a decision without a second request.',
-            properties: {
-              total: { type: 'integer', minimum: 0, maximum: 100 },
-              components: { $ref: '#/components/schemas/ScoreComponents' },
-            },
-          },
-          basis: { type: 'string', enum: ['proxy', 'empirical'], description: 'proxy = <10 reports (using trust score), empirical = >=10 reports' },
-          confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
-          verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN'] },
+          p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Bayesian posterior success probability (hierarchical Beta-Binomial).' },
+          ci95_low: { type: 'number', minimum: 0, maximum: 1, description: '95% credible interval lower bound.' },
+          ci95_high: { type: 'number', minimum: 0, maximum: 1, description: '95% credible interval upper bound.' },
+          n_obs: { type: 'integer', minimum: 0, description: 'Observations effectives (excès d\'évidence au-delà du prior) — somme décayée τ=7j des 3 sources.' },
+          time_constant_days: { type: 'number', description: 'Constante τ exposée (décroissance exponentielle, jours). Actuellement 7.' },
+          last_update: { type: 'number', description: 'Unix seconds de la dernière ingestion connue. 0 si aucune observation.' },
+          sources: { type: 'object', description: 'Per-source breakdown (probe / report / paid). Null when no data for that source.' },
+          convergence: { type: 'object', description: 'Whether ≥2 independent sources converge on p ≥ threshold.' },
+          recent_activity: { type: 'object', description: 'n_obs cumulé 24h/7d/30d (daily_buckets, observer inclus).' },
+          risk_profile: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'], description: 'Trend delta success_rate 7j récents vs 23j antérieurs.' },
+          verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT'] },
           flags: { type: 'array', items: { type: 'string' } },
           pathfinding: { oneOf: [{ $ref: '#/components/schemas/PathfindingResult' }, { type: 'null' }] },
           riskProfile: { $ref: '#/components/schemas/RiskProfile' },
@@ -1223,7 +1235,6 @@ export const openapiSpec = {
           survival: { $ref: '#/components/schemas/SurvivalResult' },
           targetFeeStability: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Fee stability of the target node only, not the full route (0 = highly volatile, 1 = perfectly stable). Null when no fee data is available.' },
           maxRoutableAmount: { type: ['integer', 'null'], description: 'Highest amount in sats for which a route was found in recent multi-amount probes (1k/10k/100k/1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.' },
-          reportedSuccessRate: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Raw empirical success rate from payment reports (0-1). Null when insufficient data (< 10 reports or < 5 unique reporters). Distinct from successRate which blends proxies.' },
           lastProbeAgeMs: { type: ['integer', 'null'], description: 'Milliseconds since the last probe for this node. Null if never probed.' },
           serviceHealth: { oneOf: [{ type: 'object', properties: {
             url: { type: 'string' }, status: { type: 'string', enum: ['healthy', 'degraded', 'down', 'checking', 'unknown'] },
@@ -1233,7 +1244,7 @@ export const openapiSpec = {
           } }, { type: 'null' }], description: 'HTTP health of the service behind this node. Null when serviceUrl not provided.' },
           latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },
         },
-        required: ['go', 'successRate', 'components', 'basis', 'confidence', 'verdict', 'flags', 'reason', 'survival', 'latencyMs'],
+        required: ['go', 'successRate', 'components', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile', 'verdict', 'flags', 'reason', 'survival', 'latencyMs'],
       },
       SurvivalResult: {
         type: 'object',
@@ -1288,6 +1299,57 @@ export const openapiSpec = {
         },
         required: ['reportId', 'verified', 'weight', 'timestamp'],
       },
+      EndpointResponse: {
+        type: 'object',
+        description: 'Bayesian view of a single HTTP endpoint keyed by url_hash (sha256 of the canonical URL).',
+        properties: {
+          data: {
+            type: 'object',
+            required: ['urlHash', 'bayesian'],
+            properties: {
+              urlHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+              bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
+              metadata: {
+                oneOf: [
+                  { type: 'null' },
+                  { type: 'object', properties: {
+                    url: { type: 'string' },
+                    name: { type: ['string', 'null'] },
+                    description: { type: ['string', 'null'] },
+                    category: { type: ['string', 'null'] },
+                    provider: { type: ['string', 'null'] },
+                    priceSats: { type: ['integer', 'null'] },
+                    source: { type: 'string', enum: ['402index', 'self_registered', 'ad_hoc'] },
+                  } },
+                ],
+                description: 'Light metadata pulled from service_endpoints when the url_hash matches a known row.',
+              },
+              http: {
+                oneOf: [
+                  { type: 'null' },
+                  { type: 'object', properties: {
+                    status: { type: ['integer', 'null'] },
+                    latencyMs: { type: ['integer', 'null'] },
+                    uptimeRatio: { type: ['number', 'null'] },
+                    checkCount: { type: 'integer' },
+                    lastCheckedAt: { type: ['integer', 'null'] },
+                  } },
+                ],
+              },
+              node: {
+                oneOf: [
+                  { type: 'null' },
+                  { type: 'object', properties: {
+                    publicKeyHash: { type: 'string' },
+                    alias: { type: ['string', 'null'] },
+                  } },
+                ],
+              },
+            },
+          },
+          meta: { type: 'object', properties: { computedAt: { type: 'integer' } } },
+        },
+      },
       ProfileResponse: {
         type: 'object',
         description: 'Restructured agent profile with report statistics and probe uptime.',
@@ -1300,12 +1362,8 @@ export const openapiSpec = {
             lastSeen: { type: 'integer' },
             source: { type: 'string' },
           } },
-          score: { type: 'object', properties: {
-            total: { type: 'integer' },
-            components: { $ref: '#/components/schemas/ScoreComponents' },
-            confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Confidence 0-1 (0.1 very_low, 0.25 low, 0.5 medium, 0.75 high, 0.9 very_high).' },
-            rank: { type: ['integer', 'null'], description: '1-based rank among all agents by score' },
-          } },
+          bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
+          rank: { type: ['integer', 'null'], description: '1-based rank among all agents by p_success (null when no posterior has converged).' },
           reports: { type: 'object', properties: {
             total: { type: 'integer' },
             successes: { type: 'integer' },
@@ -1318,7 +1376,6 @@ export const openapiSpec = {
           channelFlow: { oneOf: [{ type: 'object', properties: { net7d: { type: ['integer', 'null'] }, capacityDelta7d: { type: ['integer', 'null'] }, trend: { type: 'string', enum: ['growing', 'stable', 'declining'] } } }, { type: 'null' }], description: 'Net channel change over 7 days' },
           capacityHealth: { oneOf: [{ type: 'object', properties: { drainRate24h: { type: ['number', 'null'] }, drainRate7d: { type: ['number', 'null'] }, trend: { type: 'string', enum: ['growing', 'stable', 'declining'] } } }, { type: 'null' }], description: 'Capacity drain rate' },
           feeVolatility: { oneOf: [{ type: 'object', properties: { index: { type: 'integer' }, interpretation: { type: 'string', enum: ['stable', 'moderate', 'volatile'] }, changesLast7d: { type: 'integer' } } }, { type: 'null' }], description: 'Fee policy volatility index' },
-          delta: { $ref: '#/components/schemas/ScoreDelta' },
           riskProfile: { $ref: '#/components/schemas/RiskProfile' },
           evidence: { $ref: '#/components/schemas/ScoreEvidence' },
           flags: { type: 'array', items: { type: 'string' } },

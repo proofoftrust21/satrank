@@ -24,7 +24,8 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { metricsMiddleware, metricsRegistry } from '../middleware/metrics';
 import { errorHandler } from '../middleware/errorHandler';
-const EXPECTED_SCHEMA_VERSION = 32;
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
+const EXPECTED_SCHEMA_VERSION = 36;
 
 function buildTestApp() {
   const db = new Database(':memory:');
@@ -38,12 +39,13 @@ function buildTestApp() {
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+  const bayesianVerdictService = createBayesianVerdictService(db);
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+  const agentController = new AgentController(agentService, agentRepo, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
 
@@ -156,7 +158,7 @@ describe('Migration rollback', () => {
     runMigrations(db);
 
     let versions = getAppliedVersions(db);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
 
     rollbackTo(db, 4);
 
@@ -200,7 +202,7 @@ describe('Migration rollback', () => {
     runMigrations(db);
 
     const versions = getAppliedVersions(db);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
 
     db.close();
   });

@@ -26,6 +26,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { errorHandler } from '../middleware/errorHandler';
 import { sha256 } from '../utils/crypto';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import type { LndGraphClient, LndGetInfoResponse, LndGraph, LndNodeInfo, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
 import type { Agent } from '../types';
 
@@ -282,11 +283,12 @@ describe('Batch verdict endpoint', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+    const bayesianVerdictService = createBayesianVerdictService(db);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
     const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-    const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+    const agentController = new AgentController(agentService, agentRepo, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
 
@@ -322,7 +324,7 @@ describe('Batch verdict endpoint', () => {
     expect(res.body.data[1].publicKeyHash).toBe(agent2.public_key_hash);
   });
 
-  it('POST /api/verdicts returns UNKNOWN for missing hashes', async () => {
+  it('POST /api/verdicts returns INSUFFICIENT for missing hashes', async () => {
     const unknownHash = sha256('definitely-unknown-batch');
 
     const res = await request(app)
@@ -330,7 +332,7 @@ describe('Batch verdict endpoint', () => {
       .send({ hashes: [unknownHash] });
 
     expect(res.status).toBe(200);
-    expect(res.body.data[0].verdict).toBe('UNKNOWN');
+    expect(res.body.data[0].verdict).toBe('INSUFFICIENT');
   });
 
   it('POST /api/verdicts rejects empty array', async () => {
@@ -375,11 +377,12 @@ describe('Free attestations verification', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+    const bayesianVerdictService = createBayesianVerdictService(db);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
     const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-    const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+    const agentController = new AgentController(agentService, agentRepo, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
 

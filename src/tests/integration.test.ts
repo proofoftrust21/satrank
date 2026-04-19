@@ -27,6 +27,7 @@ import { createHealthRoutes } from '../routes/health';
 import { requestIdMiddleware } from '../middleware/requestId';
 import { errorHandler } from '../middleware/errorHandler';
 import { openapiSpec } from '../openapi';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
 
@@ -46,12 +47,13 @@ function buildTestApp() {
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+  const bayesianVerdictService = createBayesianVerdictService(db);
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
 
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+  const agentController = new AgentController(agentService, agentRepo, verdictService);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
 
@@ -194,7 +196,6 @@ describe('Integration — HTTP endpoints', () => {
     expect(res.body.data).toHaveProperty('totalChannels');
     expect(res.body.data).toHaveProperty('nodesWithRatings');
     expect(res.body.data).toHaveProperty('networkCapacityBtc');
-    expect(res.body.data).toHaveProperty('avgScore');
     expect(res.body.data).toHaveProperty('totalVolumeBuckets');
   });
 
@@ -224,25 +225,34 @@ describe('Integration — HTTP endpoints', () => {
     expect(res.body.meta.limit).toBe(1);
   });
 
-  it('GET /api/agents/top returns components for each agent', async () => {
+  it('GET /api/agents/top returns Bayesian block for each agent', async () => {
     const res = await request(app).get('/api/agents/top?limit=1');
     expect(res.status).toBe(200);
     const agent = res.body.data[0];
-    expect(agent).toHaveProperty('components');
-    expect(agent.components).toHaveProperty('volume');
-    expect(agent.components).toHaveProperty('reputation');
-    expect(agent.components).toHaveProperty('seniority');
-    expect(agent.components).toHaveProperty('regularity');
-    expect(agent.components).toHaveProperty('diversity');
+    expect(agent).toHaveProperty('bayesian');
+    expect(agent.bayesian).toHaveProperty('p_success');
+    expect(agent.bayesian).toHaveProperty('ci95_low');
+    expect(agent.bayesian).toHaveProperty('ci95_high');
+    expect(agent.bayesian).toHaveProperty('n_obs');
+    expect(agent.bayesian).toHaveProperty('verdict');
+    expect(agent.bayesian).toHaveProperty('time_constant_days');
+    expect(agent.bayesian).toHaveProperty('last_update');
+    expect(agent.bayesian).toHaveProperty('recent_activity');
+    expect(agent.bayesian).toHaveProperty('risk_profile');
   });
 
-  it('GET /api/agents/top?sort_by=reputation sorts by reputation component', async () => {
-    const res = await request(app).get('/api/agents/top?sort_by=reputation');
+  it('GET /api/agents/top?sort_by=n_obs sorts by observation count', async () => {
+    const res = await request(app).get('/api/agents/top?sort_by=n_obs');
     expect(res.status).toBe(200);
-    expect(res.body.meta.sort_by).toBe('reputation');
+    expect(res.body.meta.sort_by).toBe('n_obs');
     if (res.body.data.length >= 2) {
-      expect(res.body.data[0].components.reputation).toBeGreaterThanOrEqual(res.body.data[1].components.reputation);
+      expect(res.body.data[0].bayesian.n_obs).toBeGreaterThanOrEqual(res.body.data[1].bayesian.n_obs);
     }
+  });
+
+  it('GET /api/agents/top?sort_by=reputation returns 400 (legacy axis removed)', async () => {
+    const res = await request(app).get('/api/agents/top?sort_by=reputation');
+    expect(res.status).toBe(400);
   });
 
   it('GET /api/agents/top?sort_by=invalid returns 400', async () => {
@@ -266,12 +276,12 @@ describe('Integration — HTTP endpoints', () => {
 
   // --- Agent detail (L402-gated in prod, free in dev) ---
 
-  it('GET /api/agent/:hash returns score with evidence', async () => {
+  it('GET /api/agent/:hash returns Bayesian block with evidence', async () => {
     const res = await request(app).get(`/api/agent/${agentA.public_key_hash}`);
     expect(res.status).toBe(200);
     expect(res.body.data.agent.publicKeyHash).toBe(agentA.public_key_hash);
-    expect(res.body.data.score).toHaveProperty('total');
-    expect(res.body.data.score).toHaveProperty('components');
+    expect(res.body.data.bayesian).toHaveProperty('p_success');
+    expect(res.body.data.bayesian).toHaveProperty('verdict');
     expect(res.body.data.evidence).toBeDefined();
   });
 
@@ -418,11 +428,12 @@ describe('Integration — L402 perimeter (production mode)', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+    const bayesianVerdictService = createBayesianVerdictService(db);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
     const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-    const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+    const agentController = new AgentController(agentService, agentRepo, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
 
@@ -533,11 +544,12 @@ describe('Integration — Security headers and Content-Type', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo);
+    const bayesianVerdictService = createBayesianVerdictService(db);
+    const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService);
     const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
     const statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-    const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService);
+    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), bayesianVerdictService);
+    const agentController = new AgentController(agentService, agentRepo, verdictService);
     const attestationController = new AttestationController(attestationService);
     const healthController = new HealthController(statsService);
 

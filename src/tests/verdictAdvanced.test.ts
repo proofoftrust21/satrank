@@ -1,4 +1,4 @@
-// Advanced verdict tests — confidence formula, risk profile edge cases, personal trust depth 2, 4-hop cycles
+// Advanced verdict tests — risk profile edge cases, personal trust depth 2, 4-hop cycles
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
@@ -10,15 +10,11 @@ import { ScoringService } from '../services/scoringService';
 import { TrendService } from '../services/trendService';
 import { VerdictService } from '../services/verdictService';
 import { RiskService } from '../services/riskService';
+import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types';
-import { METHODOLOGY_CHANGE_AT_UNIX } from '../config/scoring';
-
-// Anchor tests 30 days past the Option D cutoff so 7d snapshots are post-methodology.
-// Without this, any snapshot at `NOW - 7*DAY` would predate the cutoff and trigger
-// `deltaValid=false` → `delta7d=null`, which masks declining_node / rapid_rise profiles.
-const NOW = METHODOLOGY_CHANGE_AT_UNIX + 30 * 86400;
+const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
@@ -67,180 +63,10 @@ function insertAttestation(db: Database.Database, attester: string, subject: str
   `).run(uuid(), txId, attester, subject, score, ts, category);
 }
 
-describe('Verdict confidence formula', () => {
-  let db: Database.Database;
-  let agentRepo: AgentRepository;
-  let verdictService: VerdictService;
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(NOW * 1000);
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-    agentRepo = new AgentRepository(db);
-    const txRepo = new TransactionRepository(db);
-    const attestationRepo = new AttestationRepository(db);
-    const snapshotRepo = new SnapshotRepository(db);
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
-  });
-
-  afterEach(() => { db.close(); vi.useRealTimers(); });
-
-  it('returns very_low confidence (0.1) for agent with < 5 data points', async () => {
-    const agent = makeAgent({
-      public_key_hash: sha256('conf-verylow'),
-      total_transactions: 2,
-      total_attestations_received: 1,
-    });
-    agentRepo.insert(agent);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    expect(result.confidence).toBe(0.1);
-  });
-
-  it('returns low confidence (0.25) for agent with 5-19 data points', async () => {
-    const agent = makeAgent({
-      public_key_hash: sha256('conf-low'),
-      total_transactions: 10,
-      total_attestations_received: 5,
-    });
-    agentRepo.insert(agent);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    expect(result.confidence).toBe(0.25);
-  });
-
-  it('returns medium confidence (0.5) for agent with 20-99 data points', async () => {
-    const agent = makeAgent({
-      public_key_hash: sha256('conf-medium'),
-      total_transactions: 50,
-      total_attestations_received: 30,
-    });
-    agentRepo.insert(agent);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    expect(result.confidence).toBe(0.5);
-  });
-
-  it('returns high confidence (0.75) for agent with 100-499 data points', async () => {
-    const agent = makeAgent({
-      public_key_hash: sha256('conf-high'),
-      total_transactions: 200,
-      total_attestations_received: 100,
-    });
-    agentRepo.insert(agent);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    expect(result.confidence).toBe(0.75);
-  });
-
-  it('returns very_high confidence (0.9) for agent with >= 500 data points', async () => {
-    const agent = makeAgent({
-      public_key_hash: sha256('conf-veryhigh'),
-      total_transactions: 300,
-      total_attestations_received: 250,
-    });
-    agentRepo.insert(agent);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    expect(result.confidence).toBe(0.9);
-  });
-
-  it('UNKNOWN (not RISKY) for low score with very_low confidence — insufficient data', async () => {
-    // A small LND node with few channels and no reputation data should be UNKNOWN, not RISKY.
-    // RISKY requires at least low confidence (some evidence of risk).
-    const hash = sha256('conf-insufficient-data');
-    const agent = makeAgent({
-      public_key_hash: hash,
-      avg_score: 15,
-      total_transactions: 2,  // few channels → very_low confidence (2 data points < 5)
-      total_attestations_received: 0,
-      source: 'lightning_graph',
-      capacity_sats: 500_000,
-      positive_ratings: 0,
-      negative_ratings: 0,
-      lnplus_rank: 0,
-    });
-    agentRepo.insert(agent);
-    // Insert recent snapshot so cache is used (avoids recompute overriding score)
-    db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), hash, 15, '{"volume":5,"reputation":0,"seniority":10,"regularity":50,"diversity":1}', NOW);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    // very_low confidence (2 data points) + low score → UNKNOWN, not RISKY
-    expect(result.verdict).toBe('UNKNOWN');
-    expect(result.confidence).toBe(0.1);
-  });
-
-  it('RISKY for low score with sufficient confidence', async () => {
-    // An agent with enough data points to have at least low confidence AND a low score is genuinely RISKY
-    const hash = sha256('conf-risky-with-evidence');
-    const agent = makeAgent({
-      public_key_hash: hash,
-      avg_score: 20,
-      total_transactions: 10,
-      total_attestations_received: 5,
-      // 15 data points → low confidence (>= 5, < 20)
-      positive_ratings: 0,
-      lnplus_rank: 0,
-    });
-    agentRepo.insert(agent);
-    db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), hash, 20, '{"volume":10,"reputation":5,"seniority":20,"regularity":10,"diversity":5}', NOW);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    // low confidence (15 data points) + low score → RISKY (enough evidence)
-    expect(result.verdict).toBe('RISKY');
-    expect(result.confidence).toBe(0.25);
-  });
-
-  it('UNKNOWN verdict for score 30-49 even with medium confidence', async () => {
-    // Score 30-49 should be UNKNOWN, not SAFE or RISKY
-    const hash = sha256('conf-unknown-mid');
-    const agent = makeAgent({
-      public_key_hash: hash,
-      avg_score: 40,
-      total_transactions: 50,
-      total_attestations_received: 50,
-      positive_ratings: 5,
-      lnplus_rank: 2,
-    });
-    agentRepo.insert(agent);
-    // Insert a recent snapshot so scoring engine uses cache
-    db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), hash, 40, '{"volume":20,"reputation":30,"seniority":50,"regularity":40,"diversity":30}', NOW);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    expect(result.verdict).toBe('UNKNOWN');
-  });
-
-  it('SAFE requires confidence >= medium (0.5)', async () => {
-    // High score but very few data points → should NOT be SAFE
-    const hash = sha256('conf-safe-needs-medium');
-    const agent = makeAgent({
-      public_key_hash: hash,
-      avg_score: 80,
-      total_transactions: 3,
-      total_attestations_received: 1,
-      positive_ratings: 10,
-      lnplus_rank: 5,
-      source: 'lightning_graph',
-      capacity_sats: 5_000_000_000,
-      public_key: 'pk-test',
-    });
-    agentRepo.insert(agent);
-    // Insert a recent snapshot with high score so cache is used
-    db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), hash, 80, '{"volume":80,"reputation":80,"seniority":80,"regularity":80,"diversity":80}', NOW);
-    const result = await verdictService.getVerdict(agent.public_key_hash);
-    // very_low confidence (4 data points) → should be UNKNOWN despite high score
-    expect(result.verdict).toBe('UNKNOWN');
-    expect(result.confidence).toBe(0.1);
-  });
-});
+// Note: the former "Verdict confidence formula" describe block was removed in
+// Phase 3 when the composite score was retired from public responses. Bayesian
+// verdict semantics (INSUFFICIENT / RISKY / UNKNOWN / SAFE) are exercised by
+// bayesianScoringService.verdict.test.ts.
 
 describe('Risk profile edge cases', () => {
   let db: Database.Database;
@@ -259,7 +85,7 @@ describe('Risk profile edge cases', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   });
 
   afterEach(() => { db.close(); vi.useRealTimers(); });
@@ -275,11 +101,20 @@ describe('Risk profile edge cases', () => {
     });
     agentRepo.insert(agent);
 
-    // Insert snapshot 7 days ago with much lower score
+    // Past p_success=0.20 vs current 0.5 prior → delta=+0.30 > DELTA_RAPID_RISE (0.26)
     db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), agent.public_key_hash, 30, '{"volume":0,"reputation":0,"seniority":10,"regularity":0,"diversity":0}', NOW - 7 * DAY);
+      INSERT INTO score_snapshots (
+        snapshot_id, agent_hash,
+        p_success, ci95_low, ci95_high, n_obs,
+        posterior_alpha, posterior_beta, window,
+        computed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '7d', ?, ?)
+    `).run(
+      uuid(), agent.public_key_hash,
+      0.20, 0.15, 0.25, 10,
+      1.5 + 10 * 0.20, 1.5 + 10 * 0.80,
+      NOW - 7 * DAY, NOW - 7 * DAY,
+    );
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
     // The computed score might differ, but the risk profile logic checks delta
@@ -296,11 +131,20 @@ describe('Risk profile edge cases', () => {
     });
     agentRepo.insert(agent);
 
-    // Insert a higher snapshot 7 days ago
+    // Past p_success=0.70 vs current 0.5 prior → delta=-0.20 < DELTA_DECLINING (-0.13)
     db.prepare(`
-      INSERT INTO score_snapshots (snapshot_id, agent_hash, score, components, computed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(uuid(), agent.public_key_hash, 70, '{"volume":50,"reputation":50,"seniority":50,"regularity":50,"diversity":50}', NOW - 7 * DAY);
+      INSERT INTO score_snapshots (
+        snapshot_id, agent_hash,
+        p_success, ci95_low, ci95_high, n_obs,
+        posterior_alpha, posterior_beta, window,
+        computed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '7d', ?, ?)
+    `).run(
+      uuid(), agent.public_key_hash,
+      0.70, 0.65, 0.75, 10,
+      1.5 + 10 * 0.70, 1.5 + 10 * 0.30,
+      NOW - 7 * DAY, NOW - 7 * DAY,
+    );
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.riskProfile.name).toBe('declining_node');
@@ -344,7 +188,7 @@ describe('Personal trust — distance 2', () => {
     const snapshotRepo = new SnapshotRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
     const trendService = new TrendService(agentRepo, snapshotRepo);
-    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService());
+    verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, new RiskService(), createBayesianVerdictService(db));
   });
 
   afterEach(() => { db.close(); vi.useRealTimers(); });

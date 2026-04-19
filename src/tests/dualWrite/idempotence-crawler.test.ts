@@ -17,11 +17,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-// 2026-04-18T12:00:00Z → window_bucket must be exactly '2026-04-18' regardless
-// of the host timezone (ISO slice is UTC-anchored).
+// 2026-04-18T12:00:00Z → window_bucket must be exactly '2026-04-18-12' (6h
+// bucket UTC: hour 12 rounds down to 12) regardless of host TZ.
 const FIXED_ISO = '2026-04-18T12:00:00Z';
 const FIXED_UNIX = Math.floor(new Date(FIXED_ISO).getTime() / 1000);
-const EXPECTED_BUCKET = '2026-04-18';
+const EXPECTED_BUCKET = '2026-04-18-12';
 
 function makeEvent(overrides: Partial<ObserverEvent> = {}): ObserverEvent {
   return {
@@ -152,7 +152,7 @@ describe('Crawler idempotence × dual-write modes', () => {
   });
 
   it('window_bucket derived UTC — crawler on a late-evening UTC timestamp buckets correctly', async () => {
-    // 2026-04-18T23:59:59Z lands on 2026-04-18 UTC regardless of host TZ.
+    // 2026-04-18T23:59:59Z → hour 23 → 6h bucket 18 → '2026-04-18-18' regardless of host TZ.
     const latenight = '2026-04-18T23:59:59Z';
     mockClient.response = {
       transactions: [makeEvent({ transaction_hash: 'tx-late', created_at: latenight })],
@@ -163,6 +163,6 @@ describe('Crawler idempotence × dual-write modes', () => {
     await crawler.run();
 
     const row = db.prepare('SELECT window_bucket FROM transactions WHERE tx_id = ?').get('tx-late') as Record<string, unknown>;
-    expect(row.window_bucket).toBe('2026-04-18');
+    expect(row.window_bucket).toBe('2026-04-18-18');
   });
 });

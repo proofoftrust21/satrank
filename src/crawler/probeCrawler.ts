@@ -1,11 +1,16 @@
 // Probe crawler — tests route reachability to Lightning nodes via LND QueryRoutes
 // Proprietary data: only our node can generate this. One probe = one route query, no payment sent.
 // LND API: GET /v1/graph/routes/{pub_key}/{amt}
+import type Database from 'better-sqlite3';
 import { logger } from '../logger';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
+import type { TransactionRepository, DualWriteMode } from '../repositories/transactionRepository';
+import type { BayesianScoringService } from '../services/bayesianScoringService';
 import type { LndGraphClient } from './lndGraphClient';
 import { CircuitBreaker } from '../utils/circuitBreaker';
+import { sha256 } from '../utils/crypto';
+import { windowBucket, type DualWriteLogger, type DualWriteEnrichment } from '../utils/dualWriteLogger';
 
 export interface ProbeCrawlResult {
   startedAt: number;
@@ -24,6 +29,22 @@ const PROBE_AMOUNTS = [1_000, 10_000, 100_000, 1_000_000];
 interface ProbeCrawlerOptions {
   maxPerSecond: number;
   amountSats: number;
+  /** Dual-write mode for the v31 enrichment columns on the transactions row.
+   *  Bayesian aggregates ingestion is systematically performed regardless of
+   *  this flag — only the transactions.endpoint_hash/operator_id/source/
+   *  window_bucket population respects it. See Phase 3 brief Q1. */
+  dualWriteMode?: DualWriteMode;
+}
+
+/** Optional dependencies that turn probe observations into bayesian signal.
+ *  When any is missing, the crawler still writes probe_results (legacy
+ *  behavior) but produces no bayesian ingestion — used by the few unit
+ *  tests that don't bootstrap the full stack. */
+export interface ProbeCrawlerBayesianDeps {
+  txRepo: TransactionRepository;
+  bayesian: BayesianScoringService;
+  db: Database.Database;
+  dualWriteLogger?: DualWriteLogger;
 }
 
 export class ProbeCrawler {
@@ -35,6 +56,7 @@ export class ProbeCrawler {
     private agentRepo: AgentRepository,
     private probeRepo: ProbeRepository,
     private options: ProbeCrawlerOptions,
+    private bayesianDeps?: ProbeCrawlerBayesianDeps,
   ) {
     this.breaker = new CircuitBreaker({ name: 'probe', failureThreshold: 10 });
     this.delayMs = Math.ceil(1000 / options.maxPerSecond);
@@ -95,6 +117,7 @@ export class ProbeCrawler {
             probe_amount_sats: baseAmount,
           });
           result.reachable++;
+          this.ingestProbeToBayesian(agent.public_key_hash, baseAmount, true, now);
 
           // Multi-amount probing for hot nodes: test higher tiers to find
           // the max routable amount. Stops at the first failure (no point
@@ -132,6 +155,7 @@ export class ProbeCrawler {
             probe_amount_sats: baseAmount,
           });
           result.unreachable++;
+          this.ingestProbeToBayesian(agent.public_key_hash, baseAmount, false, now);
         }
 
         result.probed++;
@@ -173,7 +197,77 @@ export class ProbeCrawler {
     return result;
   }
 
+  /** Bridge base-probe outcome → bayesian streaming state. Une transaction
+   *  SQLite atomique : INSERT `transactions` + `ingestStreaming`.
+   *
+   *  Daily idempotence via tx_id = sha256('lnprobe:<pubkey>:<bucket>:<amount>').
+   *  The guard avoids double-counting on overlapping cron ticks / restarts.
+   *
+   *  Only the base amount contributes — higher tiers are capacity-discovery
+   *  probes, not a fresh reachability signal for 1k-sat routing. */
+  private ingestProbeToBayesian(pubkeyHash: string, amountSats: number, success: boolean, timestamp: number): void {
+    if (!this.bayesianDeps) return;
+    if (amountSats !== this.options.amountSats) return;
+
+    const { txRepo, bayesian, db, dualWriteLogger } = this.bayesianDeps;
+    const bucket = windowBucket(timestamp);
+    const txId = sha256(`lnprobe:${pubkeyHash}:${bucket}:${amountSats}`);
+    const mode = this.options.dualWriteMode ?? 'active';
+
+    try {
+      db.transaction(() => {
+        if (txRepo.findById(txId)) return;
+
+        const tx = {
+          tx_id: txId,
+          sender_hash: pubkeyHash,
+          receiver_hash: pubkeyHash,
+          amount_bucket: amountToBucket(amountSats),
+          timestamp,
+          payment_hash: sha256(`${txId}:ph`),
+          preimage: null,
+          status: (success ? 'verified' : 'failed') as 'verified' | 'failed',
+          protocol: 'keysend' as const,
+        };
+        const enrichment: DualWriteEnrichment = {
+          endpoint_hash: pubkeyHash,
+          operator_id: pubkeyHash,
+          source: 'probe',
+          window_bucket: bucket,
+        };
+        txRepo.insertWithDualWrite(tx, enrichment, mode, 'probeCrawler', dualWriteLogger);
+        // Phase 3 streaming — unique chemin d'écriture verdict. Observer exclu :
+        // probe écrit dans streaming_posteriors ET daily_buckets.
+        bayesian.ingestStreaming({
+          success,
+          timestamp,
+          source: 'probe',
+          endpointHash: pubkeyHash,
+          operatorId: pubkeyHash,
+          nodePubkey: pubkeyHash,
+        });
+      })();
+    } catch (err) {
+      // A FK miss or a UNIQUE collision must not abort the probe crawler —
+      // probe_results was already persisted, which is the legacy contract.
+      logger.warn(
+        { pubkey: pubkeyHash.slice(0, 12), error: err instanceof Error ? err.message : String(err) },
+        'Probe bayesian ingest failed — tx row and streaming posteriors rolled back',
+      );
+    }
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
+}
+
+/** Map probe amount (sats) → canonical amount_bucket enum. Mirrors the
+ *  thresholds used elsewhere in the codebase so a probe row sits in the
+ *  same bucket as a real payment of the same size. */
+function amountToBucket(sats: number): 'micro' | 'small' | 'medium' | 'large' {
+  if (sats < 10_000) return 'micro';
+  if (sats < 100_000) return 'small';
+  if (sats < 1_000_000) return 'medium';
+  return 'large';
 }

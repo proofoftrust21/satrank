@@ -1,5 +1,6 @@
 // Repository for HTTP service endpoint health tracking
 import type Database from 'better-sqlite3';
+import { endpointHash } from '../utils/urlCanonical';
 
 export type ServiceSource = '402index' | 'self_registered' | 'ad_hoc';
 
@@ -36,9 +37,11 @@ export interface ServiceMetadata {
 export interface ServiceSearchFilters {
   q?: string;
   category?: string;
-  minScore?: number;
   minUptime?: number;
-  sort?: 'score' | 'price' | 'uptime';
+  /** SQL-level sort axis. `activity` is the default (ORDER BY check_count DESC).
+   *  `p_success` sort is delegated to the controller (requires per-row agent
+   *  lookup, so it's a post-filter re-sort in JS). */
+  sort?: 'p_success' | 'activity' | 'price' | 'uptime';
   limit?: number;
   offset?: number;
 }
@@ -100,6 +103,26 @@ export class ServiceEndpointRepository {
     return this.stmtFindByUrl.get(url) as ServiceEndpoint | undefined;
   }
 
+  /** Best-effort metadata lookup by url_hash (sha256 of canonicalized URL).
+   *  SQLite has no native sha256, and `service_endpoints` stores only the
+   *  literal URL, so we scan trusted rows and compare hashes in-process. The
+   *  table is small (low thousands at most today) so the O(N) scan is fine
+   *  for a detail view. A dedicated column / index can be added in a later
+   *  migration if this endpoint ever gets hot. */
+  findByUrlHash(urlHash: string): ServiceEndpoint | undefined {
+    const rows = this.db
+      .prepare("SELECT * FROM service_endpoints WHERE source IN ('402index', 'self_registered')")
+      .all() as ServiceEndpoint[];
+    for (const row of rows) {
+      try {
+        if (endpointHash(row.url) === urlHash) return row;
+      } catch {
+        // Malformed URL in DB — skip, do not abort the lookup.
+      }
+    }
+    return undefined;
+  }
+
   findByAgent(agentHash: string): ServiceEndpoint[] {
     return this.stmtFindByAgent.all(agentHash) as ServiceEndpoint[];
   }
@@ -150,11 +173,14 @@ export class ServiceEndpointRepository {
     const SORT_SQL: Record<string, string> = {
       price: 'se.service_price_sats ASC',
       uptime: '(CAST(se.success_count AS REAL) / MAX(se.check_count, 1)) DESC',
-      score: 'se.check_count DESC',
+      activity: 'se.check_count DESC',
+      // `p_success` at the SQL layer is a no-op fallback to activity; the
+      // controller re-sorts in JS with the per-row Bayesian posterior.
+      p_success: 'se.check_count DESC',
     };
     const sortKey = typeof filters.sort === 'string' && Object.prototype.hasOwnProperty.call(SORT_SQL, filters.sort)
       ? filters.sort
-      : 'score';
+      : 'activity';
     const sortCol = SORT_SQL[sortKey];
 
     const limit = Math.min(filters.limit ?? 20, 100);
@@ -171,5 +197,28 @@ export class ServiceEndpointRepository {
     return this.db.prepare(
       "SELECT category, COUNT(*) as count FROM service_endpoints WHERE category IS NOT NULL AND agent_hash IS NOT NULL AND source IN ('402index', 'self_registered') GROUP BY category ORDER BY count DESC",
     ).all() as Array<{ category: string; count: number }>;
+  }
+
+  /** Scan live des URLs pour matcher un url_hash → category. La table n'a pas
+   *  de colonne `url_hash` stockée ; pour ~100 endpoints le coût est
+   *  négligeable (microsecondes). Ne trust que les sources trusted (pas ad_hoc). */
+  findCategoryByUrlHash(targetHash: string): string | null {
+    const rows = this.db.prepare(
+      "SELECT url, category FROM service_endpoints WHERE category IS NOT NULL AND source IN ('402index', 'self_registered')",
+    ).all() as Array<{ url: string; category: string }>;
+    for (const r of rows) {
+      if (endpointHash(r.url) === targetHash) return r.category;
+    }
+    return null;
+  }
+
+  /** Retourne tous les url_hash appartenant à une catégorie. Utilisé par le
+   *  bayesian verdict service pour alimenter le niveau `category` du prior
+   *  hiérarchique (somme des streaming posteriors des siblings). */
+  listUrlHashesByCategory(category: string): string[] {
+    const rows = this.db.prepare(
+      "SELECT url FROM service_endpoints WHERE category = ? AND source IN ('402index', 'self_registered')",
+    ).all(category) as Array<{ url: string }>;
+    return rows.map(r => endpointHash(r.url));
   }
 }

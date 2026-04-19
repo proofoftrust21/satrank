@@ -52,8 +52,25 @@ import { PingController } from './controllers/pingController';
 import { DepositController } from './controllers/depositController';
 import { ServiceController } from './controllers/serviceController';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
+import { EndpointController } from './controllers/endpointController';
 import { WatchlistController } from './controllers/watchlistController';
 import { ReportStatsController } from './controllers/reportStatsController';
+import { BayesianScoringService } from './services/bayesianScoringService';
+import { BayesianVerdictService } from './services/bayesianVerdictService';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from './repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from './repositories/dailyBucketsRepository';
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createReportAuth, safeEqual } from './middleware/auth';
@@ -93,7 +110,6 @@ export function createApp() {
 
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
-  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, scoringService, trendService, snapshotRepo, probeRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
   const serviceEndpointRepo = new ServiceEndpointRepository(db);
   const preimagePoolRepo = new PreimagePoolRepository(db);
@@ -115,7 +131,29 @@ export function createApp() {
     lndClient.isConfigured() ? lndClient : undefined,
   );
 
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+  // Phase 3 : Bayesian scoring stack — built before VerdictService so it can
+  // be injected. BayesianVerdictService is a read-side composer that owns the
+  // canonical Bayesian shape consumed across all public endpoints.
+  const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(db);
+  const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(db);
+  const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(db);
+  const nodeStreamingRepo = new NodeStreamingPosteriorRepository(db);
+  const routeStreamingRepo = new RouteStreamingPosteriorRepository(db);
+  const endpointBucketsRepo = new EndpointDailyBucketsRepository(db);
+  const serviceBucketsRepo = new ServiceDailyBucketsRepository(db);
+  const operatorBucketsRepo = new OperatorDailyBucketsRepository(db);
+  const nodeBucketsRepo = new NodeDailyBucketsRepository(db);
+  const routeBucketsRepo = new RouteDailyBucketsRepository(db);
+  const bayesianScoringService = new BayesianScoringService(
+    endpointStreamingRepo, serviceStreamingRepo, operatorStreamingRepo, nodeStreamingRepo, routeStreamingRepo,
+    endpointBucketsRepo, serviceBucketsRepo, operatorBucketsRepo, nodeBucketsRepo, routeBucketsRepo,
+  );
+  const bayesianVerdictService = new BayesianVerdictService(
+    db, bayesianScoringService, endpointStreamingRepo, endpointBucketsRepo, snapshotRepo,
+  );
+
+  const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
   const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
   const channelFlowService = new ChannelFlowService(channelSnapshotRepo);
   const feeVolatilityService = new FeeVolatilityService(feeSnapshotRepo, agentRepo);
@@ -125,6 +163,7 @@ export function createApp() {
     : null;
   const autoIndexService = new AutoIndexService(
     lndGraphCrawler, agentRepo, scoringService, config.AUTO_INDEX_MAX_PER_MINUTE,
+    bayesianVerdictService,
   );
 
   const decideService = new DecideService({
@@ -143,6 +182,7 @@ export function createApp() {
     attestationRepo, agentRepo, txRepo, scoringService, db,
     config.TRANSACTIONS_DUAL_WRITE_MODE,
     dualWriteLogger,
+    bayesianScoringService,
   );
 
   // Tier 2 report bonus — gated by REPORT_BONUS_ENABLED env (off by default).
@@ -166,14 +206,15 @@ export function createApp() {
   });
   reportBonusService.startGuard();
 
-  const agentController = new AgentController(agentService, agentRepo, snapshotRepo, trendService, verdictService, autoIndexService, db);
+  const agentController = new AgentController(agentService, agentRepo, verdictService, autoIndexService, db);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
-  const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, scoringService);
-  const watchlistController = new WatchlistController(agentRepo, snapshotRepo, scoringService);
+  const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
+  const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo);
+  const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
 
   // Self-registration — uses LND BOLT11 decoder if available
@@ -415,6 +456,7 @@ export function createApp() {
   api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
+  api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
   api.get('/stats/reports', discoveryRateLimit, reportStatsController.getStats);
@@ -479,21 +521,16 @@ function runWarmUp(
 
   for (const limit of [5, 10, 20]) {
     try {
-      const response = agentController.buildTopResponse(limit, 0, 'score');
-      cacheSet(`agents:top:${limit}:0:score`, response, 5 * 60_000);
+      const response = agentController.buildTopResponse(limit, 0, 'p_success');
+      cacheSet(`agents:top:${limit}:0:p_success`, response, 5 * 60_000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ error: msg, limit }, 'Cache warm-up: buildTopResponse failed');
     }
   }
-
-  try {
-    const { up, down } = trendService.getTopMovers(5);
-    cacheSet('agents:movers', { data: { gainers: up, losers: down } }, 5 * 60_000);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: msg }, 'Cache warm-up: getTopMovers failed');
-  }
+  // Movers cache is served from the controller (empty envelope in Phase 3)
+  // — no warm-up needed until Commit 8 lands posterior deltas.
+  void trendService;
 
   if (initial) {
     logger.info({ durationMs: Date.now() - start }, 'Cache warm-up complete');
