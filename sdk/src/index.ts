@@ -1,8 +1,35 @@
-// @satrank/sdk — Client SDK for the SatRank API
+// Public API — main entry. Subpath-exported modules (`./wallet`, `./nlp`)
+// live in their own files and are not re-exported here to keep the barrel
+// narrow. Agents choose what they import:
+//
+//   import { SatRank } from '@satrank/sdk';
+//   import { LndWallet } from '@satrank/sdk/wallet';
+//   import { parseIntent } from '@satrank/sdk/nlp';
+export { SatRank } from './SatRank';
+
+export type {
+  Intent,
+  ResolvedIntent,
+  IntentCandidate,
+  IntentResponse,
+  IntentResponseMeta,
+  IntentCategory,
+  IntentCategoriesResponse,
+  BayesianBlock,
+  AdvisoryBlock,
+  HealthBlock,
+  Wallet,
+  FulfillOptions,
+  FulfillRequest,
+  FulfillResult,
+  CandidateAttempt,
+  CandidateOutcome,
+  FulfillErrorShape,
+  SatRankOptions,
+} from './types';
+
 export {
-  SatRankClient,
   SatRankError,
-  // Typed error subclasses — agents can dispatch on type instead of string-matching
   ValidationSatRankError,
   UnauthorizedError,
   PaymentRequiredError,
@@ -14,82 +41,5 @@ export {
   ServiceUnavailableError,
   TimeoutError,
   NetworkError,
-} from './client';
-export type { SatRankClientOptions, NostrScoreEvent, WatchlistChange, WatchlistResponse } from './client';
-export type {
-  AgentScoreResponse,
-  AgentSummary,
-  TopAgentsResponse,
-  TopAgentsEntry,
-  SearchAgentsResponse,
-  SearchAgentsEntry,
-  HistoryResponse,
-  AttestationsResponse,
-  AttestationRecord,
-  HealthResponse,
-  NetworkStats,
-  VersionResponse,
-  // Bayesian block — canonical shape across every endpoint
-  BayesianScoreBlock,
-  BayesianSourceBlock,
-  BayesianConvergence,
-  BayesianWindow,
-  BayesianSource,
-  // Evidence
-  ScoreEvidence,
-  TransactionSample,
-  LightningGraphEvidence,
-  ReputationEvidence,
-  PopularityEvidence,
-  PaginationMeta,
-  AgentSource,
-  AmountBucket,
-  PaymentProtocol,
-  // Verdict types
-  VerdictResponse,
-  Verdict,
-  VerdictFlag,
-  PersonalTrust,
-  RiskProfile,
-  RiskProfileName,
-  RiskLevel,
-  PathfindingResult,
-  // Temporal types
-  ScoreDelta,
-  TrendDirection,
-  AgentAlert,
-  TopMover,
-  NetworkTrends,
-  // Attestation types
-  AttestationCategory,
-  CreateAttestationInput,
-  CreateAttestationResponse,
-  BatchVerdictItem,
-  MoversResponse,
-  // Decision types
-  WalletProvider,
-  DecideRequest,
-  DecideResponse,
-  ReportRequest,
-  ReportResponse,
-  ReportOutcome,
-  ProfileResponse,
-  BestRouteRequest,
-  BestRouteResponse,
-  BestRouteCandidate,
-  PaymentResult,
-  TransactResult,
-  SurvivalResult,
-  SurvivalPrediction,
-  ServiceHealth,
-  ChannelFlow,
-  CapacityHealth,
-  FeeVolatility,
-  // Deposit types
-  DepositInvoiceResponse,
-  DepositVerifyResponse,
-  // Service discovery types
-  ServiceSearchParams,
-  ServiceResult,
-  ServiceCategory,
-} from './types';
+  WalletError,
+} from './errors';

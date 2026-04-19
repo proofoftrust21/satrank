@@ -1,0 +1,12 @@
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+satrank.egg-info/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.coverage
+htmlcov/
