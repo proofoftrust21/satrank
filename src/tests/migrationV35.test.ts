@@ -57,7 +57,9 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     }
   });
 
-  it('preserves the five *_aggregates tables (additive migration)', () => {
+  it('drops the five *_aggregates tables (v36 final sweep)', () => {
+    // v36 DROP aggregates — "no cohabitation" : le scoring est 100% streaming,
+    // les aggregates n'ont plus aucun caller.
     for (const t of [
       'endpoint_aggregates',
       'node_aggregates',
@@ -65,7 +67,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
       'operator_aggregates',
       'route_aggregates',
     ]) {
-      expect(tableExists(db, t)).toBe(true);
+      expect(tableExists(db, t)).toBe(false);
     }
   });
 

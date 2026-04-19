@@ -919,11 +919,34 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 35, 'Phase 3 refactor — streaming posteriors (5 tables) + daily buckets (5 tables), additive');
   }
 
-  // Note : la suppression des cinq *_aggregates est différée en fin de chaîne
-  // Phase 3 (migration v36 à poser au dernier commit, après que tous les
-  // callers aient basculé sur streaming+buckets). Cela permet à la CI de
-  // rester verte entre C1 et la fin de la chaîne — l'aggregatesRepository et
-  // les services qui lisent encore les aggregates continuent de fonctionner.
+  // v36: Phase 3 refactor — DROP les cinq tables *_aggregates après que tous
+  // les callers ont basculé sur streaming_posteriors + daily_buckets (C16). Le
+  // code applicatif n'y accède plus depuis C16 ; cette migration finalise le
+  // sweep en supprimant physiquement les tables mortes. SQLite 3.46 supporte
+  // DROP TABLE IF EXISTS sans contrainte.
+  if (!hasVersion(db, 36)) {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_route_agg_target;
+      DROP INDEX IF EXISTS idx_route_agg_caller;
+      DROP INDEX IF EXISTS idx_route_agg_window;
+      DROP TABLE IF EXISTS route_aggregates;
+
+      DROP INDEX IF EXISTS idx_operator_agg_window;
+      DROP TABLE IF EXISTS operator_aggregates;
+
+      DROP INDEX IF EXISTS idx_service_agg_window;
+      DROP TABLE IF EXISTS service_aggregates;
+
+      DROP INDEX IF EXISTS idx_node_agg_updated;
+      DROP INDEX IF EXISTS idx_node_agg_window;
+      DROP TABLE IF EXISTS node_aggregates;
+
+      DROP INDEX IF EXISTS idx_endpoint_agg_updated;
+      DROP INDEX IF EXISTS idx_endpoint_agg_window;
+      DROP TABLE IF EXISTS endpoint_aggregates;
+    `);
+    recordVersion(db, 36, 'Phase 3 refactor C17 — DROP 5 *_aggregates tables (streaming-only)');
+  }
 
   logger.info('Migrations executed successfully');
 }
@@ -934,6 +957,89 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  36: (db) => {
+    // Restore the 5 *_aggregates tables at their v33 schema. Le contenu
+    // applicatif est perdu (plus personne n'écrivait depuis C16) ; un rollback
+    // les recrée vides pour rétablir la forme du schéma.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS endpoint_aggregates (
+        url_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        median_latency_ms INTEGER,
+        median_price_msat INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (url_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_window ON endpoint_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_endpoint_agg_updated ON endpoint_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS node_aggregates (
+        pubkey TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_observations INTEGER NOT NULL DEFAULT 0,
+        n_routable INTEGER NOT NULL DEFAULT 0,
+        n_delivered INTEGER NOT NULL DEFAULT 0,
+        n_reported_success INTEGER NOT NULL DEFAULT 0,
+        n_reported_failure INTEGER NOT NULL DEFAULT 0,
+        routing_alpha REAL NOT NULL DEFAULT 1.5,
+        routing_beta REAL NOT NULL DEFAULT 1.5,
+        delivery_alpha REAL NOT NULL DEFAULT 1.5,
+        delivery_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (pubkey, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_node_agg_window ON node_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_node_agg_updated ON node_aggregates(updated_at);
+
+      CREATE TABLE IF NOT EXISTS service_aggregates (
+        service_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (service_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_service_agg_window ON service_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS operator_aggregates (
+        operator_id TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (operator_id, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_agg_window ON operator_aggregates(window);
+
+      CREATE TABLE IF NOT EXISTS route_aggregates (
+        route_hash TEXT NOT NULL,
+        window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        posterior_alpha REAL NOT NULL DEFAULT 1.5,
+        posterior_beta REAL NOT NULL DEFAULT 1.5,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (route_hash, window)
+      );
+      CREATE INDEX IF NOT EXISTS idx_route_agg_window ON route_aggregates(window);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_caller ON route_aggregates(caller_hash);
+      CREATE INDEX IF NOT EXISTS idx_route_agg_target ON route_aggregates(target_hash);
+    `);
+  },
   35: (db) => {
     // Rollback streaming refactor — drop 10 new tables. Les aggregates sont
     // toujours présents puisque v35 est additive ; rien à restaurer ici.

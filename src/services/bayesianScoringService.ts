@@ -14,13 +14,6 @@
 //      Option B : tendance success_rate récent vs antérieur (daily_buckets).
 
 import type {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import type {
   EndpointStreamingPosteriorRepository,
   NodeStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
@@ -195,22 +188,18 @@ export interface RiskProfileBucketRepo {
 
 export class BayesianScoringService {
   constructor(
-    private endpointRepo: EndpointAggregateRepository,
-    private serviceRepo: ServiceAggregateRepository,
-    private operatorRepo: OperatorAggregateRepository,
-    private nodeRepo: NodeAggregateRepository,
-    private routeRepo?: RouteAggregateRepository,
-    // --- Streaming path (Phase 3 refactor C5+) — optionnels pour rétro-compat
-    private endpointStreamingRepo?: EndpointStreamingPosteriorRepository,
-    private serviceStreamingRepo?: ServiceStreamingPosteriorRepository,
-    private operatorStreamingRepo?: OperatorStreamingPosteriorRepository,
-    private nodeStreamingRepo?: NodeStreamingPosteriorRepository,
-    private routeStreamingRepo?: RouteStreamingPosteriorRepository,
-    private endpointBucketsRepo?: EndpointDailyBucketsRepository,
-    private serviceBucketsRepo?: ServiceDailyBucketsRepository,
-    private operatorBucketsRepo?: OperatorDailyBucketsRepository,
-    private nodeBucketsRepo?: NodeDailyBucketsRepository,
-    private routeBucketsRepo?: RouteDailyBucketsRepository,
+    // Streaming posteriors (verdict path) — alimentés par ingestStreaming.
+    private endpointStreamingRepo: EndpointStreamingPosteriorRepository,
+    private serviceStreamingRepo: ServiceStreamingPosteriorRepository,
+    private operatorStreamingRepo: OperatorStreamingPosteriorRepository,
+    private nodeStreamingRepo: NodeStreamingPosteriorRepository,
+    private routeStreamingRepo: RouteStreamingPosteriorRepository,
+    // Daily buckets (risk profile + activity). Observer autorisé ici.
+    private endpointBucketsRepo: EndpointDailyBucketsRepository,
+    private serviceBucketsRepo: ServiceDailyBucketsRepository,
+    private operatorBucketsRepo: OperatorDailyBucketsRepository,
+    private nodeBucketsRepo: NodeDailyBucketsRepository,
+    private routeBucketsRepo: RouteDailyBucketsRepository,
   ) {}
 
   /** Résout le prior hiérarchique pour une cible donnée.
@@ -231,7 +220,7 @@ export class BayesianScoringService {
     const now = Math.floor(Date.now() / 1000);
 
     // Niveau 1 : operator — somme des 3 sources sur le streaming opérateur.
-    if (ctx.operatorId && this.operatorStreamingRepo) {
+    if (ctx.operatorId) {
       const summed = sumDecayedAcrossSources(
         this.operatorStreamingRepo.readAllSourcesDecayed(ctx.operatorId, now),
       );
@@ -241,7 +230,7 @@ export class BayesianScoringService {
     }
 
     // Niveau 2 : service — somme des 3 sources sur le streaming service.
-    if (ctx.serviceHash && this.serviceStreamingRepo) {
+    if (ctx.serviceHash) {
       const summed = sumDecayedAcrossSources(
         this.serviceStreamingRepo.readAllSourcesDecayed(ctx.serviceHash, now),
       );
@@ -253,7 +242,7 @@ export class BayesianScoringService {
     // Niveau 3 : category global — somme l'excédent d'évidence de chaque
     // sibling endpoint (toutes sources cumulées). L'équivalent intuitif :
     //   prior_category = flat + (évidence cumulée dans la catégorie)
-    if (ctx.categorySiblingHashes && ctx.categorySiblingHashes.length > 0 && this.endpointStreamingRepo) {
+    if (ctx.categorySiblingHashes && ctx.categorySiblingHashes.length > 0) {
       let excessAlpha = 0;
       let excessBeta = 0;
       for (const hash of ctx.categorySiblingHashes) {
@@ -362,11 +351,7 @@ export class BayesianScoringService {
    *  Comportement par source :
    *    - 'probe' / 'paid' / 'report' → streaming_posteriors ET daily_buckets
    *    - 'observer'                  → daily_buckets UNIQUEMENT (CHECK SQL
-   *                                     sur streaming_posteriors rejette observer)
-   *
-   *  Les repos streaming/buckets sont optionnels côté constructeur : si non
-   *  wired, la méthode est no-op pour le niveau concerné (permet un rollout
-   *  progressif par commit). */
+   *                                     sur streaming_posteriors rejette observer) */
   ingestStreaming(input: StreamingIngestionInput): StreamingIngestionResult {
     const result: StreamingIngestionResult = {
       endpointUpdates: 0,
@@ -400,59 +385,49 @@ export class BayesianScoringService {
 
     // endpoint
     if (input.endpointHash) {
-      if (input.source !== 'observer' && this.endpointStreamingRepo) {
+      if (input.source !== 'observer') {
         this.endpointStreamingRepo.ingest(input.endpointHash, input.source, streamingDeltas);
         result.endpointUpdates++;
       }
-      if (this.endpointBucketsRepo) {
-        this.endpointBucketsRepo.bump(input.endpointHash, input.source as BucketSource, bucketDeltas);
-        result.bucketsBumped++;
-      }
+      this.endpointBucketsRepo.bump(input.endpointHash, input.source as BucketSource, bucketDeltas);
+      result.bucketsBumped++;
     }
     // service
     if (input.serviceHash) {
-      if (input.source !== 'observer' && this.serviceStreamingRepo) {
+      if (input.source !== 'observer') {
         this.serviceStreamingRepo.ingest(input.serviceHash, input.source, streamingDeltas);
         result.serviceUpdates++;
       }
-      if (this.serviceBucketsRepo) {
-        this.serviceBucketsRepo.bump(input.serviceHash, input.source as BucketSource, bucketDeltas);
-        result.bucketsBumped++;
-      }
+      this.serviceBucketsRepo.bump(input.serviceHash, input.source as BucketSource, bucketDeltas);
+      result.bucketsBumped++;
     }
     // operator
     if (input.operatorId) {
-      if (input.source !== 'observer' && this.operatorStreamingRepo) {
+      if (input.source !== 'observer') {
         this.operatorStreamingRepo.ingest(input.operatorId, input.source, streamingDeltas);
         result.operatorUpdates++;
       }
-      if (this.operatorBucketsRepo) {
-        this.operatorBucketsRepo.bump(input.operatorId, input.source as BucketSource, bucketDeltas);
-        result.bucketsBumped++;
-      }
+      this.operatorBucketsRepo.bump(input.operatorId, input.source as BucketSource, bucketDeltas);
+      result.bucketsBumped++;
     }
     // node
     if (input.nodePubkey) {
-      if (input.source !== 'observer' && this.nodeStreamingRepo) {
+      if (input.source !== 'observer') {
         this.nodeStreamingRepo.ingest(input.nodePubkey, input.source, streamingDeltas);
         result.nodeUpdates++;
       }
-      if (this.nodeBucketsRepo) {
-        this.nodeBucketsRepo.bump(input.nodePubkey, input.source as BucketSource, bucketDeltas);
-        result.bucketsBumped++;
-      }
+      this.nodeBucketsRepo.bump(input.nodePubkey, input.source as BucketSource, bucketDeltas);
+      result.bucketsBumped++;
     }
     // route (caller + target requis)
     if (input.callerHash && input.targetHash) {
       const routeKey = `${input.callerHash}:${input.targetHash}`;
-      if (input.source !== 'observer' && this.routeStreamingRepo) {
+      if (input.source !== 'observer') {
         this.routeStreamingRepo.ingest(routeKey, input.callerHash, input.targetHash, input.source, streamingDeltas);
         result.routeUpdates++;
       }
-      if (this.routeBucketsRepo) {
-        this.routeBucketsRepo.bump(routeKey, input.callerHash, input.targetHash, input.source as BucketSource, bucketDeltas);
-        result.bucketsBumped++;
-      }
+      this.routeBucketsRepo.bump(routeKey, input.callerHash, input.targetHash, input.source as BucketSource, bucketDeltas);
+      result.bucketsBumped++;
     }
 
     return result;

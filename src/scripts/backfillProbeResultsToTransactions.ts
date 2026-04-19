@@ -37,13 +37,6 @@ import * as path from 'node:path';
 import { sha256 } from '../utils/crypto';
 import { windowBucket } from '../utils/dualWriteLogger';
 import {
-  EndpointAggregateRepository,
-  OperatorAggregateRepository,
-  ServiceAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -146,11 +139,6 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
 
   const txRepo = new TransactionRepository(opts.db);
   const bayesian = new BayesianScoringService(
-    new EndpointAggregateRepository(opts.db),
-    new ServiceAggregateRepository(opts.db),
-    new OperatorAggregateRepository(opts.db),
-    new NodeAggregateRepository(opts.db),
-    new RouteAggregateRepository(opts.db),
     new EndpointStreamingPosteriorRepository(opts.db),
     new ServiceStreamingPosteriorRepository(opts.db),
     new OperatorStreamingPosteriorRepository(opts.db),

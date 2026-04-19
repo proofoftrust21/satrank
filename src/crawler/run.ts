@@ -29,13 +29,6 @@ import { FeeSnapshotRepository } from '../repositories/feeSnapshotRepository';
 import { ProbeCrawler } from './probeCrawler';
 import { SurvivalService } from '../services/survivalService';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -400,17 +393,11 @@ async function main(): Promise<void> {
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
 
   // Phase 3 C8: crawler-side BayesianVerdictService owns snapshot persistence.
-  // Reusing the same aggregate repos the app.ts stack uses keeps the hierarchy
-  // lookup consistent between the online read path and the crawler write path.
-  const endpointAggRepoMain = new EndpointAggregateRepository(db);
-  const serviceAggRepoMain = new ServiceAggregateRepository(db);
-  const operatorAggRepoMain = new OperatorAggregateRepository(db);
-  const nodeAggRepoMain = new NodeAggregateRepository(db);
-  const routeAggRepoMain = new RouteAggregateRepository(db);
+  // Les streaming/buckets repos sont mutualisés avec l'app — même schéma, même
+  // DB, la cascade hiérarchique lit les mêmes tables côté read et write.
   const endpointStreamingMain = new EndpointStreamingPosteriorRepository(db);
   const endpointBucketsMain = new EndpointDailyBucketsRepository(db);
   const bayesianScoringServiceMain = new BayesianScoringService(
-    endpointAggRepoMain, serviceAggRepoMain, operatorAggRepoMain, nodeAggRepoMain, routeAggRepoMain,
     endpointStreamingMain,
     new ServiceStreamingPosteriorRepository(db),
     new OperatorStreamingPosteriorRepository(db),
@@ -530,19 +517,19 @@ async function main(): Promise<void> {
         const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
         // Bayesian verdict service — C10 branchement dans le pipeline Nostr :
         // les tags publiés sont 100 % bayésiens (plus de composite legacy).
-        const endpointAggRepoNostr = new EndpointAggregateRepository(db);
-        const serviceAggRepoNostr = new ServiceAggregateRepository(db);
-        const operatorAggRepoNostr = new OperatorAggregateRepository(db);
-        const nodeAggRepoNostr = new NodeAggregateRepository(db);
-        const routeAggRepoNostr = new RouteAggregateRepository(db);
         const endpointStreamingNostr = new EndpointStreamingPosteriorRepository(db);
         const endpointBucketsNostr = new EndpointDailyBucketsRepository(db);
         const bayesianScoringServiceNostr = new BayesianScoringService(
-          endpointAggRepoNostr,
-          serviceAggRepoNostr,
-          operatorAggRepoNostr,
-          nodeAggRepoNostr,
-          routeAggRepoNostr,
+          endpointStreamingNostr,
+          new ServiceStreamingPosteriorRepository(db),
+          new OperatorStreamingPosteriorRepository(db),
+          new NodeStreamingPosteriorRepository(db),
+          new RouteStreamingPosteriorRepository(db),
+          endpointBucketsNostr,
+          new ServiceDailyBucketsRepository(db),
+          new OperatorDailyBucketsRepository(db),
+          new NodeDailyBucketsRepository(db),
+          new RouteDailyBucketsRepository(db),
         );
         const bayesianVerdictServiceNostr = new BayesianVerdictService(
           db, bayesianScoringServiceNostr, endpointStreamingNostr, endpointBucketsNostr,
@@ -639,19 +626,27 @@ async function main(): Promise<void> {
       // lives inside the Nostr-publisher try-block scope.
       try {
         const { SatRankDvm } = await import('../nostr/dvm');
-        const endpointAggRepoDvm = new EndpointAggregateRepository(db);
-        const serviceAggRepoDvm = new ServiceAggregateRepository(db);
-        const operatorAggRepoDvm = new OperatorAggregateRepository(db);
-        const nodeAggRepoDvm = new NodeAggregateRepository(db);
-        const routeAggRepoDvm = new RouteAggregateRepository(db);
         const endpointStreamingDvm = new EndpointStreamingPosteriorRepository(db);
+        const serviceStreamingDvm = new ServiceStreamingPosteriorRepository(db);
+        const operatorStreamingDvm = new OperatorStreamingPosteriorRepository(db);
+        const nodeStreamingDvm = new NodeStreamingPosteriorRepository(db);
+        const routeStreamingDvm = new RouteStreamingPosteriorRepository(db);
         const endpointBucketsDvm = new EndpointDailyBucketsRepository(db);
+        const serviceBucketsDvm = new ServiceDailyBucketsRepository(db);
+        const operatorBucketsDvm = new OperatorDailyBucketsRepository(db);
+        const nodeBucketsDvm = new NodeDailyBucketsRepository(db);
+        const routeBucketsDvm = new RouteDailyBucketsRepository(db);
         const bayesianScoringServiceDvm = new BayesianScoringService(
-          endpointAggRepoDvm,
-          serviceAggRepoDvm,
-          operatorAggRepoDvm,
-          nodeAggRepoDvm,
-          routeAggRepoDvm,
+          endpointStreamingDvm,
+          serviceStreamingDvm,
+          operatorStreamingDvm,
+          nodeStreamingDvm,
+          routeStreamingDvm,
+          endpointBucketsDvm,
+          serviceBucketsDvm,
+          operatorBucketsDvm,
+          nodeBucketsDvm,
+          routeBucketsDvm,
         );
         const bayesianVerdictServiceDvm = new BayesianVerdictService(
           db, bayesianScoringServiceDvm, endpointStreamingDvm, endpointBucketsDvm,

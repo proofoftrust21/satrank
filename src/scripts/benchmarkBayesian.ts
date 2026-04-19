@@ -22,13 +22,6 @@
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -64,11 +57,6 @@ export function runBenchmark(options: BenchmarkOptions): BenchmarkResult {
     runMigrations(db);
 
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
       new EndpointStreamingPosteriorRepository(db),
       new ServiceStreamingPosteriorRepository(db),
       new OperatorStreamingPosteriorRepository(db),

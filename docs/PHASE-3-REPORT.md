@@ -2,7 +2,7 @@
 
 **Date** : 2026-04-19
 **Branche** : `phase-3-bayesian-scoring` (à merger dans `main`)
-**Schema DB** : v35 (ajout `*_streaming_posteriors` + `*_daily_buckets`)
+**Schema DB** : v36 (streaming-only — aggregates droppées)
 **Référence design** : `docs/PHASE-3-BAYESIAN-DESIGN.md`
 
 ---
@@ -11,38 +11,47 @@
 
 Phase 3 remplace le scoring composite v30 (score 0-100 agrégé sur 5 composantes à poids fixes) par un posterior Beta-Binomial par cible, par source, décroissant exponentiellement à τ = 7 jours. Le verdict publié (`SAFE / RISKY / UNKNOWN / INSUFFICIENT`) est dérivé du couple (p_success, IC95, n_obs) sans agrégation linéaire de composantes hétérogènes.
 
-La chaîne C1-C14 du refactor Phase 3 livre :
+La chaîne C1-C17 livre un refactor atomique **sans cohabitation** : les 5 tables `*_aggregates` sont DROPées en v36, le scoring lit et écrit uniquement dans `*_streaming_posteriors` + `*_daily_buckets`.
+
 - **Schéma streaming** (5 niveaux : endpoint / service / operator / node / route) — une row par (id, source) avec `(α, β, last_update_ts, total_ingestions)`.
 - **Décroissance à la lecture** — l'état stocké converge vers le prior flat `Beta(1.5, 1.5)` à la limite Δt → ∞.
-- **Séparation des sources** — `probe` (1.0) / `report` (0.3-1.0 selon tier) / `paid` (2.0). Observer en bucket-only (exclu du verdict par CHECK SQL).
+- **Séparation des sources** — `probe` (1.0) / `report` (0.3-1.0 selon tier, NIP-98=1.0) / `paid` (2.0). Observer en bucket-only (exclu du verdict par CHECK SQL).
 - **Daily buckets display** (30 jours de rétention) — alimentent `recent_activity.{24h, 7d, 30d}` et le `risk_profile` (Option B : tendance success_rate récent vs antérieur).
+- **Prior hiérarchique streaming** (C15) — cascade 4 niveaux (`operator → service → category → flat`) calculée sur `streaming_posteriors` avec seuil `PRIOR_MIN_EFFECTIVE_OBS = 30` sur l'excès d'évidence `(α+β) − (α₀+β₀)`.
 - **Retention cron** (`npm run bayesian:prune`) — purge buckets > 30 j et streaming rows dormantes > 90 j.
 - **Script de rebuild** (`npm run bayesian:rebuild`) — réplay depuis `transactions` vers streaming + buckets, avec `--truncate`, `--dry-run`, `--from-ts`.
 - **Backfill probe** (`npm run bayesian:backfill-probe`) — migre `probe_results` → `transactions` + ingestion streaming dans une transaction atomique.
-- **Benchmark hot path** (`npm run bayesian:benchmark`) — 1000 `ingestStreaming` < 5 s (mesure locale : 0.19 ms/update, 5234/s).
+- **Benchmark hot path** (`npm run bayesian:benchmark`) — 1000 `ingestStreaming` < 5 s (mesure locale : 0.20 ms/update, 4937/s).
 
-**Tests** : 922 passing (81 fichiers). Zéro lint TypeScript. Le chemin chaud tient son budget 5 ms/update avec ~10 tables touchées par observation.
+**Tests** : 879 passing (79 fichiers). Zéro lint TypeScript. `BayesianScoringService` constructeur passe de 15 à 10 repos (5 streaming + 5 buckets), sans dépendance aggregates.
+
+**Validation** :
+- Kendall τ legacy vs bayesian : **0.9038** (seuil ≥ 0.90).
+- Benchmark : **202.5 ms pour 1000 updates** (budget 5 000 ms).
 
 ---
 
-## 2. Chaîne C1-C14
+## 2. Chaîne C1-C17
 
-| # | SHA | Sujet |
-| --- | --- | --- |
-| C1  | `e444454` | migration v35 — `*_streaming_posteriors` + `*_daily_buckets` (additive) |
-| C2  | `5195267` | bayesianConfig — `TAU_DAYS=7`, `BUCKET_RETENTION_DAYS=30`, thresholds `risk_profile` |
-| C3  | `8c375fe` | `StreamingPosteriorRepository` x5 + décroissance exp(-Δt/τ) |
-| C4  | `fc48950` | `DailyBucketsRepository` x5 — compteurs display-only |
-| C5  | `8f0d758` | `BayesianScoringService.ingestStreaming` + `computeRiskProfile` (Option B) |
-| C6  | `409401a` | `probeCrawler` → `ingestStreaming` (transaction-safe) |
-| C7  | `9e3d3bb` | `reportService` → `ingestStreaming` (weight par tier, identifié + anonyme) |
-| C8  | `e061448` | `observerCrawler` → `ingestStreaming` (buckets only — observer exclu du streaming) |
-| C9  | `292ee6b` | API shape streaming publique + fix out-of-order backfill |
-| C10 | `292ee6b` | (même commit que C9) backfill probe → streaming |
-| C11 | `827ef9b` | `rebuildStreamingPosteriors` script |
-| C12 | `dda3688` | cron retention Bayesian (buckets + streaming stale) |
-| C13 | `e4cbc69` | benchmark `ingestStreaming` hot path |
-| C14 | _this_    | rapport de phase + plan de sweep destructif différé |
+| # | Sujet |
+| --- | --- |
+| C1  | migration v35 — `*_streaming_posteriors` + `*_daily_buckets` (additive) |
+| C2  | bayesianConfig — `TAU_DAYS=7`, `BUCKET_RETENTION_DAYS=30`, thresholds `risk_profile` |
+| C3  | `StreamingPosteriorRepository` x5 + décroissance exp(-Δt/τ) |
+| C4  | `DailyBucketsRepository` x5 — compteurs display-only |
+| C5  | `BayesianScoringService.ingestStreaming` + `computeRiskProfile` (Option B) |
+| C6  | `probeCrawler` → `ingestStreaming` (transaction-safe) |
+| C7  | `reportService` → `ingestStreaming` (weight par tier, identifié + anonyme) |
+| C8  | `observerCrawler` → `ingestStreaming` (buckets only — observer exclu du streaming) |
+| C9  | API shape streaming publique + fix out-of-order backfill |
+| C10 | backfill probe → streaming |
+| C11 | `rebuildStreamingPosteriors` script |
+| C12 | cron retention Bayesian (buckets + streaming stale) |
+| C13 | benchmark `ingestStreaming` hot path |
+| C14 | rapport de phase + cadrage refactor streaming |
+| C15 | `resolveHierarchicalPrior` 100 % streaming — cascade 4 niveaux (operator → service → category → flat), constante `PRIOR_MIN_EFFECTIVE_OBS = 30` |
+| C16 | Suppression `ingestTransactionOutcome` + tous les callers aggregates (probeCrawler, reportService, backfill) — grep 0 hit |
+| C17 | Migration v36 `DROP TABLE *_aggregates` ×5 + suppression `aggregatesRepository.ts` + constructeur `BayesianScoringService` ramené à 10 params (5 streaming + 5 buckets) — 15+ sites de construction rebasés |
 
 ---
 
@@ -75,6 +84,17 @@ La formule retenue garde `Beta(α₀, β₀) = Beta(1.5, 1.5)` comme attracteur 
 
 À Δt = 0 on retrouve exactement `(α_stored, β_stored)` — aucune perte d'information si une autre observation arrive immédiatement. À Δt → ∞ on retombe sur le prior flat, pas sur `(0, 0)`. La grandeur qui alimente le verdict est `n_obs_effective = (α + β) − (α₀ + β₀)` — "l'excès d'évidence" au-dessus du prior.
 
+### Prior hiérarchique streaming (C15)
+
+`resolveHierarchicalPrior` cascade 4 niveaux sur `streaming_posteriors` (sommation inter-sources `(α − α₀, β − β₀)` puis décroissance) :
+
+1. **operator** — `operatorStreamingRepo.readAllSourcesDecayed(operatorId, now)` sommé sur probe+report+paid. Seuil `nObsEffective ≥ 30` ; sinon descendre.
+2. **service** — même logique sur `serviceStreamingRepo`.
+3. **category** — agrégation des endpoints-frères de la même catégorie de service (somme inter-endpoints).
+4. **flat** — fallback `Beta(1.5, 1.5)`.
+
+Le seuil 30 correspond à l'effective excess (pas au raw count) — cohérent avec l'espace des posteriors streaming où `n_obs_effective` est la métrique sémantique utilisée partout ailleurs (verdict, convergence, risk_profile).
+
 ### Out-of-order writes (fix Phase 3 C9+C10)
 
 L'ingestion rebuild arrive volontiers en ordre chronologique inverse (probes des 7 derniers jours, du plus récent au plus ancien). Sans garde, `decayPosterior(Δt < 0)` clampait Δt à 0 et `last_update_ts` régressait → perte d'information cumulative. La correction est dans `streamingPosteriorRepository.ts` :
@@ -92,59 +112,30 @@ Validation mathématique : 22 probes sur 22 jours → `α ≈ 1.5 + Σ exp(−i/
 
 ---
 
-## 5. Ce qui reste en cohabitation
+## 5. Migration v36 — DROP aggregates
 
-**État actuel** : le chemin d'écriture garde `ingestTransactionOutcome` (écrit dans les 5 tables `*_aggregates`) en parallèle de `ingestStreaming`. Le chemin de lecture verdict (`bayesianVerdictService.buildVerdict`) lit **uniquement** depuis `*_streaming_posteriors` + `*_daily_buckets`, **sauf** pour `resolveHierarchicalPrior` qui interroge encore `operator_aggregates` et `service_aggregates` pour la cascade du prior hérité.
+Le point de cohabitation documenté en C14 est levé en C17. La migration v36 :
 
-Pourquoi la cohabitation est acceptée sur cette phase :
-- **Irréversibilité d'un DROP** — une migration `DROP TABLE *_aggregates` est destructive. Le risque d'une régression silencieuse (ex. un test passe, un chemin de prod non couvert tombe en flat prior en silence) est réel tant que le chemin streaming n'a pas soaké en prod ≥ 7 jours.
-- **Le prior hiérarchique est un fallback** — sa dérivation depuis operator/service streaming doit être réimplémentée avec `readAllSourcesDecayed` et un seuil sur `nObsEffective` (30) plutôt que sur `n_obs` raw. Changement local mais sémantiquement nouveau (raw count ≠ effective excess) — mérite son propre commit + tests dédiés.
+```sql
+DROP TABLE endpoint_aggregates;
+DROP TABLE service_aggregates;
+DROP TABLE operator_aggregates;
+DROP TABLE node_aggregates;
+DROP TABLE route_aggregates;
+```
 
-Ce n'est pas une cohabitation d'endpoint public (cf. principe produit "jamais d'endpoint parallèle") — c'est une cohabitation d'infrastructure interne pendant la montée en charge du successeur.
+Les index associés tombent avec (CASCADE implicite sur SQLite). La rollback v36 recrée les tables vides au schéma v33 (pour pouvoir revenir à une image antérieure si besoin d'audit), mais le chemin de production ne réhydrate plus jamais ces tables.
 
----
+**Callers supprimés** :
+- `bayesianScoringService.ingestTransactionOutcome` (le dual-write path).
+- `bayesianScoringService.checkConvergence` (utilisé seulement par le dual-write).
+- Import `aggregatesRepository` dans 17 fichiers (app.ts, crawler/run.ts, mcp/server.ts, 4 scripts, 10 tests).
 
-## 6. Sweep destructif — plan C15
-
-À lancer après ≥ 7 jours de prod sur le chemin streaming, avec `bayesian_rebuild:prod --truncate` joué la veille pour garantir que les streaming tables sont canoniques :
-
-1. **Migrer `resolveHierarchicalPrior` vers streaming**
-   - Signature : `resolveHierarchicalPrior(ctx) → ResolvedPrior` (supprimer `window`).
-   - Lire `operatorStreamingRepo.readAllSourcesDecayed(operatorId, now)` puis sommer `(α − α₀, β − β₀)` sur les 3 sources.
-   - Seuil : `nObsEffective ≥ MIN_N_OBS_FOR_PRIOR_INHERITANCE` (à recalibrer — l'effective est décroissant, le raw ne l'était pas).
-   - Ajuster les tests dans `bayesianScoringService.prior.test.ts`.
-
-2. **Supprimer les callers de `ingestTransactionOutcome`**
-   - `probeCrawler.ts:247`, `reportService.ts:220` + `:411`, `backfillProbeResultsToTransactions.ts:222`.
-   - Garder uniquement `ingestStreaming`.
-
-3. **Nettoyer `bayesianScoringService.ts`**
-   - Supprimer : `ingestTransactionOutcome`, `selectWindow`, `selectEndpointWindow`, `applyTemporalDecay`, `windowSeconds`, `windowTau`, `aggregateToPosterior`.
-   - Retirer les 5 aggregates repos du constructeur (reste 10 params : 5 streaming + 5 buckets).
-   - Nettoyer les imports inutilisés (`BAYESIAN_WINDOWS`, `MIN_N_OBS_FOR_WINDOW`, `WINDOW_SECONDS`, `DECAY_TAU_FRACTION`).
-
-4. **Supprimer les fichiers dédiés aggregates**
-   - `src/repositories/aggregatesRepository.ts`
-   - `src/tests/aggregatesRepository.test.ts`
-   - `src/tests/bayesianScoringService.ingest.test.ts`
-   - Migrer `bayesianScoringService.prior.test.ts` vers streaming.
-
-5. **Mettre à jour les 15+ sites de construction** de `BayesianScoringService` : `app.ts`, `crawler/run.ts` (×3), `mcp/server.ts`, scripts (×4), tests (×7).
-
-6. **Migration v36 — DROP TABLE**
-   - `DROP TABLE endpoint_aggregates`, `service_aggregates`, `operator_aggregates`, `node_aggregates`, `route_aggregates`.
-   - Laisser les index associés tomber avec (CASCADE implicite sur SQLite).
-
-7. **Vérifications**
-   - `npm run lint` ✓
-   - `npx vitest run` ✓ (sera moins de 922 tests après les suppressions)
-   - Smoke prod : compare `buildVerdict` output sur top-20 endpoints avant/après sweep. Tolérance sur `prior_source` : `operator` → peut devenir `flat` si operator streaming < seuil.
-
-Budget estimé : 3-4 h de travail focalisé + revue.
+**Effet de bord sur la lecture** : le verdict lit depuis `streaming_posteriors`, jamais depuis aggregates → aucun changement observable côté API.
 
 ---
 
-## 7. Commandes utiles
+## 6. Commandes utiles
 
 ```bash
 # Rebuild from scratch après backfill massif
@@ -165,7 +156,7 @@ npm run bayesian:kendall
 
 ---
 
-## 8. Ce que Phase 3 **n'adresse pas** (hors scope)
+## 7. Ce que Phase 3 **n'adresse pas** (hors scope)
 
 - **Pondération économique du verdict par les montants des transactions** — tout tx compte pour 1 observation, quel que soit le bucket de montant. Rationalisé : Phase 3 est un refactor d'infra (streaming vs aggregates), pas un changement de sémantique observationnelle.
 - **Décroissance par source différenciée** — tous les posteriors utilisent τ = 7 j. Un signal `paid` plus rare/cher pourrait mériter un τ plus long, mais cela complique le modèle sans demande produit claire.
@@ -173,4 +164,4 @@ npm run bayesian:kendall
 
 ---
 
-**Fin du livrable Phase 3.** Le score bayésien streaming est déployable en cohabitation contrôlée ; le sweep destructif est documenté et reporté en C15.
+**Fin du livrable Phase 3.** Le score bayésien streaming est livré sans cohabitation — le code de lecture et d'écriture est 100 % streaming, la table aggregates a été droppée en v36.

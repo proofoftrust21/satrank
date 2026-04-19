@@ -15,13 +15,6 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { ProbeRepository } from '../repositories/probeRepository';
 import {
-  EndpointAggregateRepository,
-  OperatorAggregateRepository,
-  ServiceAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -95,11 +88,6 @@ function buildCrawler(db: Database.Database, reachable: Map<string, boolean>, mo
   const txRepo = new TransactionRepository(db);
   const probeRepo = new ProbeRepository(db);
   const bayesian = new BayesianScoringService(
-    new EndpointAggregateRepository(db),
-    new ServiceAggregateRepository(db),
-    new OperatorAggregateRepository(db),
-    new NodeAggregateRepository(db),
-    new RouteAggregateRepository(db),
     new EndpointStreamingPosteriorRepository(db),
     new ServiceStreamingPosteriorRepository(db),
     new OperatorStreamingPosteriorRepository(db),

@@ -52,13 +52,6 @@ import {
   type StreamingIngestionInput,
 } from '../services/bayesianScoringService';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -148,11 +141,6 @@ export function runRebuild(options: RebuildOptions): RebuildResult {
   }
 
   const bayesian = new BayesianScoringService(
-    new EndpointAggregateRepository(options.db),
-    new ServiceAggregateRepository(options.db),
-    new OperatorAggregateRepository(options.db),
-    new NodeAggregateRepository(options.db),
-    new RouteAggregateRepository(options.db),
     new EndpointStreamingPosteriorRepository(options.db),
     new ServiceStreamingPosteriorRepository(options.db),
     new OperatorStreamingPosteriorRepository(options.db),

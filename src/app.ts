@@ -58,13 +58,6 @@ import { ReportStatsController } from './controllers/reportStatsController';
 import { BayesianScoringService } from './services/bayesianScoringService';
 import { BayesianVerdictService } from './services/bayesianVerdictService';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from './repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -141,11 +134,6 @@ export function createApp() {
   // Phase 3 : Bayesian scoring stack — built before VerdictService so it can
   // be injected. BayesianVerdictService is a read-side composer that owns the
   // canonical Bayesian shape consumed across all public endpoints.
-  const endpointAggRepo = new EndpointAggregateRepository(db);
-  const serviceAggRepo = new ServiceAggregateRepository(db);
-  const operatorAggRepo = new OperatorAggregateRepository(db);
-  const nodeAggRepo = new NodeAggregateRepository(db);
-  const routeAggRepo = new RouteAggregateRepository(db);
   const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(db);
   const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(db);
   const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(db);
@@ -157,7 +145,6 @@ export function createApp() {
   const nodeBucketsRepo = new NodeDailyBucketsRepository(db);
   const routeBucketsRepo = new RouteDailyBucketsRepository(db);
   const bayesianScoringService = new BayesianScoringService(
-    endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
     endpointStreamingRepo, serviceStreamingRepo, operatorStreamingRepo, nodeStreamingRepo, routeStreamingRepo,
     endpointBucketsRepo, serviceBucketsRepo, operatorBucketsRepo, nodeBucketsRepo, routeBucketsRepo,
   );

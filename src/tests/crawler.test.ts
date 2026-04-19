@@ -7,13 +7,6 @@ import { TransactionRepository } from '../repositories/transactionRepository';
 import { Crawler } from '../crawler/crawler';
 import { sha256 } from '../utils/crypto';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -329,11 +322,6 @@ describe('Crawler — Phase 3 C8 streaming bridge (observer = buckets only)', ()
     agentRepo = new AgentRepository(db);
     txRepo = new TransactionRepository(db);
     bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
       new EndpointStreamingPosteriorRepository(db),
       new ServiceStreamingPosteriorRepository(db),
       new OperatorStreamingPosteriorRepository(db),

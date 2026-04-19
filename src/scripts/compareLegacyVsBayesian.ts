@@ -25,13 +25,6 @@
 
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
-import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
 import {
@@ -128,11 +121,6 @@ export function runComparison(options: CompareOptions): CompareResult {
     const endpointStreaming = new EndpointStreamingPosteriorRepository(db);
     const endpointBuckets = new EndpointDailyBucketsRepository(db);
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
       endpointStreaming,
       new ServiceStreamingPosteriorRepository(db),
       new OperatorStreamingPosteriorRepository(db),

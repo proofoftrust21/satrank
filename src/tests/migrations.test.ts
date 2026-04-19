@@ -49,8 +49,8 @@ describe('Schema versioning', () => {
   it('creates schema_version table with all migration versions', () => {
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(35);
-    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]);
+    expect(versions.length).toBe(36);
+    expect(versions.map(v => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
   });
 
   it('records applied_at as ISO string and description for each version', () => {
@@ -66,7 +66,7 @@ describe('Schema versioning', () => {
     runMigrations(db);
     runMigrations(db);
     const versions = getAppliedVersions(db);
-    expect(versions.length).toBe(35);
+    expect(versions.length).toBe(36);
   });
 
   it('does not re-apply existing migrations on second run', () => {
@@ -640,7 +640,9 @@ describe('v33 Phase 3 bayesian scoring layer', () => {
   beforeEach(() => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
+    // v36 DROP aggregates — rollback to v33 pour tester le schéma originel.
     runMigrations(db);
+    rollbackTo(db, 33);
   });
 
   afterEach(() => { db.close(); });

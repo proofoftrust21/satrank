@@ -28,13 +28,6 @@ import {
   RouteDailyBucketsRepository,
   NodeDailyBucketsRepository,
 } from '../repositories/dailyBucketsRepository';
-import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { WEIGHT_PAID_PROBE, WEIGHT_SOVEREIGN_PROBE, WEIGHT_REPORT_NIP98, DEFAULT_PRIOR_ALPHA } from '../config/bayesianConfig';
 
@@ -42,11 +35,6 @@ const NOW = Date.UTC(2026, 3, 18, 12, 0, 0) / 1000;
 
 function makeService(db: Database.Database): BayesianScoringService {
   return new BayesianScoringService(
-    new EndpointAggregateRepository(db),
-    new ServiceAggregateRepository(db),
-    new OperatorAggregateRepository(db),
-    new NodeAggregateRepository(db),
-    new RouteAggregateRepository(db),
     new EndpointStreamingPosteriorRepository(db),
     new ServiceStreamingPosteriorRepository(db),
     new OperatorStreamingPosteriorRepository(db),
@@ -166,23 +154,6 @@ describe('ingestStreaming — routage par source', () => {
     expect(routeRow.route_hash).toBe('caller-A:target-B');
   });
 
-  it('repos non-wired → no-op sans erreur pour le niveau concerné', () => {
-    const minimalSvc = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      // pas de streaming / buckets wired
-    );
-    const r = minimalSvc.ingestStreaming({
-      success: true,
-      timestamp: NOW,
-      source: 'probe',
-      endpointHash: 'h5',
-    });
-    expect(r.endpointUpdates).toBe(0);
-    expect(r.bucketsBumped).toBe(0);
-  });
 });
 
 describe('computeRiskProfile — Option B (delta success_rate)', () => {

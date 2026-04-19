@@ -22,16 +22,21 @@ import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { ProbeRepository } from '../repositories/probeRepository';
 import {
-  EndpointAggregateRepository,
-  OperatorAggregateRepository,
-  ServiceAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
-import { EndpointStreamingPosteriorRepository } from '../repositories/streamingPosteriorRepository';
-import { EndpointDailyBucketsRepository } from '../repositories/dailyBucketsRepository';
 import { runBackfill } from '../scripts/backfillProbeResultsToTransactions';
 import { ingestBayesianObservation } from './helpers/bayesianTestFactory';
 import type { Agent } from '../types';
@@ -126,11 +131,16 @@ describe('Phase 3 end-to-end acceptance — GO criterion', () => {
 
     // Now query the verdict
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
     const verdictSvc = new BayesianVerdictService(
       db, bayesian,
@@ -172,11 +182,16 @@ describe('Phase 3 end-to-end acceptance — GO criterion', () => {
     runBackfill({ db });
 
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
     const verdict = new BayesianVerdictService(
       db, bayesian,

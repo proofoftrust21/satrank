@@ -6,17 +6,19 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
   NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
 } from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import {
   DEFAULT_PRIOR_ALPHA,
@@ -30,24 +32,22 @@ function makeEnv() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  const endpointAggRepo = new EndpointAggregateRepository(db);
-  const serviceAggRepo = new ServiceAggregateRepository(db);
-  const operatorAggRepo = new OperatorAggregateRepository(db);
-  const nodeAggRepo = new NodeAggregateRepository(db);
   const endpointStreamRepo = new EndpointStreamingPosteriorRepository(db);
   const serviceStreamRepo = new ServiceStreamingPosteriorRepository(db);
   const operatorStreamRepo = new OperatorStreamingPosteriorRepository(db);
   const nodeStreamRepo = new NodeStreamingPosteriorRepository(db);
+  const routeStreamRepo = new RouteStreamingPosteriorRepository(db);
   const svc = new BayesianScoringService(
-    endpointAggRepo,
-    serviceAggRepo,
-    operatorAggRepo,
-    nodeAggRepo,
-    undefined,
     endpointStreamRepo,
     serviceStreamRepo,
     operatorStreamRepo,
     nodeStreamRepo,
+    routeStreamRepo,
+    new EndpointDailyBucketsRepository(db),
+    new ServiceDailyBucketsRepository(db),
+    new OperatorDailyBucketsRepository(db),
+    new NodeDailyBucketsRepository(db),
+    new RouteDailyBucketsRepository(db),
   );
   return { db, svc, endpointStreamRepo, serviceStreamRepo, operatorStreamRepo };
 }

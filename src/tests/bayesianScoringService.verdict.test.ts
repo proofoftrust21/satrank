@@ -5,11 +5,19 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-} from '../repositories/aggregatesRepository';
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import {
   SAFE_P_THRESHOLD,
@@ -27,10 +35,16 @@ function makeService() {
   db.pragma('foreign_keys = ON');
   runMigrations(db);
   const svc = new BayesianScoringService(
-    new EndpointAggregateRepository(db),
-    new ServiceAggregateRepository(db),
-    new OperatorAggregateRepository(db),
-    new NodeAggregateRepository(db),
+    new EndpointStreamingPosteriorRepository(db),
+    new ServiceStreamingPosteriorRepository(db),
+    new OperatorStreamingPosteriorRepository(db),
+    new NodeStreamingPosteriorRepository(db),
+    new RouteStreamingPosteriorRepository(db),
+    new EndpointDailyBucketsRepository(db),
+    new ServiceDailyBucketsRepository(db),
+    new OperatorDailyBucketsRepository(db),
+    new NodeDailyBucketsRepository(db),
+    new RouteDailyBucketsRepository(db),
   );
   return { db, svc };
 }

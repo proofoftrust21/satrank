@@ -14,13 +14,6 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import {
-  EndpointAggregateRepository,
-  OperatorAggregateRepository,
-  ServiceAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -74,11 +67,6 @@ function buildReportService(db: Database.Database, mode: 'off' | 'dry_run' | 'ac
   const snapshotRepo = new SnapshotRepository(db);
   const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
   const bayesian = new BayesianScoringService(
-    new EndpointAggregateRepository(db),
-    new ServiceAggregateRepository(db),
-    new OperatorAggregateRepository(db),
-    new NodeAggregateRepository(db),
-    new RouteAggregateRepository(db),
     new EndpointStreamingPosteriorRepository(db),
     new ServiceStreamingPosteriorRepository(db),
     new OperatorStreamingPosteriorRepository(db),

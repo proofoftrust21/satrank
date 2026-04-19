@@ -12,18 +12,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../database/migrations';
-import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
 import { AgentRepository } from '../repositories/agentRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
-import { EndpointStreamingPosteriorRepository } from '../repositories/streamingPosteriorRepository';
-import { EndpointDailyBucketsRepository } from '../repositories/dailyBucketsRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { ingestBayesianObservation } from './helpers/bayesianTestFactory';
 import type { Agent } from '../types';
 
@@ -116,11 +121,16 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
     }
 
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
     const verdict = new BayesianVerdictService(
       db, bayesian,
@@ -150,11 +160,16 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
     }
 
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
     const verdict = new BayesianVerdictService(
       db, bayesian,
@@ -179,11 +194,16 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
     }
 
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
     const verdict = new BayesianVerdictService(
       db, bayesian,
@@ -208,11 +228,16 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
     }
 
     const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
     const verdict = new BayesianVerdictService(
       db, bayesian,

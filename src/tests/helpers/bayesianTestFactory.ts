@@ -8,13 +8,6 @@ import {
 } from '../../services/bayesianScoringService';
 import { BayesianVerdictService } from '../../services/bayesianVerdictService';
 import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../../repositories/aggregatesRepository';
-import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
   OperatorStreamingPosteriorRepository,
@@ -30,16 +23,11 @@ import {
 } from '../../repositories/dailyBucketsRepository';
 import { sha256 } from '../../utils/crypto';
 
-/** Construit un BayesianScoringService test-friendly (tous les 15 repos câblés
+/** Construit un BayesianScoringService test-friendly (tous les 10 repos câblés
  *  sur la même DB). Utilisé par les tests qui ont besoin d'ingérer directement
  *  via `ingestStreaming` sans passer par les crawlers. */
 export function createBayesianScoringService(db: Database): BayesianScoringService {
   return new BayesianScoringService(
-    new EndpointAggregateRepository(db),
-    new ServiceAggregateRepository(db),
-    new OperatorAggregateRepository(db),
-    new NodeAggregateRepository(db),
-    new RouteAggregateRepository(db),
     new EndpointStreamingPosteriorRepository(db),
     new ServiceStreamingPosteriorRepository(db),
     new OperatorStreamingPosteriorRepository(db),
@@ -65,11 +53,6 @@ export function ingestBayesianObservation(
 }
 
 export function createBayesianVerdictService(db: Database): BayesianVerdictService {
-  const endpointAggRepo = new EndpointAggregateRepository(db);
-  const serviceAggRepo = new ServiceAggregateRepository(db);
-  const operatorAggRepo = new OperatorAggregateRepository(db);
-  const nodeAggRepo = new NodeAggregateRepository(db);
-  const routeAggRepo = new RouteAggregateRepository(db);
   const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(db);
   const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(db);
   const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(db);
@@ -81,7 +64,6 @@ export function createBayesianVerdictService(db: Database): BayesianVerdictServi
   const nodeBucketsRepo = new NodeDailyBucketsRepository(db);
   const routeBucketsRepo = new RouteDailyBucketsRepository(db);
   const bayesianScoringService = new BayesianScoringService(
-    endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
     endpointStreamingRepo, serviceStreamingRepo, operatorStreamingRepo, nodeStreamingRepo, routeStreamingRepo,
     endpointBucketsRepo, serviceBucketsRepo, operatorBucketsRepo, nodeBucketsRepo, routeBucketsRepo,
   );
@@ -127,25 +109,7 @@ export function seedSafeBayesianObservations(
   }
 
   // Streaming path — direct ingest par le scoring service pour avoir posteriors + buckets.
-  const streamingEndpoint = new EndpointStreamingPosteriorRepository(db);
-  const bucketsEndpoint = new EndpointDailyBucketsRepository(db);
-  const scoring = new BayesianScoringService(
-    new EndpointAggregateRepository(db),
-    new ServiceAggregateRepository(db),
-    new OperatorAggregateRepository(db),
-    new NodeAggregateRepository(db),
-    new RouteAggregateRepository(db),
-    streamingEndpoint,
-    new ServiceStreamingPosteriorRepository(db),
-    new OperatorStreamingPosteriorRepository(db),
-    new NodeStreamingPosteriorRepository(db),
-    new RouteStreamingPosteriorRepository(db),
-    bucketsEndpoint,
-    new ServiceDailyBucketsRepository(db),
-    new OperatorDailyBucketsRepository(db),
-    new NodeDailyBucketsRepository(db),
-    new RouteDailyBucketsRepository(db),
-  );
+  const scoring = createBayesianScoringService(db);
   for (let i = 0; i < nProbe; i++) {
     scoring.ingestStreaming({
       success: true,
