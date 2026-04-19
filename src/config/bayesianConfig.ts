@@ -17,10 +17,12 @@ export const DEFAULT_PRIOR_BETA = 1.5;
  *  comme prior au niveau enfant. Sous ce seuil, on remonte d'un cran. */
 export const MIN_N_OBS_FOR_PRIOR_INHERITANCE = 30;
 
-// --- Fenêtres temporelles ---
+// --- Fenêtres temporelles (LEGACY — à supprimer en fin de chaîne Phase 3) ---
 // Trois horizons parallèles. L'auto-sélection prend la plus courte qui a
 // atteint MIN_N_OBS_FOR_WINDOW — principe : réagir vite si on a des
 // données fraîches, sinon se rabattre sur plus long.
+// Ces constantes restent le temps que tous les callers basculent sur le
+// modèle streaming. Les nouveaux callers doivent utiliser TAU_SECONDS.
 export const WINDOW_24H_SEC = 24 * 3600;
 export const WINDOW_7D_SEC = 7 * 24 * 3600;
 export const WINDOW_30D_SEC = 30 * 24 * 3600;
@@ -38,8 +40,37 @@ export const WINDOW_SECONDS: Record<BayesianWindow, number> = {
 /** Minimum n_obs pour qu'une fenêtre soit sélectionnable. */
 export const MIN_N_OBS_FOR_WINDOW = 20;
 
-/** Décroissance exponentielle : τ = fenêtre / 3. Observation à t=τ → poids e⁻¹ ≈ 0.368. */
+/** Décroissance exponentielle legacy : τ = fenêtre / 3. Observation à t=τ → poids e⁻¹ ≈ 0.368. */
 export const DECAY_TAU_FRACTION = 1 / 3;
+
+// --- Streaming exponential (Phase 3 C1-C14) ---
+// Modèle unique remplaçant les 3 fenêtres ci-dessus. Une paire (α, β) par
+// (cible, source), décroissance exponentielle appliquée à la fois à
+// l'ingestion (α ← α·exp(-Δt/τ)) et à la lecture (pour la cohérence temporelle).
+// τ=7 jours donne un poids ≈ 0.368 à une observation d'il y a une semaine,
+// ≈ 0.135 à deux semaines, ≈ 0.018 à un mois — se comporte comme un "7d glissant"
+// mais sans effet de bord aux bornes de fenêtre.
+export const TAU_DAYS = 7;
+export const TAU_SECONDS = TAU_DAYS * 24 * 3600;
+
+// --- Daily buckets (display-only) ---
+/** Rétention des daily_buckets en jours — au-delà, purgés par cron. */
+export const BUCKET_RETENTION_DAYS = 30;
+
+// --- Risk profile (Option B : comparaison success_rate récent vs antérieur) ---
+// Dérivé du delta success_rate(7j récents) - success_rate(23j antérieurs).
+// low = stable ou en progrès, medium = léger déclin, high = dégradation marquée.
+/** Fenêtre récente pour le calcul de tendance. */
+export const RISK_PROFILE_RECENT_WINDOW_DAYS = 7;
+/** Fenêtre antérieure pour comparaison (prev_N_days avant la fenêtre récente). */
+export const RISK_PROFILE_PRIOR_WINDOW_DAYS = 23;
+/** Delta en dessous duquel le profil est medium (légère dégradation). */
+export const RISK_PROFILE_DELTA_MEDIUM = -0.10;
+/** Delta en dessous duquel le profil est high (dégradation marquée). */
+export const RISK_PROFILE_DELTA_HIGH = -0.25;
+/** Minimum n_obs sur les deux fenêtres combinées avant de classer le risque.
+ *  Sous ce seuil, le profil est 'unknown'. */
+export const RISK_PROFILE_MIN_N_OBS = 5;
 
 // --- Source weighting ---
 // Trois sources distinctes, calculées en parallèle par cible.
