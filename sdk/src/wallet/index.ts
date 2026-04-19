@@ -1,3 +1,5 @@
-// Wallet drivers. C1 only re-exports the Wallet interface; concrete drivers
-// (LndWallet, NwcWallet, LnurlWallet) land in C3-C4.
+// Wallet drivers. Re-exports the Wallet interface + concrete drivers.
+// NwcWallet and LnurlWallet land in C4.
 export type { Wallet } from '../types';
+export { LndWallet } from './LndWallet';
+export type { LndWalletOptions } from './LndWallet';
