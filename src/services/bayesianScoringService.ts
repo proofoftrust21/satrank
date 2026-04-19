@@ -24,6 +24,22 @@ import type {
   RouteAggregateRepository,
   SimpleAggregate,
 } from '../repositories/aggregatesRepository';
+import type {
+  EndpointStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import type {
+  EndpointDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+  BucketSource,
+} from '../repositories/dailyBucketsRepository';
+import { dayKeyUTC } from '../repositories/dailyBucketsRepository';
 import {
   BAYESIAN_WINDOWS,
   MIN_N_OBS_FOR_WINDOW,
@@ -47,6 +63,11 @@ import {
   RISKY_CI95_HIGH_MAX,
   UNKNOWN_CI95_INTERVAL_MAX,
   UNKNOWN_MIN_N_OBS,
+  RISK_PROFILE_RECENT_WINDOW_DAYS,
+  RISK_PROFILE_PRIOR_WINDOW_DAYS,
+  RISK_PROFILE_DELTA_MEDIUM,
+  RISK_PROFILE_DELTA_HIGH,
+  RISK_PROFILE_MIN_N_OBS,
   type BayesianWindow,
   type BayesianSource,
 } from '../config/bayesianConfig';
@@ -144,6 +165,57 @@ export interface IngestionResult {
   routeUpdates: number;
 }
 
+/** Input d'ingestion pour le modèle streaming. Inclut la source et le tier
+ *  (nécessaire pour calculer le poids de l'observation — voir weightForSource).
+ *  Observer est autorisé ici : on n'écrit pas dans les streaming_posteriors
+ *  (CHECK constraint) mais on bump les daily_buckets (activité visible). */
+export interface StreamingIngestionInput {
+  success: boolean;
+  timestamp: number;
+  /** 'probe' | 'report' | 'paid' | 'observer' — observer = bucket-only. */
+  source: BayesianSource | 'observer';
+  /** Tier reporter — requis si source='report'. */
+  tier?: ReportTier;
+  endpointHash?: string | null;
+  serviceHash?: string | null;
+  operatorId?: string | null;
+  /** Pubkey du node LN (pour node_streaming/buckets). */
+  nodePubkey?: string | null;
+  callerHash?: string | null;
+  targetHash?: string | null;
+}
+
+export interface StreamingIngestionResult {
+  endpointUpdates: number;
+  serviceUpdates: number;
+  operatorUpdates: number;
+  nodeUpdates: number;
+  routeUpdates: number;
+  /** Compte des buckets aussi bumpés — peut différer si observer (bucket-only). */
+  bucketsBumped: number;
+}
+
+/** Risk profile dérivé de la tendance success_rate récente vs antérieure (Option B). */
+export type RiskProfile = 'low' | 'medium' | 'high' | 'unknown';
+
+export interface RiskProfileResult {
+  profile: RiskProfile;
+  /** success_rate sur les 7 derniers jours. */
+  recentSuccessRate: number | null;
+  /** success_rate sur les 23 jours précédant la fenêtre récente. */
+  priorSuccessRate: number | null;
+  /** Delta recent - prior (peut être null si pas assez d'obs). */
+  delta: number | null;
+  /** n_obs cumulé sur les deux fenêtres. */
+  totalObs: number;
+}
+
+/** Interface minimale du bucket repo pour computeRiskProfile — permet au
+ *  service de tourner avec n'importe laquelle des 5 tables sans surcharge. */
+export interface RiskProfileBucketRepo {
+  sumSuccessFailureBetween(id: string, fromDay: string, toDay: string): { nSuccess: number; nFailure: number; nObs: number };
+}
+
 export class BayesianScoringService {
   constructor(
     private endpointRepo: EndpointAggregateRepository,
@@ -151,6 +223,17 @@ export class BayesianScoringService {
     private operatorRepo: OperatorAggregateRepository,
     private nodeRepo: NodeAggregateRepository,
     private routeRepo?: RouteAggregateRepository,
+    // --- Streaming path (Phase 3 refactor C5+) — optionnels pour rétro-compat
+    private endpointStreamingRepo?: EndpointStreamingPosteriorRepository,
+    private serviceStreamingRepo?: ServiceStreamingPosteriorRepository,
+    private operatorStreamingRepo?: OperatorStreamingPosteriorRepository,
+    private nodeStreamingRepo?: NodeStreamingPosteriorRepository,
+    private routeStreamingRepo?: RouteStreamingPosteriorRepository,
+    private endpointBucketsRepo?: EndpointDailyBucketsRepository,
+    private serviceBucketsRepo?: ServiceDailyBucketsRepository,
+    private operatorBucketsRepo?: OperatorDailyBucketsRepository,
+    private nodeBucketsRepo?: NodeDailyBucketsRepository,
+    private routeBucketsRepo?: RouteDailyBucketsRepository,
   ) {}
 
   /** Résout le prior hiérarchique pour une cible donnée.
@@ -431,5 +514,158 @@ export class BayesianScoringService {
       sourcesAboveThreshold: aboveThreshold,
       threshold: CONVERGENCE_P_THRESHOLD,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 3 streaming path (C5+). Méthodes additives — les ingestion callers
+  // migrent un par un (C6 probeCrawler → C7 reportService → C8 observerCrawler).
+  // -------------------------------------------------------------------------
+
+  /** Ingestion streaming : applique la décroissance τ=7j, additionne les
+   *  deltas pondérés, et bump les daily_buckets pour chaque niveau connu.
+   *
+   *  Comportement par source :
+   *    - 'probe' / 'paid' / 'report' → streaming_posteriors ET daily_buckets
+   *    - 'observer'                  → daily_buckets UNIQUEMENT (CHECK SQL
+   *                                     sur streaming_posteriors rejette observer)
+   *
+   *  Les repos streaming/buckets sont optionnels côté constructeur : si non
+   *  wired, la méthode est no-op pour le niveau concerné (permet un rollout
+   *  progressif par commit). */
+  ingestStreaming(input: StreamingIngestionInput): StreamingIngestionResult {
+    const result: StreamingIngestionResult = {
+      endpointUpdates: 0,
+      serviceUpdates: 0,
+      operatorUpdates: 0,
+      nodeUpdates: 0,
+      routeUpdates: 0,
+      bucketsBumped: 0,
+    };
+
+    // Poids de l'observation. Observer n'alimente pas les streaming_posteriors,
+    // mais vaut 1 dans les buckets (présence visible).
+    const weight = input.source === 'observer'
+      ? 1
+      : this.weightForSource(input.source, input.tier);
+    const successDelta = input.success ? weight : 0;
+    const failureDelta = input.success ? 0 : weight;
+    const day = dayKeyUTC(input.timestamp);
+
+    const streamingDeltas = {
+      successDelta,
+      failureDelta,
+      nowSec: input.timestamp,
+    };
+    const bucketDeltas = {
+      day,
+      nObsDelta: 1,
+      nSuccessDelta: input.success ? 1 : 0,
+      nFailureDelta: input.success ? 0 : 1,
+    };
+
+    // endpoint
+    if (input.endpointHash) {
+      if (input.source !== 'observer' && this.endpointStreamingRepo) {
+        this.endpointStreamingRepo.ingest(input.endpointHash, input.source, streamingDeltas);
+        result.endpointUpdates++;
+      }
+      if (this.endpointBucketsRepo) {
+        this.endpointBucketsRepo.bump(input.endpointHash, input.source as BucketSource, bucketDeltas);
+        result.bucketsBumped++;
+      }
+    }
+    // service
+    if (input.serviceHash) {
+      if (input.source !== 'observer' && this.serviceStreamingRepo) {
+        this.serviceStreamingRepo.ingest(input.serviceHash, input.source, streamingDeltas);
+        result.serviceUpdates++;
+      }
+      if (this.serviceBucketsRepo) {
+        this.serviceBucketsRepo.bump(input.serviceHash, input.source as BucketSource, bucketDeltas);
+        result.bucketsBumped++;
+      }
+    }
+    // operator
+    if (input.operatorId) {
+      if (input.source !== 'observer' && this.operatorStreamingRepo) {
+        this.operatorStreamingRepo.ingest(input.operatorId, input.source, streamingDeltas);
+        result.operatorUpdates++;
+      }
+      if (this.operatorBucketsRepo) {
+        this.operatorBucketsRepo.bump(input.operatorId, input.source as BucketSource, bucketDeltas);
+        result.bucketsBumped++;
+      }
+    }
+    // node
+    if (input.nodePubkey) {
+      if (input.source !== 'observer' && this.nodeStreamingRepo) {
+        this.nodeStreamingRepo.ingest(input.nodePubkey, input.source, streamingDeltas);
+        result.nodeUpdates++;
+      }
+      if (this.nodeBucketsRepo) {
+        this.nodeBucketsRepo.bump(input.nodePubkey, input.source as BucketSource, bucketDeltas);
+        result.bucketsBumped++;
+      }
+    }
+    // route (caller + target requis)
+    if (input.callerHash && input.targetHash) {
+      const routeKey = `${input.callerHash}:${input.targetHash}`;
+      if (input.source !== 'observer' && this.routeStreamingRepo) {
+        this.routeStreamingRepo.ingest(routeKey, input.callerHash, input.targetHash, input.source, streamingDeltas);
+        result.routeUpdates++;
+      }
+      if (this.routeBucketsRepo) {
+        this.routeBucketsRepo.bump(routeKey, input.callerHash, input.targetHash, input.source as BucketSource, bucketDeltas);
+        result.bucketsBumped++;
+      }
+    }
+
+    return result;
+  }
+
+  /** Risk profile Option B — delta success_rate(7j récents) vs (23j antérieurs).
+   *
+   *  Classification :
+   *    - unknown  : n_obs total < RISK_PROFILE_MIN_N_OBS (signal trop faible)
+   *    - low      : delta ≥ RISK_PROFILE_DELTA_MEDIUM (stable ou en progrès)
+   *    - medium   : RISK_PROFILE_DELTA_HIGH ≤ delta < RISK_PROFILE_DELTA_MEDIUM
+   *    - high     : delta < RISK_PROFILE_DELTA_HIGH (dégradation marquée)
+   *
+   *  Source mélangée (toutes sources confondues) — c'est du display, pas du
+   *  verdict, donc l'activité globale est le bon signal pour "ce nœud est-il
+   *  en train de se dégrader ?". */
+  computeRiskProfile(bucketRepo: RiskProfileBucketRepo, id: string, atTs: number): RiskProfileResult {
+    const atDay = dayKeyUTC(atTs);
+    const recentFromDay = dayKeyUTC(atTs - (RISK_PROFILE_RECENT_WINDOW_DAYS - 1) * 86400);
+    // Fenêtre antérieure : les RISK_PROFILE_PRIOR_WINDOW_DAYS jours AVANT la fenêtre récente.
+    const priorToTs = atTs - RISK_PROFILE_RECENT_WINDOW_DAYS * 86400;
+    const priorToDay = dayKeyUTC(priorToTs);
+    const priorFromDay = dayKeyUTC(priorToTs - (RISK_PROFILE_PRIOR_WINDOW_DAYS - 1) * 86400);
+
+    const recent = bucketRepo.sumSuccessFailureBetween(id, recentFromDay, atDay);
+    const prior = bucketRepo.sumSuccessFailureBetween(id, priorFromDay, priorToDay);
+
+    const totalObs = recent.nObs + prior.nObs;
+    if (totalObs < RISK_PROFILE_MIN_N_OBS) {
+      return { profile: 'unknown', recentSuccessRate: null, priorSuccessRate: null, delta: null, totalObs };
+    }
+
+    // Si une des deux fenêtres est vide, delta non-définissable → unknown.
+    if (recent.nObs === 0 || prior.nObs === 0) {
+      const recentRate = recent.nObs > 0 ? recent.nSuccess / recent.nObs : null;
+      const priorRate = prior.nObs > 0 ? prior.nSuccess / prior.nObs : null;
+      return { profile: 'unknown', recentSuccessRate: recentRate, priorSuccessRate: priorRate, delta: null, totalObs };
+    }
+
+    const recentRate = recent.nSuccess / recent.nObs;
+    const priorRate = prior.nSuccess / prior.nObs;
+    const delta = recentRate - priorRate;
+
+    let profile: RiskProfile;
+    if (delta < RISK_PROFILE_DELTA_HIGH) profile = 'high';
+    else if (delta < RISK_PROFILE_DELTA_MEDIUM) profile = 'medium';
+    else profile = 'low';
+
+    return { profile, recentSuccessRate: recentRate, priorSuccessRate: priorRate, delta, totalObs };
   }
 }
