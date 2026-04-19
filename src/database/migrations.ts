@@ -773,6 +773,158 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 34, 'Phase 3 C8 — DROP score_snapshots.score + score_snapshots.components (bayesian-only)');
   }
 
+  // v35: Phase 3 refactor streaming — suppression du modèle 3-windows et
+  // adoption d'un unique posterior streaming par (target, source) avec
+  // décroissance exponentielle continue (τ = 7 jours). Cinq tables
+  // *_streaming_posteriors remplacent les *_aggregates pour la composante
+  // verdict. Cinq tables *_daily_buckets prennent en charge les compteurs
+  // d'affichage (last_24h/7d/30d). Observer garde sa place dans les buckets
+  // pour l'activité mais reste exclu des streaming posteriors (pas de poids
+  // dans le verdict — contrat Q3 préservé).
+  //
+  // Rationale : les *_aggregates avaient un bug latent — n_obs raw cumulatif
+  // + updated_at frais faisaient que selectWindow piquait toujours 24h même
+  // pour des targets probés quotidiennement, menant à des verdicts toujours
+  // INSUFFICIENT. Le nouveau modèle n'a plus de fenêtre discrète : un seul
+  // (α, β) par source, décroit en continu à la lecture + à l'écriture.
+  if (!hasVersion(db, 35)) {
+    // Note : v35 est purement additive. La suppression des cinq *_aggregates
+    // arrive en v36 une fois tous les callers migrés vers le nouveau modèle
+    // (fin de chaîne du refactor streaming). CI reste verte entre commits.
+
+    // Cinq tables streaming_posteriors. Une row par (id, source). Source
+    // limité aux trois contribuant au verdict : probe / report / paid.
+    // Observer est volontairement absent (contrat Q3).
+    db.exec(`
+      CREATE TABLE endpoint_streaming_posteriors (
+        url_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (url_hash, source)
+      );
+      CREATE INDEX idx_endpoint_streaming_ts ON endpoint_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE node_streaming_posteriors (
+        pubkey TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (pubkey, source)
+      );
+      CREATE INDEX idx_node_streaming_ts ON node_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE service_streaming_posteriors (
+        service_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (service_hash, source)
+      );
+      CREATE INDEX idx_service_streaming_ts ON service_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE operator_streaming_posteriors (
+        operator_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (operator_id, source)
+      );
+      CREATE INDEX idx_operator_streaming_ts ON operator_streaming_posteriors(last_update_ts);
+
+      CREATE TABLE route_streaming_posteriors (
+        route_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        posterior_alpha REAL NOT NULL,
+        posterior_beta REAL NOT NULL,
+        last_update_ts INTEGER NOT NULL,
+        total_ingestions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (route_hash, source)
+      );
+      CREATE INDEX idx_route_streaming_ts ON route_streaming_posteriors(last_update_ts);
+      CREATE INDEX idx_route_streaming_caller ON route_streaming_posteriors(caller_hash);
+      CREATE INDEX idx_route_streaming_target ON route_streaming_posteriors(target_hash);
+    `);
+
+    // Cinq tables daily_buckets. Observer est autorisé ici (activité visible).
+    db.exec(`
+      CREATE TABLE endpoint_daily_buckets (
+        url_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (url_hash, source, day)
+      );
+      CREATE INDEX idx_endpoint_buckets_day ON endpoint_daily_buckets(day);
+
+      CREATE TABLE node_daily_buckets (
+        pubkey TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (pubkey, source, day)
+      );
+      CREATE INDEX idx_node_buckets_day ON node_daily_buckets(day);
+
+      CREATE TABLE service_daily_buckets (
+        service_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (service_hash, source, day)
+      );
+      CREATE INDEX idx_service_buckets_day ON service_daily_buckets(day);
+
+      CREATE TABLE operator_daily_buckets (
+        operator_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (operator_id, source, day)
+      );
+      CREATE INDEX idx_operator_buckets_day ON operator_daily_buckets(day);
+
+      CREATE TABLE route_daily_buckets (
+        route_hash TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('probe', 'report', 'paid', 'observer')),
+        caller_hash TEXT NOT NULL,
+        target_hash TEXT NOT NULL,
+        day TEXT NOT NULL,
+        n_obs INTEGER NOT NULL DEFAULT 0,
+        n_success INTEGER NOT NULL DEFAULT 0,
+        n_failure INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (route_hash, source, day)
+      );
+      CREATE INDEX idx_route_buckets_day ON route_daily_buckets(day);
+    `);
+
+    recordVersion(db, 35, 'Phase 3 refactor — streaming posteriors (5 tables) + daily buckets (5 tables), additive');
+  }
+
+  // Note : la suppression des cinq *_aggregates est différée en fin de chaîne
+  // Phase 3 (migration v36 à poser au dernier commit, après que tous les
+  // callers aient basculé sur streaming+buckets). Cela permet à la CI de
+  // rester verte entre C1 et la fin de la chaîne — l'aggregatesRepository et
+  // les services qui lisent encore les aggregates continuent de fonctionner.
+
   logger.info('Migrations executed successfully');
 }
 
@@ -782,6 +934,32 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  35: (db) => {
+    // Rollback streaming refactor — drop 10 new tables. Les aggregates sont
+    // toujours présents puisque v35 est additive ; rien à restaurer ici.
+    db.exec('DROP INDEX IF EXISTS idx_route_buckets_day');
+    db.exec('DROP TABLE IF EXISTS route_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_operator_buckets_day');
+    db.exec('DROP TABLE IF EXISTS operator_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_service_buckets_day');
+    db.exec('DROP TABLE IF EXISTS service_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_node_buckets_day');
+    db.exec('DROP TABLE IF EXISTS node_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_buckets_day');
+    db.exec('DROP TABLE IF EXISTS endpoint_daily_buckets');
+    db.exec('DROP INDEX IF EXISTS idx_route_streaming_target');
+    db.exec('DROP INDEX IF EXISTS idx_route_streaming_caller');
+    db.exec('DROP INDEX IF EXISTS idx_route_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS route_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_operator_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS operator_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_service_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS service_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_node_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS node_streaming_posteriors');
+    db.exec('DROP INDEX IF EXISTS idx_endpoint_streaming_ts');
+    db.exec('DROP TABLE IF EXISTS endpoint_streaming_posteriors');
+  },
   34: (db) => {
     // Restore the legacy composite columns as NULL-able REAL/TEXT. Rollback
     // recovers schema only — data that was already dropped stays gone.
