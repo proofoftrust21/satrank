@@ -108,7 +108,19 @@ export class ServiceController {
   };
 
   /** Picks 3 best providers for a category/keyword: bestQuality, bestValue, cheapest.
-   *  All three filter to SAFE nodes (score ≥ 47). */
+   *
+   *  Filtering is tiered (Phase 4 P3):
+   *  - **strict** pool: `verdict === 'SAFE'` + httpHealth healthy|unknown. This
+   *    is the default; when it's non-empty we return from here.
+   *  - **relaxed** fallback: `verdict ∈ {SAFE, UNKNOWN}` + httpHealth
+   *    healthy|unknown. Lets agents surface candidates on thin categories where
+   *    no node has converged to SAFE yet, rather than returning nulls.
+   *  - **degraded** fallback (legacy): if both above are empty, allow
+   *    httpHealth === 'degraded' (never 'down'). Tagged with a DEGRADED_HTTP
+   *    warning per-result so agents can gate client-side.
+   *
+   *  `meta.strictness` exposes which pool was used so agents can re-query with
+   *  stricter params or inform their user. */
   best = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const parsed = serviceSearchSchema.safeParse(req.query);
@@ -129,17 +141,7 @@ export class ServiceController {
         offset: 0,
       });
 
-      // Enrich + filter to SAFE nodes with valid price + optional minUptime floor.
-      // Sim #6 finding: the prior filter ignored last_http_status, so a service
-      // returning 404 on every probe could still win bestQuality just because
-      // its uptime was >20%. We now classify the last HTTP status (healthy /
-      // unknown / degraded / down) and prefer healthy|unknown. Degraded
-      // services are only kept as a fallback pool and are tagged with a
-      // DEGRADED_HTTP warning so agents can gate on warnings.length === 0.
-      //
-      // Phase 3: SAFE gating is now Bayesian — `bayesian.verdict === 'SAFE'`
-      // replaces `score >= VERDICT_SAFE_THRESHOLD`. The composite score threshold
-      // is retired along with ScoringService in Commit 8.
+      // Enrich all candidates (no verdict gate yet — that's the pool-tier step).
       const minUptime = parsed.data.minUptime ?? 0;
       const enriched = services
         .map(svc => {
@@ -154,22 +156,47 @@ export class ServiceController {
         })
         .filter(s =>
           s.bayesian !== null &&
-          s.bayesian.verdict === 'SAFE' &&
           s.uptimeRatio > 0 &&
           s.price > 0 &&
           s.uptimeRatio >= minUptime &&
           s.httpHealth !== 'down',
         );
 
-      // Prefer healthy|unknown. Fall back to degraded only if the healthy pool is empty.
-      const healthyPool = enriched.filter(s => s.httpHealth === 'healthy' || s.httpHealth === 'unknown');
-      const pool = healthyPool.length > 0 ? healthyPool : enriched;
-      const usedDegradedFallback = healthyPool.length === 0 && enriched.length > 0;
+      // Tier 1 — strict: SAFE verdict + healthy|unknown HTTP.
+      const strictPool = enriched.filter(s =>
+        s.bayesian!.verdict === 'SAFE'
+        && (s.httpHealth === 'healthy' || s.httpHealth === 'unknown'),
+      );
+      // Tier 2 — relaxed: SAFE or UNKNOWN verdict + healthy|unknown HTTP.
+      const relaxedPool = enriched.filter(s =>
+        (s.bayesian!.verdict === 'SAFE' || s.bayesian!.verdict === 'UNKNOWN')
+        && (s.httpHealth === 'healthy' || s.httpHealth === 'unknown'),
+      );
+      // Tier 3 — degraded legacy: accept degraded HTTP, still exclude RISKY.
+      const degradedPool = enriched.filter(s => s.bayesian!.verdict !== 'RISKY');
+
+      let pool: typeof enriched;
+      let strictness: 'strict' | 'relaxed' | 'degraded';
+      if (strictPool.length > 0) {
+        pool = strictPool;
+        strictness = 'strict';
+      } else if (relaxedPool.length > 0) {
+        pool = relaxedPool;
+        strictness = 'relaxed';
+      } else {
+        pool = degradedPool;
+        strictness = 'degraded';
+      }
+      const usedDegradedFallback = strictness === 'degraded' && enriched.length > 0;
 
       if (pool.length === 0) {
         res.json({
           data: { bestQuality: null, bestValue: null, cheapest: null },
-          meta: { candidates: 0, message: 'No SAFE services with healthy HTTP, positive uptime and price found' },
+          meta: {
+            candidates: 0,
+            strictness,
+            message: 'No candidate services found with positive uptime and price',
+          },
         });
         return;
       }
@@ -235,7 +262,9 @@ export class ServiceController {
         },
         meta: {
           candidates: pool.length,
-          healthyCandidates: healthyPool.length,
+          strictPoolSize: strictPool.length,
+          relaxedPoolSize: relaxedPool.length,
+          strictness,
           usedDegradedFallback,
           formula: 'bestValue = (p_success × uptime) / sqrt(priceSats)',
         },
