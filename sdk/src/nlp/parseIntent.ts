@@ -179,14 +179,16 @@ function extractKeywords(
   tokens: string[],
   category: string,
 ): string[] {
-  const catParts = new Set(category.toLowerCase().split(/[\/_-]/).filter(Boolean));
+  const catLower = category.toLowerCase();
+  const catParts = new Set(catLower.split(/[\/_-]/).filter(Boolean));
   const out: string[] = [];
   const seen = new Set<string>();
   for (const t of tokens) {
     if (t.length < 3) continue; // drop "a", "is", tiny connectors
     if (/^\d+$/.test(t)) continue; // pure numbers handled elsewhere
     if (STOPWORDS_EN.has(t)) continue;
-    if (catParts.has(t)) continue; // don't duplicate category parts
+    if (t === catLower) continue; // drop the category literal itself (e.g. "ai/code")
+    if (catParts.has(t)) continue; // drop component parts ("ai", "code")
     if (seen.has(t)) continue;
     seen.add(t);
     out.push(t);
