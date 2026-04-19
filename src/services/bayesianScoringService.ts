@@ -34,6 +34,7 @@ import {
   PRIOR_MIN_EFFECTIVE_OBS,
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
+  OPERATOR_PRIOR_WEIGHT,
   WEIGHT_SOVEREIGN_PROBE,
   WEIGHT_PAID_PROBE,
   WEIGHT_REPORT_LOW,
@@ -220,12 +221,19 @@ export class BayesianScoringService {
     const now = Math.floor(Date.now() / 1000);
 
     // Niveau 1 : operator — somme des 3 sources sur le streaming opérateur.
+    // Précision 1 (Phase 7 C10) : on scale l'évidence excédentaire par
+    // OPERATOR_PRIOR_WEIGHT (=0.5). Le seuil d'adoption reste sur
+    // l'évidence *non-scalée* pour ne pas double-pénaliser : un operator
+    // avec n_obs ≥ 30 est éligible, puis on divise sa masse d'évidence
+    // par 2 dans le prior transmis. p_success inchangé, confiance bornée.
     if (ctx.operatorId) {
       const summed = sumDecayedAcrossSources(
         this.operatorStreamingRepo.readAllSourcesDecayed(ctx.operatorId, now),
       );
       if (summed.nObsEffective >= PRIOR_MIN_EFFECTIVE_OBS) {
-        return { alpha: summed.alpha, beta: summed.beta, source: 'operator' };
+        const scaledAlpha = DEFAULT_PRIOR_ALPHA + OPERATOR_PRIOR_WEIGHT * (summed.alpha - DEFAULT_PRIOR_ALPHA);
+        const scaledBeta = DEFAULT_PRIOR_BETA + OPERATOR_PRIOR_WEIGHT * (summed.beta - DEFAULT_PRIOR_BETA);
+        return { alpha: scaledAlpha, beta: scaledBeta, source: 'operator' };
       }
     }
 

@@ -24,6 +24,7 @@ import {
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
   PRIOR_MIN_EFFECTIVE_OBS,
+  OPERATOR_PRIOR_WEIGHT,
 } from '../config/bayesianConfig';
 
 const NOW = 1_776_240_000;
@@ -73,7 +74,7 @@ describe('resolveHierarchicalPrior — 4-level streaming cascade (C15)', () => {
     expect(prior.beta).toBe(DEFAULT_PRIOR_BETA);
   });
 
-  it('2. operator : nObsEff ≥ 30 sur operator_streaming → prior_source=operator', () => {
+  it('2. operator : nObsEff ≥ 30 sur operator_streaming → prior_source=operator (scaled 0.5× par C10)', () => {
     // 25 succès + 10 échecs = 35 obs effectives sur une source → seuil atteint.
     env.operatorStreamRepo.ingest('op-rich', 'probe', {
       successDelta: 25,
@@ -82,9 +83,10 @@ describe('resolveHierarchicalPrior — 4-level streaming cascade (C15)', () => {
     });
     const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-rich' });
     expect(prior.source).toBe('operator');
-    // Pas de décroissance (Δt = 0) → α = 1.5 + 25, β = 1.5 + 10.
-    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 25, 3);
-    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 10, 3);
+    // Précision 1 (C10) : évidence excédentaire scalée par OPERATOR_PRIOR_WEIGHT (0.5).
+    // α_scaled = 1.5 + 0.5 × 25 = 14 ; β_scaled = 1.5 + 0.5 × 10 = 6.5.
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + OPERATOR_PRIOR_WEIGHT * 25, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + OPERATOR_PRIOR_WEIGHT * 10, 3);
   });
 
   it('3. service : operator < 30, service ≥ 30 → prior_source=service (fallback)', () => {
@@ -153,8 +155,9 @@ describe('resolveHierarchicalPrior — 4-level streaming cascade (C15)', () => {
       categorySiblingHashes: ['sib-1'],
     });
     expect(prior.source).toBe('operator');
-    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 30, 3);
-    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 5, 3);
+    // C10 scaling : α = 1.5 + 0.5 × 30 = 16.5 ; β = 1.5 + 0.5 × 5 = 4.
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + OPERATOR_PRIOR_WEIGHT * 30, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + OPERATOR_PRIOR_WEIGHT * 5, 3);
   });
 
   it('6. flat : tous les niveaux sous le seuil → Beta(α₀, β₀)', () => {
@@ -184,5 +187,94 @@ describe('resolveHierarchicalPrior — 4-level streaming cascade (C15)', () => {
     expect(prior.source).toBe('flat');
     expect(prior.alpha).toBe(DEFAULT_PRIOR_ALPHA);
     expect(prior.beta).toBe(DEFAULT_PRIOR_BETA);
+  });
+});
+
+// Précision 1 (Phase 7 C10) : scaling sur (α − α₀, β − β₀) au niveau operator
+// uniquement. Divise la masse d'évidence par 2 sans effacer le signal.
+describe('resolveHierarchicalPrior — C10 operator prior weight 0.5× (Précision 1)', () => {
+  let env: ReturnType<typeof makeEnv>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW * 1000));
+    env = makeEnv();
+  });
+
+  afterEach(() => {
+    env.db.close();
+    vi.useRealTimers();
+  });
+
+  it('operator evidence mass is halved in the returned prior', () => {
+    // 40 succès + 20 échecs = 60 obs excédentaires.
+    env.operatorStreamRepo.ingest('op-strong', 'probe', {
+      successDelta: 40,
+      failureDelta: 20,
+      nowSec: NOW,
+    });
+    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-strong' });
+
+    const scaledNObsEff = (prior.alpha + prior.beta) - (DEFAULT_PRIOR_ALPHA + DEFAULT_PRIOR_BETA);
+    // raw nObsEff = 60 → scaled = 30 (halved).
+    expect(scaledNObsEff).toBeCloseTo(60 * OPERATOR_PRIOR_WEIGHT, 3);
+  });
+
+  it('threshold still applies on UNSCALED evidence (no double-penalty)', () => {
+    // 31 obs excédentaires : juste au-dessus du seuil 30.
+    // Si le seuil était appliqué sur l'évidence scalée (15.5 < 30), on retomberait
+    // en fallback flat. Le check est sur l'évidence *raw* pour préserver
+    // l'éligibilité.
+    env.operatorStreamRepo.ingest('op-borderline', 'probe', {
+      successDelta: 20,
+      failureDelta: 11,
+      nowSec: NOW,
+    });
+    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-borderline' });
+    expect(prior.source).toBe('operator');
+  });
+
+  it('excess-evidence ratio α/β is preserved across scaling', () => {
+    env.operatorStreamRepo.ingest('op-biased', 'probe', {
+      successDelta: 60,
+      failureDelta: 20,
+      nowSec: NOW,
+    });
+    const prior = env.svc.resolveHierarchicalPrior({ operatorId: 'op-biased' });
+    const excessAlpha = prior.alpha - DEFAULT_PRIOR_ALPHA;
+    const excessBeta = prior.beta - DEFAULT_PRIOR_BETA;
+    // Raw ratio : 60 / 20 = 3.0. Scaled : 30 / 10 = 3.0. Préservé.
+    expect(excessAlpha / excessBeta).toBeCloseTo(3.0, 3);
+  });
+
+  it('service prior is NOT scaled (le weight ne s\'applique qu\'au niveau operator)', () => {
+    env.serviceStreamRepo.ingest('svc-unscaled', 'probe', {
+      successDelta: 25,
+      failureDelta: 10,
+      nowSec: NOW,
+    });
+    const prior = env.svc.resolveHierarchicalPrior({ serviceHash: 'svc-unscaled' });
+    expect(prior.source).toBe('service');
+    // Pas de scaling pour service : α = 1.5 + 25, β = 1.5 + 10.
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 25, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 10, 3);
+  });
+
+  it('category prior is NOT scaled (le weight ne s\'applique qu\'au niveau operator)', () => {
+    for (const hash of ['sib-x', 'sib-y', 'sib-z']) {
+      env.endpointStreamRepo.ingest(hash, 'probe', {
+        successDelta: 9,
+        failureDelta: 3,
+        nowSec: NOW,
+      });
+    }
+    const prior = env.svc.resolveHierarchicalPrior({
+      categoryName: 'llm',
+      categorySiblingHashes: ['sib-x', 'sib-y', 'sib-z'],
+    });
+    expect(prior.source).toBe('category');
+    // Pas de scaling : α = 1.5 + 27, β = 1.5 + 9.
+    expect(prior.alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + 27, 3);
+    expect(prior.beta).toBeCloseTo(DEFAULT_PRIOR_BETA + 9, 3);
   });
 });
