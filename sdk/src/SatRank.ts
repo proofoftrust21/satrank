@@ -1,6 +1,7 @@
-// Main class. C1 scaffolding: constructor stores options and the method
-// signatures throw "not implemented". Logic lands in C2-C7.
+// Main class. C2: listCategories + resolveIntent go live. fulfill() still
+// stubbed (lands in C5).
 
+import { ApiClient } from './client/apiClient';
 import type {
   FulfillOptions,
   FulfillResult,
@@ -9,37 +10,54 @@ import type {
   SatRankOptions,
 } from './types';
 
+interface InternalOptions {
+  apiBase: string;
+  request_timeout_ms: number;
+  fetch: typeof fetch;
+  depositToken?: string;
+  caller?: string;
+  wallet?: SatRankOptions['wallet'];
+}
+
 export class SatRank {
-  private readonly options: Required<
-    Pick<SatRankOptions, 'apiBase' | 'request_timeout_ms'>
-  > &
-    SatRankOptions;
+  private readonly options: InternalOptions;
+  private readonly api: ApiClient;
 
   constructor(options: SatRankOptions) {
     if (!options.apiBase) {
       throw new Error('SatRank: apiBase is required');
     }
-    const apiBase = options.apiBase.replace(/\/$/, '');
+    const fetchImpl = options.fetch ?? globalThis.fetch;
+    if (!fetchImpl) {
+      throw new Error(
+        'SatRank: no fetch available. Pass options.fetch in Node <18 or polyfill globalThis.fetch.',
+      );
+    }
     this.options = {
-      ...options,
-      apiBase,
+      apiBase: options.apiBase.replace(/\/$/, ''),
       request_timeout_ms: options.request_timeout_ms ?? 10_000,
-      fetch: options.fetch ?? globalThis.fetch,
+      fetch: fetchImpl,
+      depositToken: options.depositToken,
+      caller: options.caller,
+      wallet: options.wallet,
     };
+    this.api = new ApiClient({
+      apiBase: this.options.apiBase,
+      fetch: this.options.fetch,
+      request_timeout_ms: this.options.request_timeout_ms,
+      depositToken: this.options.depositToken,
+    });
   }
 
-  /** One-call discovery + payment + fulfillment. See FulfillOptions. */
   async fulfill(_opts: FulfillOptions): Promise<FulfillResult> {
     throw new Error('SatRank.fulfill: not implemented (landing in C5)');
   }
 
-  /** Lightweight discovery — useful for NLP helpers that want the category enum. */
   async listCategories(): Promise<IntentCategoriesResponse> {
-    throw new Error('SatRank.listCategories: not implemented (landing in C2)');
+    return this.api.getIntentCategories();
   }
 
-  /** Direct passthrough to /api/intent for agents that want the raw candidates. */
-  async resolveIntent(_intent: {
+  async resolveIntent(input: {
     category: string;
     keywords?: string[];
     budget_sats?: number;
@@ -47,11 +65,15 @@ export class SatRank {
     caller?: string;
     limit?: number;
   }): Promise<IntentResponse> {
-    throw new Error('SatRank.resolveIntent: not implemented (landing in C2)');
+    const caller = input.caller ?? this.options.caller;
+    return this.api.postIntent({ ...input, caller });
   }
 
-  /** Exposed for tests and introspection — not part of the stable public API. */
-  _options(): Readonly<SatRankOptions> {
+  _options(): Readonly<InternalOptions> {
     return this.options;
+  }
+
+  _api(): ApiClient {
+    return this.api;
   }
 }
