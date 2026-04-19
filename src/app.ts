@@ -255,7 +255,11 @@ export function createApp() {
     nodeStreamingRepo,
     serviceStreamingRepo,
   );
-  const operatorController = new OperatorController({ operatorService });
+  const operatorController = new OperatorController({
+    operatorService,
+    serviceEndpointRepo,
+    agentRepo,
+  });
 
   // Cache warm-up — fills the stats and leaderboard caches before the first
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
@@ -495,6 +499,7 @@ export function createApp() {
   // Phase 7 — operator registration (NIP-98 gated, rate-limited avec discovery
   // car endpoint à effort de preuve côté claimant — pas de quota L402).
   api.post('/operator/register', discoveryRateLimit, operatorController.register);
+  api.get('/operator/:id', discoveryRateLimit, operatorController.show);
   api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.

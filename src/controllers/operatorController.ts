@@ -21,11 +21,13 @@
 // scoring. Le coût de stockage est plafonné par le rate-limit global.
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { ValidationError } from '../errors';
+import { ValidationError, NotFoundError } from '../errors';
 import { formatZodError } from '../utils/zodError';
 import { logger } from '../logger';
 import { verifyNip98 } from '../middleware/nip98';
 import type { OperatorService } from '../services/operatorService';
+import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { AgentRepository } from '../repositories/agentRepository';
 import {
   verifyLnPubkeyOwnership,
   verifyNip05Ownership,
@@ -76,17 +78,29 @@ export interface OperatorControllerDeps {
   operatorService: OperatorService;
   nostrJsonFetcher?: NostrJsonFetcher;
   dnsTxtResolver?: DnsTxtResolver;
+  /** Optionnel — quand fournis, enrichit le catalog avec les métadonnées
+   *  endpoints (url, name, category) et nodes (alias, avg_score). */
+  serviceEndpointRepo?: ServiceEndpointRepository;
+  agentRepo?: AgentRepository;
 }
+
+const operatorIdParamSchema = z.object({
+  id: operatorIdSchema,
+});
 
 export class OperatorController {
   private readonly operatorService: OperatorService;
   private readonly nostrJsonFetcher?: NostrJsonFetcher;
   private readonly dnsTxtResolver?: DnsTxtResolver;
+  private readonly serviceEndpointRepo?: ServiceEndpointRepository;
+  private readonly agentRepo?: AgentRepository;
 
   constructor(deps: OperatorControllerDeps) {
     this.operatorService = deps.operatorService;
     this.nostrJsonFetcher = deps.nostrJsonFetcher;
     this.dnsTxtResolver = deps.dnsTxtResolver;
+    this.serviceEndpointRepo = deps.serviceEndpointRepo;
+    this.agentRepo = deps.agentRepo;
   }
 
   register = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -195,5 +209,104 @@ export class OperatorController {
     if (identity.type === 'ln_pubkey') return `ecdsa:${identity.signature_hex ?? ''}`;
     if (identity.type === 'nip05') return `nip05:${identity.expected_pubkey ?? ''}`;
     return `dns:satrank-operator=${identity.value}`;
+  }
+
+  /** GET /api/operator/:id — catalog complet + agrégat Bayesian.
+   *
+   *  Distinction clé (cf. Précision 2 du checkpoint 1) :
+   *    - catalog.nodes/endpoints/services = TOUTES les ressources claimed,
+   *      même celles sans observation. L'operator doit pouvoir débugger son
+   *      état ("je sais que j'ai 10 endpoints, pourquoi 3 n'ont pas d'obs ?").
+   *    - bayesian.resources_counted = sous-ensemble qui contribue à l'agrégat
+   *      (evidence > prior). Sert à auditer la masse d'évidence réelle.
+   */
+  show = (req: Request, res: Response, next: NextFunction): void => {
+    try {
+      const parsed = operatorIdParamSchema.safeParse(req.params);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params));
+      const { id: operatorId } = parsed.data;
+
+      const now = Math.floor(Date.now() / 1000);
+      const catalog = this.operatorService.getOperatorCatalog(operatorId, now);
+      if (catalog === null) throw new NotFoundError('operator', operatorId);
+
+      const enrichedCatalog = this.enrichCatalog(catalog);
+
+      res.json({
+        data: {
+          operator: {
+            operator_id: catalog.operator.operator_id,
+            status: catalog.operator.status,
+            verification_score: catalog.operator.verification_score,
+            first_seen: catalog.operator.first_seen,
+            last_activity: catalog.operator.last_activity,
+            created_at: catalog.operator.created_at,
+          },
+          identities: catalog.identities.map((i) => ({
+            type: i.identity_type,
+            value: i.identity_value,
+            verified_at: i.verified_at,
+            verification_proof: i.verification_proof,
+          })),
+          catalog: enrichedCatalog,
+          bayesian: {
+            posterior_alpha: catalog.aggregated.posteriorAlpha,
+            posterior_beta: catalog.aggregated.posteriorBeta,
+            p_success: Number.isFinite(catalog.aggregated.pSuccess) ? catalog.aggregated.pSuccess : null,
+            n_obs_effective: catalog.aggregated.nObsEffective,
+            resources_counted: catalog.aggregated.resourcesCounted,
+            at_ts: catalog.aggregated.atTs,
+          },
+        },
+        meta: { computedAt: now },
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  /** Enrichit chaque ressource avec ses métadonnées (URL, alias, etc.). La
+   *  liste complète des claims reste exposée — la jointure ajoute des champs,
+   *  elle n'en filtre aucun (cf. Précision 2). */
+  private enrichCatalog(
+    catalog: ReturnType<OperatorService['getOperatorCatalog']> & object,
+  ): {
+    nodes: Array<{
+      node_pubkey: string; claimed_at: number; verified_at: number | null;
+      alias: string | null; avg_score: number | null;
+    }>;
+    endpoints: Array<{
+      url_hash: string; claimed_at: number; verified_at: number | null;
+      url: string | null; name: string | null; category: string | null; price_sats: number | null;
+    }>;
+    services: Array<{ service_hash: string; claimed_at: number; verified_at: number | null }>;
+  } {
+    const nodes = catalog.ownedNodes.map((n) => {
+      const agent = this.agentRepo?.findByHash(n.node_pubkey);
+      return {
+        node_pubkey: n.node_pubkey,
+        claimed_at: n.claimed_at,
+        verified_at: n.verified_at,
+        alias: agent?.alias ?? null,
+        avg_score: agent?.avg_score ?? null,
+      };
+    });
+    const endpoints = catalog.ownedEndpoints.map((e) => {
+      const svc = this.serviceEndpointRepo?.findByUrlHash(e.url_hash);
+      return {
+        url_hash: e.url_hash,
+        claimed_at: e.claimed_at,
+        verified_at: e.verified_at,
+        url: svc?.url ?? null,
+        name: svc?.name ?? null,
+        category: svc?.category ?? null,
+        price_sats: svc?.service_price_sats ?? null,
+      };
+    });
+    return {
+      nodes,
+      endpoints,
+      services: catalog.ownedServices,
+    };
   }
 }
