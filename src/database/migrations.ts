@@ -948,6 +948,92 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 36, 'Phase 3 refactor C17 — DROP 5 *_aggregates tables (streaming-only)');
   }
 
+  // v37: Phase 7 — operators abstraction. Cinq nouvelles tables :
+  //   operators             : identité logique + score de vérification
+  //   operator_identities   : une ligne par preuve (ln_pubkey | nip05 | dns)
+  //   operator_owns_node    : rattachement operator → pubkey LN
+  //   operator_owns_endpoint: rattachement operator → url_hash
+  //   operator_owns_service : rattachement operator → service_hash (logique)
+  //
+  // Plus deux colonnes additives (nullable) :
+  //   agents.operator_id              — rattache un node à son operator
+  //   service_endpoints.operator_id   — rattache un endpoint à son operator
+  //
+  // Note : transactions.operator_id existe déjà (v31) comme sha256hex(node_pubkey)
+  // — c'est un proto-operator mono-node. Le script d'auto-bootstrap (Phase 7 C9)
+  // réconcilie cet existant avec la nouvelle table operators en créant des
+  // entries status='pending' pour chaque proto-operator observé.
+  //
+  // verification_score = 0..3 (nombre de preuves vérifiées). status='verified'
+  // requiert ≥2 preuves convergentes (règle dure du brief Phase 7).
+  if (!hasVersion(db, 37)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS operators (
+        operator_id TEXT PRIMARY KEY,
+        first_seen INTEGER NOT NULL,
+        last_activity INTEGER NOT NULL,
+        verification_score INTEGER NOT NULL DEFAULT 0 CHECK(verification_score >= 0 AND verification_score <= 3),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('verified', 'pending', 'rejected')),
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_operators_status ON operators(status);
+      CREATE INDEX IF NOT EXISTS idx_operators_last_activity ON operators(last_activity);
+
+      CREATE TABLE IF NOT EXISTS operator_identities (
+        operator_id TEXT NOT NULL REFERENCES operators(operator_id) ON DELETE CASCADE,
+        identity_type TEXT NOT NULL CHECK(identity_type IN ('ln_pubkey', 'nip05', 'dns')),
+        identity_value TEXT NOT NULL,
+        verified_at INTEGER,
+        verification_proof TEXT,
+        PRIMARY KEY (operator_id, identity_type, identity_value)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_identities_verified_at ON operator_identities(verified_at);
+      CREATE INDEX IF NOT EXISTS idx_operator_identities_value ON operator_identities(identity_value);
+
+      CREATE TABLE IF NOT EXISTS operator_owns_node (
+        operator_id TEXT NOT NULL REFERENCES operators(operator_id) ON DELETE CASCADE,
+        node_pubkey TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL,
+        verified_at INTEGER,
+        PRIMARY KEY (operator_id, node_pubkey)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_owns_node_pubkey ON operator_owns_node(node_pubkey);
+
+      CREATE TABLE IF NOT EXISTS operator_owns_endpoint (
+        operator_id TEXT NOT NULL REFERENCES operators(operator_id) ON DELETE CASCADE,
+        url_hash TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL,
+        verified_at INTEGER,
+        PRIMARY KEY (operator_id, url_hash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_owns_endpoint_url_hash ON operator_owns_endpoint(url_hash);
+
+      CREATE TABLE IF NOT EXISTS operator_owns_service (
+        operator_id TEXT NOT NULL REFERENCES operators(operator_id) ON DELETE CASCADE,
+        service_hash TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL,
+        verified_at INTEGER,
+        PRIMARY KEY (operator_id, service_hash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_owns_service_hash ON operator_owns_service(service_hash);
+    `);
+
+    // Colonnes operator_id additives sur tables existantes.
+    // try/catch pour tolérer les réapplications partielles.
+    try { db.exec('ALTER TABLE service_endpoints ADD COLUMN operator_id TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    try { db.exec('ALTER TABLE agents ADD COLUMN operator_id TEXT'); } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('duplicate column name')) throw err;
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_service_endpoints_operator_id ON service_endpoints(operator_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_agents_operator_id ON agents(operator_id)');
+
+    recordVersion(db, 37, 'Phase 7 — operators abstraction: 5 tables (operators + identities + 3 ownership) + operator_id on agents/service_endpoints');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -957,6 +1043,28 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  37: (db) => {
+    // Rollback Phase 7 — operators abstraction. Drop les colonnes operator_id
+    // (agents, service_endpoints) puis les 5 tables dans l'ordre inverse de
+    // création pour respecter les FK CASCADE. Les indexes tombent avec les
+    // tables ; ceux sur les colonnes ALTER-ed doivent être droppés explicitement.
+    db.exec('DROP INDEX IF EXISTS idx_agents_operator_id');
+    db.exec('DROP INDEX IF EXISTS idx_service_endpoints_operator_id');
+    try { db.exec('ALTER TABLE agents DROP COLUMN operator_id'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE service_endpoints DROP COLUMN operator_id'); } catch { /* SQLite < 3.35 */ }
+    db.exec('DROP INDEX IF EXISTS idx_operator_owns_service_hash');
+    db.exec('DROP TABLE IF EXISTS operator_owns_service');
+    db.exec('DROP INDEX IF EXISTS idx_operator_owns_endpoint_url_hash');
+    db.exec('DROP TABLE IF EXISTS operator_owns_endpoint');
+    db.exec('DROP INDEX IF EXISTS idx_operator_owns_node_pubkey');
+    db.exec('DROP TABLE IF EXISTS operator_owns_node');
+    db.exec('DROP INDEX IF EXISTS idx_operator_identities_value');
+    db.exec('DROP INDEX IF EXISTS idx_operator_identities_verified_at');
+    db.exec('DROP TABLE IF EXISTS operator_identities');
+    db.exec('DROP INDEX IF EXISTS idx_operators_last_activity');
+    db.exec('DROP INDEX IF EXISTS idx_operators_status');
+    db.exec('DROP TABLE IF EXISTS operators');
+  },
   36: (db) => {
     // Restore the 5 *_aggregates tables at their v33 schema. Le contenu
     // applicatif est perdu (plus personne n'écrivait depuis C16) ; un rollback
