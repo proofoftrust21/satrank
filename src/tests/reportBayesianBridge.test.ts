@@ -1,10 +1,10 @@
 // ReportService bayesian bridge — prove both submit() paths ingest into
-// operator/endpoint aggregates (3 windows) regardless of dualWriteMode.
-//   (a) identified report (submit) → endpoint_hash=target + ingestion
+// operator/endpoint streaming_posteriors + daily_buckets regardless of
+// dualWriteMode.
+//   (a) identified report (submit) → endpoint_hash=target + streaming ingestion
 //   (b) anonymous report (submitAnonymous) → same
-//   (c) Q1 contract: mode='off' must still ingest (aggregates decoupled
-//       from dualWriteMode flag) — otherwise the scoring engine has no
-//       signal while operators run with the legacy flag.
+//   (c) Q1 contract: mode='off' must still ingest into streaming (scoring
+//       signal decoupled from dualWriteMode flag).
 //   (d) Q3 neighbor: intent (decide_log hit) is classified source='intent'
 //       and MUST NOT ingest (intent is not an observation of success/failure).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -106,7 +106,7 @@ describe('ReportService bayesian bridge', () => {
 
   afterEach(() => db.close());
 
-  it('submit() writes tx with endpoint_hash=target and bumps operator+endpoint aggregates', () => {
+  it('submit() writes tx with endpoint_hash=target and bumps operator+endpoint streaming', () => {
     const reporterHash = 'aa'.repeat(32);
     const targetHash = 'bb'.repeat(32);
     const { service, agentRepo } = buildReportService(db, 'active');
@@ -127,25 +127,19 @@ describe('ReportService bayesian bridge', () => {
     expect(tx.source).toBe('report');
     expect(tx.status).toBe('verified');
 
-    const opAgg = db.prepare(
-      `SELECT window, n_success, n_obs FROM operator_aggregates WHERE operator_id = ? ORDER BY window`,
-    ).all(targetHash) as any[];
-    expect(opAgg.length).toBe(3);
-    expect(opAgg.every(r => r.n_success === 1 && r.n_obs === 1)).toBe(true);
-
-    const epAgg = db.prepare(
-      `SELECT n_obs FROM endpoint_aggregates WHERE url_hash = ?`,
-    ).all(targetHash) as any[];
-    expect(epAgg.length).toBe(3);
-    expect(epAgg.every(r => r.n_obs === 1)).toBe(true);
-
-    // Phase 3 streaming (C7) — le report identifié sans preimage doit produire
-    // une row streaming source='report' ET bumper les daily_buckets.
+    // Phase 3 streaming — le report identifié sans preimage produit une row
+    // streaming source='report' ET bump les daily_buckets (operator + endpoint).
     const streamingOp = db.prepare(
       `SELECT source, total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(targetHash) as any;
     expect(streamingOp.source).toBe('report');
     expect(streamingOp.total_ingestions).toBe(1);
+
+    const streamingEp = db.prepare(
+      `SELECT source, total_ingestions FROM endpoint_streaming_posteriors WHERE url_hash = ?`,
+    ).get(targetHash) as any;
+    expect(streamingEp.source).toBe('report');
+    expect(streamingEp.total_ingestions).toBe(1);
 
     const bucketOp = db.prepare(
       `SELECT n_obs, n_success FROM operator_daily_buckets WHERE operator_id = ? AND source = 'report'`,
@@ -154,7 +148,7 @@ describe('ReportService bayesian bridge', () => {
     expect(bucketOp.n_success).toBe(1);
   });
 
-  it('Q1 contract: mode=off still ingests aggregates (decoupled from flag)', () => {
+  it('Q1 contract: mode=off still ingests streaming (decoupled from flag)', () => {
     const reporterHash = '11'.repeat(32);
     const targetHash = '22'.repeat(32);
     const { service, agentRepo } = buildReportService(db, 'off');
@@ -175,14 +169,14 @@ describe('ReportService bayesian bridge', () => {
     expect(tx.operator_id).toBeNull();
     expect(tx.source).toBeNull();
 
-    // …but aggregates still updated
-    const opAgg = db.prepare(
-      `SELECT n_obs FROM operator_aggregates WHERE operator_id = ? AND window = '7d'`,
+    // …mais le streaming ingère quand même (scoring signal découplé du flag).
+    const streaming = db.prepare(
+      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(targetHash) as any;
-    expect(opAgg.n_obs).toBe(1);
+    expect(streaming.total_ingestions).toBe(1);
   });
 
-  it('failure outcome increments failure counter', () => {
+  it('failure outcome increments failure counter in daily_buckets', () => {
     const reporterHash = '33'.repeat(32);
     const targetHash = '44'.repeat(32);
     const { service, agentRepo } = buildReportService(db, 'active');
@@ -195,14 +189,14 @@ describe('ReportService bayesian bridge', () => {
       outcome: 'failure',
     });
 
-    const opAgg = db.prepare(
-      `SELECT n_success, n_failure FROM operator_aggregates WHERE operator_id = ? AND window = '7d'`,
+    const bucket = db.prepare(
+      `SELECT n_success, n_failure FROM operator_daily_buckets WHERE operator_id = ? AND source = 'report'`,
     ).get(targetHash) as any;
-    expect(opAgg.n_success).toBe(0);
-    expect(opAgg.n_failure).toBe(1);
+    expect(bucket.n_success).toBe(0);
+    expect(bucket.n_failure).toBe(1);
   });
 
-  it('intent classification skips ingestion (decide_log hit → source=intent, no aggregate)', () => {
+  it('intent classification skips ingestion (decide_log hit → source=intent, no streaming)', () => {
     const reporterHash = '55'.repeat(32);
     const targetHash = '66'.repeat(32);
     const l402PaymentHash = Buffer.from('77'.repeat(32), 'hex');
@@ -228,14 +222,8 @@ describe('ReportService bayesian bridge', () => {
     ).get(targetHash) as any;
     expect(tx.source).toBe('intent');
 
-    // intent must NOT contribute to aggregates (C9 contract)
-    const opAgg = db.prepare(
-      `SELECT COUNT(*) AS c FROM operator_aggregates WHERE operator_id = ?`,
-    ).get(targetHash) as any;
-    expect(opAgg.c).toBe(0);
-
-    // Phase 3 streaming (C7) — intent must also skip streaming_posteriors ET
-    // daily_buckets : un intent n'est pas une observation.
+    // intent must NOT contribute to streaming_posteriors ET daily_buckets :
+    // un intent n'est pas une observation de succès/échec.
     const streamingCount = db.prepare(
       `SELECT COUNT(*) AS c FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(targetHash) as any;
@@ -246,14 +234,14 @@ describe('ReportService bayesian bridge', () => {
     expect(bucketsCount.c).toBe(0);
   });
 
-  it('absent bayesian dep — legacy tx row only, no aggregates', () => {
+  it('absent bayesian dep — legacy tx row only, no streaming', () => {
     const reporterHash = '88'.repeat(32);
     const targetHash = '99'.repeat(32);
     const agentRepo = new AgentRepository(db);
     const attestationRepo = new AttestationRepository(db);
     const txRepo = new TransactionRepository(db);
     const snapshotRepo = new SnapshotRepository(db);
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
+    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
     agentRepo.insert(makeAgent(reporterHash));
     agentRepo.insert(makeAgent(targetHash));
 
@@ -269,7 +257,7 @@ describe('ReportService bayesian bridge', () => {
     const txCount = (db.prepare(`SELECT COUNT(*) AS c FROM transactions`).get() as any).c;
     expect(txCount).toBe(1);
 
-    const opCount = (db.prepare(`SELECT COUNT(*) AS c FROM operator_aggregates`).get() as any).c;
-    expect(opCount).toBe(0);
+    const streamingCount = (db.prepare(`SELECT COUNT(*) AS c FROM operator_streaming_posteriors`).get() as any).c;
+    expect(streamingCount).toBe(0);
   });
 });

@@ -1,20 +1,17 @@
-// Bayesian scoring service — cœur du pipeline Phase 3.
+// Bayesian scoring service — cœur du pipeline Phase 3 streaming.
 //
 // Structure des calculs :
-//   1. resolveHierarchicalPrior(target) → (α₀, β₀)
-//      Cascade : operator → service → flat(1.5, 1.5). Category non implémentée
-//      en C5 (future extension — nécessiterait une table category_aggregates
-//      ou un agrégat virtuel group by service.category).
-//   2. selectWindow(nObsByWindow) → BayesianWindow
-//      Plus courte fenêtre avec n_obs ≥ MIN_N_OBS_FOR_WINDOW (20). Fallback 30d.
-//   3. applyTemporalDecay(ageSec, windowSec) → poids ∈ [0, 1]
-//      τ = windowSec × DECAY_TAU_FRACTION (1/3). Wrapping de l'util exponentialDecay.
-//   4. weightForSource(source, tier) → poids multiplicatif par observation
+//   1. resolveHierarchicalPrior(ctx) → (α, β, source)
+//      Cascade 100% streaming : operator → service → category → flat.
+//      Critère d'héritage : n_obs_effective ≥ PRIOR_MIN_EFFECTIVE_OBS (30).
+//   2. weightForSource(source, tier) → poids multiplicatif par observation
 //      probe=1.0, paid=2.0, report selon tier (low/medium/high/NIP-98=0.3/0.5/0.7/1.0)
-//   5. computePerSourcePosteriors(prior, observations) → { probe, report, paid }
-//      Posteriors Beta séparés par source — indispensable pour la convergence
-//   6. checkConvergence(posteriors) → { converged, sources_above_threshold }
-//      SAFE exige ≥ CONVERGENCE_MIN_SOURCES sources avec p ≥ CONVERGENCE_P_THRESHOLD
+//   3. computeVerdict(combined, convergence) → { verdict, reason }
+//      SAFE exige ≥ CONVERGENCE_MIN_SOURCES sources avec p ≥ CONVERGENCE_P_THRESHOLD.
+//   4. ingestStreaming(input) → StreamingIngestionResult
+//      Unique chemin d'écriture. Décroissance τ=7j appliquée à l'ingestion.
+//   5. computeRiskProfile(bucketRepo, id, atTs) → RiskProfileResult
+//      Option B : tendance success_rate récent vs antérieur (daily_buckets).
 
 import type {
   EndpointAggregateRepository,
@@ -22,7 +19,6 @@ import type {
   OperatorAggregateRepository,
   NodeAggregateRepository,
   RouteAggregateRepository,
-  SimpleAggregate,
 } from '../repositories/aggregatesRepository';
 import type {
   EndpointStreamingPosteriorRepository,
@@ -42,13 +38,9 @@ import type {
 } from '../repositories/dailyBucketsRepository';
 import { dayKeyUTC } from '../repositories/dailyBucketsRepository';
 import {
-  BAYESIAN_WINDOWS,
-  MIN_N_OBS_FOR_WINDOW,
-  WINDOW_SECONDS,
   PRIOR_MIN_EFFECTIVE_OBS,
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
-  DECAY_TAU_FRACTION,
   WEIGHT_SOVEREIGN_PROBE,
   WEIGHT_PAID_PROBE,
   WEIGHT_REPORT_LOW,
@@ -69,10 +61,8 @@ import {
   RISK_PROFILE_DELTA_MEDIUM,
   RISK_PROFILE_DELTA_HIGH,
   RISK_PROFILE_MIN_N_OBS,
-  type BayesianWindow,
   type BayesianSource,
 } from '../config/bayesianConfig';
-import { exponentialDecay, computePosterior, type Posterior } from '../utils/betaBinomial';
 
 /** Somme les 3 sources d'un `readAllSourcesDecayed(id)` en un unique posterior :
  *  chaque source contribue `(α − α₀, β − β₀)` d'évidence excédentaire, et on
@@ -124,27 +114,6 @@ export interface ResolvedPrior {
  *  forcé à 'nip98' si la requête était signée NIP-98. */
 export type ReportTier = 'low' | 'medium' | 'high' | 'nip98';
 
-/** Observation brute pondérable — unité d'entrée pour computePerSourcePosteriors. */
-export interface SourceObservation {
-  /** true = succès, false = échec */
-  success: boolean;
-  /** source du signal */
-  source: BayesianSource;
-  /** tier du reporter (uniquement si source='report'). Ignoré sinon. */
-  tier?: ReportTier;
-  /** age en secondes pour la décroissance exponentielle (0 = maintenant). */
-  ageSec?: number;
-  /** window pour calculer tau = windowSec / 3. Si absent, pas de décroissance. */
-  window?: BayesianWindow;
-}
-
-/** Résultat par source. `null` quand aucune observation n'a été reçue. */
-export interface PerSourceResult {
-  probe: (Posterior & { weightTotal: number }) | null;
-  report: (Posterior & { weightTotal: number }) | null;
-  paid: (Posterior & { weightTotal: number }) | null;
-}
-
 /** État de convergence multi-sources — SAFE exige ≥ N sources au-dessus du seuil. */
 export interface ConvergenceResult {
   converged: boolean;
@@ -171,30 +140,6 @@ export interface AggregatePosterior {
   ci95Low: number;
   ci95High: number;
   nObs: number;
-}
-
-/** Outcome d'une transaction prêt à être ingéré dans les aggregates.
- *  Tous les champs sauf `success`, `timestamp` sont optionnels — on met à
- *  jour uniquement les niveaux hiérarchiques pour lesquels on a une clé. */
-export interface TransactionOutcome {
-  success: boolean;
-  /** Unix seconds — sert à dater updated_at */
-  timestamp: number;
-  endpointHash?: string | null;
-  serviceHash?: string | null;
-  operatorId?: string | null;
-  /** Pour route_aggregates : caller qui a lancé la transaction. */
-  callerHash?: string | null;
-  /** Pour route_aggregates : target reçu. */
-  targetHash?: string | null;
-}
-
-/** Résumé de l'ingestion — combien d'agrégats ont été touchés. Utile en test. */
-export interface IngestionResult {
-  endpointUpdates: number;
-  serviceUpdates: number;
-  operatorUpdates: number;
-  routeUpdates: number;
 }
 
 /** Input d'ingestion pour le modèle streaming. Inclut la source et le tier
@@ -332,60 +277,6 @@ export class BayesianScoringService {
     return { alpha: DEFAULT_PRIOR_ALPHA, beta: DEFAULT_PRIOR_BETA, source: 'flat' };
   }
 
-  /** Sélectionne la plus courte fenêtre avec n_obs ≥ seuil (20 par défaut).
-   *
-   *  Principe : réagir vite si on a des données fraîches, se rabattre sur
-   *  plus long sinon. Si aucune fenêtre n'atteint le seuil, retourne la
-   *  plus large (30d) pour maximiser les données disponibles même si
-   *  l'IC est large. */
-  selectWindow(nObsByWindow: Record<BayesianWindow, number>): BayesianWindow {
-    for (const w of BAYESIAN_WINDOWS) {
-      if ((nObsByWindow[w] ?? 0) >= MIN_N_OBS_FOR_WINDOW) return w;
-    }
-    return '30d';
-  }
-
-  /** Variant qui interroge les aggregates pour un endpoint donné et retourne la fenêtre sélectionnée. */
-  selectEndpointWindow(urlHash: string): BayesianWindow {
-    const counts: Record<BayesianWindow, number> = { '24h': 0, '7d': 0, '30d': 0 };
-    for (const w of BAYESIAN_WINDOWS) {
-      counts[w] = this.endpointRepo.findOne(urlHash, w)?.nObs ?? 0;
-    }
-    return this.selectWindow(counts);
-  }
-
-  /** Décroissance exponentielle appliquée à une observation.
-   *
-   *  τ = windowSec × DECAY_TAU_FRACTION (1/3). Une observation à t=τ pèse
-   *  e⁻¹ ≈ 0.368 ; à t=windowSec pèse ≈ 0.050. Garantit que la fin de
-   *  fenêtre ne contribue quasi plus rien — cohérent avec l'horizon.
-   *
-   *  Les compteurs raw dans les aggregates ne sont PAS décroissants (Option A) :
-   *  la décroissance est appliquée à la lecture en rejouant les observations
-   *  depuis `transactions`. Voir computeDecayedPosterior() ci-dessous. */
-  applyTemporalDecay(ageSec: number, window: BayesianWindow): number {
-    const windowSec = WINDOW_SECONDS[window];
-    const tauSec = windowSec * DECAY_TAU_FRACTION;
-    return exponentialDecay(ageSec, tauSec);
-  }
-
-  /** Durée de la fenêtre en secondes. */
-  windowSeconds(window: BayesianWindow): number {
-    return WINDOW_SECONDS[window];
-  }
-
-  /** Utilitaire : tau pour une fenêtre (fraction DECAY_TAU_FRACTION). */
-  windowTau(window: BayesianWindow): number {
-    return WINDOW_SECONDS[window] * DECAY_TAU_FRACTION;
-  }
-
-  /** Expose simpleAggregate → posterior (en réutilisant l'α/β stocké).
-   *  Utilisé par C6 pour composer les posteriors par source. */
-  aggregateToPosterior(agg: SimpleAggregate | undefined): { alpha: number; beta: number; nObs: number } {
-    if (!agg) return { alpha: DEFAULT_PRIOR_ALPHA, beta: DEFAULT_PRIOR_BETA, nObs: 0 };
-    return { alpha: agg.posteriorAlpha, beta: agg.posteriorBeta, nObs: agg.nObs };
-  }
-
   /** Poids multiplicatif d'une observation selon sa source.
    *
    *  Philosophie : un sovereign probe (preuve on-LN exécutée par SatRank)
@@ -408,54 +299,6 @@ export class BayesianScoringService {
         }
       }
     }
-  }
-
-  /** Composition par source : partitionne les observations en 3 flux (probe,
-   *  report, paid), applique le poids de source × la décroissance temporelle,
-   *  puis calcule un posterior Beta par flux en partant du même prior hérité.
-   *
-   *  Pourquoi 3 posteriors séparés plutôt qu'un posterior global pondéré :
-   *  la convergence multi-sources (SAFE exige ≥ 2 sources au-dessus du seuil)
-   *  ne peut se vérifier QUE sur des posteriors distincts. Un pooling global
-   *  perdrait cette information.
-   *
-   *  Renvoie `null` pour une source sans aucune observation — le client le
-   *  traitera comme "source absente" (pas comme "source avec prior pur"). */
-  computePerSourcePosteriors(
-    prior: { alpha: number; beta: number },
-    observations: readonly SourceObservation[],
-  ): PerSourceResult {
-    const accumulators: Record<BayesianSource, { wSuccess: number; wFailure: number; wTotal: number; count: number }> = {
-      probe:  { wSuccess: 0, wFailure: 0, wTotal: 0, count: 0 },
-      report: { wSuccess: 0, wFailure: 0, wTotal: 0, count: 0 },
-      paid:   { wSuccess: 0, wFailure: 0, wTotal: 0, count: 0 },
-    };
-
-    for (const obs of observations) {
-      const sourceWeight = this.weightForSource(obs.source, obs.tier);
-      const decayWeight = (obs.ageSec !== undefined && obs.window !== undefined)
-        ? this.applyTemporalDecay(obs.ageSec, obs.window)
-        : 1;
-      const effectiveWeight = sourceWeight * decayWeight;
-
-      const acc = accumulators[obs.source];
-      if (obs.success) acc.wSuccess += effectiveWeight;
-      else acc.wFailure += effectiveWeight;
-      acc.wTotal += effectiveWeight;
-      acc.count += 1;
-    }
-
-    const build = (acc: { wSuccess: number; wFailure: number; wTotal: number; count: number }) => {
-      if (acc.count === 0) return null;
-      const post = computePosterior(prior.alpha, prior.beta, acc.wSuccess, acc.wFailure);
-      return { ...post, weightTotal: acc.wTotal };
-    };
-
-    return {
-      probe:  build(accumulators.probe),
-      report: build(accumulators.report),
-      paid:   build(accumulators.paid),
-    };
   }
 
   /** Mapping déterministe (posterior combiné, convergence) → verdict.
@@ -512,84 +355,6 @@ export class BayesianScoringService {
     }
     return { verdict: 'UNKNOWN', reason: `p=${pSuccess.toFixed(3)}, ci95=[${ci95Low.toFixed(3)}, ${ci95High.toFixed(3)}] — zone grise` };
   }
-
-  /** Ingestion incrémentale : met à jour TOUS les niveaux hiérarchiques
-   *  (endpoint, service, operator, route) sur les 3 fenêtres (24h/7d/30d)
-   *  pour refléter une nouvelle transaction.
-   *
-   *  **Stratégie Option A (gravée dans le design)** :
-   *  Les compteurs raw (n_success, n_failure) dans les aggregates sont
-   *  NON-DÉCROISSANTS. Chaque observation compte pour son poids plein
-   *  dans chacune des 3 fenêtres, quelle que soit l'ancienneté. La
-   *  décroissance exponentielle est appliquée UNIQUEMENT à la LECTURE
-   *  par computePerSourcePosteriors/computeDecayedPosterior, en relisant
-   *  la table transactions et en pondérant par exp(-age/τ).
-   *
-   *  Rationale : INSERT O(nb_niveaux × 3_fenêtres) = ~12-15 UPDATE au pire.
-   *  Si on voulait appliquer la décroissance à l'INSERT, il faudrait
-   *  recalculer depuis 0 toute la fenêtre à chaque observation (O(n)
-   *  par update) — impensable en prod. Au pire le posterior raw surestime
-   *  légèrement la confiance d'une entité ancienne ; le read-path corrige.
-   *
-   *  Pour les 3 fenêtres on applique exactement le même delta — elles
-   *  divergent naturellement par pruneStale() (exécuté par un job de purge). */
-  ingestTransactionOutcome(outcome: TransactionOutcome): IngestionResult {
-    const delta = {
-      successDelta: outcome.success ? 1 : 0,
-      failureDelta: outcome.success ? 0 : 1,
-      updatedAt: outcome.timestamp,
-    };
-    const result: IngestionResult = {
-      endpointUpdates: 0, serviceUpdates: 0, operatorUpdates: 0, routeUpdates: 0,
-    };
-
-    for (const window of BAYESIAN_WINDOWS) {
-      if (outcome.endpointHash) {
-        this.endpointRepo.upsert(outcome.endpointHash, window, delta);
-        result.endpointUpdates++;
-      }
-      if (outcome.serviceHash) {
-        this.serviceRepo.upsert(outcome.serviceHash, window, delta);
-        result.serviceUpdates++;
-      }
-      if (outcome.operatorId) {
-        this.operatorRepo.upsert(outcome.operatorId, window, delta);
-        result.operatorUpdates++;
-      }
-      if (this.routeRepo && outcome.callerHash && outcome.targetHash) {
-        const routeKey = `${outcome.callerHash}:${outcome.targetHash}`;
-        this.routeRepo.upsertRoute(routeKey, outcome.callerHash, outcome.targetHash, window, delta);
-        result.routeUpdates++;
-      }
-    }
-
-    return result;
-  }
-
-  /** Vérifie la convergence multi-sources.
-   *
-   *  Définition : une source "converge" si son posterior a p_success ≥
-   *  CONVERGENCE_P_THRESHOLD. SAFE n'est autorisé que si ≥ CONVERGENCE_MIN_SOURCES
-   *  sources convergent indépendamment — garde-fou contre le gaming mono-source
-   *  (un opérateur qui ne fait que des self-reports positifs n'atteindra jamais
-   *  la convergence car aucun probe ne sera d'accord). */
-  checkConvergence(perSource: PerSourceResult): ConvergenceResult {
-    const aboveThreshold: BayesianSource[] = [];
-    for (const source of ['probe', 'report', 'paid'] as const) {
-      const post = perSource[source];
-      if (post && post.pSuccess >= CONVERGENCE_P_THRESHOLD) aboveThreshold.push(source);
-    }
-    return {
-      converged: aboveThreshold.length >= CONVERGENCE_MIN_SOURCES,
-      sourcesAboveThreshold: aboveThreshold,
-      threshold: CONVERGENCE_P_THRESHOLD,
-    };
-  }
-
-  // -------------------------------------------------------------------------
-  // Phase 3 streaming path (C5+). Méthodes additives — les ingestion callers
-  // migrent un par un (C6 probeCrawler → C7 reportService → C8 observerCrawler).
-  // -------------------------------------------------------------------------
 
   /** Ingestion streaming : applique la décroissance τ=7j, additionne les
    *  deltas pondérés, et bump les daily_buckets pour chaque niveau connu.

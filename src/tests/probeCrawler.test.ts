@@ -2,10 +2,10 @@
 // (a) persists a row in `probe_results` (legacy contract),
 // (b) writes a v31-enriched row in `transactions` when dualWriteMode='active'
 //     and a legacy 9-col row when mode='off',
-// (c) upserts operator/endpoint aggregates in all 3 bayesian windows regardless
-//     of the mode (Q1: ingestion decoupled from flag),
+// (c) ingests into operator/endpoint streaming_posteriors + daily_buckets
+//     regardless of dualWriteMode (scoring signal decoupled from tx flag),
 // (d) is idempotent per (pubkey, UTC-day, amount) — rerun produces no duplicate
-//     row in transactions and no double-count in aggregates.
+//     row in transactions and no double-count in streaming.
 //
 // The LND client is stubbed so the test never hits the network.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -130,7 +130,7 @@ describe('ProbeCrawler bayesian bridge', () => {
 
   afterEach(() => db.close());
 
-  it('writes tx row + operator aggregates on a reachable probe (mode=active)', async () => {
+  it('writes tx row + streaming posteriors on a reachable probe (mode=active)', async () => {
     const reachableKey = 'aa'.repeat(33);
     const reachableHash = 'bb'.repeat(32);
 
@@ -148,25 +148,19 @@ describe('ProbeCrawler bayesian bridge', () => {
     expect(tx.operator_id).toBe(reachableHash);
     expect(tx.window_bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
-    const opAgg = db.prepare(
-      `SELECT window, n_success, n_failure, n_obs FROM operator_aggregates WHERE operator_id = ? ORDER BY window`,
-    ).all(reachableHash) as any[];
-    expect(opAgg.length).toBe(3);
-    expect(opAgg.every(r => r.n_success === 1 && r.n_failure === 0 && r.n_obs === 1)).toBe(true);
-
-    const epAgg = db.prepare(
-      `SELECT window, n_obs FROM endpoint_aggregates WHERE url_hash = ?`,
-    ).all(reachableHash) as any[];
-    expect(epAgg.length).toBe(3);
-    expect(epAgg.every(r => r.n_obs === 1)).toBe(true);
-
-    // Phase 3 streaming (C6) — probe doit aussi alimenter streaming_posteriors
-    // ET daily_buckets, en parallèle du legacy aggregates.
+    // Phase 3 streaming — probe alimente streaming_posteriors + daily_buckets
+    // (operator + endpoint) en un unique chemin d'écriture.
     const streamingOp = db.prepare(
       `SELECT source, total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(reachableHash) as any;
     expect(streamingOp.source).toBe('probe');
     expect(streamingOp.total_ingestions).toBe(1);
+
+    const streamingEp = db.prepare(
+      `SELECT source, total_ingestions FROM endpoint_streaming_posteriors WHERE url_hash = ?`,
+    ).get(reachableHash) as any;
+    expect(streamingEp.source).toBe('probe');
+    expect(streamingEp.total_ingestions).toBe(1);
 
     const bucketOp = db.prepare(
       `SELECT n_obs, n_success FROM operator_daily_buckets WHERE operator_id = ? AND source = 'probe'`,
@@ -175,7 +169,7 @@ describe('ProbeCrawler bayesian bridge', () => {
     expect(bucketOp.n_success).toBe(1);
   });
 
-  it('writes tx row with failed status + failure aggregates on an unreachable probe', async () => {
+  it('writes tx row with failed status + failure counted in streaming on an unreachable probe', async () => {
     const pubkey = 'cc'.repeat(33);
     const hash = 'dd'.repeat(32);
 
@@ -191,13 +185,13 @@ describe('ProbeCrawler bayesian bridge', () => {
     expect(tx.status).toBe('failed');
     expect(tx.source).toBe('probe');
 
-    const opAgg = db.prepare(
-      `SELECT n_success, n_failure FROM operator_aggregates WHERE operator_id = ? AND window = '7d'`,
+    const bucket = db.prepare(
+      `SELECT n_success, n_failure FROM operator_daily_buckets WHERE operator_id = ? AND source = 'probe'`,
     ).get(hash) as any;
-    expect(opAgg).toEqual(expect.objectContaining({ n_success: 0, n_failure: 1 }));
+    expect(bucket).toEqual(expect.objectContaining({ n_success: 0, n_failure: 1 }));
   });
 
-  it('is idempotent: rerun produces no duplicate tx and no aggregate double-count', async () => {
+  it('is idempotent: rerun produces no duplicate tx and no streaming double-count', async () => {
     const pubkey = 'ee'.repeat(33);
     const hash = 'ff'.repeat(32);
 
@@ -213,13 +207,13 @@ describe('ProbeCrawler bayesian bridge', () => {
     ).get(hash) as any;
     expect(txCount.c).toBe(1);
 
-    const opAgg = db.prepare(
-      `SELECT n_obs FROM operator_aggregates WHERE operator_id = ? AND window = '7d'`,
+    const streaming = db.prepare(
+      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(hash) as any;
-    expect(opAgg.n_obs).toBe(1);
+    expect(streaming.total_ingestions).toBe(1);
   });
 
-  it('mode=off skips v31 enrichment but still updates aggregates', async () => {
+  it('mode=off skips v31 enrichment but still updates streaming', async () => {
     const pubkey = '11'.repeat(33);
     const hash = '22'.repeat(32);
 
@@ -239,10 +233,11 @@ describe('ProbeCrawler bayesian bridge', () => {
     expect(tx.source).toBeNull();
     expect(tx.window_bucket).toBeNull();
 
-    const opAgg = db.prepare(
-      `SELECT n_obs FROM operator_aggregates WHERE operator_id = ? AND window = '7d'`,
+    // Scoring signal is decoupled from dualWriteMode — streaming still writes.
+    const streaming = db.prepare(
+      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(hash) as any;
-    expect(opAgg.n_obs).toBe(1);
+    expect(streaming.total_ingestions).toBe(1);
   });
 
   it('ingests nothing when bayesianDeps missing — legacy probe_results only', async () => {
@@ -266,7 +261,7 @@ describe('ProbeCrawler bayesian bridge', () => {
     const txCount = db.prepare(`SELECT COUNT(*) AS c FROM transactions`).get() as any;
     expect(txCount.c).toBe(0);
 
-    const opCount = db.prepare(`SELECT COUNT(*) AS c FROM operator_aggregates`).get() as any;
-    expect(opCount.c).toBe(0);
+    const streamingCount = db.prepare(`SELECT COUNT(*) AS c FROM operator_streaming_posteriors`).get() as any;
+    expect(streamingCount.c).toBe(0);
   });
 });

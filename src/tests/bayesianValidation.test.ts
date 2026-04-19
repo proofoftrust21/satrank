@@ -2,7 +2,7 @@
 // Exécute les scripts de comparaison et de benchmark, et vérifie que les deux
 // seuils critiques sont tenus :
 //   - Kendall τ ≥ 0.90 (accuracy du ranking)
-//   - 1000 ingestTransactionOutcome < 5000 ms (chemin chaud)
+//   - 1000 ingestStreaming < 5000 ms (chemin chaud)
 
 import { describe, it, expect } from 'vitest';
 import { runComparison } from '../scripts/compareLegacyVsBayesian';

@@ -219,15 +219,8 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
         // Force mode='active' : le backfill DOIT remplir les 4 colonnes v31
         // sinon les rows insérées sont invisibles à buildVerdict.
         txRepo.insertWithDualWrite(tx, enrichment, 'active', 'probeCrawler');
-        bayesian.ingestTransactionOutcome({
-          endpointHash: row.target_hash,
-          operatorId: row.target_hash,
-          success: row.reachable === 1,
-          timestamp: row.probed_at,
-        });
-        // Phase 3 C10 : le verdict lit dans streaming_posteriors (C9), donc
-        // le backfill doit aussi alimenter le streaming — sinon un replay de
-        // probe_results produit des aggregates pleins mais un verdict vide.
+        // Phase 3 : le verdict lit dans streaming_posteriors — le backfill
+        // doit alimenter le streaming sinon un replay produit un verdict vide.
         bayesian.ingestStreaming({
           success: row.reachable === 1,
           timestamp: row.probed_at,

@@ -1,8 +1,8 @@
-// C2 Phase 3 — backfill probe_results → transactions + aggregates.
+// C2 Phase 3 — backfill probe_results → transactions + streaming_posteriors.
 //
 // Ce qu'on prouve :
-//   1. dry-run compte sans écrire (0 tx, 0 agg delta)
-//   2. run actif insère 1 tx par (target, UTC-day, 1k sats) + peuple agg
+//   1. dry-run compte sans écrire (0 tx, 0 streaming delta)
+//   2. run actif insère 1 tx par (target, UTC-day, 1k sats) + peuple streaming
 //   3. idempotence : 2× run ne duplique pas
 //   4. non-base amounts (10k/100k/1M) skippés
 //   5. orphan target (agent disparu) skipped gracefully
@@ -62,7 +62,7 @@ describe('backfillProbeResultsToTransactions', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('dry-run counts without writing tx rows or aggregate deltas', () => {
+  it('dry-run counts without writing tx rows or streaming deltas', () => {
     const a = 'aa'.repeat(32);
     new AgentRepository(db).insert(makeAgent(a));
     new ProbeRepository(db).insert({
@@ -78,11 +78,11 @@ describe('backfillProbeResultsToTransactions', () => {
 
     const txCount = (db.prepare('SELECT COUNT(*) AS c FROM transactions').get() as any).c;
     expect(txCount).toBe(0);
-    const aggCount = (db.prepare('SELECT COUNT(*) AS c FROM operator_aggregates').get() as any).c;
-    expect(aggCount).toBe(0);
+    const streamingCount = (db.prepare('SELECT COUNT(*) AS c FROM operator_streaming_posteriors').get() as any).c;
+    expect(streamingCount).toBe(0);
   });
 
-  it('active run inserts 1 tx per (target, day) and bumps aggregates', () => {
+  it('active run inserts 1 tx per (target, day) and bumps streaming + buckets', () => {
     const a = 'bb'.repeat(32);
     const agentRepo = new AgentRepository(db);
     const probeRepo = new ProbeRepository(db);
@@ -116,13 +116,14 @@ describe('backfillProbeResultsToTransactions', () => {
     // First row wins → reachable=1 → verified
     expect(tx.status).toBe('verified');
 
-    const agg = db.prepare(
-      "SELECT n_obs FROM operator_aggregates WHERE operator_id = ? AND window = '7d'",
+    const streaming = db.prepare(
+      `SELECT source, total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(a) as any;
-    expect(agg.n_obs).toBe(1);
+    expect(streaming.source).toBe('probe');
+    expect(streaming.total_ingestions).toBe(1);
   });
 
-  it('idempotent — 2× run does not duplicate tx or double-count aggregates', () => {
+  it('idempotent — 2× run does not duplicate tx or double-count streaming', () => {
     const a = 'cc'.repeat(32);
     new AgentRepository(db).insert(makeAgent(a));
     new ProbeRepository(db).insert({
@@ -139,10 +140,10 @@ describe('backfillProbeResultsToTransactions', () => {
     const txCount = (db.prepare('SELECT COUNT(*) AS c FROM transactions').get() as any).c;
     expect(txCount).toBe(1);
 
-    const agg = db.prepare(
-      "SELECT n_obs FROM operator_aggregates WHERE operator_id = ? AND window = '7d'",
+    const streaming = db.prepare(
+      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
     ).get(a) as any;
-    expect(agg.n_obs).toBe(1);
+    expect(streaming.total_ingestions).toBe(1);
   });
 
   it('skips non-base amount probes (10k/100k/1M tiers)', () => {

@@ -208,28 +208,13 @@ export class ReportService {
           this.dualWriteLogger,
         );
 
-        // Bridge report → bayesian. Q1 : l'ingestion est systématique, ignore
-        // le flag dualWriteMode. Q4 : la pondération par tier (novice/contributor/
-        // reliable/trusted côté identifié, preimage low/medium/high côté anonyme)
-        // est appliquée à la LECTURE via weightForSource — pas à l'ingestion.
-        // Ici on pousse une observation brute success/failure ; le reporter_tier
-        // entre dans le calcul quand buildVerdict charge les obs. Les intents
-        // (decide_log) NE sont PAS ingérés — mapTransactionSourceToBayesian(intent)
-        // = null et ils ne doivent pas compter comme observation réussie.
+        // Bridge report → bayesian streaming. Q1 : ingestion systématique,
+        // ignore le flag dualWriteMode. La pondération par tier est appliquée
+        // à l'ingestion via weightForSource. Les intents (decide_log) ne sont
+        // PAS ingérés — source='intent' n'entre pas dans cette branche.
+        // Tier dérivé du verified flag : preimage-verified → 'nip98' (poids
+        // plein 1.0) ; sans preimage → 'low' (0.3), baseline conservateur.
         if (this.bayesian && source === 'report') {
-          this.bayesian.ingestTransactionOutcome({
-            endpointHash: input.target,
-            operatorId: input.target,
-            success: input.outcome === 'success',
-            timestamp: now,
-          });
-          // Phase 3 streaming path (C7). Tier dérivé du verified flag :
-          // preimage-verified (sha256(preimage)==payment_hash) → 'nip98' (poids
-          // plein 1.0), équivalent à une signature authentifiée. Sans preimage
-          // → 'low' (0.3), baseline conservateur pour les reports standards.
-          // L'intent (decide_log hit) est exclu de la même manière que pour
-          // ingestTransactionOutcome — c'est une déclaration d'intention, pas
-          // une observation de résultat.
           this.bayesian.ingestStreaming({
             success: input.outcome === 'success',
             timestamp: now,
@@ -404,19 +389,11 @@ export class ReportService {
           this.dualWriteLogger,
         );
 
-        // Bridge anonymous report → bayesian aggregates. Même contrat que la
-        // voie identifiée : observation brute, la pondération par preimage tier
-        // (low/medium/high) est appliquée à la lecture.
+        // Bridge anonymous report → bayesian streaming. Le PreimagePoolTier
+        // (high/medium/low) mappe directement au ReportTier bayesien — la
+        // preimage prouve le paiement mais pas l'authenticité du payeur,
+        // donc jamais 'nip98'.
         if (this.bayesian) {
-          this.bayesian.ingestTransactionOutcome({
-            endpointHash: input.target,
-            operatorId: input.target,
-            success: input.outcome === 'success',
-            timestamp: now,
-          });
-          // Phase 3 streaming path (C7). Le PreimagePoolTier (high/medium/low)
-          // mappe directement au ReportTier bayesien — la preimage prouve le
-          // paiement mais pas l'authenticité du payeur, donc jamais 'nip98'.
           this.bayesian.ingestStreaming({
             success: input.outcome === 'success',
             timestamp: now,

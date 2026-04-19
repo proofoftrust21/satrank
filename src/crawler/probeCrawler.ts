@@ -197,16 +197,8 @@ export class ProbeCrawler {
     return result;
   }
 
-  /** Bridge base-probe outcome → bayesian state. Two atomic writes in one
-   *  SQLite transaction so the transactions row and the aggregates delta
-   *  commit together:
-   *    1. INSERT transactions with source='probe' + v31 enrichment
-   *       (enrichment is populated only when dualWriteMode='active' —
-   *       Q1 of the Phase 3 brief keeps the legacy-compat flag intact).
-   *    2. ingestTransactionOutcome — unconditional, decoupled from the
-   *       flag. Populates operator/endpoint aggregates across the 3
-   *       bayesian windows so hierarchical priors + window selection
-   *       have signal even when v31 enrichment is off.
+  /** Bridge base-probe outcome → bayesian streaming state. Une transaction
+   *  SQLite atomique : INSERT `transactions` + `ingestStreaming`.
    *
    *  Daily idempotence via tx_id = sha256('lnprobe:<pubkey>:<bucket>:<amount>').
    *  The guard avoids double-counting on overlapping cron ticks / restarts.
@@ -244,16 +236,8 @@ export class ProbeCrawler {
           window_bucket: bucket,
         };
         txRepo.insertWithDualWrite(tx, enrichment, mode, 'probeCrawler', dualWriteLogger);
-        bayesian.ingestTransactionOutcome({
-          endpointHash: pubkeyHash,
-          operatorId: pubkeyHash,
-          success,
-          timestamp,
-        });
-        // Phase 3 streaming path (C6). Tourne en parallèle du legacy pendant
-        // la chaîne de migration ; deviendra le seul chemin quand le verdict
-        // service aura basculé (C9). Observer exclu : probe écrit dans
-        // streaming_posteriors ET daily_buckets.
+        // Phase 3 streaming — unique chemin d'écriture verdict. Observer exclu :
+        // probe écrit dans streaming_posteriors ET daily_buckets.
         bayesian.ingestStreaming({
           success,
           timestamp,
@@ -268,7 +252,7 @@ export class ProbeCrawler {
       // probe_results was already persisted, which is the legacy contract.
       logger.warn(
         { pubkey: pubkeyHash.slice(0, 12), error: err instanceof Error ? err.message : String(err) },
-        'Probe bayesian ingest failed — tx row and aggregates rolled back',
+        'Probe bayesian ingest failed — tx row and streaming posteriors rolled back',
       );
     }
   }
