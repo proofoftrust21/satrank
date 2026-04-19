@@ -143,17 +143,30 @@ describe('Report signal in reputation scoring', () => {
     expect(result.components.reputation).toBe(50);
   });
 
-  it('agent with <5 reports -> no change (threshold)', () => {
+  it('agent with a single report -> no change (anti-spam)', () => {
+    const agent = makeAgent('one-report');
+    agentRepo.insert(agent);
+
+    // Phase 4 P5: the binary cutoff at 5 is replaced by linear damping
+    // damp = min(1, (total-1)/9). At total=1, damp=0 → no signal.
+    insertReports(agent.public_key_hash, 1, 'success');
+
+    const result = scoring.computeScore(agent.public_key_hash);
+    expect(result.components.reputation).toBe(50);
+  });
+
+  it('agent with <10 reports -> graduated signal (damped)', () => {
     const agent = makeAgent('few-reports');
     agentRepo.insert(agent);
 
-    // Insert 4 positive reports (below the 5-report threshold)
+    // Phase 4 P5: 4 reports now contribute damp = 3/9 ≈ 0.333 of the signal.
+    // 4 successes → ratio=1.0 → (1.0-0.5)*2*10*0.333 ≈ 3.33 → rounds to 3.
+    // Previously (hard cutoff at 5), this was exactly 0 and the score
+    // jumped from 50 to 60 at the 5th report. Now it ramps smoothly.
     insertReports(agent.public_key_hash, 4, 'success');
 
     const result = scoring.computeScore(agent.public_key_hash);
-    // Reports exist but below threshold -> no report signal contribution
-    // Reputation is 50 (neutral) because there are no general attestations either
-    expect(result.components.reputation).toBe(50);
+    expect(result.components.reputation).toBe(53);
   });
 
   it('agent with 10 positive reports -> reputation boost (capped at +10)', () => {

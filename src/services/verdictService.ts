@@ -13,6 +13,7 @@ import type { BayesianVerdictService } from './bayesianVerdictService';
 import type { VerdictResponse, VerdictFlag, Verdict, PersonalTrust, PathfindingResult } from '../types';
 import { DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
+import { computeAdvisoryReport } from './advisoryService';
 import { PROBE_FRESHNESS_TTL } from '../config/scoring';
 import { config } from '../config';
 import { logger } from '../logger';
@@ -21,6 +22,9 @@ import { verdictTotal } from '../middleware/metrics';
 const POSITIVE_ATTESTATION_MIN_SCORE = 70;
 const PATH_CACHE_TTL_MS = 5 * 60 * 1000;
 const PATH_CACHE_MAX_SIZE = 1000;
+/** Window for uptime-based reachability fed into the advisory report. Matches
+ *  the bayesian τ (7 days) so reachability decays on the same time horizon. */
+const REACHABILITY_WINDOW_SEC = 7 * 24 * 3600;
 
 export class VerdictService {
   private pathCache = new Map<string, { result: PathfindingResult; expiresAt: number; lastAccess: number }>();
@@ -128,6 +132,19 @@ export class VerdictService {
 
     const reason = this.buildReason(agent, bayes, flags, ageDays);
 
+    const reachability = this.probeRepo?.computeUptime(publicKeyHash, REACHABILITY_WINDOW_SEC) ?? null;
+    const advisory = computeAdvisoryReport({
+      bayesian: {
+        p_success: bayes.p_success,
+        ci95_low: bayes.ci95_low,
+        ci95_high: bayes.ci95_high,
+        n_obs: bayes.n_obs,
+      },
+      flags,
+      reachability: reachability ?? undefined,
+      delta7d: delta.delta7d,
+    });
+
     verdictTotal.inc({ verdict, source });
     return {
       verdict,
@@ -146,6 +163,10 @@ export class VerdictService {
       personalTrust,
       riskProfile,
       pathfinding,
+      advisory_level: advisory.advisory_level,
+      risk_score: advisory.risk_score,
+      advisories: advisory.advisories,
+      reachability: reachability != null ? Math.round(reachability * 1000) / 1000 : null,
     };
   }
 
@@ -290,6 +311,13 @@ export class VerdictService {
 }
 
 function buildMissingAgentResponse(callerPubkey: string | undefined): VerdictResponse {
+  // Missing agent ⇒ the unknown CI (width=1) saturates uncertainty_factor to 1.0.
+  // With no other signals, risk_score = 0.15 → yellow. That's a faithful overlay
+  // of "we know nothing" — distinct from green (evidence of safety).
+  const advisory = computeAdvisoryReport({
+    bayesian: { p_success: 0.5, ci95_low: 0, ci95_high: 1, n_obs: 0 },
+    flags: [],
+  });
   return {
     verdict: 'INSUFFICIENT',
     p_success: 0.5,
@@ -307,5 +335,9 @@ function buildMissingAgentResponse(callerPubkey: string | undefined): VerdictRes
     personalTrust: callerPubkey ? { distance: null, sharedConnections: 0, strongestConnection: null } : null,
     riskProfile: { name: 'unrated', riskLevel: 'unknown', description: 'Agent not found in the SatRank index.' },
     pathfinding: null,
+    advisory_level: advisory.advisory_level,
+    risk_score: advisory.risk_score,
+    advisories: advisory.advisories,
+    reachability: null,
   };
 }

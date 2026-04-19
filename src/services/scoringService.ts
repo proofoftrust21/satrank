@@ -50,7 +50,6 @@ import {
   MAX_ATTESTATIONS_PER_AGENT,
   PROBE_UNREACHABLE_PENALTY,
   PROBE_FRESHNESS_TTL,
-  REPORT_SIGNAL_MIN_REPORTS,
   REPORT_SIGNAL_CAP,
 } from '../config/scoring';
 
@@ -741,19 +740,31 @@ export class ScoringService {
 
   /** Compute the report-based signal for the reputation component.
    *  Returns a value in [-REPORT_SIGNAL_CAP, +REPORT_SIGNAL_CAP].
-   *  Only contributes when >= REPORT_SIGNAL_MIN_REPORTS reports exist (anti-manipulation).
+   *
+   *  Phase 4 P5 — graduated damping replaces the old binary cutoff at 5.
+   *  Previously: `if (stats.total < 5) return 0`, which created a discrete
+   *  jump at the 5th report (4 reports = 0 signal, 5 reports = full CAP).
+   *  Now: damp = min(1, (total - 1) / 9) ramps linearly from total=1 (damp=0)
+   *  to total=10 (damp=1). A single report contributes nothing (anti-spam),
+   *  a second contributes 1/9, and the signal reaches full weight at 10
+   *  reports — matching the audit target pool size while eliminating the
+   *  cliff-edge behaviour.
+   *
    *  Preimage-verified reports receive 2x weight (baked into reportSignalStats). */
   private computeReportSignal(agentHash: string): number {
     const stats = this.attestationRepo.reportSignalStats(agentHash);
-    if (stats.total < REPORT_SIGNAL_MIN_REPORTS) return 0;
+    if (stats.total < 1) return 0;
 
     const totalWeighted = stats.weightedSuccesses + stats.weightedFailures;
     if (totalWeighted === 0) return 0;
 
+    // Linear damping: 0 at total=1, full at total=10+.
+    const damp = Math.min(1, (stats.total - 1) / 9);
+
     // ratio: 0.0 (all failures) to 1.0 (all successes)
     const successRatio = stats.weightedSuccesses / totalWeighted;
-    // Map 0.5 (neutral) to 0, 1.0 to +CAP, 0.0 to -CAP
-    const adjustment = (successRatio - 0.5) * 2 * REPORT_SIGNAL_CAP;
+    // Map 0.5 (neutral) to 0, 1.0 to +CAP, 0.0 to -CAP, scaled by damp.
+    const adjustment = (successRatio - 0.5) * 2 * REPORT_SIGNAL_CAP * damp;
     return Math.round(Math.min(REPORT_SIGNAL_CAP, Math.max(-REPORT_SIGNAL_CAP, adjustment)));
   }
 

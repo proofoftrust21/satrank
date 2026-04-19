@@ -152,15 +152,11 @@ export const POPULARITY_BONUS_CAP = 10;
 export const POPULARITY_LOG_MULTIPLIER = 2;
 
 // --- Verdict thresholds ---
+// Phase 3 a retiré le seuil composite SAFE/RISKY/UNKNOWN au profit du verdict
+// bayésien (p_success + CI + n_obs_effective). Les constantes legacy
+// VERDICT_SAFE_THRESHOLD et VERDICT_RISKY_THRESHOLD ont été supprimées en
+// Phase 4 P6 — leur valeur (47) n'était plus lue par aucun code.
 
-/** Minimum score for a SAFE verdict.
- *  Rationale: SAFE means "the top ~50% of the theoretical maximum". The old
- *  threshold was ≥50 on a 0-100 scale that saturated at 100 (seven nodes tied
- *  at the cap). After the v15 calibration (multi-axis regularity + peer-based
- *  diversity + no probe bonus stacking), the best nodes realistically score
- *  93-94, so the proportional equivalent is 47/94 ≈ 50/100. Semantic is
- *  preserved; the number drops to match the new scale. */
-export const VERDICT_SAFE_THRESHOLD = 47;
 
 // --- Probe routing ---
 

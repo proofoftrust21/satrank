@@ -449,6 +449,45 @@ export interface VerdictResponse extends BayesianScoreBlock {
   personalTrust: PersonalTrust | null;
   riskProfile: RiskProfile;
   pathfinding: PathfindingResult | null;
+  // Phase 4 — advisory overlay (orthogonal to the Bayesian verdict).
+  advisory_level: AdvisoryLevel;
+  risk_score: number;
+  advisories: Advisory[];
+  /** Phase 4 P6 — uptime probe ratio in [0, 1] on the same 7d window the advisory uses.
+   *  null when no probes yet. Complements the binary `unreachable` flag. */
+  reachability: number | null;
+}
+
+// Phase 4 — graduated advisory overlay. `advisory_level` sits alongside
+// `verdict` (Bayesian 4-class label) and adds a continuous risk perspective
+// so agent consumers can nuance proceed/abort decisions.
+export type AdvisoryLevel = 'green' | 'yellow' | 'orange' | 'red';
+
+export type AdvisoryCode =
+  | 'CRITICAL_FLAG'
+  | 'LOW_REACHABILITY'
+  | 'UNCERTAIN_POSTERIOR'
+  | 'POSTERIOR_DECLINE'
+  | 'LOW_UPTIME'
+  | 'DEGRADED_HTTP'
+  | 'STALE_HEALTH'
+  | 'INTERMITTENT';
+
+export interface Advisory {
+  code: AdvisoryCode;
+  level: 'info' | 'warning' | 'critical';
+  msg: string;
+  /** Continuous [0, 1] — how strongly this signal fires. 0 = silent, 1 = fully active. */
+  signal_strength: number;
+  /** Optional structured payload for programmatic agent consumers. */
+  data?: Record<string, unknown>;
+}
+
+export interface AdvisoryReport {
+  advisory_level: AdvisoryLevel;
+  /** Continuous aggregate [0, 1], 0 = green, 1 = red. Paliers < 0.15 / 0.35 / 0.60 → green/yellow/orange/red. */
+  risk_score: number;
+  advisories: Advisory[];
 }
 
 // --- v2 types ---
@@ -516,6 +555,14 @@ export interface ServiceHealth {
   lastCheckedAt: number | null;
   /** Price of the service in sats (from BOLT11 invoice), null if unknown */
   servicePriceSats: number | null;
+  /** Phase 4 P6 — graduated HTTP health in [0, 1] derived from status +
+   *  uptimeRatio. 1.0 = fully healthy, 0 = down. Continuous complement to the
+   *  discrete `status`; null when no data (status = 'checking'|'unknown'). */
+  httpHealthScore: number | null;
+  /** Phase 4 P6 — exp(-age/600) decay on lastCheckedAt, null if no check yet.
+   *  1.0 = just checked, ~0.37 at 10 min, ~0.14 at 20 min. Lets agents decay
+   *  their trust in the cached health instead of the old binary 5-min flag. */
+  healthFreshness: number | null;
 }
 
 export interface FeeVolatility {
@@ -548,7 +595,15 @@ export interface DecideResponse extends BayesianScoreBlock {
   /** HTTP health of the service behind this node. null when no serviceUrl provided or no data available. */
   serviceHealth: ServiceHealth | null;
   latencyMs: number;
+  // Phase 4 — advisory overlay mirrored from /verdict.
+  advisory_level: AdvisoryLevel;
+  risk_score: number;
+  advisories: Advisory[];
+  // Phase 4 — tiered recommendation, calibrated on verdict + advisory + ci95.
+  recommendation: Recommendation;
 }
+
+export type Recommendation = 'proceed' | 'proceed_with_caution' | 'consider_alternative' | 'avoid';
 
 export interface BestRouteCandidate {
   publicKeyHash: string;

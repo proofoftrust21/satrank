@@ -10,7 +10,7 @@ import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { VerdictService } from './verdictService';
 import type { SurvivalService } from './survivalService';
-import type { DecideResponse, ServiceHealth, PathfindingResult } from '../types';
+import type { DecideResponse, ServiceHealth, PathfindingResult, Recommendation, AdvisoryLevel, Verdict } from '../types';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
 import { logger } from '../logger';
 
@@ -27,6 +27,48 @@ const REPROBE_RATE_LIMIT_SEC = 300;
 const recentReprobes = new Map<string, number>(); // targetHash → timestamp
 // Fee budget as fraction of the payment amount — fees above this cap P_path.feeScore to 0
 const FEE_BUDGET_RATIO = 0.01; // 1%
+
+/** Tiered recommendation — Phase 4 P4. Ranks {proceed, proceed_with_caution,
+ *  consider_alternative, avoid} on the combination of Bayesian verdict,
+ *  advisory overlay, ci95 width, and service health. The boolean `go` is kept
+ *  alongside for SDK 0.2.x compat but defers to this tier at the SDK layer.
+ *
+ *  Decision order (first match wins):
+ *   1. Hard veto → avoid
+ *   2. Orange overlay → consider_alternative
+ *   3. SAFE + green + tight CI (ci95_low ≥ 0.70) → proceed
+ *   4. Everything else → proceed_with_caution
+ *
+ *  Why ci95_low ≥ 0.70 for `proceed`: the lower bound of the 95% credible
+ *  interval is the agent's worst-case p_success. If even the pessimistic end
+ *  is ≥ 0.70, the posterior is both central and tight enough to call a
+ *  green-light. This matches the SAFE-verdict threshold in
+ *  bayesianVerdictService (verdict = SAFE when p_success ≥ 0.80 AND CI
+ *  converged) but tightens it one notch for the unconditional `proceed`
+ *  recommendation. Agents in proceed_with_caution can still proceed — they
+ *  just know the CI is wider or the posterior is on the lower side. */
+const PROCEED_CI95_LOW_THRESHOLD = 0.70;
+
+function deriveRecommendation(
+  verdict: Verdict,
+  advisoryLevel: AdvisoryLevel,
+  hasCritical: boolean,
+  serviceDown: boolean,
+  ci95Low: number,
+): Recommendation {
+  if (verdict === 'RISKY' || advisoryLevel === 'red' || hasCritical || serviceDown) {
+    return 'avoid';
+  }
+  if (advisoryLevel === 'orange') return 'consider_alternative';
+  if (
+    verdict === 'SAFE'
+    && advisoryLevel === 'green'
+    && ci95Low >= PROCEED_CI95_LOW_THRESHOLD
+  ) {
+    return 'proceed';
+  }
+  return 'proceed_with_caution';
+}
 
 // P_path — quality of the Lightning path from caller to target.
 // Continuous 0-1 signal derived from the pathfinding result. Captures HOW WELL
@@ -86,6 +128,30 @@ function classifyHttp(status: number): 'healthy' | 'degraded' | 'down' {
   if (status === 401 || status === 403) return 'degraded'; // access issue
   if (status >= 400 && status < 500) return 'degraded';  // other client errors
   return 'down';                                         // 5xx, 0 (timeout/DNS), anything else
+}
+
+/** Phase 4 P6 — graduated HTTP health in [0, 1]. Blends the discrete status
+ *  (healthy=1, degraded=0.5, down=0) with the uptime ratio when available, so
+ *  a single bad probe doesn't flip a long-term-stable service to 0.5. Returns
+ *  null for 'checking'/'unknown' — the caller has no signal yet. */
+function computeHttpHealthScore(
+  status: 'healthy' | 'degraded' | 'down' | 'checking' | 'unknown',
+  uptimeRatio: number | null,
+): number | null {
+  if (status === 'checking' || status === 'unknown') return null;
+  const statusScore = status === 'healthy' ? 1 : status === 'degraded' ? 0.5 : 0;
+  if (uptimeRatio == null) return statusScore;
+  // 70% current status, 30% long-run uptime — the current probe is what the
+  // agent is about to face, but history reduces flapping.
+  return Math.round((0.7 * statusScore + 0.3 * uptimeRatio) * 1000) / 1000;
+}
+
+/** Phase 4 P6 — exp(-age/600) decay on health checks. 1.0 just-checked,
+ *  0.37 at 10 min, 0.14 at 20 min. Replaces the old STALE_HEALTH 5-min binary. */
+function computeHealthFreshness(lastCheckedAt: number | null, nowSec: number): number | null {
+  if (lastCheckedAt == null) return null;
+  const age = Math.max(0, nowSec - lastCheckedAt);
+  return Math.round(Math.exp(-age / 600) * 1000) / 1000;
 }
 
 export class DecideService {
@@ -263,6 +329,14 @@ export class DecideService {
 
     const latencyMs = Date.now() - startMs;
 
+    const recommendation = deriveRecommendation(
+      verdictResult.verdict,
+      verdictResult.advisory_level,
+      hasCritical,
+      serviceDown,
+      verdictResult.ci95_low,
+    );
+
     return {
       go,
       successRate: Math.round(successRate * 1000) / 1000,
@@ -293,6 +367,10 @@ export class DecideService {
       lastProbeAgeMs,
       serviceHealth,
       latencyMs,
+      advisory_level: verdictResult.advisory_level,
+      risk_score: verdictResult.risk_score,
+      advisories: verdictResult.advisories,
+      recommendation,
     };
   }
 
@@ -308,15 +386,17 @@ export class DecideService {
       const uptimeRatio = cached.check_count >= 3
         ? Math.round((cached.success_count / cached.check_count) * 1000) / 1000
         : null;
+      const status = cached.last_http_status ? classifyHttp(cached.last_http_status) : 'unknown';
       return {
         url,
-        status: cached.last_http_status ? classifyHttp(cached.last_http_status) : 'unknown',
+        status,
         httpCode: cached.last_http_status,
         latencyMs: cached.last_latency_ms,
         uptimeRatio,
         lastCheckedAt: cached.last_checked_at,
-
         servicePriceSats,
+        httpHealthScore: computeHttpHealthScore(status, uptimeRatio),
+        healthFreshness: computeHealthFreshness(cached.last_checked_at, now),
       };
     }
 
@@ -327,7 +407,7 @@ export class DecideService {
     if (remainingBudget <= 50) {
       // Already spent too long — fire background check, return 'checking'
       this.fireBackgroundCheck(agentHash, url, pinnedIp);
-      return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats };
+      return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats, httpHealthScore: null, healthFreshness: null };
     }
 
     // Race: live check vs budget timeout
@@ -339,7 +419,7 @@ export class DecideService {
 
     // Budget exceeded — the check continues in background, return 'checking'
     checkPromise.catch(() => {}); // prevent unhandled rejection
-    return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats };
+    return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats, httpHealthScore: null, healthFreshness: null };
   }
 
   private fireBackgroundCheck(agentHash: string, url: string, pinnedIp?: string): void {
@@ -380,11 +460,24 @@ export class DecideService {
 
 
       const ep = this.serviceEndpointRepo!.findByUrl(url);
-      return { url, status: classifyHttp(httpCode), httpCode, latencyMs, uptimeRatio, lastCheckedAt: Math.floor(Date.now() / 1000), servicePriceSats: ep?.service_price_sats ?? null };
+      const nowSec = Math.floor(Date.now() / 1000);
+      const status = classifyHttp(httpCode);
+      return {
+        url, status, httpCode, latencyMs, uptimeRatio,
+        lastCheckedAt: nowSec,
+        servicePriceSats: ep?.service_price_sats ?? null,
+        httpHealthScore: computeHttpHealthScore(status, uptimeRatio),
+        healthFreshness: computeHealthFreshness(nowSec, nowSec),
+      };
     } catch {
       this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0, 'ad_hoc');
-
-      return { url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: Math.floor(Date.now() / 1000), servicePriceSats: null };
+      const nowSec = Math.floor(Date.now() / 1000);
+      return {
+        url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null,
+        lastCheckedAt: nowSec, servicePriceSats: null,
+        httpHealthScore: 0,
+        healthFreshness: computeHealthFreshness(nowSec, nowSec),
+      };
     }
   }
 }
