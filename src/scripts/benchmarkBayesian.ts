@@ -1,11 +1,14 @@
-// Benchmark ingestTransactionOutcome — C11.
+// Benchmark ingestStreaming — Phase 3 C13.
 //
-// Exigence Phase 3 : BENCHMARK_UPDATE_COUNT=1000 updates doivent terminer en
-// moins de 5 s (budget moyen 5 ms/update). Seuil binaire pass/fail.
+// Exigence : BENCHMARK_UPDATE_COUNT=1000 updates doivent terminer en moins
+// de 5 s (budget moyen 5 ms/update). Seuil binaire pass/fail.
 //
-// Ce benchmark simule le chemin chaud d'ingestion transactionnelle : chaque
-// outcome déclenche une update des 4 niveaux d'agrégats × 3 fenêtres
-// temporelles (= 12 lignes touchées par transaction en théorie).
+// Ce benchmark mesure le chemin chaud Bayesian Phase 3 : `ingestStreaming`
+// touche 5 tables streaming_posteriors + 5 tables daily_buckets par level
+// (endpoint/service/operator/node/route). Concrètement, une observation
+// avec endpoint + service + operator + node + caller+target = 10 tables
+// touchées (5 streaming + 5 buckets) — mais la plupart des ingestions n'ont
+// qu'un subset de clés (probe : endpoint + operator + node).
 //
 // Usage :
 //   npx tsx src/scripts/benchmarkBayesian.ts
@@ -25,6 +28,20 @@ import {
   NodeAggregateRepository,
   RouteAggregateRepository,
 } from '../repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 
 export interface BenchmarkOptions {
@@ -52,34 +69,52 @@ export function runBenchmark(options: BenchmarkOptions): BenchmarkResult {
       new OperatorAggregateRepository(db),
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
 
-    // Warm up — 10 outcomes pour précharger les prepared statements et
+    // Warm up — 10 ingests pour précharger les prepared statements et
     // la table schema (sinon la 1ère mesure inclut ~5ms de compilation SQL).
     const now = Math.floor(Date.now() / 1000);
     for (let i = 0; i < 10; i++) {
-      bayesian.ingestTransactionOutcome({
+      bayesian.ingestStreaming({
         success: true,
         timestamp: now,
+        source: 'probe',
         endpointHash: 'warmup',
         serviceHash: 'warmup-svc',
         operatorId: 'warmup-op',
+        nodePubkey: 'warmup-op',
         callerHash: 'warmup-caller',
         targetHash: 'warmup',
       });
     }
 
-    // Mesure — N outcomes avec variance sur les clés pour ne pas toucher
+    // Mesure — N ingests avec variance sur les clés pour ne pas toucher
     // toujours la même ligne (simule la charge réelle multi-endpoints).
+    // 3 sources en rotation (probe/report/paid) pour exercer le 3-way
+    // per-source read path qu'utilise le verdict.
+    const sources = ['probe', 'report', 'paid'] as const;
     const startNs = process.hrtime.bigint();
     for (let i = 0; i < options.updateCount; i++) {
       const bucket = i % 100; // 100 endpoints distincts
-      bayesian.ingestTransactionOutcome({
+      bayesian.ingestStreaming({
         success: i % 7 !== 0, // ~85% success
         timestamp: now - (i % 604800), // dispersion sur 7j
+        source: sources[i % 3],
+        tier: 'medium',
         endpointHash: `endpoint-${bucket}`,
         serviceHash: `service-${bucket % 10}`,
         operatorId: `operator-${bucket % 20}`,
+        nodePubkey: `operator-${bucket % 20}`,
         callerHash: `caller-${i % 50}`,
         targetHash: `endpoint-${bucket}`,
       });
