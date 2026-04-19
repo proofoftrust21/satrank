@@ -2,6 +2,7 @@
 // stubbed (lands in C5).
 
 import { ApiClient } from './client/apiClient';
+import { fulfillIntent } from './fulfill';
 import type {
   FulfillOptions,
   FulfillResult,
@@ -49,8 +50,16 @@ export class SatRank {
     });
   }
 
-  async fulfill(_opts: FulfillOptions): Promise<FulfillResult> {
-    throw new Error('SatRank.fulfill: not implemented (landing in C5)');
+  async fulfill(opts: FulfillOptions): Promise<FulfillResult> {
+    return fulfillIntent(
+      {
+        api: this.api,
+        wallet: this.options.wallet,
+        fetchImpl: this.options.fetch,
+        defaultCaller: this.options.caller,
+      },
+      opts,
+    );
   }
 
   async listCategories(): Promise<IntentCategoriesResponse> {

@@ -33,14 +33,18 @@ describe('SDK 1.0 — scaffolding', () => {
     ).toThrow(/apiBase is required/);
   });
 
-  it('fulfill still throws not-implemented (lands in C5)', async () => {
+  it('fulfill rejects invalid inputs at the boundary', async () => {
     const sr = new SatRank({
       apiBase: 'https://satrank.dev',
       fetch: () => Promise.resolve(new Response('{}')),
     });
+    // @ts-expect-error deliberately wrong shape
+    await expect(sr.fulfill({ budget_sats: 10 })).rejects.toThrow(
+      /intent\.category/,
+    );
     await expect(
-      sr.fulfill({ intent: { category: 'data' }, budget_sats: 10 }),
-    ).rejects.toThrow(/not implemented/);
+      sr.fulfill({ intent: { category: 'data' }, budget_sats: 0 }),
+    ).rejects.toThrow(/budget_sats must be > 0/);
   });
 
   it('WalletError is a plain Error subclass (not a SatRankError)', () => {
