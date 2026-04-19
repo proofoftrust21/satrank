@@ -199,6 +199,50 @@ export class ServiceEndpointRepository {
     ).all() as Array<{ category: string; count: number }>;
   }
 
+  /** Résumé par catégorie pour /api/intent/categories : total + nombre
+   *  d'endpoints actifs (≥3 probes ET uptime ≥ 50%). L'écart entre les deux
+   *  signale aux agents quelles catégories sont saines vs. fossiles. */
+  findCategoriesWithActive(): Array<{ category: string; endpoint_count: number; active_count: number }> {
+    return this.db.prepare(`
+      SELECT
+        category,
+        COUNT(*) AS endpoint_count,
+        SUM(CASE
+          WHEN check_count >= 3 AND (CAST(success_count AS REAL) / check_count) >= 0.5
+          THEN 1 ELSE 0
+        END) AS active_count
+      FROM service_endpoints
+      WHERE category IS NOT NULL
+        AND agent_hash IS NOT NULL
+        AND source IN ('402index', 'self_registered')
+      GROUP BY category
+      ORDER BY endpoint_count DESC
+    `).all() as Array<{ category: string; endpoint_count: number; active_count: number }>;
+  }
+
+  /** Médiane de response_latency_ms sur `service_probes` dans la fenêtre 7j.
+   *  Retourne `null` si moins de `minSample` probes (défaut 3) — les agents
+   *  n'ont pas à traiter une "médiane" sur 1 point comme un signal.
+   *  SQLite n'a pas de MEDIAN natif — on extrait tous les points triés puis
+   *  on prend celui du milieu côté TS. Fenêtre 7j en secondes, cohérente avec
+   *  τ du bayésien et la reachability. */
+  medianHttpLatency7d(url: string, minSample = 3): number | null {
+    const cutoff = Math.floor(Date.now() / 1000) - 7 * 86400;
+    const rows = this.db.prepare(`
+      SELECT response_latency_ms AS latency
+      FROM service_probes
+      WHERE url = ?
+        AND probed_at >= ?
+        AND response_latency_ms IS NOT NULL
+      ORDER BY response_latency_ms ASC
+    `).all(url, cutoff) as Array<{ latency: number }>;
+    if (rows.length < minSample) return null;
+    const mid = Math.floor(rows.length / 2);
+    return rows.length % 2 === 1
+      ? rows[mid].latency
+      : Math.round((rows[mid - 1].latency + rows[mid].latency) / 2);
+  }
+
   /** Scan live des URLs pour matcher un url_hash → category. La table n'a pas
    *  de colonne `url_hash` stockée ; pour ~100 endpoints le coût est
    *  négligeable (microsecondes). Ne trust que les sources trusted (pas ad_hoc). */

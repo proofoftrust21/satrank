@@ -42,6 +42,7 @@ import { PROBE_FRESHNESS_TTL } from '../config/scoring';
 import { WALLET_PROVIDERS } from '../config/walletProviders';
 import { verdictTotal } from '../middleware/metrics';
 import { logTokenQuery } from '../utils/tokenQueryLog';
+import { logDeprecatedCall, markDeprecated, patchDeprecatedBody } from '../utils/deprecation';
 import type { WalletProvider, PathfindingResult } from '../types';
 
 export class V2Controller {
@@ -72,6 +73,10 @@ export class V2Controller {
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Phase 5 — signaler la déprécation dès l'entrée, y compris sur 4xx, pour
+    // que les agents détectent l'URL successeur même quand leur requête est
+    // malformée (RFC 8594 n'interdit pas les headers sur les erreurs).
+    markDeprecated(res, '/api/intent');
     try {
       const parsed = decideSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
@@ -117,13 +122,20 @@ export class V2Controller {
       // for why every paid target-query path writes here, not just /api/decide.
       logTokenQuery(this.db, req.headers.authorization, target.hash, req.requestId);
 
-      res.json({ data: result });
+      // Phase 5 — /api/decide déprécié en faveur de /api/intent. Ne supprime
+      // pas l'endpoint (compat agents existants). Headers Deprecation+Link
+      // déjà set en entrée (s'applique aussi aux 4xx) ; ici on ajoute le log
+      // success-path + le body.meta.deprecated_use.
+      logDeprecatedCall('/api/decide', '/api/intent', { caller: caller.hash });
+      res.json(patchDeprecatedBody({ data: result }, '/api/intent'));
     } catch (err) {
       next(err);
     }
   };
 
   bestRoute = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Phase 5 — déprécation signalée dès l'entrée (cf. commentaire `decide`).
+    markDeprecated(res, '/api/intent');
     try {
       const parsed = bestRouteSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
@@ -162,7 +174,8 @@ export class V2Controller {
         for (const t of targetInfos) {
           logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
         }
-        res.json({
+        logDeprecatedCall('/api/best-route', '/api/intent', { caller: caller.hash, degraded: true });
+        res.json(patchDeprecatedBody({
           data: {
             candidates,
             totalQueried: parsed.data.targets.length,
@@ -171,7 +184,7 @@ export class V2Controller {
             pathfindingContext: 'Caller has no known Lightning pubkey. Candidates ranked by score only (no pathfinding). Add walletProvider or callerNodePubkey to POST /api/decide for positional pathfinding.',
             latencyMs: Date.now() - startMs,
           },
-        });
+        }, '/api/intent'));
         return;
       }
 
@@ -283,7 +296,8 @@ export class V2Controller {
         logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
       }
 
-      res.json({
+      logDeprecatedCall('/api/best-route', '/api/intent', { caller: caller.hash, reachableCount });
+      res.json(patchDeprecatedBody({
         data: {
           candidates,
           totalQueried,
@@ -292,7 +306,7 @@ export class V2Controller {
           pathfindingContext: 'Pathfinding runs from the SatRank node position in the Lightning graph (limited outbound channels). Low reachability (e.g. 3/20) reflects graph topology, not target node quality. Targets unreachable from SatRank may be fully reachable from your node.',
           latencyMs: Date.now() - startMs,
         },
-      });
+      }, '/api/intent'));
     } catch (err) {
       next(err);
     }

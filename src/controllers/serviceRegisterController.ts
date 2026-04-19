@@ -6,12 +6,23 @@ import { z } from 'zod';
 import type { RegistryCrawler } from '../crawler/registryCrawler';
 import { ValidationError } from '../errors';
 import { formatZodError } from '../utils/zodError';
+import { isValidCategoryFormat, normalizeCategory } from '../utils/categoryValidation';
 
 const registerSchema = z.object({
   url: z.string().url().max(500),
   name: z.string().max(100).optional(),
   description: z.string().max(500).optional(),
-  category: z.string().max(50).optional(),
+  // Phase 5 — la catégorie est normalisée (trim/lower + alias) puis validée
+  // contre le regex partagé. Rejet explicite en 400 INVALID_CATEGORY_FORMAT
+  // plutôt qu'un skip silencieux : l'operator saura que sa valeur est refusée.
+  category: z
+    .string()
+    .max(50)
+    .optional()
+    .transform(v => (v == null ? v : normalizeCategory(v) ?? v))
+    .refine(v => v == null || isValidCategoryFormat(v), {
+      message: 'category must match /^[a-z][a-z0-9/_-]{1,31}$/ (e.g. "weather-api", "data/finance")',
+    }),
   provider: z.string().max(100).optional(),
 });
 
