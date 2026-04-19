@@ -28,21 +28,45 @@ const recentReprobes = new Map<string, number>(); // targetHash → timestamp
 // Fee budget as fraction of the payment amount — fees above this cap P_path.feeScore to 0
 const FEE_BUDGET_RATIO = 0.01; // 1%
 
-/** Tiered recommendation — P1 minimal mapping kept in sync with the boolean
- *  `go`. P4 will refine this with ci95-based thresholds and service-health
- *  escalation; for now the ranking is: verdict class → advisory overlay veto
- *  → success signal. `proceed` is only issued when both layers align. */
+/** Tiered recommendation — Phase 4 P4. Ranks {proceed, proceed_with_caution,
+ *  consider_alternative, avoid} on the combination of Bayesian verdict,
+ *  advisory overlay, ci95 width, and service health. The boolean `go` is kept
+ *  alongside for SDK 0.2.x compat but defers to this tier at the SDK layer.
+ *
+ *  Decision order (first match wins):
+ *   1. Hard veto → avoid
+ *   2. Orange overlay → consider_alternative
+ *   3. SAFE + green + tight CI (ci95_low ≥ 0.70) → proceed
+ *   4. Everything else → proceed_with_caution
+ *
+ *  Why ci95_low ≥ 0.70 for `proceed`: the lower bound of the 95% credible
+ *  interval is the agent's worst-case p_success. If even the pessimistic end
+ *  is ≥ 0.70, the posterior is both central and tight enough to call a
+ *  green-light. This matches the SAFE-verdict threshold in
+ *  bayesianVerdictService (verdict = SAFE when p_success ≥ 0.80 AND CI
+ *  converged) but tightens it one notch for the unconditional `proceed`
+ *  recommendation. Agents in proceed_with_caution can still proceed — they
+ *  just know the CI is wider or the posterior is on the lower side. */
+const PROCEED_CI95_LOW_THRESHOLD = 0.70;
+
 function deriveRecommendation(
   verdict: Verdict,
   advisoryLevel: AdvisoryLevel,
   hasCritical: boolean,
   serviceDown: boolean,
+  ci95Low: number,
 ): Recommendation {
   if (verdict === 'RISKY' || advisoryLevel === 'red' || hasCritical || serviceDown) {
     return 'avoid';
   }
   if (advisoryLevel === 'orange') return 'consider_alternative';
-  if (verdict === 'SAFE' && advisoryLevel === 'green') return 'proceed';
+  if (
+    verdict === 'SAFE'
+    && advisoryLevel === 'green'
+    && ci95Low >= PROCEED_CI95_LOW_THRESHOLD
+  ) {
+    return 'proceed';
+  }
   return 'proceed_with_caution';
 }
 
@@ -286,6 +310,7 @@ export class DecideService {
       verdictResult.advisory_level,
       hasCritical,
       serviceDown,
+      verdictResult.ci95_low,
     );
 
     return {
