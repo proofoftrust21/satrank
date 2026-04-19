@@ -51,6 +51,8 @@ import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
 import { DepositController } from './controllers/depositController';
 import { ServiceController } from './controllers/serviceController';
+import { IntentController } from './controllers/intentController';
+import { IntentService } from './services/intentService';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
 import { EndpointController } from './controllers/endpointController';
 import { WatchlistController } from './controllers/watchlistController';
@@ -213,6 +215,14 @@ export function createApp() {
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
+  const intentService = new IntentService({
+    serviceEndpointRepo,
+    agentRepo,
+    agentService,
+    trendService,
+    probeRepo,
+  });
+  const intentController = new IntentController(intentService);
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
@@ -455,6 +465,9 @@ export function createApp() {
   api.get('/services', discoveryRateLimit, serviceController.search);
   api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
+  // Phase 5 — /api/intent structuré (neutral discovery, same rate class as /services)
+  api.post('/intent', discoveryRateLimit, intentController.resolve);
+  api.get('/intent/categories', discoveryRateLimit, intentController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
   api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
