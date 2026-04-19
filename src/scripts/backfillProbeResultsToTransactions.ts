@@ -80,7 +80,7 @@ export interface BackfillProbeResult {
   /** Rows skipped because the target agent is missing (FK would fail). */
   skippedOrphanTarget: number;
   /** Rows skipped because tx_id already existed from a prior run / same-day
-   *  duplicate in probe_results (the daily bucket collision — by design). */
+   *  duplicate in probe_results (the 6h bucket collision — by design). */
   skippedDuplicate: number;
   /** Rows that caused an unrecoverable error (e.g. schema mismatch). */
   errors: number;

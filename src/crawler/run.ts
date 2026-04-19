@@ -192,8 +192,10 @@ async function crawlProbe(crawler: ProbeCrawler, probeRepo: ProbeRepository): Pr
     logger.warn({ errors: result.errors }, 'Errors during probe crawl');
   }
 
-  // Purge stale probe results — keep 7 days
-  const purged = await probeRepo.purgeOlderThan(7 * 24 * 3600);
+  // Purge stale probe results — keep 60 days. Streaming τ=7j pondère déjà les
+  // vieilles probes vers zéro, mais on conserve l'historique brut 60j pour le
+  // rebuild streaming et l'audit. Storage ≈ 290k rows, acceptable SQLite.
+  const purged = await probeRepo.purgeOlderThan(60 * 24 * 3600);
   if (purged > 0) {
     logger.info({ purged }, 'Old probe results purged');
   }

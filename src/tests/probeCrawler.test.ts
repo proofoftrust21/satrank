@@ -134,7 +134,7 @@ describe('ProbeCrawler bayesian bridge', () => {
     expect(tx).toBeDefined();
     expect(tx.status).toBe('verified');
     expect(tx.operator_id).toBe(reachableHash);
-    expect(tx.window_bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(tx.window_bucket).toMatch(/^\d{4}-\d{2}-\d{2}-\d{2}$/);
 
     // Phase 3 streaming — probe alimente streaming_posteriors + daily_buckets
     // (operator + endpoint) en un unique chemin d'écriture.

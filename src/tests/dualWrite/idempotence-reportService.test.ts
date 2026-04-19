@@ -31,11 +31,11 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Agent, ReportRequest } from '../../types';
 
-// 2026-04-18T12:00:00Z → window_bucket must be '2026-04-18' regardless of the
-// host TZ (ISO slice is UTC-anchored).
+// 2026-04-18T12:00:00Z → window_bucket must be '2026-04-18-12' (6h bucket,
+// HH ∈ {00,06,12,18}) regardless of the host TZ (ISO slice is UTC-anchored).
 const FIXED_ISO = '2026-04-18T12:00:00Z';
 const FIXED_UNIX = Math.floor(new Date(FIXED_ISO).getTime() / 1000);
-const EXPECTED_BUCKET = '2026-04-18';
+const EXPECTED_BUCKET = '2026-04-18-12';
 
 // Fixed preimage/paymentHash pair so tx_id = `${paymentHash}:${reporter}` is
 // deterministic across the two submit() calls — that's what drives the
@@ -228,6 +228,6 @@ describe('ReportService idempotence × dual-write modes', () => {
     reportService.submit(makeReport());
 
     const row = db.prepare('SELECT window_bucket FROM transactions').get() as { window_bucket: string };
-    expect(row.window_bucket).toBe('2026-04-18');
+    expect(row.window_bucket).toBe('2026-04-18-18');
   });
 });

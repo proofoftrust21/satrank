@@ -40,7 +40,8 @@ import type { Agent, ReportRequest } from '../../types';
 
 const FIXED_ISO = '2026-04-18T12:00:00Z';
 const FIXED_UNIX = Math.floor(new Date(FIXED_ISO).getTime() / 1000);
-const EXPECTED_BUCKET = '2026-04-18';
+// 6h bucket UTC: hour 12 rounds down to 12 → '2026-04-18-12'.
+const EXPECTED_BUCKET = '2026-04-18-12';
 
 const PREIMAGE = 'a'.repeat(64);
 const PAYMENT_HASH_BUF = createHash('sha256').update(Buffer.from(PREIMAGE, 'hex')).digest();
