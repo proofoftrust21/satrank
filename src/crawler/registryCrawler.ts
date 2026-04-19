@@ -12,6 +12,7 @@ import type { PreimagePoolRepository } from '../repositories/preimagePoolReposit
 import { sha256 } from '../utils/crypto';
 import { isSafeUrl } from '../utils/ssrf';
 import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
+import { validateCategoryOrNull } from '../utils/categoryValidation';
 
 interface IndexService {
   url: string;
@@ -22,31 +23,15 @@ interface IndexService {
   provider?: string;
 }
 
-// Normalize 402index categories (inconsistent: "ai/ml", "AI", "ai/llm", etc.)
-const CATEGORY_MAP: Record<string, string> = {
-  'ai': 'ai',
-  'ai/ml': 'ai',
-  'ai/llm': 'ai',
-  'ai/agents': 'ai',
-  'ai/embeddings': 'ai',
-  'data': 'data',
-  'data/oracle': 'data',
-  'real-time-data': 'data',
-  'crypto/prices': 'data',
-  'tools': 'tools',
-  'tools/directory': 'tools',
-  'bitcoin': 'bitcoin',
-  'lightning': 'bitcoin',
-  'media': 'media',
-  'social': 'social',
-  'earn/cashback': 'earn',
-  'earn/optimization': 'earn',
-};
-
-function normalizeCategory(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const key = raw.trim().toLowerCase();
-  return CATEGORY_MAP[key] ?? key;
+/** Ingest silencieux côté crawler : valeurs invalides rejetées avec un warn
+ *  log. Pas d'erreur levée — une page 402index polluée ne doit pas casser le
+ *  crawl complet. Retourne null si la catégorie est absente OU invalide. */
+function sanitizeCrawledCategory(raw: string | undefined, url: string): string | null {
+  const validated = validateCategoryOrNull(raw);
+  if (raw && !validated) {
+    logger.warn({ rawCategory: raw, url }, 'registryCrawler: category rejected by regex validator');
+  }
+  return validated;
 }
 
 const PAGE_SIZE = 100;
@@ -89,7 +74,7 @@ export class RegistryCrawler {
             const meta = {
               name: svc.name?.trim() || null,
               description: svc.description?.trim() || null,
-              category: normalizeCategory(svc.category),
+              category: sanitizeCrawledCategory(svc.category, svc.url),
               provider: svc.provider?.trim() || null,
             };
 
@@ -163,7 +148,7 @@ export class RegistryCrawler {
       const patch = {
         name: existing?.name ?? (meta.name?.trim() || null),
         description: existing?.description ?? (meta.description?.trim() || null),
-        category: existing?.category ?? (meta.category ? normalizeCategory(meta.category) : null),
+        category: existing?.category ?? validateCategoryOrNull(meta.category),
         provider: existing?.provider ?? (meta.provider?.trim() || null),
       };
       // Track which fields actually changed
