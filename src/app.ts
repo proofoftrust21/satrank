@@ -54,6 +54,13 @@ import { ServiceController } from './controllers/serviceController';
 import { IntentController } from './controllers/intentController';
 import { IntentService } from './services/intentService';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
+import { OperatorController } from './controllers/operatorController';
+import { OperatorService } from './services/operatorService';
+import {
+  OperatorRepository,
+  OperatorIdentityRepository,
+  OperatorOwnershipRepository,
+} from './repositories/operatorRepository';
 import { EndpointController } from './controllers/endpointController';
 import { WatchlistController } from './controllers/watchlistController';
 import { ReportStatsController } from './controllers/reportStatsController';
@@ -233,6 +240,22 @@ export function createApp() {
     : undefined;
   const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11, preimagePoolRepo) : null;
   const serviceRegisterController = new ServiceRegisterController(registryCrawler);
+
+  // Phase 7 — operator abstraction (nodes + endpoints + services sous une
+  // même identité cryptographique). OperatorService agrège les posteriors
+  // Bayesian des ressources owned ; voir le bloc archi en tête de ce fichier.
+  const operatorRepo = new OperatorRepository(db);
+  const operatorIdentityRepo = new OperatorIdentityRepository(db);
+  const operatorOwnershipRepo = new OperatorOwnershipRepository(db);
+  const operatorService = new OperatorService(
+    operatorRepo,
+    operatorIdentityRepo,
+    operatorOwnershipRepo,
+    endpointStreamingRepo,
+    nodeStreamingRepo,
+    serviceStreamingRepo,
+  );
+  const operatorController = new OperatorController({ operatorService });
 
   // Cache warm-up — fills the stats and leaderboard caches before the first
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
@@ -469,6 +492,9 @@ export function createApp() {
   api.post('/intent', discoveryRateLimit, intentController.resolve);
   api.get('/intent/categories', discoveryRateLimit, intentController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
+  // Phase 7 — operator registration (NIP-98 gated, rate-limited avec discovery
+  // car endpoint à effort de preuve côté claimant — pas de quota L402).
+  api.post('/operator/register', discoveryRateLimit, operatorController.register);
   api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
