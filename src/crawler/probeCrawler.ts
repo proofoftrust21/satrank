@@ -250,6 +250,18 @@ export class ProbeCrawler {
           success,
           timestamp,
         });
+        // Phase 3 streaming path (C6). Tourne en parallèle du legacy pendant
+        // la chaîne de migration ; deviendra le seul chemin quand le verdict
+        // service aura basculé (C9). Observer exclu : probe écrit dans
+        // streaming_posteriors ET daily_buckets.
+        bayesian.ingestStreaming({
+          success,
+          timestamp,
+          source: 'probe',
+          endpointHash: pubkeyHash,
+          operatorId: pubkeyHash,
+          nodePubkey: pubkeyHash,
+        });
       })();
     } catch (err) {
       // A FK miss or a UNIQUE collision must not abort the probe crawler —

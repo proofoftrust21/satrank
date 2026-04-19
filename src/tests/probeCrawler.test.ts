@@ -21,6 +21,20 @@ import {
   NodeAggregateRepository,
   RouteAggregateRepository,
 } from '../repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { ProbeCrawler } from '../crawler/probeCrawler';
 import type { LndGraphClient, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
@@ -86,6 +100,16 @@ function buildCrawler(db: Database.Database, reachable: Map<string, boolean>, mo
     new OperatorAggregateRepository(db),
     new NodeAggregateRepository(db),
     new RouteAggregateRepository(db),
+    new EndpointStreamingPosteriorRepository(db),
+    new ServiceStreamingPosteriorRepository(db),
+    new OperatorStreamingPosteriorRepository(db),
+    new NodeStreamingPosteriorRepository(db),
+    new RouteStreamingPosteriorRepository(db),
+    new EndpointDailyBucketsRepository(db),
+    new ServiceDailyBucketsRepository(db),
+    new OperatorDailyBucketsRepository(db),
+    new NodeDailyBucketsRepository(db),
+    new RouteDailyBucketsRepository(db),
   );
   const lnd = stubLndClient(reachable);
   const crawler = new ProbeCrawler(
@@ -135,6 +159,20 @@ describe('ProbeCrawler bayesian bridge', () => {
     ).all(reachableHash) as any[];
     expect(epAgg.length).toBe(3);
     expect(epAgg.every(r => r.n_obs === 1)).toBe(true);
+
+    // Phase 3 streaming (C6) — probe doit aussi alimenter streaming_posteriors
+    // ET daily_buckets, en parallèle du legacy aggregates.
+    const streamingOp = db.prepare(
+      `SELECT source, total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
+    ).get(reachableHash) as any;
+    expect(streamingOp.source).toBe('probe');
+    expect(streamingOp.total_ingestions).toBe(1);
+
+    const bucketOp = db.prepare(
+      `SELECT n_obs, n_success FROM operator_daily_buckets WHERE operator_id = ? AND source = 'probe'`,
+    ).get(reachableHash) as any;
+    expect(bucketOp.n_obs).toBe(1);
+    expect(bucketOp.n_success).toBe(1);
   });
 
   it('writes tx row with failed status + failure aggregates on an unreachable probe', async () => {
