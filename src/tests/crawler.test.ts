@@ -6,6 +6,28 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { Crawler } from '../crawler/crawler';
 import { sha256 } from '../utils/crypto';
+import {
+  EndpointAggregateRepository,
+  ServiceAggregateRepository,
+  OperatorAggregateRepository,
+  NodeAggregateRepository,
+  RouteAggregateRepository,
+} from '../repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
+import { BayesianScoringService } from '../services/bayesianScoringService';
 import type { ObserverClient, ObserverHealthResponse, ObserverTransactionsResponse, ObserverEvent } from '../crawler/types';
 
 function makeEvent(overrides: Partial<ObserverEvent> = {}): ObserverEvent {
@@ -288,5 +310,117 @@ describe('Crawler', () => {
     expect(result.newTransactions).toBe(1);
     expect(result.errors.length).toBe(1);
     expect(result.errors[0]).toContain('Missing agent_alias');
+  });
+});
+
+describe('Crawler — Phase 3 C8 streaming bridge (observer = buckets only)', () => {
+  let db: Database.Database;
+  let agentRepo: AgentRepository;
+  let txRepo: TransactionRepository;
+  let mockClient: MockObserverClient;
+  let bayesian: BayesianScoringService;
+  let crawler: Crawler;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+
+    agentRepo = new AgentRepository(db);
+    txRepo = new TransactionRepository(db);
+    bayesian = new BayesianScoringService(
+      new EndpointAggregateRepository(db),
+      new ServiceAggregateRepository(db),
+      new OperatorAggregateRepository(db),
+      new NodeAggregateRepository(db),
+      new RouteAggregateRepository(db),
+      new EndpointStreamingPosteriorRepository(db),
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
+    );
+    mockClient = new MockObserverClient();
+    crawler = new Crawler(mockClient, agentRepo, txRepo, 'off', undefined, bayesian);
+  });
+
+  afterEach(() => db.close());
+
+  it('verified event bumps node_daily_buckets with source=observer + n_success=1', async () => {
+    const ev = makeEvent({
+      transaction_hash: 'tx-obs-ok',
+      agent_alias: 'alice',
+      counterparty_id: 'bob',
+      direction: 'inbound',
+      verified: true,
+    });
+    mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
+    await crawler.run();
+
+    const aliceHash = sha256('alice'); // receiver (inbound)
+    const bucket = db.prepare(
+      `SELECT n_obs, n_success, n_failure FROM node_daily_buckets WHERE pubkey = ? AND source = 'observer'`,
+    ).get(aliceHash) as { n_obs: number; n_success: number; n_failure: number };
+    expect(bucket.n_obs).toBe(1);
+    expect(bucket.n_success).toBe(1);
+    expect(bucket.n_failure).toBe(0);
+  });
+
+  it('pending event bumps buckets as failure (not verified = not success)', async () => {
+    const ev = makeEvent({
+      transaction_hash: 'tx-obs-pending',
+      agent_alias: 'alice',
+      counterparty_id: 'bob',
+      direction: 'inbound',
+      verified: false,
+    });
+    mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
+    await crawler.run();
+
+    const aliceHash = sha256('alice');
+    const bucket = db.prepare(
+      `SELECT n_obs, n_success, n_failure FROM node_daily_buckets WHERE pubkey = ? AND source = 'observer'`,
+    ).get(aliceHash) as { n_obs: number; n_success: number; n_failure: number };
+    expect(bucket.n_obs).toBe(1);
+    expect(bucket.n_success).toBe(0);
+    expect(bucket.n_failure).toBe(1);
+  });
+
+  it('observer MUST NOT write to streaming_posteriors (CHECK constraint contract Q3)', async () => {
+    const ev = makeEvent({
+      transaction_hash: 'tx-obs-no-stream',
+      agent_alias: 'alice',
+      counterparty_id: 'bob',
+      verified: true,
+    });
+    mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
+    await crawler.run();
+
+    const streamingCount = db.prepare(
+      `SELECT COUNT(*) AS c FROM node_streaming_posteriors`,
+    ).get() as { c: number };
+    expect(streamingCount.c).toBe(0);
+  });
+
+  it('absent bayesian dep — legacy tx row only, no buckets', async () => {
+    const crawlerNoBayesian = new Crawler(mockClient, agentRepo, txRepo);
+    const ev = makeEvent({
+      transaction_hash: 'tx-no-bayesian',
+      agent_alias: 'alice',
+      counterparty_id: 'bob',
+      verified: true,
+    });
+    mockClient.transactionsResponse = { transactions: [ev], events: [], total: 1 };
+    await crawlerNoBayesian.run();
+
+    const txCount = (db.prepare(`SELECT COUNT(*) AS c FROM transactions`).get() as { c: number }).c;
+    expect(txCount).toBe(1);
+    const bucketCount = (db.prepare(`SELECT COUNT(*) AS c FROM node_daily_buckets`).get() as { c: number }).c;
+    expect(bucketCount).toBe(0);
   });
 });

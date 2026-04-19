@@ -35,6 +35,20 @@ import {
   NodeAggregateRepository,
   RouteAggregateRepository,
 } from '../repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
 import { runRetentionCleanup } from '../database/retention';
@@ -395,6 +409,16 @@ async function main(): Promise<void> {
   const routeAggRepoMain = new RouteAggregateRepository(db);
   const bayesianScoringServiceMain = new BayesianScoringService(
     endpointAggRepoMain, serviceAggRepoMain, operatorAggRepoMain, nodeAggRepoMain, routeAggRepoMain,
+    new EndpointStreamingPosteriorRepository(db),
+    new ServiceStreamingPosteriorRepository(db),
+    new OperatorStreamingPosteriorRepository(db),
+    new NodeStreamingPosteriorRepository(db),
+    new RouteStreamingPosteriorRepository(db),
+    new EndpointDailyBucketsRepository(db),
+    new ServiceDailyBucketsRepository(db),
+    new OperatorDailyBucketsRepository(db),
+    new NodeDailyBucketsRepository(db),
+    new RouteDailyBucketsRepository(db),
   );
   const bayesianVerdictServiceMain = new BayesianVerdictService(db, bayesianScoringServiceMain, snapshotRepo);
 
@@ -416,6 +440,7 @@ async function main(): Promise<void> {
     txRepo,
     config.TRANSACTIONS_DUAL_WRITE_MODE,
     dualWriteLogger,
+    bayesianScoringServiceMain,
   );
 
   const lndClient = new HttpLndGraphClient({

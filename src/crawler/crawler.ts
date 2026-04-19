@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
+import type { BayesianScoringService } from '../services/bayesianScoringService';
 import type { ObserverClient, ObserverEvent, CrawlResult } from './types';
 import type { AmountBucket, TransactionStatus, PaymentProtocol } from '../types';
 import { sha256 } from '../utils/crypto';
@@ -38,6 +39,13 @@ export class Crawler {
      *  prod by reading TRANSACTIONS_DUAL_WRITE_MODE from config. */
     private dualWriteMode: DualWriteMode = 'off',
     private dualWriteLogger?: DualWriteLogger,
+    /** Phase 3 C8 : quand fourni, chaque event ingère une observation dans les
+     *  daily_buckets bayesiens avec source='observer'. Le CHECK SQL sur
+     *  streaming_posteriors rejette observer — pas de contamination du signal
+     *  de verdict, mais l'activité reste visible dans recent_activity + risk_profile
+     *  (display only). Optionnel pour rétro-compat avec les tests qui n'ont
+     *  pas besoin du pipeline bayésien. */
+    private bayesian?: BayesianScoringService,
   ) {}
 
   async run(): Promise<CrawlResult> {
@@ -173,6 +181,22 @@ export class Crawler {
       'crawler',
       this.dualWriteLogger,
     );
+
+    // Phase 3 streaming path (C8). Observer bump UNIQUEMENT les daily_buckets
+    // (le CHECK SQL sur streaming_posteriors rejette observer). success=verified :
+    // un tx preimage-confirmé compte comme succès, les tx 'pending' comme
+    // observations de non-succès. Les deux comptent dans n_obs → recent_activity
+    // remonte la vraie densité d'échanges autour d'un agent. La pubkey ou URL
+    // n'est pas disponible côté Observer, on bump sur le receiver_hash comme
+    // proxy d'activité — cohérent avec le modèle agent-centric d'Observer.
+    if (this.bayesian) {
+      this.bayesian.ingestStreaming({
+        success: ev.verified,
+        timestamp,
+        source: 'observer',
+        nodePubkey: receiverHash,
+      });
+    }
 
     this.updateAgentActivity(senderHash, timestamp);
     this.updateAgentActivity(receiverHash, timestamp);
