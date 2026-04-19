@@ -426,6 +426,290 @@ describe('SatRank.fulfill — retry policy', () => {
   });
 });
 
+describe('SatRank.fulfill — auto_report', () => {
+  it('posts /api/report with target hash + preimage + bucket on paid_success', async () => {
+    const candidateUrl = 'https://svc.test/x';
+    const endpointHash = 'a1b2'.repeat(16);
+    let reportBody: Record<string, unknown> | null = null;
+    let reportAuth: string | null = null;
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([
+                { endpoint_url: candidateUrl, endpoint_hash: endpointHash },
+              ]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === candidateUrl,
+        response: (_u, init) => {
+          const h = (init.headers ?? {}) as Record<string, string>;
+          return h.Authorization
+            ? new Response(JSON.stringify({ ok: true }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+      {
+        match: (u) => u.endsWith('/api/report'),
+        response: (_u, init) => {
+          reportBody = JSON.parse(init.body as string);
+          const h = (init.headers ?? {}) as Record<string, string>;
+          reportAuth = h.Authorization ?? null;
+          return new Response(JSON.stringify({ data: { ok: true } }), {
+            status: 200,
+          });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+      depositToken: 'L402 deposit:feed',
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+    });
+    expect(res.success).toBe(true);
+    expect(res.report_submitted).toBe(true);
+    expect(reportBody).toMatchObject({
+      target: endpointHash,
+      outcome: 'success',
+      preimage: 'be'.repeat(32),
+      bolt11Raw: 'lnbc10n1ok',
+      amountBucket: 'micro', // 1 sat invoice + 1 fee = 2 sats
+    });
+    expect(reportAuth).toBe('L402 deposit:feed');
+  });
+
+  it('skips report when no depositToken is configured', async () => {
+    const candidateUrl = 'https://svc.test/x';
+    let reportCalled = 0;
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: candidateUrl }]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === candidateUrl,
+        response: (_u, init) => {
+          const h = (init.headers ?? {}) as Record<string, string>;
+          return h.Authorization
+            ? new Response('{}', { status: 200 })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+      {
+        match: (u) => u.endsWith('/api/report'),
+        response: () => {
+          reportCalled += 1;
+          return new Response('{}', { status: 200 });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+      // no depositToken
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+    });
+    expect(res.success).toBe(true);
+    expect(res.report_submitted).toBe(false);
+    expect(reportCalled).toBe(0);
+  });
+
+  it('reports outcome=failure when service returns 5xx after payment', async () => {
+    const candidateUrl = 'https://svc.test/broken';
+    let reportBody: Record<string, unknown> | null = null;
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: candidateUrl }]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === candidateUrl,
+        response: (_u, init) => {
+          const h = (init.headers ?? {}) as Record<string, string>;
+          return h.Authorization
+            ? new Response('boom', { status: 503 })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1test"',
+                },
+              });
+        },
+      },
+      {
+        match: (u) => u.endsWith('/api/report'),
+        response: (_u, init) => {
+          reportBody = JSON.parse(init.body as string);
+          return new Response('{}', { status: 200 });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+      depositToken: 'L402 deposit:beef',
+      retry_timeout_ms: 1000,
+    } as unknown as ConstructorParameters<typeof SatRank>[0]);
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+      retry_policy: 'none',
+    });
+    expect(res.success).toBe(false);
+    expect(res.report_submitted).toBe(true);
+    expect((reportBody as Record<string, unknown> | null)?.outcome).toBe(
+      'failure',
+    );
+  });
+
+  it('auto_report=false disables the call even with depositToken set', async () => {
+    const candidateUrl = 'https://svc.test/x';
+    let reportCalled = 0;
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: candidateUrl }]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === candidateUrl,
+        response: (_u, init) => {
+          const h = (init.headers ?? {}) as Record<string, string>;
+          return h.Authorization
+            ? new Response('{}', { status: 200 })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+      {
+        match: (u) => u.endsWith('/api/report'),
+        response: () => {
+          reportCalled += 1;
+          return new Response('{}', { status: 200 });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+      depositToken: 'L402 deposit:feed',
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+      auto_report: false,
+    });
+    expect(res.success).toBe(true);
+    expect(res.report_submitted).toBe(false);
+    expect(reportCalled).toBe(0);
+  });
+
+  it('report failure does not fail fulfill (report_submitted=false)', async () => {
+    const candidateUrl = 'https://svc.test/x';
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: candidateUrl }]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === candidateUrl,
+        response: (_u, init) => {
+          const h = (init.headers ?? {}) as Record<string, string>;
+          return h.Authorization
+            ? new Response('{}', { status: 200 })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+      {
+        match: (u) => u.endsWith('/api/report'),
+        response: () =>
+          new Response(
+            JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'no' } }),
+            { status: 401 },
+          ),
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+      depositToken: 'L402 deposit:bad',
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+    });
+    expect(res.success).toBe(true);
+    expect(res.report_submitted).toBe(false);
+  });
+});
+
 describe('SatRank.fulfill — failure surfaces', () => {
   it('NO_CANDIDATES when the API returns an empty list', async () => {
     const fetchMock = fetchRouter([

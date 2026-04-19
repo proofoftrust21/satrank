@@ -21,6 +21,7 @@ import { SatRankError, TimeoutError, WalletError } from './errors';
 import type { ApiClient } from './client/apiClient';
 import type {
   CandidateAttempt,
+  CandidateOutcome,
   FulfillOptions,
   FulfillRequest,
   FulfillResult,
@@ -37,6 +38,26 @@ export interface FulfillCtx {
   wallet?: Wallet;
   fetchImpl: typeof fetch;
   defaultCaller?: string;
+  /** L402 deposit token — required for auto_report to authenticate. */
+  depositToken?: string;
+}
+
+/** Classification used by auto_report. Bucketed so the server can aggregate
+ *  without seeing the exact invoice amount (privacy: reports should not leak
+ *  precise prices per-agent). */
+function amountBucket(sats: number): 'micro' | 'small' | 'medium' | 'large' {
+  if (sats <= 21) return 'micro';
+  if (sats <= 500) return 'small';
+  if (sats <= 5000) return 'medium';
+  return 'large';
+}
+
+interface LastAttemptCtx {
+  endpointHash: string;
+  invoice?: string;
+  preimage?: string;
+  outcome: CandidateAttempt['outcome'];
+  costSats: number;
 }
 
 export async function fulfillIntent(
@@ -56,6 +77,7 @@ export async function fulfillIntent(
 
   const tried: CandidateAttempt[] = [];
   let spent = 0;
+  let lastCtx: LastAttemptCtx | null = null;
 
   let intentResult;
   try {
@@ -116,9 +138,16 @@ export async function fulfillIntent(
     );
     tried.push(attempt.summary);
     spent += attempt.summary.cost_sats ?? 0;
+    lastCtx = {
+      endpointHash: candidate.endpoint_hash,
+      invoice: attempt.invoice,
+      preimage: attempt.preimage,
+      outcome: attempt.summary.outcome,
+      costSats: attempt.summary.cost_sats ?? 0,
+    };
 
     if (attempt.summary.outcome === 'paid_success') {
-      return {
+      const result: FulfillResult = {
         success: true,
         response_body: attempt.body,
         response_code: attempt.summary.response_code,
@@ -132,6 +161,8 @@ export async function fulfillIntent(
         },
         candidates_tried: tried,
       };
+      result.report_submitted = await maybeAutoReport(ctx, opts, lastCtx);
+      return result;
     }
 
     // C6: honor retry_policy='none' — stop after the first attempt regardless
@@ -140,18 +171,21 @@ export async function fulfillIntent(
   }
 
   const lastOutcome = tried[tried.length - 1]?.outcome ?? 'NO_CANDIDATES';
-  return failure(
+  const result = failure(
     tried,
     spent,
     lastOutcome.toString().toUpperCase(),
     `All ${tried.length} candidates failed`,
   );
+  result.report_submitted = await maybeAutoReport(ctx, opts, lastCtx);
+  return result;
 }
 
 interface AttemptInternal {
   summary: CandidateAttempt;
   body?: unknown;
   preimage?: string;
+  invoice?: string;
 }
 
 async function attemptCandidate(
@@ -297,6 +331,7 @@ async function attemptCandidate(
       },
       body,
       preimage: pay.preimage,
+      invoice: challenge.invoice,
     };
   }
   return {
@@ -307,6 +342,7 @@ async function attemptCandidate(
       response_code: secondRes.status,
     },
     preimage: pay.preimage,
+    invoice: challenge.invoice,
   };
 }
 
@@ -425,4 +461,46 @@ function failure(
     candidates_tried: tried,
     error: { code, message },
   };
+}
+
+function outcomeToReport(
+  outcome: CandidateOutcome,
+): 'success' | 'failure' | 'timeout' | null {
+  if (outcome === 'paid_success') return 'success';
+  if (outcome === 'paid_failure') return 'failure';
+  if (outcome === 'abort_timeout') return 'timeout';
+  // pay_failed, abort_budget, no_invoice, network_error → don't report.
+  // We respect SatRank's rule: reports are for real payments + interactions,
+  // not for SDK-side aborts.
+  return null;
+}
+
+async function maybeAutoReport(
+  ctx: FulfillCtx,
+  opts: FulfillOptions,
+  last: LastAttemptCtx | null,
+): Promise<boolean> {
+  // auto_report defaults to true; only disabled when explicitly set false.
+  if (opts.auto_report === false) return false;
+  if (!last) return false;
+  if (!ctx.depositToken) return false; // report requires L402 auth
+  const outcome = outcomeToReport(last.outcome);
+  if (!outcome) return false;
+  // Only report when we can prove we actually paid — preimage is required by
+  // the spec for `outcome='success'` and strongly preferred for 'failure'.
+  if (!last.preimage && outcome !== 'timeout') return false;
+  try {
+    await ctx.api.postReport({
+      target: last.endpointHash,
+      outcome,
+      preimage: last.preimage,
+      bolt11Raw: last.invoice,
+      amountBucket: amountBucket(last.costSats),
+    });
+    return true;
+  } catch {
+    // Report failures should not fail the fulfill — agent already got its
+    // response. Swallow and surface via report_submitted=false.
+    return false;
+  }
 }

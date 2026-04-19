@@ -57,6 +57,7 @@ export class SatRank {
         wallet: this.options.wallet,
         fetchImpl: this.options.fetch,
         defaultCaller: this.options.caller,
+        depositToken: this.options.depositToken,
       },
       opts,
     );
