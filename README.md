@@ -431,29 +431,71 @@ npm run mcp        # Development
 npm run mcp:prod   # Production
 ```
 
-## SDK
+## SDK 1.0 available
+
+One verb — `fulfill()` — bundles discovery, payment, and reporting into a single
+call with a hard budget guarantee. TypeScript + Python, same API.
+
+### TypeScript
 
 ```bash
 npm install @satrank/sdk
 ```
 
 ```typescript
-import { SatRankClient } from '@satrank/sdk';
+import { SatRank } from '@satrank/sdk';
+import { LndWallet } from '@satrank/sdk/wallet';
 
-const client = new SatRankClient('https://satrank.dev');
-
-// Full cycle in one line: decide → pay → report
-const result = await client.transact('<target-hash>', '<your-hash>', async () => {
-  const payment = await myWallet.pay(invoice);
-  return { success: payment.ok, preimage: payment.preimage, paymentHash: payment.hash };
+const sr = new SatRank({
+  apiBase: 'https://satrank.dev',
+  wallet: new LndWallet({ restEndpoint: 'https://127.0.0.1:8080', macaroonHex: process.env.LND_MACAROON! }),
+  caller: 'my-agent',
 });
-// result.paid, result.decision.go, result.report.weight
 
-// Or step by step
-const decision = await client.decide({ target: '<hash>', caller: '<your-hash>' });
-const profile  = await client.getProfile('<hash>');
-const verdict  = await client.getVerdict('<hash>');
+const result = await sr.fulfill({
+  intent: { category: 'data/weather', keywords: ['paris'] },
+  budget_sats: 50,
+});
+
+console.log(result.success ? result.response_body : result.error);
 ```
+
+### Python
+
+```bash
+pip install satrank
+```
+
+```python
+import asyncio
+from satrank import SatRank
+from satrank.wallet import LndWallet
+
+async def main() -> None:
+    async with SatRank(
+        api_base="https://satrank.dev",
+        wallet=LndWallet(rest_endpoint="https://127.0.0.1:8080", macaroon_hex="..."),
+        caller="my-agent",
+    ) as sr:
+        result = await sr.fulfill(
+            intent={"category": "data/weather", "keywords": ["paris"]},
+            budget_sats=50,
+        )
+        print(result["response_body"] if result["success"] else result["error"])
+
+asyncio.run(main())
+```
+
+### Docs
+
+- [TypeScript quickstart](docs/sdk/quickstart-ts.md)
+- [Python quickstart](docs/sdk/quickstart-python.md)
+- [Wallet drivers (LND / NWC / LNURL)](docs/sdk/wallet-drivers.md)
+- [NLP helper — `parseIntent`](docs/sdk/nlp-helper.md)
+- [Migration 0.2.x → 1.0](docs/sdk/migration-0.2-to-1.0.md)
+
+Discovery (`listCategories` / `resolveIntent`) works without a wallet; only
+`fulfill()` needs one.
 
 ## End-to-end demo
 
