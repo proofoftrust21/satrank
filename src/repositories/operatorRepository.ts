@@ -98,6 +98,16 @@ export class OperatorRepository {
     for (const r of rows) out[r.status] = r.c;
     return out;
   }
+
+  /** Total d'operators matchant le filtre status (ou tous si status=undefined).
+   *  Utilisé pour la pagination côté liste. */
+  countFiltered(status?: OperatorStatus): number {
+    const sql = status
+      ? 'SELECT COUNT(*) as c FROM operators WHERE status = ?'
+      : 'SELECT COUNT(*) as c FROM operators';
+    const row = (status ? this.db.prepare(sql).get(status) : this.db.prepare(sql).get()) as { c: number };
+    return row.c;
+  }
 }
 
 export class OperatorIdentityRepository {

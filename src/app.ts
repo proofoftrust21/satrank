@@ -257,6 +257,7 @@ export function createApp() {
   );
   const operatorController = new OperatorController({
     operatorService,
+    operatorRepo,
     serviceEndpointRepo,
     agentRepo,
   });
@@ -499,6 +500,7 @@ export function createApp() {
   // Phase 7 — operator registration (NIP-98 gated, rate-limited avec discovery
   // car endpoint à effort de preuve côté claimant — pas de quota L402).
   api.post('/operator/register', discoveryRateLimit, operatorController.register);
+  api.get('/operators', discoveryRateLimit, operatorController.list);
   api.get('/operator/:id', discoveryRateLimit, operatorController.show);
   api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);

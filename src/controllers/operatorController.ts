@@ -26,6 +26,7 @@ import { formatZodError } from '../utils/zodError';
 import { logger } from '../logger';
 import { verifyNip98 } from '../middleware/nip98';
 import type { OperatorService } from '../services/operatorService';
+import type { OperatorRepository, OperatorStatus } from '../repositories/operatorRepository';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { AgentRepository } from '../repositories/agentRepository';
 import {
@@ -76,6 +77,8 @@ export interface VerificationReport {
 /** Options d'injection pour les tests (fetcher NIP-05 + resolver DNS). */
 export interface OperatorControllerDeps {
   operatorService: OperatorService;
+  /** Requis pour le handler list (count + findAll). Optionnel pour register/show. */
+  operatorRepo?: OperatorRepository;
   nostrJsonFetcher?: NostrJsonFetcher;
   dnsTxtResolver?: DnsTxtResolver;
   /** Optionnel — quand fournis, enrichit le catalog avec les métadonnées
@@ -88,8 +91,15 @@ const operatorIdParamSchema = z.object({
   id: operatorIdSchema,
 });
 
+const listQuerySchema = z.object({
+  status: z.enum(['verified', 'pending', 'rejected']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export class OperatorController {
   private readonly operatorService: OperatorService;
+  private readonly operatorRepo?: OperatorRepository;
   private readonly nostrJsonFetcher?: NostrJsonFetcher;
   private readonly dnsTxtResolver?: DnsTxtResolver;
   private readonly serviceEndpointRepo?: ServiceEndpointRepository;
@@ -97,6 +107,7 @@ export class OperatorController {
 
   constructor(deps: OperatorControllerDeps) {
     this.operatorService = deps.operatorService;
+    this.operatorRepo = deps.operatorRepo;
     this.nostrJsonFetcher = deps.nostrJsonFetcher;
     this.dnsTxtResolver = deps.dnsTxtResolver;
     this.serviceEndpointRepo = deps.serviceEndpointRepo;
@@ -259,6 +270,53 @@ export class OperatorController {
           },
         },
         meta: { computedAt: now },
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  /** GET /api/operators — liste paginée filtrable par status.
+   *
+   *  Retourne les champs de base (operator_id, status, score, timestamps) —
+   *  PAS de bayesian aggregate par-operator (trop cher en list-mode). Pour
+   *  le détail complet, aller sur GET /:id.
+   */
+  list = (req: Request, res: Response, next: NextFunction): void => {
+    try {
+      if (!this.operatorRepo) {
+        res.status(503).json({
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Operator listing not wired' },
+        });
+        return;
+      }
+      const parsed = listQuerySchema.safeParse(req.query);
+      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.query));
+      const { status, limit, offset } = parsed.data;
+
+      const rows = this.operatorRepo.findAll({ status, limit, offset });
+      const total = this.operatorRepo.countFiltered(status);
+      const counts = this.operatorRepo.countByStatus();
+
+      res.json({
+        data: rows.map((r) => ({
+          operator_id: r.operator_id,
+          status: r.status,
+          verification_score: r.verification_score,
+          first_seen: r.first_seen,
+          last_activity: r.last_activity,
+          created_at: r.created_at,
+        })),
+        meta: {
+          total,
+          limit,
+          offset,
+          counts: {
+            verified: counts.verified,
+            pending: counts.pending,
+            rejected: counts.rejected,
+          },
+        },
       });
     } catch (err) {
       next(err);
