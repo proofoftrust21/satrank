@@ -449,6 +449,42 @@ export interface VerdictResponse extends BayesianScoreBlock {
   personalTrust: PersonalTrust | null;
   riskProfile: RiskProfile;
   pathfinding: PathfindingResult | null;
+  // Phase 4 — advisory overlay (orthogonal to the Bayesian verdict).
+  advisory_level: AdvisoryLevel;
+  risk_score: number;
+  advisories: Advisory[];
+}
+
+// Phase 4 — graduated advisory overlay. `advisory_level` sits alongside
+// `verdict` (Bayesian 4-class label) and adds a continuous risk perspective
+// so agent consumers can nuance proceed/abort decisions.
+export type AdvisoryLevel = 'green' | 'yellow' | 'orange' | 'red';
+
+export type AdvisoryCode =
+  | 'CRITICAL_FLAG'
+  | 'LOW_REACHABILITY'
+  | 'UNCERTAIN_POSTERIOR'
+  | 'POSTERIOR_DECLINE'
+  | 'LOW_UPTIME'
+  | 'DEGRADED_HTTP'
+  | 'STALE_HEALTH'
+  | 'INTERMITTENT';
+
+export interface Advisory {
+  code: AdvisoryCode;
+  level: 'info' | 'warning' | 'critical';
+  msg: string;
+  /** Continuous [0, 1] — how strongly this signal fires. 0 = silent, 1 = fully active. */
+  signal_strength: number;
+  /** Optional structured payload for programmatic agent consumers. */
+  data?: Record<string, unknown>;
+}
+
+export interface AdvisoryReport {
+  advisory_level: AdvisoryLevel;
+  /** Continuous aggregate [0, 1], 0 = green, 1 = red. Paliers < 0.15 / 0.35 / 0.60 → green/yellow/orange/red. */
+  risk_score: number;
+  advisories: Advisory[];
 }
 
 // --- v2 types ---
@@ -548,7 +584,15 @@ export interface DecideResponse extends BayesianScoreBlock {
   /** HTTP health of the service behind this node. null when no serviceUrl provided or no data available. */
   serviceHealth: ServiceHealth | null;
   latencyMs: number;
+  // Phase 4 — advisory overlay mirrored from /verdict.
+  advisory_level: AdvisoryLevel;
+  risk_score: number;
+  advisories: Advisory[];
+  // Phase 4 — tiered recommendation, calibrated on verdict + advisory + ci95.
+  recommendation: Recommendation;
 }
+
+export type Recommendation = 'proceed' | 'proceed_with_caution' | 'consider_alternative' | 'avoid';
 
 export interface BestRouteCandidate {
   publicKeyHash: string;

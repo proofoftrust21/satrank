@@ -10,7 +10,7 @@ import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { VerdictService } from './verdictService';
 import type { SurvivalService } from './survivalService';
-import type { DecideResponse, ServiceHealth, PathfindingResult } from '../types';
+import type { DecideResponse, ServiceHealth, PathfindingResult, Recommendation, AdvisoryLevel, Verdict } from '../types';
 import { SEVEN_DAYS_SEC } from '../utils/constants';
 import { logger } from '../logger';
 
@@ -27,6 +27,24 @@ const REPROBE_RATE_LIMIT_SEC = 300;
 const recentReprobes = new Map<string, number>(); // targetHash → timestamp
 // Fee budget as fraction of the payment amount — fees above this cap P_path.feeScore to 0
 const FEE_BUDGET_RATIO = 0.01; // 1%
+
+/** Tiered recommendation — P1 minimal mapping kept in sync with the boolean
+ *  `go`. P4 will refine this with ci95-based thresholds and service-health
+ *  escalation; for now the ranking is: verdict class → advisory overlay veto
+ *  → success signal. `proceed` is only issued when both layers align. */
+function deriveRecommendation(
+  verdict: Verdict,
+  advisoryLevel: AdvisoryLevel,
+  hasCritical: boolean,
+  serviceDown: boolean,
+): Recommendation {
+  if (verdict === 'RISKY' || advisoryLevel === 'red' || hasCritical || serviceDown) {
+    return 'avoid';
+  }
+  if (advisoryLevel === 'orange') return 'consider_alternative';
+  if (verdict === 'SAFE' && advisoryLevel === 'green') return 'proceed';
+  return 'proceed_with_caution';
+}
 
 // P_path — quality of the Lightning path from caller to target.
 // Continuous 0-1 signal derived from the pathfinding result. Captures HOW WELL
@@ -263,6 +281,13 @@ export class DecideService {
 
     const latencyMs = Date.now() - startMs;
 
+    const recommendation = deriveRecommendation(
+      verdictResult.verdict,
+      verdictResult.advisory_level,
+      hasCritical,
+      serviceDown,
+    );
+
     return {
       go,
       successRate: Math.round(successRate * 1000) / 1000,
@@ -293,6 +318,10 @@ export class DecideService {
       lastProbeAgeMs,
       serviceHealth,
       latencyMs,
+      advisory_level: verdictResult.advisory_level,
+      risk_score: verdictResult.risk_score,
+      advisories: verdictResult.advisories,
+      recommendation,
     };
   }
 
