@@ -223,6 +223,22 @@ export class ReportService {
             success: input.outcome === 'success',
             timestamp: now,
           });
+          // Phase 3 streaming path (C7). Tier dérivé du verified flag :
+          // preimage-verified (sha256(preimage)==payment_hash) → 'nip98' (poids
+          // plein 1.0), équivalent à une signature authentifiée. Sans preimage
+          // → 'low' (0.3), baseline conservateur pour les reports standards.
+          // L'intent (decide_log hit) est exclu de la même manière que pour
+          // ingestTransactionOutcome — c'est une déclaration d'intention, pas
+          // une observation de résultat.
+          this.bayesian.ingestStreaming({
+            success: input.outcome === 'success',
+            timestamp: now,
+            source: 'report',
+            tier: verified ? 'nip98' : 'low',
+            endpointHash: input.target,
+            operatorId: input.target,
+            nodePubkey: input.target,
+          });
         }
       }
 
@@ -397,6 +413,18 @@ export class ReportService {
             operatorId: input.target,
             success: input.outcome === 'success',
             timestamp: now,
+          });
+          // Phase 3 streaming path (C7). Le PreimagePoolTier (high/medium/low)
+          // mappe directement au ReportTier bayesien — la preimage prouve le
+          // paiement mais pas l'authenticité du payeur, donc jamais 'nip98'.
+          this.bayesian.ingestStreaming({
+            success: input.outcome === 'success',
+            timestamp: now,
+            source: 'report',
+            tier: input.tier,
+            endpointHash: input.target,
+            operatorId: input.target,
+            nodePubkey: input.target,
           });
         }
       }

@@ -20,6 +20,20 @@ import {
   NodeAggregateRepository,
   RouteAggregateRepository,
 } from '../repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
 import { BayesianScoringService } from '../services/bayesianScoringService';
@@ -65,6 +79,16 @@ function buildReportService(db: Database.Database, mode: 'off' | 'dry_run' | 'ac
     new OperatorAggregateRepository(db),
     new NodeAggregateRepository(db),
     new RouteAggregateRepository(db),
+    new EndpointStreamingPosteriorRepository(db),
+    new ServiceStreamingPosteriorRepository(db),
+    new OperatorStreamingPosteriorRepository(db),
+    new NodeStreamingPosteriorRepository(db),
+    new RouteStreamingPosteriorRepository(db),
+    new EndpointDailyBucketsRepository(db),
+    new ServiceDailyBucketsRepository(db),
+    new OperatorDailyBucketsRepository(db),
+    new NodeDailyBucketsRepository(db),
+    new RouteDailyBucketsRepository(db),
   );
   const service = new ReportService(
     attestationRepo, agentRepo, txRepo, scoringService, db, mode, undefined, bayesian,
@@ -114,6 +138,20 @@ describe('ReportService bayesian bridge', () => {
     ).all(targetHash) as any[];
     expect(epAgg.length).toBe(3);
     expect(epAgg.every(r => r.n_obs === 1)).toBe(true);
+
+    // Phase 3 streaming (C7) — le report identifié sans preimage doit produire
+    // une row streaming source='report' ET bumper les daily_buckets.
+    const streamingOp = db.prepare(
+      `SELECT source, total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
+    ).get(targetHash) as any;
+    expect(streamingOp.source).toBe('report');
+    expect(streamingOp.total_ingestions).toBe(1);
+
+    const bucketOp = db.prepare(
+      `SELECT n_obs, n_success FROM operator_daily_buckets WHERE operator_id = ? AND source = 'report'`,
+    ).get(targetHash) as any;
+    expect(bucketOp.n_obs).toBe(1);
+    expect(bucketOp.n_success).toBe(1);
   });
 
   it('Q1 contract: mode=off still ingests aggregates (decoupled from flag)', () => {
@@ -195,6 +233,17 @@ describe('ReportService bayesian bridge', () => {
       `SELECT COUNT(*) AS c FROM operator_aggregates WHERE operator_id = ?`,
     ).get(targetHash) as any;
     expect(opAgg.c).toBe(0);
+
+    // Phase 3 streaming (C7) — intent must also skip streaming_posteriors ET
+    // daily_buckets : un intent n'est pas une observation.
+    const streamingCount = db.prepare(
+      `SELECT COUNT(*) AS c FROM operator_streaming_posteriors WHERE operator_id = ?`,
+    ).get(targetHash) as any;
+    expect(streamingCount.c).toBe(0);
+    const bucketsCount = db.prepare(
+      `SELECT COUNT(*) AS c FROM operator_daily_buckets WHERE operator_id = ?`,
+    ).get(targetHash) as any;
+    expect(bucketsCount.c).toBe(0);
   });
 
   it('absent bayesian dep — legacy tx row only, no aggregates', () => {
