@@ -140,6 +140,21 @@ describe('POST /api/decide', () => {
     expect(res.body.data.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
+  // Phase 5 — /api/decide est déprécié en faveur de /api/intent. Aucune
+  // suppression : l'endpoint reste fonctionnel, mais chaque réponse porte
+  // les signaux de déprécation (headers RFC 8594 + body.meta.deprecated_use).
+  it('signale la déprécation via headers et body.meta.deprecated_use', async () => {
+    const res = await request(app)
+      .post('/api/decide')
+      .send({ target: sha256('bob'), caller: sha256('alice') })
+      .set('Content-Type', 'application/json');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['deprecation']).toBe('true');
+    expect(res.headers['link']).toBe('</api/intent>; rel="successor-version"');
+    expect(res.body.meta?.deprecated_use).toBe('/api/intent');
+  });
+
   it('returns go=false for unknown target', async () => {
     const res = await request(app)
       .post('/api/decide')
