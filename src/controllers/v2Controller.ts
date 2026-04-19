@@ -73,6 +73,10 @@ export class V2Controller {
   ) {}
 
   decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Phase 5 — signaler la déprécation dès l'entrée, y compris sur 4xx, pour
+    // que les agents détectent l'URL successeur même quand leur requête est
+    // malformée (RFC 8594 n'interdit pas les headers sur les erreurs).
+    markDeprecated(res, '/api/intent');
     try {
       const parsed = decideSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
@@ -119,9 +123,9 @@ export class V2Controller {
       logTokenQuery(this.db, req.headers.authorization, target.hash, req.requestId);
 
       // Phase 5 — /api/decide déprécié en faveur de /api/intent. Ne supprime
-      // pas l'endpoint (compat agents existants) mais signale l'URL successeur
-      // via header Deprecation + Link + body.meta.deprecated_use.
-      markDeprecated(res, '/api/intent');
+      // pas l'endpoint (compat agents existants). Headers Deprecation+Link
+      // déjà set en entrée (s'applique aussi aux 4xx) ; ici on ajoute le log
+      // success-path + le body.meta.deprecated_use.
       logDeprecatedCall('/api/decide', '/api/intent', { caller: caller.hash });
       res.json(patchDeprecatedBody({ data: result }, '/api/intent'));
     } catch (err) {
@@ -130,6 +134,8 @@ export class V2Controller {
   };
 
   bestRoute = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Phase 5 — déprécation signalée dès l'entrée (cf. commentaire `decide`).
+    markDeprecated(res, '/api/intent');
     try {
       const parsed = bestRouteSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
@@ -168,7 +174,6 @@ export class V2Controller {
         for (const t of targetInfos) {
           logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
         }
-        markDeprecated(res, '/api/intent');
         logDeprecatedCall('/api/best-route', '/api/intent', { caller: caller.hash, degraded: true });
         res.json(patchDeprecatedBody({
           data: {
@@ -291,7 +296,6 @@ export class V2Controller {
         logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
       }
 
-      markDeprecated(res, '/api/intent');
       logDeprecatedCall('/api/best-route', '/api/intent', { caller: caller.hash, reachableCount });
       res.json(patchDeprecatedBody({
         data: {

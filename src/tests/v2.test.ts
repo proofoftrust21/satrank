@@ -155,6 +155,19 @@ describe('POST /api/decide', () => {
     expect(res.body.meta?.deprecated_use).toBe('/api/intent');
   });
 
+  // Les headers de déprécation doivent tomber aussi sur les 4xx — sinon un
+  // agent qui envoie un body mal formé ne voit jamais l'URL successeur.
+  it('signale la déprécation même sur 400 (body invalide)', async () => {
+    const res = await request(app)
+      .post('/api/decide')
+      .send({})
+      .set('Content-Type', 'application/json');
+
+    expect(res.status).toBe(400);
+    expect(res.headers['deprecation']).toBe('true');
+    expect(res.headers['link']).toBe('</api/intent>; rel="successor-version"');
+  });
+
   it('returns go=false for unknown target', async () => {
     const res = await request(app)
       .post('/api/decide')
