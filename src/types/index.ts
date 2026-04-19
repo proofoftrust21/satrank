@@ -351,21 +351,41 @@ export interface BayesianConvergence {
   threshold: number;
 }
 
+/** n_obs cumulé sur les 3 fenêtres d'affichage — lu depuis daily_buckets, observer inclus.
+ *  Display-only, indépendant du verdict. */
+export interface BayesianRecentActivity {
+  last_24h: number;
+  last_7d: number;
+  last_30d: number;
+}
+
+/** Trend delta success_rate (low/medium/high/unknown) — Option B. */
+export type BayesianRiskTrend = 'low' | 'medium' | 'high' | 'unknown';
+
 /** Canonical Bayesian scoring block — shared shape across all public endpoints
- *  (verdict, decide, profile, best-route, service, endpoint). */
+ *  (verdict, decide, profile, best-route, service, endpoint). Phase 3 C9 : le
+ *  champ `window` a disparu (streaming, τ=7j implicite), remplacé par
+ *  `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`. */
 export interface BayesianScoreBlock {
   p_success: number;
   ci95_low: number;
   ci95_high: number;
   n_obs: number;
   verdict: Verdict;
-  window: BayesianWindow;
   sources: {
     probe:  BayesianSourceBlock | null;
     report: BayesianSourceBlock | null;
     paid:   BayesianSourceBlock | null;
   };
   convergence: BayesianConvergence;
+  /** n_obs cumulé 24h/7d/30d (observer inclus). */
+  recent_activity: BayesianRecentActivity;
+  /** Trend success_rate 7j récents vs 23j antérieurs — Option B. */
+  risk_profile: BayesianRiskTrend;
+  /** Constante τ exposée (décroissance exponentielle, jours). */
+  time_constant_days: number;
+  /** Unix seconds de la dernière ingestion connue — 0 si aucune observation. */
+  last_update: number;
 }
 
 export type VerdictFlag =

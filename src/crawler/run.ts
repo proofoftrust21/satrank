@@ -407,20 +407,24 @@ async function main(): Promise<void> {
   const operatorAggRepoMain = new OperatorAggregateRepository(db);
   const nodeAggRepoMain = new NodeAggregateRepository(db);
   const routeAggRepoMain = new RouteAggregateRepository(db);
+  const endpointStreamingMain = new EndpointStreamingPosteriorRepository(db);
+  const endpointBucketsMain = new EndpointDailyBucketsRepository(db);
   const bayesianScoringServiceMain = new BayesianScoringService(
     endpointAggRepoMain, serviceAggRepoMain, operatorAggRepoMain, nodeAggRepoMain, routeAggRepoMain,
-    new EndpointStreamingPosteriorRepository(db),
+    endpointStreamingMain,
     new ServiceStreamingPosteriorRepository(db),
     new OperatorStreamingPosteriorRepository(db),
     new NodeStreamingPosteriorRepository(db),
     new RouteStreamingPosteriorRepository(db),
-    new EndpointDailyBucketsRepository(db),
+    endpointBucketsMain,
     new ServiceDailyBucketsRepository(db),
     new OperatorDailyBucketsRepository(db),
     new NodeDailyBucketsRepository(db),
     new RouteDailyBucketsRepository(db),
   );
-  const bayesianVerdictServiceMain = new BayesianVerdictService(db, bayesianScoringServiceMain, snapshotRepo);
+  const bayesianVerdictServiceMain = new BayesianVerdictService(
+    db, bayesianScoringServiceMain, endpointStreamingMain, endpointBucketsMain, snapshotRepo,
+  );
 
   const observerClient = new HttpObserverClient({
     baseUrl: config.OBSERVER_BASE_URL,
@@ -531,6 +535,8 @@ async function main(): Promise<void> {
         const operatorAggRepoNostr = new OperatorAggregateRepository(db);
         const nodeAggRepoNostr = new NodeAggregateRepository(db);
         const routeAggRepoNostr = new RouteAggregateRepository(db);
+        const endpointStreamingNostr = new EndpointStreamingPosteriorRepository(db);
+        const endpointBucketsNostr = new EndpointDailyBucketsRepository(db);
         const bayesianScoringServiceNostr = new BayesianScoringService(
           endpointAggRepoNostr,
           serviceAggRepoNostr,
@@ -538,7 +544,9 @@ async function main(): Promise<void> {
           nodeAggRepoNostr,
           routeAggRepoNostr,
         );
-        const bayesianVerdictServiceNostr = new BayesianVerdictService(db, bayesianScoringServiceNostr);
+        const bayesianVerdictServiceNostr = new BayesianVerdictService(
+          db, bayesianScoringServiceNostr, endpointStreamingNostr, endpointBucketsNostr,
+        );
         const nostrRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim());
         const nostrPublisher = new NostrPublisher(
           agentRepo,
@@ -636,6 +644,8 @@ async function main(): Promise<void> {
         const operatorAggRepoDvm = new OperatorAggregateRepository(db);
         const nodeAggRepoDvm = new NodeAggregateRepository(db);
         const routeAggRepoDvm = new RouteAggregateRepository(db);
+        const endpointStreamingDvm = new EndpointStreamingPosteriorRepository(db);
+        const endpointBucketsDvm = new EndpointDailyBucketsRepository(db);
         const bayesianScoringServiceDvm = new BayesianScoringService(
           endpointAggRepoDvm,
           serviceAggRepoDvm,
@@ -643,7 +653,9 @@ async function main(): Promise<void> {
           nodeAggRepoDvm,
           routeAggRepoDvm,
         );
-        const bayesianVerdictServiceDvm = new BayesianVerdictService(db, bayesianScoringServiceDvm);
+        const bayesianVerdictServiceDvm = new BayesianVerdictService(
+          db, bayesianScoringServiceDvm, endpointStreamingDvm, endpointBucketsDvm,
+        );
         const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdictServiceDvm,
           lndClient.isConfigured() ? lndClient : undefined, {
             privateKeyHex: config.NOSTR_PRIVATE_KEY,

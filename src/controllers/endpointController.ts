@@ -40,9 +40,12 @@ export class EndpointController {
         ci95_high: v.ci95_high,
         n_obs: v.n_obs,
         verdict: v.verdict,
-        window: v.window,
         sources: v.sources,
         convergence: v.convergence,
+        recent_activity: v.recent_activity,
+        risk_profile: v.risk_profile,
+        time_constant_days: v.time_constant_days,
+        last_update: v.last_update,
       };
 
       const svc = this.serviceEndpointRepo.findByUrlHash(urlHash);

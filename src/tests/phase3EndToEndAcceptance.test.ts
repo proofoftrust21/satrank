@@ -30,7 +30,10 @@ import {
 } from '../repositories/aggregatesRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
+import { EndpointStreamingPosteriorRepository } from '../repositories/streamingPosteriorRepository';
+import { EndpointDailyBucketsRepository } from '../repositories/dailyBucketsRepository';
 import { runBackfill } from '../scripts/backfillProbeResultsToTransactions';
+import { ingestBayesianObservation } from './helpers/bayesianTestFactory';
 import type { Agent } from '../types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -113,15 +116,13 @@ describe('Phase 3 end-to-end acceptance — GO criterion', () => {
         targetHash, targetHash,
         new Date(ts * 1000).toISOString().slice(0, 10),
       );
+      // Phase 3 C9 : le verdict lit dans streaming_posteriors. Tier nip98
+      // pour atteindre le seuil de convergence (weight 1.0).
+      ingestBayesianObservation(db, {
+        success: true, timestamp: ts, source: 'report', tier: 'nip98',
+        endpointHash: targetHash, operatorId: targetHash, nodePubkey: targetHash,
+      });
     }
-
-    // Simule l'état post-retention : les aggregates 24h et 7d ont été taillés
-    // par pruneStale (pas dans un test in-memory), forçant selectWindow à
-    // retomber sur 30d. Sans ça, les aggregates raw de 24h reportent 25+
-    // ingestions (cumul sur 25 jours) et selectWindow pique 24h, mais
-    // loadObservations ne trouve que 1 tx dans cutoff=24h.
-    db.prepare("DELETE FROM endpoint_aggregates WHERE url_hash = ? AND window IN ('24h', '7d')").run(targetHash);
-    db.prepare("DELETE FROM operator_aggregates WHERE operator_id = ? AND window IN ('24h', '7d')").run(targetHash);
 
     // Now query the verdict
     const bayesian = new BayesianScoringService(
@@ -131,8 +132,12 @@ describe('Phase 3 end-to-end acceptance — GO criterion', () => {
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
     );
-    const verdictSvc = new BayesianVerdictService(db, bayesian);
-    const verdict = verdictSvc.buildVerdict({ targetHash, reporterTier: 'nip98' });
+    const verdictSvc = new BayesianVerdictService(
+      db, bayesian,
+      new EndpointStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+    );
+    const verdict = verdictSvc.buildVerdict({ targetHash });
 
     // GO criteria — the whole point of the session
     expect(verdict.n_obs).toBeGreaterThan(0);
@@ -173,7 +178,11 @@ describe('Phase 3 end-to-end acceptance — GO criterion', () => {
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
     );
-    const verdict = new BayesianVerdictService(db, bayesian).buildVerdict({ targetHash });
+    const verdict = new BayesianVerdictService(
+      db, bayesian,
+      new EndpointStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+    ).buildVerdict({ targetHash });
 
     expect(verdict.n_obs).toBeGreaterThan(0);
     // With only 5 obs, verdict should be INSUFFICIENT (UNKNOWN_MIN_N_OBS=10)

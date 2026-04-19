@@ -13,7 +13,6 @@ import type { ScoringService } from '../services/scoringService';
 import type { SurvivalService } from '../services/survivalService';
 import type { BayesianVerdictService } from '../services/bayesianVerdictService';
 import type { Verdict } from '../services/bayesianScoringService';
-import type { BayesianWindow } from '../config/bayesianConfig';
 import { logger } from '../logger';
 import {
   nostrPublishTotal,
@@ -57,7 +56,8 @@ interface ScoreEvent {
   nObs: number;
   converged: boolean;
   priorSource: 'operator' | 'service' | 'flat';
-  window: BayesianWindow;
+  /** τ=7j exposé pour diagnostic — remplace l'ancien champ `window`. */
+  tauDays: number;
   reachable: boolean;
   survival: string;
 }
@@ -70,7 +70,7 @@ function fingerprint(ev: ScoreEvent): string {
   const p = ev.pSuccess.toFixed(3);
   const lo = ev.ci95Low.toFixed(3);
   const hi = ev.ci95High.toFixed(3);
-  return `${ev.verdict}|${p}|${lo}|${hi}|${ev.nObs}|${ev.converged ? 1 : 0}|${ev.priorSource}|${ev.window}|${ev.reachable ? 1 : 0}|${ev.survival}`;
+  return `${ev.verdict}|${p}|${lo}|${hi}|${ev.nObs}|${ev.converged ? 1 : 0}|${ev.priorSource}|τ${ev.tauDays}|${ev.reachable ? 1 : 0}|${ev.survival}`;
 }
 
 export class NostrPublisher {
@@ -133,7 +133,7 @@ export class NostrPublisher {
       nObs: verdict.n_obs,
       converged: verdict.convergence.converged,
       priorSource: verdict.prior_source,
-      window: verdict.window,
+      tauDays: verdict.time_constant_days,
       reachable,
       survival,
     };
@@ -152,7 +152,7 @@ export class NostrPublisher {
       ['n_obs', String(Math.round(ev.nObs))],
       ['converged', ev.converged ? 'true' : 'false'],
       ['prior_source', ev.priorSource],
-      ['window', ev.window],
+      ['tau_days', String(ev.tauDays)],
       ['reachable', ev.reachable ? 'true' : 'false'],
       ['survival', ev.survival],
     ];

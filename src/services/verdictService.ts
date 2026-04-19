@@ -135,9 +135,12 @@ export class VerdictService {
       ci95_low: bayes.ci95_low,
       ci95_high: bayes.ci95_high,
       n_obs: bayes.n_obs,
-      window: bayes.window,
       sources: bayes.sources,
       convergence: bayes.convergence,
+      recent_activity: bayes.recent_activity,
+      risk_profile: bayes.risk_profile,
+      time_constant_days: bayes.time_constant_days,
+      last_update: bayes.last_update,
       reason,
       flags,
       personalTrust,
@@ -265,7 +268,7 @@ export class VerdictService {
 
   private buildReason(
     agent: { total_transactions: number; negative_ratings: number },
-    bayes: { verdict: Verdict; verdict_reason: string; p_success: number; n_obs: number; window: string },
+    bayes: { verdict: Verdict; verdict_reason: string; p_success: number; n_obs: number; time_constant_days: number },
     flags: VerdictFlag[],
     ageDays: number,
   ): string {
@@ -281,7 +284,7 @@ export class VerdictService {
       parts.push(`${agent.negative_ratings} disputes`);
     }
     parts.push(`${Math.round(ageDays)}d history`);
-    parts.push(`p_success=${bayes.p_success.toFixed(3)} (n=${bayes.n_obs}, ${bayes.window})`);
+    parts.push(`p_success=${bayes.p_success.toFixed(3)} (n=${bayes.n_obs}, τ=${bayes.time_constant_days}d)`);
     return parts.join(', ');
   }
 }
@@ -293,9 +296,12 @@ function buildMissingAgentResponse(callerPubkey: string | undefined): VerdictRes
     ci95_low: 0,
     ci95_high: 1,
     n_obs: 0,
-    window: '30d',
     sources: { probe: null, report: null, paid: null },
     convergence: { converged: false, sources_above_threshold: [], threshold: 0.8 },
+    recent_activity: { last_24h: 0, last_7d: 0, last_30d: 0 },
+    risk_profile: 'unknown',
+    time_constant_days: 7,
+    last_update: 0,
     reason: 'Agent not found in the SatRank index',
     flags: [],
     personalTrust: callerPubkey ? { distance: null, sharedConnections: 0, strongestConnection: null } : null,

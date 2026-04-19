@@ -64,6 +64,20 @@ import {
   NodeAggregateRepository,
   RouteAggregateRepository,
 } from './repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from './repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from './repositories/dailyBucketsRepository';
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createReportAuth, safeEqual } from './middleware/auth';
@@ -132,10 +146,24 @@ export function createApp() {
   const operatorAggRepo = new OperatorAggregateRepository(db);
   const nodeAggRepo = new NodeAggregateRepository(db);
   const routeAggRepo = new RouteAggregateRepository(db);
+  const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(db);
+  const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(db);
+  const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(db);
+  const nodeStreamingRepo = new NodeStreamingPosteriorRepository(db);
+  const routeStreamingRepo = new RouteStreamingPosteriorRepository(db);
+  const endpointBucketsRepo = new EndpointDailyBucketsRepository(db);
+  const serviceBucketsRepo = new ServiceDailyBucketsRepository(db);
+  const operatorBucketsRepo = new OperatorDailyBucketsRepository(db);
+  const nodeBucketsRepo = new NodeDailyBucketsRepository(db);
+  const routeBucketsRepo = new RouteDailyBucketsRepository(db);
   const bayesianScoringService = new BayesianScoringService(
     endpointAggRepo, serviceAggRepo, operatorAggRepo, nodeAggRepo, routeAggRepo,
+    endpointStreamingRepo, serviceStreamingRepo, operatorStreamingRepo, nodeStreamingRepo, routeStreamingRepo,
+    endpointBucketsRepo, serviceBucketsRepo, operatorBucketsRepo, nodeBucketsRepo, routeBucketsRepo,
   );
-  const bayesianVerdictService = new BayesianVerdictService(db, bayesianScoringService, snapshotRepo);
+  const bayesianVerdictService = new BayesianVerdictService(
+    db, bayesianScoringService, endpointStreamingRepo, endpointBucketsRepo, snapshotRepo,
+  );
 
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
   const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);

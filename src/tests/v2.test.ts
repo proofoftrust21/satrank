@@ -452,7 +452,7 @@ describe('DecideService', () => {
     expect(result.p_success).toBeGreaterThanOrEqual(0);
     expect(result.p_success).toBeLessThanOrEqual(1);
     expect(typeof result.n_obs).toBe('number');
-    expect(['24h', '7d', '30d']).toContain(result.window);
+    expect(result.time_constant_days).toBe(7);
     expect(result.sources).toBeDefined();
     expect(result.convergence).toBeDefined();
     expect(result.successRate).toBeGreaterThanOrEqual(0);

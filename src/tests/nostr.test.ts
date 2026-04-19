@@ -7,17 +7,11 @@ import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ProbeRepository } from '../repositories/probeRepository';
-import {
-  EndpointAggregateRepository,
-  ServiceAggregateRepository,
-  OperatorAggregateRepository,
-  NodeAggregateRepository,
-  RouteAggregateRepository,
-} from '../repositories/aggregatesRepository';
 import { ScoringService } from '../services/scoringService';
 import { SurvivalService } from '../services/survivalService';
-import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
+import { createBayesianVerdictService, ingestBayesianObservation } from './helpers/bayesianTestFactory';
+import type { BayesianSource } from '../config/bayesianConfig';
 import { NostrPublisher } from '../nostr/publisher';
 import { sha256 } from '../utils/crypto';
 import type { Agent } from '../types';
@@ -60,6 +54,9 @@ function insertTx(
   opts: { endpoint_hash: string; status?: string; source?: string; ts?: number },
 ): void {
   const id = 'tx-' + Math.random().toString(36).slice(2, 12);
+  const status = opts.status ?? 'verified';
+  const source = opts.source ?? 'probe';
+  const ts = opts.ts ?? NOW;
   db.prepare(`
     INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
                               payment_hash, preimage, status, protocol,
@@ -70,16 +67,27 @@ function insertTx(
     'a'.repeat(64),
     'b'.repeat(64),
     'medium',
-    opts.ts ?? NOW,
+    ts,
     'p'.repeat(64),
     null,
-    opts.status ?? 'verified',
+    status,
     'l402',
     opts.endpoint_hash,
     null,
-    opts.source ?? 'probe',
+    source,
     '2026-04-18',
   );
+  // Le verdict Phase 3 lit directement dans streaming_posteriors ; on bump
+  // aussi le streaming pour que ces tests restent cohérents avec la nouvelle
+  // source de vérité (observer reste bucket-only, cf. CHECK constraint SQL).
+  if (source !== 'intent') {
+    ingestBayesianObservation(db, {
+      success: status === 'verified',
+      timestamp: ts,
+      source: source as BayesianSource | 'observer',
+      endpointHash: opts.endpoint_hash,
+    });
+  }
 }
 
 describe('NostrPublisher', () => {
@@ -105,14 +113,7 @@ describe('NostrPublisher', () => {
     scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
 
-    const bayesian = new BayesianScoringService(
-      new EndpointAggregateRepository(db),
-      new ServiceAggregateRepository(db),
-      new OperatorAggregateRepository(db),
-      new NodeAggregateRepository(db),
-      new RouteAggregateRepository(db),
-    );
-    bayesianVerdictService = new BayesianVerdictService(db, bayesian);
+    bayesianVerdictService = createBayesianVerdictService(db);
   });
 
   afterEach(() => db.close());
@@ -195,7 +196,7 @@ describe('NostrPublisher', () => {
     expect(ev!.nObs).toBeGreaterThan(0);
     expect(typeof ev!.converged).toBe('boolean');
     expect(['operator', 'service', 'flat']).toContain(ev!.priorSource);
-    expect(['24h', '7d', '30d']).toContain(ev!.window);
+    expect(ev!.tauDays).toBe(7);
   });
 
   it('buildTags émet exactement les 13 tags bayésiens et AUCUN tag legacy', () => {
@@ -215,7 +216,7 @@ describe('NostrPublisher', () => {
     expect(keys.sort()).toEqual([
       'alias', 'ci95_high', 'ci95_low', 'converged', 'd', 'n',
       'n_obs', 'p_success', 'prior_source', 'reachable', 'survival',
-      'verdict', 'window',
+      'tau_days', 'verdict',
     ]);
 
     // Anti-régression : aucun tag du composite legacy ne doit survivre.

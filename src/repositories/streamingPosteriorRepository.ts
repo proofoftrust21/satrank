@@ -128,15 +128,34 @@ abstract class BaseStreamingRepository {
       return;
     }
 
-    // Row existante : décroissance jusqu'à nowSec, puis addition des deltas.
-    const decayed = decayPosterior(
-      existing.posterior_alpha,
-      existing.posterior_beta,
-      existing.last_update_ts,
-      nowSec,
-    );
-    const newAlpha = decayed.alpha + successDelta;
-    const newBeta = decayed.beta + failureDelta;
+    // Cas chronologique normal (nowSec >= last_update_ts) : décroissance de
+    // l'état existant jusqu'à nowSec, puis addition des nouveaux deltas.
+    //
+    // Cas out-of-order (nowSec < last_update_ts) — survient lors d'un backfill
+    // qui replaye les rows par id croissant alors que les probes sont stockées
+    // en ordre reverse-chrono, ou lors d'une observation tardive reçue après
+    // une plus récente. On garde l'état aligné au `last_update_ts` le plus
+    // récent (forward-only) et on ajoute les nouveaux deltas *déjà agés* de
+    // (last_update_ts - nowSec) via le facteur exp(-Δt/τ). Mathématiquement
+    // équivalent à : ingérer nowSec puis décayer jusqu'à last_update_ts.
+    const alignTs = Math.max(existing.last_update_ts, nowSec);
+    let newAlpha: number;
+    let newBeta: number;
+    if (nowSec >= existing.last_update_ts) {
+      const decayed = decayPosterior(
+        existing.posterior_alpha,
+        existing.posterior_beta,
+        existing.last_update_ts,
+        nowSec,
+      );
+      newAlpha = decayed.alpha + successDelta;
+      newBeta = decayed.beta + failureDelta;
+    } else {
+      const ageDelta = existing.last_update_ts - nowSec;
+      const ageFactor = Math.exp(-ageDelta / TAU_SECONDS);
+      newAlpha = existing.posterior_alpha + successDelta * ageFactor;
+      newBeta = existing.posterior_beta + failureDelta * ageFactor;
+    }
 
     this.db
       .prepare(
@@ -147,7 +166,7 @@ abstract class BaseStreamingRepository {
                 total_ingestions = total_ingestions + 1
           WHERE ${this.idColumn} = ? AND source = ?`,
       )
-      .run(newAlpha, newBeta, nowSec, id, source);
+      .run(newAlpha, newBeta, alignTs, id, source);
   }
 
   /** Lit la row stockée (sans décroissance). */
@@ -296,12 +315,26 @@ export class RouteStreamingPosteriorRepository {
       return;
     }
 
-    const decayed = decayPosterior(
-      existing.posterior_alpha,
-      existing.posterior_beta,
-      existing.last_update_ts,
-      nowSec,
-    );
+    // Forward-only last_update_ts — cf BaseStreamingRepository.ingest pour
+    // la logique out-of-order (backfill reverse-chrono, late arrivals).
+    const alignTs = Math.max(existing.last_update_ts, nowSec);
+    let newAlpha: number;
+    let newBeta: number;
+    if (nowSec >= existing.last_update_ts) {
+      const decayed = decayPosterior(
+        existing.posterior_alpha,
+        existing.posterior_beta,
+        existing.last_update_ts,
+        nowSec,
+      );
+      newAlpha = decayed.alpha + successDelta;
+      newBeta = decayed.beta + failureDelta;
+    } else {
+      const ageDelta = existing.last_update_ts - nowSec;
+      const ageFactor = Math.exp(-ageDelta / TAU_SECONDS);
+      newAlpha = existing.posterior_alpha + successDelta * ageFactor;
+      newBeta = existing.posterior_beta + failureDelta * ageFactor;
+    }
 
     this.db
       .prepare(
@@ -312,13 +345,7 @@ export class RouteStreamingPosteriorRepository {
                 total_ingestions = total_ingestions + 1
           WHERE route_hash = ? AND source = ?`,
       )
-      .run(
-        decayed.alpha + successDelta,
-        decayed.beta + failureDelta,
-        nowSec,
-        routeHash,
-        source,
-      );
+      .run(newAlpha, newBeta, alignTs, routeHash, source);
   }
 
   findStored(routeHash: string, source: BayesianSource): (StreamingPosterior & { callerHash: string; targetHash: string }) | undefined {

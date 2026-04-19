@@ -43,6 +43,20 @@ import {
   NodeAggregateRepository,
   RouteAggregateRepository,
 } from '../repositories/aggregatesRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import type { DualWriteEnrichment } from '../utils/dualWriteLogger';
@@ -137,6 +151,16 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
     new OperatorAggregateRepository(opts.db),
     new NodeAggregateRepository(opts.db),
     new RouteAggregateRepository(opts.db),
+    new EndpointStreamingPosteriorRepository(opts.db),
+    new ServiceStreamingPosteriorRepository(opts.db),
+    new OperatorStreamingPosteriorRepository(opts.db),
+    new NodeStreamingPosteriorRepository(opts.db),
+    new RouteStreamingPosteriorRepository(opts.db),
+    new EndpointDailyBucketsRepository(opts.db),
+    new ServiceDailyBucketsRepository(opts.db),
+    new OperatorDailyBucketsRepository(opts.db),
+    new NodeDailyBucketsRepository(opts.db),
+    new RouteDailyBucketsRepository(opts.db),
   );
 
   // FK guard : vérifier d'abord que chaque target existe dans agents. Orphan
@@ -200,6 +224,17 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
           operatorId: row.target_hash,
           success: row.reachable === 1,
           timestamp: row.probed_at,
+        });
+        // Phase 3 C10 : le verdict lit dans streaming_posteriors (C9), donc
+        // le backfill doit aussi alimenter le streaming — sinon un replay de
+        // probe_results produit des aggregates pleins mais un verdict vide.
+        bayesian.ingestStreaming({
+          success: row.reachable === 1,
+          timestamp: row.probed_at,
+          source: 'probe',
+          endpointHash: row.target_hash,
+          operatorId: row.target_hash,
+          nodePubkey: row.target_hash,
         });
       })();
       result.inserted++;

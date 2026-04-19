@@ -4,7 +4,7 @@ import type { TransactionRepository } from '../repositories/transactionRepositor
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { BayesianVerdictService } from './bayesianVerdictService';
-import type { AgentScoreResponse, Agent, ProbeData, BayesianScoreBlock, BayesianWindow, ScoreEvidence } from '../types';
+import type { AgentScoreResponse, Agent, ProbeData, BayesianScoreBlock, ScoreEvidence } from '../types';
 import { NotFoundError } from '../errors';
 import { computePopularityBonus } from '../utils/scoring';
 
@@ -18,10 +18,11 @@ export interface TopAgentEntry {
   bayesian: BayesianScoreBlock;
 }
 
-const WINDOW_FRESHNESS_RANK: Record<BayesianWindow, number> = { '24h': 2, '7d': 1, '30d': 0 };
-
 /** Leaderboard ordering. Ties break on p_success DESC so two rows with the
- *  same primary key still land in a deterministic, user-meaningful order. */
+ *  same primary key still land in a deterministic, user-meaningful order.
+ *  Le `window_freshness` axis devient (C9) un classement par `last_update` DESC
+ *  (unix seconds de la dernière ingestion) — les données les plus fraîches
+ *  remontent. La sémantique API reste : « plus récent en haut ». */
 function compareByAxis(a: TopAgentEntry, b: TopAgentEntry, axis: SortByField): number {
   const ties = () => b.bayesian.p_success - a.bayesian.p_success;
   switch (axis) {
@@ -40,7 +41,7 @@ function compareByAxis(a: TopAgentEntry, b: TopAgentEntry, axis: SortByField): n
       return d !== 0 ? d : ties();
     }
     case 'window_freshness': {
-      const d = WINDOW_FRESHNESS_RANK[b.bayesian.window] - WINDOW_FRESHNESS_RANK[a.bayesian.window];
+      const d = b.bayesian.last_update - a.bayesian.last_update;
       return d !== 0 ? d : ties();
     }
   }
@@ -97,9 +98,12 @@ export class AgentService {
       ci95_high: v.ci95_high,
       n_obs: v.n_obs,
       verdict: v.verdict,
-      window: v.window,
       sources: v.sources,
       convergence: v.convergence,
+      recent_activity: v.recent_activity,
+      risk_profile: v.risk_profile,
+      time_constant_days: v.time_constant_days,
+      last_update: v.last_update,
     };
   }
 

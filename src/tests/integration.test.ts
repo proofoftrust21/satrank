@@ -235,7 +235,10 @@ describe('Integration — HTTP endpoints', () => {
     expect(agent.bayesian).toHaveProperty('ci95_high');
     expect(agent.bayesian).toHaveProperty('n_obs');
     expect(agent.bayesian).toHaveProperty('verdict');
-    expect(agent.bayesian).toHaveProperty('window');
+    expect(agent.bayesian).toHaveProperty('time_constant_days');
+    expect(agent.bayesian).toHaveProperty('last_update');
+    expect(agent.bayesian).toHaveProperty('recent_activity');
+    expect(agent.bayesian).toHaveProperty('risk_profile');
   });
 
   it('GET /api/agents/top?sort_by=n_obs sorts by observation count', async () => {

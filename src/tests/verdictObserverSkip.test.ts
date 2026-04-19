@@ -22,6 +22,9 @@ import {
 import { AgentRepository } from '../repositories/agentRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
+import { EndpointStreamingPosteriorRepository } from '../repositories/streamingPosteriorRepository';
+import { EndpointDailyBucketsRepository } from '../repositories/dailyBucketsRepository';
+import { ingestBayesianObservation } from './helpers/bayesianTestFactory';
 import type { Agent } from '../types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -76,6 +79,17 @@ function insertTx(
     endpointHash, endpointHash, source,
     new Date(ts * 1000).toISOString().slice(0, 10),
   );
+  // Phase 3 C9 : le verdict lit dans streaming_posteriors. intent reste exclu
+  // par contrat (jamais ingéré) ; observer n'alimente que les daily_buckets
+  // (CHECK constraint SQL sur streaming_posteriors).
+  if (source !== 'intent') {
+    ingestBayesianObservation(db, {
+      success: status === 'verified',
+      timestamp: ts,
+      source,
+      endpointHash,
+    });
+  }
 }
 
 describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
@@ -108,7 +122,11 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
     );
-    const verdict = new BayesianVerdictService(db, bayesian);
+    const verdict = new BayesianVerdictService(
+      db, bayesian,
+      new EndpointStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+    );
 
     const result = verdict.buildVerdict({ targetHash });
     expect(result.n_obs).toBe(0);
@@ -138,7 +156,11 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
     );
-    const verdict = new BayesianVerdictService(db, bayesian);
+    const verdict = new BayesianVerdictService(
+      db, bayesian,
+      new EndpointStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+    );
 
     const result = verdict.buildVerdict({ targetHash });
     expect(result.sources.probe).not.toBeNull();
@@ -163,7 +185,11 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
     );
-    const verdict = new BayesianVerdictService(db, bayesian);
+    const verdict = new BayesianVerdictService(
+      db, bayesian,
+      new EndpointStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+    );
 
     const result = verdict.buildVerdict({ targetHash });
     expect(result.sources.report).not.toBeNull();
@@ -188,7 +214,11 @@ describe('mapTransactionSourceToBayesian — Q3 observer skip', () => {
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
     );
-    const verdict = new BayesianVerdictService(db, bayesian);
+    const verdict = new BayesianVerdictService(
+      db, bayesian,
+      new EndpointStreamingPosteriorRepository(db),
+      new EndpointDailyBucketsRepository(db),
+    );
 
     const result = verdict.buildVerdict({ targetHash });
     expect(result.n_obs).toBe(0);

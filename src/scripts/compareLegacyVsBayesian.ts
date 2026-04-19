@@ -34,6 +34,20 @@ import {
 } from '../repositories/aggregatesRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { BayesianVerdictService } from '../services/bayesianVerdictService';
+import {
+  EndpointStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+  OperatorStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  RouteStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import {
+  EndpointDailyBucketsRepository,
+  ServiceDailyBucketsRepository,
+  OperatorDailyBucketsRepository,
+  NodeDailyBucketsRepository,
+  RouteDailyBucketsRepository,
+} from '../repositories/dailyBucketsRepository';
 import { kendallTau } from '../utils/rankCorrelation';
 
 export interface CompareOptions {
@@ -111,14 +125,28 @@ export function runComparison(options: CompareOptions): CompareResult {
     db.pragma('foreign_keys = OFF');
     runMigrations(db);
 
+    const endpointStreaming = new EndpointStreamingPosteriorRepository(db);
+    const endpointBuckets = new EndpointDailyBucketsRepository(db);
     const bayesian = new BayesianScoringService(
       new EndpointAggregateRepository(db),
       new ServiceAggregateRepository(db),
       new OperatorAggregateRepository(db),
       new NodeAggregateRepository(db),
       new RouteAggregateRepository(db),
+      endpointStreaming,
+      new ServiceStreamingPosteriorRepository(db),
+      new OperatorStreamingPosteriorRepository(db),
+      new NodeStreamingPosteriorRepository(db),
+      new RouteStreamingPosteriorRepository(db),
+      endpointBuckets,
+      new ServiceDailyBucketsRepository(db),
+      new OperatorDailyBucketsRepository(db),
+      new NodeDailyBucketsRepository(db),
+      new RouteDailyBucketsRepository(db),
     );
-    const verdictSvc = new BayesianVerdictService(db, bayesian);
+    const verdictSvc = new BayesianVerdictService(
+      db, bayesian, endpointStreaming, endpointBuckets,
+    );
 
     const now = Math.floor(Date.now() / 1000);
     const details: CompareResult['details'] = [];
@@ -148,11 +176,17 @@ export function runComparison(options: CompareOptions): CompareResult {
         const success = rng() < trueP;
         if (success) observedSuccesses++;
         const ageSec = Math.floor(rng() * FRESH_WINDOW_SEC);
+        const ts = now - ageSec;
         insertTx(db, {
           endpointHash: agentId,
           success,
-          ts: now - ageSec,
+          ts,
           source: 'probe',
+        });
+        // Phase 3 C9 : le verdict lit dans streaming_posteriors — alimenter
+        // la nouvelle source de vérité pour que Kendall τ reflète le posterior.
+        bayesian.ingestStreaming({
+          success, timestamp: ts, source: 'probe', endpointHash: agentId,
         });
       }
 

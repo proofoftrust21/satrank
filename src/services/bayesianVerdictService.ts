@@ -1,31 +1,38 @@
-// Composition publique du moteur bayésien — C9.
+// Composition publique du moteur bayésien — Phase 3 C9 (streaming shape).
 //
-// Assemble en une seule passe le shape que l'API doit retourner pour une cible :
-//   - posterior combiné (tous sources) → p_success, ci95_low, ci95_high, n_obs
+// Lit directement dans les streaming_posteriors (Option A gravée en C5+) au
+// lieu de rejouer la table `transactions`. Les posteriors sont pré-décayés
+// jusqu'à `now` côté repo (τ=7j exponentielle, voir StreamingPosteriorRepository).
+//
+// Shape publique :
+//   - posterior combiné (toutes sources) → p_success, ci95_low, ci95_high, n_obs
 //   - per-source breakdown → sources.{probe,report,paid}
 //   - convergence multi-sources → convergence.{converged, ..., threshold}
 //   - verdict déterministe → SAFE / RISKY / UNKNOWN / INSUFFICIENT
-//   - métadonnées de diagnostic → window choisie, priorSource (operator/service/flat)
-//
-// Source des observations : la table `transactions` (colonnes v31 endpoint_hash,
-// operator_id, source). On applique la décroissance exponentielle à la lecture
-// (Option A gravée en C8).
+//   - recent_activity → n_obs cumulé 24h/7d/30d (daily_buckets, observer inclus)
+//   - risk_profile → trend delta success_rate 7j récents vs 23j antérieurs
+//   - time_constant_days → τ=7 (constant, diagnostic pour clients)
+//   - last_update → timestamp unix max des 3 sources (ou 0 si vierge)
+//   - prior_source → operator/service/flat (hiérarchie du prior)
 
 import { randomUUID } from 'crypto';
 import type { Database } from 'better-sqlite3';
 import {
   BayesianScoringService,
-  type PerSourceResult,
-  type ConvergenceResult,
   type VerdictResult,
-  type SourceObservation,
-  type ReportTier,
+  type RiskProfile,
 } from './bayesianScoringService';
+import { CONVERGENCE_P_THRESHOLD, CONVERGENCE_MIN_SOURCES } from '../config/bayesianConfig';
+import type {
+  EndpointStreamingPosteriorRepository,
+  DecayedPosterior,
+} from '../repositories/streamingPosteriorRepository';
+import type { EndpointDailyBucketsRepository, RecentActivity } from '../repositories/dailyBucketsRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import {
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
-  type BayesianWindow,
+  TAU_DAYS,
   type BayesianSource,
 } from '../config/bayesianConfig';
 import { computePosterior } from '../utils/betaBinomial';
@@ -43,11 +50,9 @@ export interface BayesianVerdictQuery {
   serviceHash?: string | null;
   /** operator_id (pubkey node hash) — couche hiérarchique la plus fine. */
   operatorId?: string | null;
-  /** Tier reporter si l'appel vient d'un agent authentifié. Défaut 'low'. */
-  reporterTier?: ReportTier;
 }
 
-/** Shape par source exposé dans l'API. Aligné sur le brief utilisateur. */
+/** Shape par source exposé dans l'API. */
 export interface BayesianSourceBlock {
   p_success: number;
   ci95_low: number;
@@ -56,7 +61,7 @@ export interface BayesianSourceBlock {
   weight_total: number;
 }
 
-/** Réponse complète — correspond strictement au shape demandé en C9. */
+/** Réponse complète — streaming shape (C9). */
 export interface BayesianVerdictResponse {
   target: string;
   /** Posterior combiné toutes sources. */
@@ -68,8 +73,6 @@ export interface BayesianVerdictResponse {
   verdict: VerdictResult['verdict'];
   /** Raison explainable du verdict. */
   verdict_reason: string;
-  /** Fenêtre temporelle auto-sélectionnée. */
-  window: BayesianWindow;
   /** Breakdown par source — null quand aucune observation de cette source. */
   sources: {
     probe:  BayesianSourceBlock | null;
@@ -84,6 +87,14 @@ export interface BayesianVerdictResponse {
   };
   /** Source du prior (diagnostic : operator / service / flat). */
   prior_source: 'operator' | 'service' | 'flat';
+  /** n_obs cumulé par fenêtre d'affichage — daily_buckets, observer inclus. */
+  recent_activity: RecentActivity;
+  /** Trend delta success_rate (low/medium/high/unknown) — Option B. */
+  risk_profile: RiskProfile;
+  /** Constante τ exposée pour explainability client (décroissance). */
+  time_constant_days: number;
+  /** Unix seconds de la dernière ingestion connue — max(probe,report,paid). 0 si vierge. */
+  last_update: number;
   /** Timestamp unix seconds de la réponse. */
   computed_at: number;
 }
@@ -92,6 +103,8 @@ export class BayesianVerdictService {
   constructor(
     private db: Database,
     private bayesian: BayesianScoringService,
+    private endpointStreamingRepo: EndpointStreamingPosteriorRepository,
+    private endpointBucketsRepo: EndpointDailyBucketsRepository,
     private snapshotRepo?: SnapshotRepository,
   ) {}
 
@@ -99,10 +112,9 @@ export class BayesianVerdictService {
    *  into score_snapshots when the posterior has moved (|Δp_success| ≥ 0.005)
    *  or the previous snapshot is older than SNAPSHOT_HEARTBEAT_SEC.
    *
-   *  No-op if snapshotRepo was not wired (e.g. in unit tests that exercise
-   *  buildVerdict() without persistence concerns). Called from the crawler
-   *  after scoringService.computeScore — keeps the composite and bayesian
-   *  update paths side-by-side until v34. */
+   *  Le champ `window` en DB reste présent (v33 column) mais n'a plus de sens
+   *  en streaming : on écrit '7d' comme constante sentinel (τ=7 correspond).
+   *  Le nettoyage de colonne se fait en C14. */
   snapshotAndPersist(agentHash: string): BayesianVerdictResponse {
     const response = this.buildVerdict({ targetHash: agentHash });
     if (!this.snapshotRepo) return response;
@@ -126,7 +138,7 @@ export class BayesianVerdictService {
         n_obs: response.n_obs,
         posterior_alpha: posteriorAlpha,
         posterior_beta: posteriorBeta,
-        window: response.window,
+        window: '7d',
         computed_at: now,
         updated_at: now,
       });
@@ -138,31 +150,38 @@ export class BayesianVerdictService {
   buildVerdict(query: BayesianVerdictQuery): BayesianVerdictResponse {
     const now = Math.floor(Date.now() / 1000);
 
-    // 1. Auto-sélection de la fenêtre (plus courte avec ≥ 20 obs, fallback 30d)
-    const window = this.bayesian.selectEndpointWindow(query.targetHash);
+    // 1. Lecture directe des posteriors décayés pour les 3 sources.
+    //    Les repos appliquent la décroissance exponentielle τ=7j au moment
+    //    de la lecture (pas de relecture des transactions).
+    const decayed = this.endpointStreamingRepo.readAllSourcesDecayed(query.targetHash, now);
 
-    // 2. Prior hiérarchique (operator → service → flat)
-    const prior = this.bayesian.resolveHierarchicalPrior(
-      { operatorId: query.operatorId, serviceHash: query.serviceHash },
-      window,
-    );
+    // 2. Per-source blocks — null quand totalIngestions == 0.
+    const sources = {
+      probe:  toSourceBlock(decayed.probe),
+      report: toSourceBlock(decayed.report),
+      paid:   toSourceBlock(decayed.paid),
+    };
 
-    // 3. Lecture des observations depuis `transactions` pour cette cible + fenêtre
-    const observations = this.loadObservations(query.targetHash, window, query.reporterTier, now);
+    // 3. Posterior combiné : partir du prior flat + additionner les (α,β) excédentaires
+    //    de chaque source. Chaque source contribue (α - α₀) en succès pondérés et
+    //    (β - β₀) en échecs pondérés — cohérent avec la sémantique "excess evidence"
+    //    de nObsEffective. On ne double-compte donc pas le prior.
+    const combined = this.combineDecayedSources(decayed);
 
-    // 4. Calcul des posteriors par source (avec pondération poids × décroissance)
-    const perSource = this.bayesian.computePerSourcePosteriors(
-      { alpha: prior.alpha, beta: prior.beta },
-      observations,
-    );
+    // 4. Convergence — une source "converge" si son p_success ≥ CONVERGENCE_P_THRESHOLD.
+    //    Calcul local pour éviter d'exposer les types internes du scoringService.
+    const aboveThreshold: BayesianSource[] = [];
+    for (const src of ['probe', 'report', 'paid'] as const) {
+      const block = sources[src];
+      if (block && block.p_success >= CONVERGENCE_P_THRESHOLD) aboveThreshold.push(src);
+    }
+    const convergence = {
+      converged: aboveThreshold.length >= CONVERGENCE_MIN_SOURCES,
+      sourcesAboveThreshold: aboveThreshold,
+      threshold: CONVERGENCE_P_THRESHOLD,
+    };
 
-    // 5. Posterior combiné — somme des poids toutes sources sur le même prior
-    const combined = this.combineAllSources(prior, observations);
-
-    // 6. Convergence
-    const convergence = this.bayesian.checkConvergence(perSource);
-
-    // 7. Verdict
+    // 5. Verdict déterministe.
     const verdict = this.bayesian.computeVerdict(
       {
         pSuccess: combined.pSuccess,
@@ -173,119 +192,87 @@ export class BayesianVerdictService {
       convergence,
     );
 
+    // 6. Overlays display : prior_source, recent_activity (buckets), risk_profile.
+    const prior = this.bayesian.resolveHierarchicalPrior(
+      { operatorId: query.operatorId, serviceHash: query.serviceHash },
+      '7d', // fenêtre héritée conservée le temps de migrer les aggregates tables.
+    );
+    const recent_activity = this.endpointBucketsRepo.recentActivity(query.targetHash, now);
+    const riskProfileResult = this.bayesian.computeRiskProfile(
+      this.endpointBucketsRepo,
+      query.targetHash,
+      now,
+    );
+
+    // last_update = max des lastUpdateTs des 3 sources. 0 quand rien n'a été ingéré.
+    const last_update = Math.max(
+      decayed.probe.lastUpdateTs,
+      decayed.report.lastUpdateTs,
+      decayed.paid.lastUpdateTs,
+    );
+
     return {
       target: query.targetHash,
       p_success: round3(combined.pSuccess),
       ci95_low: round3(combined.ci95Low),
       ci95_high: round3(combined.ci95High),
-      n_obs: combined.nObs,
+      n_obs: round3(combined.nObs),
       verdict: verdict.verdict,
       verdict_reason: verdict.reason,
-      window,
-      sources: {
-        probe:  toSourceBlock(perSource.probe),
-        report: toSourceBlock(perSource.report),
-        paid:   toSourceBlock(perSource.paid),
-      },
+      sources,
       convergence: {
         converged: convergence.converged,
         sources_above_threshold: convergence.sourcesAboveThreshold,
         threshold: convergence.threshold,
       },
       prior_source: prior.source,
+      recent_activity,
+      risk_profile: riskProfileResult.profile,
+      time_constant_days: TAU_DAYS,
+      last_update,
       computed_at: now,
     };
   }
 
-  /** Charge les transactions pertinentes depuis la table `transactions`.
+  /** Combine les (α,β) décayés des 3 sources en un unique posterior Beta.
+   *  On part du prior flat et on additionne les deltas "excess evidence"
+   *  (α_source - α₀, β_source - β₀) — évite le double-compte du prior
+   *  quand plusieurs sources ont des données.
    *
-   *  Filtre par endpoint_hash (ou autre clé passée en targetHash) + par fenêtre
-   *  temporelle. La décroissance est calculée à partir du timestamp individuel
-   *  de chaque transaction vs maintenant. */
-  private loadObservations(
-    targetHash: string,
-    window: BayesianWindow,
-    reporterTier: ReportTier | undefined,
-    now: number,
-  ): SourceObservation[] {
-    const windowSec = this.bayesian.windowSeconds(window);
-    const cutoff = now - windowSec;
-
-    // Requête : on sélectionne les transactions correspondant à la cible
-    // (endpoint_hash = targetHash) dans la fenêtre. `source` est l'enum
-    // v31 ('probe' | 'observer' | 'report' | 'intent') qu'on mappe vers
-    // les sources bayésiennes.
-    const rows = this.db.prepare(`
-      SELECT timestamp, status, source
-      FROM transactions
-      WHERE endpoint_hash = ?
-        AND timestamp >= ?
-    `).all(targetHash, cutoff) as { timestamp: number; status: string; source: string | null }[];
-
-    const observations: SourceObservation[] = [];
-    for (const row of rows) {
-      const bayesianSource = mapTransactionSourceToBayesian(row.source);
-      if (!bayesianSource) continue; // intent-only / non-classifié — pas d'observation scorable
-      observations.push({
-        success: row.status === 'verified',
-        source: bayesianSource,
-        tier: bayesianSource === 'report' ? (reporterTier ?? 'low') : undefined,
-        ageSec: Math.max(0, now - row.timestamp),
-        window,
-      });
-    }
-    return observations;
-  }
-
-  /** Posterior combiné = partir du même prior et additionner toutes les observations
-   *  pondérées (toutes sources confondues). Différent de la somme des posteriors par source
-   *  car la somme-des-posteriors double-compte le prior. */
-  private combineAllSources(
-    prior: { alpha: number; beta: number },
-    observations: readonly SourceObservation[],
-  ) {
+   *  nObs rapporté = somme des nObsEffective (== total excess) — correspond
+   *  au "nombre d'observations effectives" après décroissance, cohérent avec
+   *  les seuils UNKNOWN_MIN_N_OBS / SAFE_MIN_N_OBS. */
+  private combineDecayedSources(decayed: Record<BayesianSource, DecayedPosterior>) {
     let wSuccess = 0;
     let wFailure = 0;
-    for (const obs of observations) {
-      const sourceW = this.bayesian.weightForSource(obs.source, obs.tier);
-      const decayW = obs.ageSec !== undefined && obs.window !== undefined
-        ? this.bayesian.applyTemporalDecay(obs.ageSec, obs.window)
-        : 1;
-      const w = sourceW * decayW;
-      if (obs.success) wSuccess += w;
-      else wFailure += w;
+    for (const src of ['probe', 'report', 'paid'] as const) {
+      const d = decayed[src];
+      if (d.totalIngestions === 0) continue;
+      // α_source - α₀ représente les succès pondérés accumulés (post-décroissance).
+      wSuccess += Math.max(0, d.posteriorAlpha - DEFAULT_PRIOR_ALPHA);
+      wFailure += Math.max(0, d.posteriorBeta - DEFAULT_PRIOR_BETA);
     }
-    return computePosterior(prior.alpha, prior.beta, wSuccess, wFailure);
+    return computePosterior(DEFAULT_PRIOR_ALPHA, DEFAULT_PRIOR_BETA, wSuccess, wFailure);
   }
 }
 
-/** Mapping transaction.source (v31) → BayesianSource.
- *  - probe     → probe  (sovereign probe que SatRank a exécuté)
- *  - paid      → paid   (probe payé via L402 — preuve stricte)
- *  - report    → report (rapport d'agent, pondéré par tier)
- *  - observer  → null   (Q3 Phase 3 : rows écrites pour stats/catalogue mais
- *                        PAS utilisées comme observation de succès/échec.
- *                        Les données Observer Protocol sont pollution-prone
- *                        — bruit de broadcast, pas de preuve d'exécution.
- *                        On préserve l'écriture côté crawler pour ne pas
- *                        casser les stats historiques, mais verdict strict.)
- *  - intent    → null   (decide_log, pas une observation de succès/échec)
- *  - null/autre → null */
-function mapTransactionSourceToBayesian(source: string | null): BayesianSource | null {
-  if (source === 'probe') return 'probe';
-  if (source === 'paid') return 'paid';
-  if (source === 'report') return 'report';
-  return null; // observer, intent, ou rows legacy
-}
-
-function toSourceBlock(p: PerSourceResult['probe']): BayesianSourceBlock | null {
-  if (!p) return null;
+/** Convertit une row décayée → block API. Retourne null quand aucune observation. */
+function toSourceBlock(d: DecayedPosterior): BayesianSourceBlock | null {
+  if (d.totalIngestions === 0) return null;
+  const alpha = d.posteriorAlpha;
+  const beta = d.posteriorBeta;
+  const post = computePosterior(
+    DEFAULT_PRIOR_ALPHA,
+    DEFAULT_PRIOR_BETA,
+    Math.max(0, alpha - DEFAULT_PRIOR_ALPHA),
+    Math.max(0, beta - DEFAULT_PRIOR_BETA),
+  );
   return {
-    p_success: round3(p.pSuccess),
-    ci95_low:  round3(p.ci95Low),
-    ci95_high: round3(p.ci95High),
-    n_obs: Math.round(p.nObs * 1000) / 1000,
-    weight_total: Math.round(p.weightTotal * 1000) / 1000,
+    p_success: round3(post.pSuccess),
+    ci95_low:  round3(post.ci95Low),
+    ci95_high: round3(post.ci95High),
+    n_obs: round3(d.nObsEffective),
+    weight_total: round3(d.nObsEffective),
   };
 }
 

@@ -89,7 +89,8 @@ describe('MCP tool response shapes', () => {
     expect(result.bayesian.p_success).toBeLessThanOrEqual(1);
     expect(typeof result.bayesian.n_obs).toBe('number');
     expect(['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT']).toContain(result.bayesian.verdict);
-    expect(['24h', '7d', '30d']).toContain(result.bayesian.window);
+    expect(result.bayesian.time_constant_days).toBe(7);
+    expect(typeof result.bayesian.last_update).toBe('number');
 
     // Evidence structure
     expect(result.evidence).toBeDefined();

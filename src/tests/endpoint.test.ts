@@ -9,7 +9,7 @@ import { AgentRepository } from '../repositories/agentRepository';
 import { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import { EndpointController } from '../controllers/endpointController';
 import { errorHandler } from '../middleware/errorHandler';
-import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
+import { createBayesianVerdictService, ingestBayesianObservation } from './helpers/bayesianTestFactory';
 import { endpointHash } from '../utils/urlCanonical';
 import { sha256 } from '../utils/crypto';
 
@@ -138,13 +138,25 @@ describe('GET /api/endpoint/:url_hash', () => {
       INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol, endpoint_hash, source)
       VALUES (?, ?, ?, 'small', ?, ?, 'verified', 'l402', ?, ?)
     `);
+    // Le verdict lit désormais dans streaming_posteriors (Phase 3 C9) ; on
+    // dual-write pour garder les tests qui lisent raw `transactions` verts
+    // ET pour alimenter la source de vérité bayésienne. Tier 'nip98' sur
+    // report pour atteindre la convergence (weight 1.0, comme probe).
     for (let i = 0; i < 40; i++) {
       const txId = `endpoint-probe-${i}`;
-      insert.run(txId, senderHash, receiverHash, now - i * 60, sha256(txId), urlHash, 'probe');
+      const ts = now - i * 60;
+      insert.run(txId, senderHash, receiverHash, ts, sha256(txId), urlHash, 'probe');
+      ingestBayesianObservation(db, {
+        success: true, timestamp: ts, source: 'probe', endpointHash: urlHash,
+      });
     }
     for (let i = 0; i < 40; i++) {
       const txId = `endpoint-report-${i}`;
-      insert.run(txId, senderHash, receiverHash, now - i * 60, sha256(txId), urlHash, 'report');
+      const ts = now - i * 60;
+      insert.run(txId, senderHash, receiverHash, ts, sha256(txId), urlHash, 'report');
+      ingestBayesianObservation(db, {
+        success: true, timestamp: ts, source: 'report', tier: 'nip98', endpointHash: urlHash,
+      });
     }
 
     const res = await request(app).get(`/api/endpoint/${urlHash}`);

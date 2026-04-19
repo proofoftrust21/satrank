@@ -183,21 +183,25 @@ describe('Contract tests — responses match OpenAPI spec', () => {
     });
     expect(['observer_protocol', '4tress', 'lightning_graph', 'manual']).toContain(data.agent.source);
 
-    // bayesian section (canonical public shape)
+    // bayesian section (canonical public shape, streaming — Phase 3 C9)
     assertShape(data.bayesian, {
       p_success: 'number',
       ci95_low: 'number',
       ci95_high: 'number',
       n_obs: 'number',
       verdict: 'string',
-      window: 'string',
+      time_constant_days: 'number',
+      last_update: 'number',
       sources: 'object',
       convergence: 'object',
+      recent_activity: 'object',
+      risk_profile: 'string',
     });
     expect(data.bayesian.p_success).toBeGreaterThanOrEqual(0);
     expect(data.bayesian.p_success).toBeLessThanOrEqual(1);
     expect(['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT']).toContain(data.bayesian.verdict);
-    expect(['24h', '7d', '30d']).toContain(data.bayesian.window);
+    expect(data.bayesian.time_constant_days).toBe(7);
+    expect(['low', 'medium', 'high', 'unknown']).toContain(data.bayesian.risk_profile);
 
     // stats
     assertShape(data.stats, {
