@@ -1,6 +1,6 @@
 {
   "name": "satrank",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Score de confiance pour agents IA sur Bitcoin Lightning",
   "main": "dist/index.js",
   "scripts": {

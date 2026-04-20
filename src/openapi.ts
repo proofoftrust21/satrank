@@ -3,7 +3,7 @@ export const openapiSpec = {
   openapi: '3.1.0',
   info: {
     title: 'SatRank API',
-    version: '0.1.0',
+    version: '1.0.0',
     description: 'Trust score for AI agents on Bitcoin Lightning. The PageRank of the agentic economy.',
     license: { name: 'AGPL-3.0' },
   },
