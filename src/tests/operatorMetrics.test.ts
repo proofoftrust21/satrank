@@ -57,24 +57,19 @@ function signNip98(url: string, method: string, body: string): string {
   return `Nostr ${Buffer.from(JSON.stringify(signed)).toString('base64')}`;
 }
 
-async function readLabeledCounter(
-  counter: { get: () => Promise<{ values: Array<{ value: number; labels: Record<string, string> }> }> },
-  labels: Record<string, string>,
-): Promise<number> {
-  const snapshot = await counter.get();
-  const match = snapshot.values.find((v) =>
-    Object.entries(labels).every(([k, val]) => v.labels[k] === val),
-  );
-  return match?.value ?? 0;
+// prom-client types le label comme `Partial<Record<T, string | number>>` —
+// on loose le type ici pour partager le helper entre counter et gauge.
+interface MetricLike {
+  get: () => Promise<{ values: Array<{ value: number; labels: Partial<Record<string, string | number>> }> }>;
 }
 
-async function readLabeledGauge(
-  gauge: { get: () => Promise<{ values: Array<{ value: number; labels: Record<string, string> }> }> },
+async function readLabeledValue(
+  metric: MetricLike,
   labels: Record<string, string>,
 ): Promise<number> {
-  const snapshot = await gauge.get();
+  const snapshot = await metric.get();
   const match = snapshot.values.find((v) =>
-    Object.entries(labels).every(([k, val]) => v.labels[k] === val),
+    Object.entries(labels).every(([k, val]) => String(v.labels[k]) === val),
   );
   return match?.value ?? 0;
 }
@@ -109,9 +104,9 @@ describe('Phase 7 — C13 operator metrics emission', () => {
   it('operatorClaimsTotal incrémente par resource_type à chaque claimOwnership', async () => {
     const service = makeOperatorService(db);
     const before = {
-      node: await readLabeledCounter(operatorClaimsTotal, { resource_type: 'node' }),
-      endpoint: await readLabeledCounter(operatorClaimsTotal, { resource_type: 'endpoint' }),
-      service: await readLabeledCounter(operatorClaimsTotal, { resource_type: 'service' }),
+      node: await readLabeledValue(operatorClaimsTotal, { resource_type: 'node' }),
+      endpoint: await readLabeledValue(operatorClaimsTotal, { resource_type: 'endpoint' }),
+      service: await readLabeledValue(operatorClaimsTotal, { resource_type: 'service' }),
     };
 
     service.upsertOperator('op-metrics-claims');
@@ -120,9 +115,9 @@ describe('Phase 7 — C13 operator metrics emission', () => {
     service.claimOwnership('op-metrics-claims', 'endpoint', 'b'.repeat(64));
     service.claimOwnership('op-metrics-claims', 'service', 'c'.repeat(64));
 
-    expect(await readLabeledCounter(operatorClaimsTotal, { resource_type: 'node' })).toBe(before.node + 1);
-    expect(await readLabeledCounter(operatorClaimsTotal, { resource_type: 'endpoint' })).toBe(before.endpoint + 2);
-    expect(await readLabeledCounter(operatorClaimsTotal, { resource_type: 'service' })).toBe(before.service + 1);
+    expect(await readLabeledValue(operatorClaimsTotal, { resource_type: 'node' })).toBe(before.node + 1);
+    expect(await readLabeledValue(operatorClaimsTotal, { resource_type: 'endpoint' })).toBe(before.endpoint + 2);
+    expect(await readLabeledValue(operatorClaimsTotal, { resource_type: 'service' })).toBe(before.service + 1);
   });
 
   it('operatorVerificationsTotal incrémente par {type,result} via le controller', async () => {
@@ -148,8 +143,8 @@ describe('Phase 7 — C13 operator metrics emission', () => {
     app.use(errorHandler);
 
     const before = {
-      dnsSuccess: await readLabeledCounter(operatorVerificationsTotal, { type: 'dns', result: 'success' }),
-      dnsFailure: await readLabeledCounter(operatorVerificationsTotal, { type: 'dns', result: 'failure' }),
+      dnsSuccess: await readLabeledValue(operatorVerificationsTotal, { type: 'dns', result: 'success' }),
+      dnsFailure: await readLabeledValue(operatorVerificationsTotal, { type: 'dns', result: 'failure' }),
     };
 
     // Success case : DNS TXT match
@@ -178,9 +173,9 @@ describe('Phase 7 — C13 operator metrics emission', () => {
       .send(bodyKo);
     expect(resKo.status).toBe(201);
 
-    expect(await readLabeledCounter(operatorVerificationsTotal, { type: 'dns', result: 'success' }))
+    expect(await readLabeledValue(operatorVerificationsTotal, { type: 'dns', result: 'success' }))
       .toBe(before.dnsSuccess + 1);
-    expect(await readLabeledCounter(operatorVerificationsTotal, { type: 'dns', result: 'failure' }))
+    expect(await readLabeledValue(operatorVerificationsTotal, { type: 'dns', result: 'failure' }))
       .toBe(before.dnsFailure + 1);
   });
 
@@ -206,8 +201,8 @@ describe('Phase 7 — C13 operator metrics emission', () => {
     operatorsTotal.set({ status: 'pending' }, counts.pending);
     operatorsTotal.set({ status: 'rejected' }, counts.rejected);
 
-    expect(await readLabeledGauge(operatorsTotal, { status: 'verified' })).toBe(0);
-    expect(await readLabeledGauge(operatorsTotal, { status: 'pending' })).toBe(2);
-    expect(await readLabeledGauge(operatorsTotal, { status: 'rejected' })).toBe(1);
+    expect(await readLabeledValue(operatorsTotal, { status: 'verified' })).toBe(0);
+    expect(await readLabeledValue(operatorsTotal, { status: 'pending' })).toBe(2);
+    expect(await readLabeledValue(operatorsTotal, { status: 'rejected' })).toBe(1);
   });
 });
