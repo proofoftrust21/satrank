@@ -19,8 +19,7 @@ import {
   TOP_WARMUP_LIMITS,
 } from '../services/statsService';
 import * as memoryCache from '../cache/memoryCache';
-
-const SCHEMA_V = 38;
+import type { HealthResponse } from '../types';
 
 function buildStatsService(db: Database.Database): StatsService {
   const agentRepo = new AgentRepository(db);
@@ -29,6 +28,14 @@ function buildStatsService(db: Database.Database): StatsService {
   const snapshotRepo = new SnapshotRepository(db);
   const trendService = new TrendService(agentRepo, snapshotRepo);
   return new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
+}
+
+/** `cacheHealth` is declared optional on `HealthResponse` but statsService
+ *  always returns it. Narrow + assert so tests can access fields without `!`
+ *  and still fail loudly if the production shape ever drops the field. */
+function cacheHealthOf(h: HealthResponse): NonNullable<HealthResponse['cacheHealth']> {
+  expect(h.cacheHealth).toBeDefined();
+  return h.cacheHealth as NonNullable<HealthResponse['cacheHealth']>;
 }
 
 /** Populate every critical key through memoryCache so getFreshnessReport sees
@@ -86,9 +93,9 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     // 10s later — well within TTL×3
     vi.setSystemTime(new Date('2026-04-20T12:00:10Z'));
 
-    const health = statsService.getHealth();
-    expect(health.cacheHealth.degraded).toBe(false);
-    expect(health.cacheHealth.critical).toEqual([]);
+    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    expect(cacheHealth.degraded).toBe(false);
+    expect(cacheHealth.critical).toEqual([]);
   });
 
   it('reports cacheHealth.degraded=true when ANY critical key exceeds TTL×3', () => {
@@ -96,11 +103,11 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     // Advance past TTL×3 (= 900s at 300s TTL)
     vi.setSystemTime(new Date('2026-04-20T12:15:01Z'));
 
-    const health = statsService.getHealth();
-    expect(health.cacheHealth.degraded).toBe(true);
-    expect(health.cacheHealth.critical.length).toBeGreaterThan(0);
+    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    expect(cacheHealth.degraded).toBe(true);
+    expect(cacheHealth.critical.length).toBeGreaterThan(0);
     // Every flagged key must be in CRITICAL_CACHE_KEYS (no prefix spill-over)
-    for (const entry of health.cacheHealth.critical) {
+    for (const entry of cacheHealth.critical) {
       expect(CRITICAL_CACHE_KEYS).toContain(entry.key);
     }
   });
@@ -122,9 +129,9 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     // limit=3 key last touched at 12:00 → 40 min stale.
     vi.setSystemTime(new Date('2026-04-20T12:40:00Z'));
 
-    const health = statsService.getHealth();
-    expect(health.cacheHealth.degraded).toBe(false);
-    expect(health.cacheHealth.critical).toEqual([]);
+    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    expect(cacheHealth.degraded).toBe(false);
+    expect(cacheHealth.critical).toEqual([]);
   });
 
   it('reports cacheHealth.degraded=true when a critical key has ≥3 consecutive refresh failures', async () => {
@@ -145,11 +152,11 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     // observes the post-failure state rather than a pre-failure snapshot.
     memoryCache.invalidate('health:snapshot');
 
-    const health = statsService.getHealth();
-    const flagged = health.cacheHealth.critical.find(c => c.key === boomKey);
+    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    const flagged = cacheHealth.critical.find(c => c.key === boomKey);
     expect(flagged).toBeDefined();
     expect(flagged!.consecutiveFailures).toBeGreaterThanOrEqual(3);
-    expect(health.cacheHealth.degraded).toBe(true);
+    expect(cacheHealth.degraded).toBe(true);
   });
 
   it('keeps cacheHealth.degraded=false on cold boot when critical keys have never been populated', () => {
@@ -158,9 +165,9 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     // otherwise every boot would fail for ~1s until warm-up finishes.
     vi.setSystemTime(new Date('2026-04-20T12:00:00Z'));
 
-    const health = statsService.getHealth();
-    expect(health.cacheHealth.degraded).toBe(false);
-    expect(health.cacheHealth.critical).toEqual([]);
+    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    expect(cacheHealth.degraded).toBe(false);
+    expect(cacheHealth.critical).toEqual([]);
   });
 });
 
