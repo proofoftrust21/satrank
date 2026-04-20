@@ -54,6 +54,10 @@ const configSchema = z.object({
   NOSTR_MULTI_KIND_INTERVAL_MS: z.coerce.number().int().positive().default(300_000), // 5 min
   NOSTR_MULTI_KIND_SCAN_WINDOW_SEC: z.coerce.number().int().positive().default(900), // 15 min (3× interval avec overlap)
   NOSTR_MULTI_KIND_MAX_PER_TYPE: z.coerce.number().int().positive().default(500), // safeguard premier boot
+  // NIP-09 deletion requests (kind 5). OFF par défaut — on garde en réserve pour
+  // Phase 8bis ou quand un relai non-NIP-33 est observé en pratique (le NIP-33
+  // replaceable rend la deletion redondante pour les 30382/30383/30384).
+  NOSTR_NIP09_ENABLED: z.coerce.boolean().default(false),
   // LND invoice macaroon — needed for /api/deposit (addInvoice + lookupInvoice)
   // Separate from LND_MACAROON_PATH which is readonly. Bake with:
   //   lncli bakemacaroon invoices:read invoices:write --save_to invoice.macaroon
