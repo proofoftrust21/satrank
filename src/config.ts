@@ -162,6 +162,13 @@ if (parsed.data.NODE_ENV === 'production') {
     process.stderr.write('APERTURE_SHARED_SECRET is required in production\n');
     process.exit(1);
   }
+  // Phase 11ter F-05: the SSRF self-block requires the public IP to be
+  // injected via env, not baked into source. Without it, a probe target that
+  // resolves to our own ingress would bypass the block.
+  if (!process.env.SERVER_IP) {
+    process.stderr.write('SERVER_IP is required in production (SSRF self-block)\n');
+    process.exit(1);
+  }
 }
 
 // Guard against accidental production deployment without NODE_ENV

@@ -6,11 +6,15 @@ import { Agent as UndiciAgent } from 'undici';
 import * as dns from 'node:dns';
 
 const PRIVATE_IPV4_RE = /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+|0\.0\.0\.0|169\.254\.\d+\.\d+|22[4-9]\.\d+\.\d+\.\d+|2[3-5]\d\.\d+\.\d+\.\d+|255\.255\.255\.255)$/;
-const SERVER_IP = process.env.SERVER_IP ?? '178.104.108.108';
+// Optional self-block: set SERVER_IP=<our public IPv4> in .env so the SSRF guard
+// also rejects our own ingress. Required in production (checked in config.ts).
+// Phase 11ter F-05: no hardcoded default — source must never embed the server IP.
+const SERVER_IP = process.env.SERVER_IP ?? '';
 
 export function isPrivateIp(ip: string): boolean {
   // IPv4
-  if (PRIVATE_IPV4_RE.test(ip) || ip === SERVER_IP) return true;
+  if (PRIVATE_IPV4_RE.test(ip)) return true;
+  if (SERVER_IP && ip === SERVER_IP) return true;
   // IPv6 loopback
   if (ip === '::1' || ip === '::') return true;
   // IPv6-mapped IPv4 (::ffff:127.0.0.1)
