@@ -1,7 +1,7 @@
-// Decision API controller — best-route, report, profile
-// Phase 10 (2026-04-20) — `/api/decide` was removed; its 410 Gone handler
-// lives in controllers/legacyGoneController.ts. The DecideService remains
-// internal (consumed by IntentService and ReportService).
+// Decision API controller — report, profile
+// Phase 10 (2026-04-20) — `/api/decide` and `/api/best-route` were removed;
+// their 410 Gone handlers live in controllers/legacyGoneController.ts.
+// The DecideService remains internal (consumed by IntentService and ReportService).
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';
@@ -33,7 +33,7 @@ import type { ChannelFlowService } from '../services/channelFlowService';
 import type { FeeVolatilityService } from '../services/feeVolatilityService';
 import type { VerdictService } from '../services/verdictService';
 import type { ReportBonusService } from '../services/reportBonusService';
-import { agentIdentifierSchema, reportSchema, anonymousReportSchema, bestRouteSchema } from '../middleware/validation';
+import { agentIdentifierSchema, reportSchema, anonymousReportSchema } from '../middleware/validation';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError, ConflictError } from '../errors';
 import { v4 as uuidv4 } from 'uuid';
@@ -42,11 +42,7 @@ import { normalizeIdentifier, resolveIdentifier } from '../utils/identifier';
 import { SEVEN_DAYS_SEC, DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
 import { PROBE_FRESHNESS_TTL } from '../config/scoring';
-import { WALLET_PROVIDERS } from '../config/walletProviders';
-import { verdictTotal } from '../middleware/metrics';
 import { logTokenQuery } from '../utils/tokenQueryLog';
-import { logDeprecatedCall, markDeprecated, patchDeprecatedBody } from '../utils/deprecation';
-import type { WalletProvider, PathfindingResult } from '../types';
 
 export class V2Controller {
   constructor(
@@ -69,190 +65,11 @@ export class V2Controller {
     // the controller never attempts to credit bonuses (identical to
     // REPORT_BONUS_ENABLED=false behavior).
     private reportBonusService?: ReportBonusService,
-    // Phase 2 voie 2 : pool d'autorisation des reports anonymes. Optional
-    // pour rester backwards-compatible — sans lui, bolt11Raw dans /api/decide
-    // est validé mais pas stocké.
+    // Phase 2 voie 3 : pool d'autorisation des reports anonymes. Optional
+    // pour rester backwards-compatible — sans lui, les reports anonymes sont
+    // refusés (cf. reportAnonymous).
     private preimagePoolRepo?: PreimagePoolRepository,
   ) {}
-
-  bestRoute = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Phase 5 — déprécation signalée dès l'entrée (cf. commentaire `decide`).
-    markDeprecated(res, '/api/intent');
-    try {
-      const parsed = bestRouteSchema.safeParse(req.body);
-      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
-
-      if (!this.verdictService) {
-        res.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE', message: 'Pathfinding not configured' } });
-        return;
-      }
-
-      const startMs = Date.now();
-      const caller = normalizeIdentifier(parsed.data.caller);
-      const callerAgent = this.agentRepo.findByHash(caller.hash);
-      // Resolve pathfinding source: callerNodePubkey > walletProvider > caller's own pubkey
-      const callerLnPubkey = parsed.data.callerNodePubkey
-        ?? (parsed.data.walletProvider ? WALLET_PROVIDERS[parsed.data.walletProvider] : undefined)
-        ?? callerAgent?.public_key
-        ?? caller.pubkey;
-
-      if (!callerLnPubkey) {
-        // Degraded response: return scores without pathfinding
-        const targetInfos = parsed.data.targets.map(t => {
-          const norm = resolveIdentifier(t, p => this.agentRepo.findByPubkey(p));
-          const agent = this.agentRepo.findByHash(norm.hash);
-          return { hash: norm.hash, agent };
-        });
-        const candidates = targetInfos
-          .filter(t => t.agent)
-          .map(t => {
-            const bayesian = this.agentService.toBayesianBlock(t.hash);
-            verdictTotal.inc({ verdict: bayesian.verdict, source: 'best-route' });
-            return { publicKeyHash: t.hash, alias: t.agent!.alias, bayesian, pathfinding: null };
-          })
-          .sort((a, b) => b.bayesian.p_success - a.bayesian.p_success)
-          .slice(0, 3);
-        // Token→target binding for /api/report (degraded path)
-        for (const t of targetInfos) {
-          logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
-        }
-        logDeprecatedCall('/api/best-route', '/api/intent', { caller: caller.hash, degraded: true });
-        res.json(patchDeprecatedBody({
-          data: {
-            candidates,
-            totalQueried: parsed.data.targets.length,
-            reachableCount: 0,
-            unreachableCount: parsed.data.targets.length,
-            pathfindingContext: 'Caller has no known Lightning pubkey. Candidates ranked by score only (no pathfinding). Add walletProvider or callerNodePubkey to POST /api/decide for positional pathfinding.',
-            latencyMs: Date.now() - startMs,
-          },
-        }, '/api/intent'));
-        return;
-      }
-
-      // Resolve all targets in parallel
-      const targetInfos = parsed.data.targets.map(t => {
-        const norm = resolveIdentifier(t, p => this.agentRepo.findByPubkey(p));
-        const agent = this.agentRepo.findByHash(norm.hash);
-        return { hash: norm.hash, pubkey: agent?.public_key ?? norm.pubkey, agent };
-      });
-
-      // queryRoutes with concurrency cap (max 10 parallel LND calls to prevent saturation)
-      const LND_CONCURRENCY_CAP = 10;
-      const pathResults: Array<typeof targetInfos[number] & { pathfinding: Awaited<ReturnType<VerdictService['computePathfinding']>> | null }> = [];
-      for (let i = 0; i < targetInfos.length; i += LND_CONCURRENCY_CAP) {
-        const batch = targetInfos.slice(i, i + LND_CONCURRENCY_CAP);
-        const batchResults = await Promise.all(
-          batch.map(async (t) => {
-            if (!t.pubkey || !t.agent) return { ...t, pathfinding: null };
-            const pf = await this.verdictService!.computePathfinding(callerLnPubkey, t.pubkey, caller.hash, t.hash);
-            // sim #6 #4: tag the source used so agents don't have to guess
-            // which hub the pathfinding ran from.
-            const tagged: PathfindingResult | null = pf
-              ? {
-                  ...pf,
-                  sourceNode: callerLnPubkey,
-                  ...(parsed.data.walletProvider
-                    ? { sourceProvider: parsed.data.walletProvider as WalletProvider }
-                    : {}),
-                }
-              : null;
-            return { ...t, pathfinding: tagged };
-          }),
-        );
-        pathResults.push(...batchResults);
-      }
-
-      const serviceUrls = parsed.data.serviceUrls;
-      // Minimum checks before trusting HTTP health as a real signal.
-      // Aligns with /api/services uptimeRatio threshold — 1-2 checks are noise.
-      const MIN_HEALTH_CHECKS = 3;
-
-      // Filter to reachable, enrich with score + verdict
-      const allReachable = pathResults
-        .filter(r => r.pathfinding?.reachable && r.agent)
-        .map(r => {
-          const scoreResult = this.scoringService.getScore(r.hash);
-          const bayesian = this.agentService.toBayesianBlock(r.hash);
-          verdictTotal.inc({ verdict: bayesian.verdict, source: 'best-route' });
-
-          // Route quality (0-100) from pathfinding
-          const hops = r.pathfinding!.hops ?? 99;
-          const hopPenalty = Math.max(12, 100 - (hops - 1) * 8);
-          const alternatives = r.pathfinding!.alternatives ?? 1;
-          const altBonus = Math.min(100, 80 + alternatives * 10);
-          const routeQuality = hopPenalty * 0.6 + altBonus * 0.4;
-
-          // Trust axis of the composite rank — still sourced from the
-          // composite score internally (retired in Commit 8 along with
-          // ScoringService); the PUBLIC candidate exposes `bayesian` only.
-          const trust = scoreResult.total;
-
-          // HTTP health: only use when we have ≥3 checks on a trusted-source endpoint.
-          // findByAgent already filters out ad_hoc entries (untrusted URL→agent binding).
-          let httpHealth = 50;
-          let hasHealth = false;
-          const url = serviceUrls?.[r.hash];
-          const endpoint = url
-            ? this.serviceEndpointRepo?.findByUrl(url)
-            : this.serviceEndpointRepo?.findByAgent(r.hash)?.[0];
-          if (endpoint && endpoint.check_count >= MIN_HEALTH_CHECKS) {
-            httpHealth = Math.round((endpoint.success_count / endpoint.check_count) * 100);
-            hasHealth = true;
-          }
-
-          return {
-            publicKeyHash: r.hash,
-            alias: r.agent!.alias,
-            bayesian,
-            pathfinding: r.pathfinding!,
-            _routeQuality: routeQuality,
-            _trust: trust,
-            _httpHealth: httpHealth,
-            _hasHealth: hasHealth,
-          };
-        });
-
-      // Per-target composite: 3D (40/30/30) when THIS target has trusted health data,
-      // 2D (50/50) otherwise. Avoids penalizing nodes without HTTP endpoints just
-      // because another target in the same batch had one sample.
-      const ranked = allReachable
-        .map(r => {
-          const rankScore = r._hasHealth
-            ? r._routeQuality * 0.40 + r._trust * 0.30 + r._httpHealth * 0.30
-            : r._routeQuality * 0.50 + r._trust * 0.50;
-          return { ...r, _rankScore: rankScore };
-        })
-        .sort((a, b) => b._rankScore - a._rankScore);
-      const candidates = ranked
-        .slice(0, 3)
-        .map(({ _rankScore, _routeQuality, _trust, _httpHealth, _hasHealth, ...rest }) => rest);
-
-      const totalQueried = parsed.data.targets.length;
-      const reachableCount = ranked.length;
-
-      // Bind every queried target to the caller token so each one is eligible
-      // for a later /api/report submission. Log ALL targets (not just the top
-      // candidates) — the caller may want to report on any of them.
-      for (const t of targetInfos) {
-        logTokenQuery(this.db, req.headers.authorization, t.hash, req.requestId);
-      }
-
-      logDeprecatedCall('/api/best-route', '/api/intent', { caller: caller.hash, reachableCount });
-      res.json(patchDeprecatedBody({
-        data: {
-          candidates,
-          totalQueried,
-          reachableCount,
-          unreachableCount: totalQueried - reachableCount,
-          pathfindingContext: 'Pathfinding runs from the SatRank node position in the Lightning graph (limited outbound channels). Low reachability (e.g. 3/20) reflects graph topology, not target node quality. Targets unreachable from SatRank may be fully reachable from your node.',
-          latencyMs: Date.now() - startMs,
-        },
-      }, '/api/intent'));
-    } catch (err) {
-      next(err);
-    }
-  };
 
   report = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

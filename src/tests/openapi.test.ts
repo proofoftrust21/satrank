@@ -1,8 +1,8 @@
-// Phase 5 — vérifie que /api/intent, /api/intent/categories et la
-// déprécation de /best-route sont annoncés dans openapi.json.
-// Phase 10 — /decide a été retiré (410 Gone, plus dans le spec).
-// Smoke test minimal : sert de filet quand on renomme un path ou qu'on
-// oublie de déprécier un endpoint remplacé.
+// Phase 5 — vérifie que /api/intent et /api/intent/categories sont annoncés
+// dans openapi.json.
+// Phase 10 — /decide et /best-route ont été retirés (410 Gone, plus dans le
+// spec). Smoke test minimal : sert de filet quand on renomme un path ou
+// qu'on oublie de déprécier un endpoint remplacé.
 import { describe, it, expect } from 'vitest';
 import { openapiSpec } from '../openapi';
 
@@ -32,9 +32,8 @@ describe('openapi.json — Phase 5/10', () => {
     expect((openapiSpec.paths as Record<string, unknown>)['/decide']).toBeUndefined();
   });
 
-  it('marque /best-route comme deprecated avec pointeur vers /intent', () => {
-    expect(openapiSpec.paths['/best-route'].post.deprecated).toBe(true);
-    expect(openapiSpec.paths['/best-route'].post.description).toContain('/api/intent');
+  it('ne liste plus /best-route dans openapi (supprimé en Phase 10, 410 Gone)', () => {
+    expect((openapiSpec.paths as Record<string, unknown>)['/best-route']).toBeUndefined();
   });
 
   it('fourbi strictness enum strict/relaxed/degraded dans meta', () => {

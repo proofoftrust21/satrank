@@ -1,4 +1,4 @@
-// API tests — report, profile + /decide 410 Gone (Phase 10)
+// API tests — report, profile + /decide and /best-route 410 Gone (Phase 10)
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import request from 'supertest';
@@ -98,9 +98,15 @@ function buildTestApp() {
   // Mount controller handlers directly — skip IP rate limiter to avoid
   // cross-test 429s. Business-level rate limiting is tested via ReportService.
   const v2 = Router();
-  // Phase 10 — /api/decide retired (410 Gone). See legacyGoneController.
+  // Phase 10 — /api/decide and /api/best-route retired (410 Gone). See legacyGoneController.
   v2.post('/decide', createGoneHandler({
     from: '/api/decide',
+    to: '/api/intent',
+    removedOn: '2026-04-20',
+    docs: 'https://satrank.dev/docs/migration-to-1.0',
+  }));
+  v2.post('/best-route', createGoneHandler({
+    from: '/api/best-route',
     to: '/api/intent',
     removedOn: '2026-04-20',
     docs: 'https://satrank.dev/docs/migration-to-1.0',
@@ -148,6 +154,37 @@ describe('POST /api/decide — 410 Gone', () => {
   it('répond 410 même avec un body vide — le endpoint n\'est plus routé au contrôleur', async () => {
     const res = await request(app)
       .post('/api/decide')
+      .send({})
+      .set('Content-Type', 'application/json');
+
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe('ENDPOINT_REMOVED');
+  });
+});
+
+// --- POST /api/best-route (Phase 10 — 410 Gone) ---
+
+describe('POST /api/best-route — 410 Gone', () => {
+  it('répond 410 avec code ENDPOINT_REMOVED et pointeur vers /api/intent', async () => {
+    const res = await request(app)
+      .post('/api/best-route')
+      .send({ targets: [sha256('bob')], caller: sha256('alice') })
+      .set('Content-Type', 'application/json');
+
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe('ENDPOINT_REMOVED');
+    expect(res.body.error.message).toContain('2026-04-20');
+    expect(res.body.error.message).toContain('/api/intent');
+    expect(res.body.error.migration).toEqual({
+      from: '/api/best-route',
+      to: '/api/intent',
+      see: 'https://satrank.dev/docs/migration-to-1.0',
+    });
+  });
+
+  it('répond 410 même avec un body vide — le endpoint n\'est plus routé au contrôleur', async () => {
+    const res = await request(app)
+      .post('/api/best-route')
       .send({})
       .set('Content-Type', 'application/json');
 

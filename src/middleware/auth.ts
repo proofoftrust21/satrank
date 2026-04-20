@@ -93,16 +93,15 @@ export function createReportAuth(db: Database.Database) {
         // and /report — we must apply the same normalization here or the
         // lookup silently misses. See sim #5 finding #7.
         const normalizedTargetHash = normalizeIdentifier(rawTarget).hash;
-        // Verify this token has looked up the target. As of 2026-04-16 the
-        // log is populated by /api/decide, /api/best-route, /api/profile,
-        // /api/agent/:hash/verdict and /api/verdicts — any paid target
-        // query works, not just /api/decide.
+        // Verify this token has looked up the target. Post Phase 10 the log
+        // is populated by /api/profile, /api/agent/:hash/verdict, and
+        // /api/verdicts — any paid target query works.
         const queried = stmtDecideLog.get(paymentHash, normalizedTargetHash);
         if (!queried) {
           next(new AuthenticationError(
             'Report rejected: this L402 token has no record of querying the target. ' +
-            'Query the target first via /api/decide, /api/verdicts, /api/agent/:hash/verdict, ' +
-            '/api/profile/:id, or /api/best-route (any works), then retry the report. ' +
+            'Query the target first via /api/verdicts, /api/agent/:hash/verdict, ' +
+            'or /api/profile/:id (any works), then retry the report. ' +
             'If you used a different token to query, switch back to that token, or submit with X-API-Key.',
           ));
           return;

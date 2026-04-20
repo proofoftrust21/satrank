@@ -371,46 +371,6 @@ export const openapiSpec = {
         },
       },
     },
-    // --- Legacy decision endpoint (deprecated — use /intent) ---
-    '/best-route': {
-      post: {
-        summary: 'Find the best route among N candidates (deprecated — use /api/intent)',
-        operationId: 'bestRoute',
-        description: 'DEPRECATED (Phase 5). Use POST /api/intent for structured discovery. Responses include header `Deprecation: true`, `Link: </api/intent>; rel="successor-version"`, and `meta.deprecated_use`. Endpoint remains functional for migration.\n\nTakes up to 50 target hashes and a caller pubkey. Runs queryRoutes in parallel for each target from the caller position. Returns the top 3 reachable candidates sorted by a composite of score, hops, and fee.',
-        tags: ['Decision'],
-        deprecated: true,
-        security: [{ l402: [] }],
-        requestBody: { required: true, content: { 'application/json': { schema: {
-          type: 'object', required: ['targets', 'caller'],
-          properties: {
-            targets: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50, description: 'Target hashes or Lightning pubkeys' },
-            caller: { type: 'string', description: 'Caller hash or Lightning pubkey (for personalized pathfinding)' },
-            amountSats: { type: 'integer', minimum: 1, description: 'Payment amount for fee estimation' },
-            walletProvider: { type: 'string', enum: ['phoenix', 'wos', 'strike', 'blink', 'breez', 'zeus', 'coinos', 'cashapp'], description: 'Wallet provider name. SatRank computes pathfinding from the provider hub node.' },
-            callerNodePubkey: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$', description: 'Lightning pubkey to use as pathfinding source. Overrides walletProvider.' },
-            serviceUrls: { type: 'object', additionalProperties: { type: 'string', format: 'uri' }, description: 'Map of targetHash → L402 service URL for HTTP health enrichment. SSRF-protected.' },
-          },
-        } } } },
-        responses: {
-          '200': { description: 'Top 3 routable candidates', content: { 'application/json': { schema: {
-            type: 'object', properties: {
-              data: { type: 'object', properties: {
-                candidates: { type: 'array', items: { type: 'object', properties: {
-                  publicKeyHash: { type: 'string' }, alias: { type: ['string', 'null'] },
-                  bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
-                  pathfinding: { $ref: '#/components/schemas/PathfindingResult' },
-                } } },
-                totalQueried: { type: 'integer', description: 'Number of targets submitted' },
-                reachableCount: { type: 'integer', description: 'Targets reachable from the SatRank node' },
-                unreachableCount: { type: 'integer', description: 'Targets not reachable from the SatRank node (may be reachable from yours)' },
-                pathfindingContext: { type: 'string', description: 'Explains that reachability depends on SatRank node graph position, not target quality' },
-                latencyMs: { type: 'integer' },
-              } },
-            },
-          } } } },
-        },
-      },
-    },
     '/report': {
       post: {
         summary: 'Report transaction outcome',
@@ -840,7 +800,7 @@ export const openapiSpec = {
       },
       BayesianScoreBlock: {
         type: 'object',
-        description: 'Canonical Bayesian posterior block — shared shape across all public endpoints (verdict, decide, profile, best-route, service, endpoint). Phase 3 C9 : streaming exponential decay (τ=7d), plus de champ `window` — l\'ancienne fenêtre a été remplacée par `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`.',
+        description: 'Canonical Bayesian posterior block — shared shape across all public endpoints (verdict, intent, profile, service, endpoint). Phase 3 C9 : streaming exponential decay (τ=7d), plus de champ `window` — l\'ancienne fenêtre a été remplacée par `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`.',
         required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile'],
         properties: {
           p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Beta-Binomial posterior mean (streaming, décroissance τ=7j).' },

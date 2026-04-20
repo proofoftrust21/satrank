@@ -78,15 +78,6 @@ export const decideSchema = z.object({
   bolt11Raw: bolt11Schema.optional(),
 });
 
-export const bestRouteSchema = z.object({
-  targets: z.array(agentIdentifierSchema).min(1).max(50),
-  caller: agentIdentifierSchema,
-  amountSats: z.number().int().positive().optional(),
-  walletProvider: z.enum(VALID_PROVIDERS as [string, ...string[]]).optional(),
-  callerNodePubkey: lnPubkeySchema.optional(),
-  serviceUrls: z.record(publicKeyHashSchema, httpUrlSchema).optional(),
-});
-
 const reportOutcomeValues = ['success', 'failure', 'timeout'] as const;
 
 export const reportSchema = z.object({

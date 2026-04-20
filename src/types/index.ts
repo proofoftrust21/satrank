@@ -363,8 +363,8 @@ export interface BayesianRecentActivity {
 export type BayesianRiskTrend = 'low' | 'medium' | 'high' | 'unknown';
 
 /** Canonical Bayesian scoring block — shared shape across all public endpoints
- *  (verdict, decide, profile, best-route, service, endpoint). Phase 3 C9 : le
- *  champ `window` a disparu (streaming, τ=7j implicite), remplacé par
+ *  (verdict, intent, profile, service, endpoint). Phase 3 C9 : le champ
+ *  `window` a disparu (streaming, τ=7j implicite), remplacé par
  *  `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`. */
 export interface BayesianScoreBlock {
   p_success: number;
@@ -514,15 +514,6 @@ export interface DecideRequest {
   serviceUrl?: string;
 }
 
-export interface BestRouteRequest {
-  targets: string[];
-  caller: string;
-  amountSats?: number;
-  walletProvider?: WalletProvider;
-  callerNodePubkey?: string;
-  serviceUrls?: Record<string, string>;
-}
-
 export interface ReportResponseEnvelope {
   reportId: string;
   verified: boolean;
@@ -582,7 +573,7 @@ export interface FeeVolatility {
 
 /** `extends BayesianScoreBlock` → inherits {p_success, ci95_low, ci95_high, n_obs,
  *  verdict, window, sources, convergence} — the canonical public shape shared
- *  with /verdict, /profile, /best-route, /service, /endpoint. */
+ *  with /verdict, /profile, /service, /endpoint. */
 export interface DecideResponse extends BayesianScoreBlock {
   go: boolean;
   successRate: number;
@@ -613,24 +604,6 @@ export interface DecideResponse extends BayesianScoreBlock {
 }
 
 export type Recommendation = 'proceed' | 'proceed_with_caution' | 'consider_alternative' | 'avoid';
-
-export interface BestRouteCandidate {
-  publicKeyHash: string;
-  alias: string | null;
-  score: number;
-  verdict: Verdict;
-  pathfinding: PathfindingResult;
-}
-
-export interface BestRouteResponse {
-  candidates: BestRouteCandidate[];
-  totalQueried: number;
-  reachableCount: number;
-  unreachableCount: number;
-  /** Explains that reachability depends on SatRank's graph position, not target quality. */
-  pathfindingContext: string;
-  latencyMs: number;
-}
 
 export interface ReportRequest {
   target: string;

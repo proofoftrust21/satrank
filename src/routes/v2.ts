@@ -51,14 +51,20 @@ export function createV2Routes(
 ): Router {
   const router = Router();
 
-  // Phase 10 — /api/decide retired (410 Gone). See docs/MIGRATION-TO-1.0.md.
+  // Phase 10 — /api/decide and /api/best-route retired (410 Gone). See
+  // docs/MIGRATION-TO-1.0.md.
   router.post('/decide', createGoneHandler({
     from: '/api/decide',
     to: '/api/intent',
     removedOn: '2026-04-20',
     docs: 'https://satrank.dev/docs/migration-to-1.0',
   }));
-  router.post('/best-route', apertureGateAuth, balanceAuth, controller.bestRoute);
+  router.post('/best-route', createGoneHandler({
+    from: '/api/best-route',
+    to: '/api/intent',
+    removedOn: '2026-04-20',
+    docs: 'https://satrank.dev/docs/migration-to-1.0',
+  }));
   // Phase 2 : dispatch anonyme (X-L402-Preimage ou body.preimage sans reporter)
   // bypass reportAuth ; chemin legacy délègue au middleware fourni.
   router.post('/report', reportRateLimit, createReportDispatchAuth(reportAuth), controller.report);
