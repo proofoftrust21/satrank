@@ -12,13 +12,16 @@ import {
   buildNodeEndorsement,
   buildEndpointEndorsement,
   buildServiceEndorsement,
+  buildVerdictFlash,
   payloadHash,
   KIND_NODE_ENDORSEMENT,
   KIND_ENDPOINT_ENDORSEMENT,
   KIND_SERVICE_ENDORSEMENT,
+  KIND_VERDICT_FLASH,
   type NodeEndorsementState,
   type EndpointEndorsementState,
   type ServiceEndorsementState,
+  type VerdictFlashState,
 } from '../nostr/eventBuilders';
 
 const NOW = 1776656900;
@@ -203,6 +206,81 @@ describe('Phase 8 — C2 nostr event builders', () => {
       const a = payloadHash(buildNodeEndorsement(nodeState, NOW));
       const b = payloadHash(buildNodeEndorsement(nodeState, NOW + 1));
       expect(a).toBe(b);
+    });
+  });
+
+  describe('20900 — verdict flash (ephemeral)', () => {
+    const flashState: VerdictFlashState = {
+      entity_type: 'endpoint',
+      entity_id: 'ab'.repeat(32),
+      from_verdict: 'SAFE',
+      to_verdict: 'RISKY',
+      p_success: 0.42,
+      ci95_low: 0.31,
+      ci95_high: 0.55,
+      n_obs: 120,
+      advisory_level: 'orange',
+      risk_score: 0.58,
+      source: 'probe',
+      time_constant_days: 7,
+      last_update: NOW,
+      operator_id: null,
+    };
+
+    it('uses ephemeral kind 20900 and no d-tag (non-addressable)', () => {
+      const template = buildVerdictFlash(flashState, NOW);
+      expect(template.kind).toBe(KIND_VERDICT_FLASH);
+      expect(template.kind).toBe(20900);
+      expect(findTag(template.tags, 'd')).toBeUndefined();
+    });
+
+    it('carries e_type + e_id + transition tags', () => {
+      const template = buildVerdictFlash(flashState, NOW);
+      expect(findTag(template.tags, 'e_type')![1]).toBe('endpoint');
+      expect(findTag(template.tags, 'e_id')![1]).toBe(flashState.entity_id);
+      expect(findTag(template.tags, 'from_verdict')![1]).toBe('SAFE');
+      expect(findTag(template.tags, 'to_verdict')![1]).toBe('RISKY');
+    });
+
+    it('emits from_verdict = "NONE" on first transition', () => {
+      const template = buildVerdictFlash({ ...flashState, from_verdict: null }, NOW);
+      expect(findTag(template.tags, 'from_verdict')![1]).toBe('NONE');
+    });
+
+    it('ajoute p tag sur transitions de type node', () => {
+      const nodeFlash: VerdictFlashState = {
+        ...flashState,
+        entity_type: 'node',
+        entity_id: '02' + 'c'.repeat(64),
+      };
+      const template = buildVerdictFlash(nodeFlash, NOW);
+      expect(findTag(template.tags, 'p')![1]).toBe(nodeFlash.entity_id);
+    });
+
+    it('n\'ajoute pas p tag pour endpoint/service', () => {
+      expect(findTag(buildVerdictFlash(flashState, NOW).tags, 'p')).toBeUndefined();
+      const svcFlash: VerdictFlashState = { ...flashState, entity_type: 'service', entity_id: 'xy'.repeat(32) };
+      expect(findTag(buildVerdictFlash(svcFlash, NOW).tags, 'p')).toBeUndefined();
+    });
+
+    it('bayesian block formatting matches endorsement (4/3/int decimals)', () => {
+      const template = buildVerdictFlash(flashState, NOW);
+      expect(findTag(template.tags, 'p_success')![1]).toBe('0.4200');
+      expect(findTag(template.tags, 'risk_score')![1]).toBe('0.580');
+      expect(findTag(template.tags, 'n_obs')![1]).toBe('120');
+      expect(findTag(template.tags, 'advisory_level')![1]).toBe('orange');
+      expect(findTag(template.tags, 'source')![1]).toBe('probe');
+    });
+
+    it('operator_id tag only when provided', () => {
+      const withoutOp = buildVerdictFlash(flashState, NOW);
+      expect(findTag(withoutOp.tags, 'operator_id')).toBeUndefined();
+      const withOp = buildVerdictFlash({ ...flashState, operator_id: 'op-1' }, NOW);
+      expect(findTag(withOp.tags, 'operator_id')![1]).toBe('op-1');
+    });
+
+    it('content is empty string (canonical)', () => {
+      expect(buildVerdictFlash(flashState, NOW).content).toBe('');
     });
   });
 });

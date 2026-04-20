@@ -23,18 +23,29 @@ import type {
 import type {
   EndpointEndorsementState,
   NodeEndorsementState,
+  VerdictFlashState,
 } from '../nostr/eventBuilders';
+import { isVerdictTransition } from '../nostr/nostrMultiKindScheduler';
 
 interface PublishCall {
   kind: number;
   entityId: string;
 }
 
+interface FlashCall {
+  entityType: 'node' | 'endpoint' | 'service';
+  entityId: string;
+  fromVerdict: string | null;
+  toVerdict: string;
+}
+
 /** Stub publisher : ne touche pas au réseau, renvoie toujours un ack success
  *  unless nextShouldFail est true, auquel cas il renvoie anySuccess=false. */
 class StubPublisher {
   calls: PublishCall[] = [];
+  flashCalls: FlashCall[] = [];
   nextShouldFail = false;
+  nextFlashShouldFail = false;
   private eventCounter = 0;
 
   private nextEventId(): string {
@@ -68,6 +79,27 @@ class StubPublisher {
     return {
       eventId: this.nextEventId(),
       kind: 30382,
+      publishedAt: nowSec,
+      acks: [{ relay: 'wss://stub', result: fail ? 'error' : 'success' }],
+      anySuccess: !fail,
+    };
+  }
+
+  async publishVerdictFlash(
+    state: VerdictFlashState,
+    nowSec: number,
+  ): Promise<PublishResult> {
+    const fail = this.nextFlashShouldFail;
+    this.nextFlashShouldFail = false;
+    this.flashCalls.push({
+      entityType: state.entity_type,
+      entityId: state.entity_id,
+      fromVerdict: state.from_verdict,
+      toVerdict: state.to_verdict,
+    });
+    return {
+      eventId: this.nextEventId(),
+      kind: 20900,
       publishedAt: nowSec,
       acks: [{ relay: 'wss://stub', result: fail ? 'error' : 'success' }],
       anySuccess: !fail,
@@ -242,6 +274,75 @@ describe('NostrMultiKindScheduler', () => {
     expect(nodeRes.published).toBe(1);
     expect(publisher.calls[0].kind).toBe(30382);
     expect(publisher.calls[0].entityId).toBe(pubkey);
+  });
+
+  it('pas de flash sur first_publish — aucune transition antérieure', async () => {
+    const { scheduler, publisher, endpointStreaming } = makeScheduler(db);
+    const urlHash = 'e'.repeat(64);
+    const now = 1_000_000;
+    seedSafeEndpoint(endpointStreaming, urlHash, now);
+
+    const result = await scheduler.runScan(now);
+    const endpointRes = result.perType.find((p) => p.entityType === 'endpoint')!;
+    expect(endpointRes.published).toBe(1);
+    expect(endpointRes.flashesPublished).toBe(0);
+    expect(publisher.flashCalls).toHaveLength(0);
+  });
+
+  it('flash émis sur transition SAFE → RISKY', async () => {
+    const { scheduler, publisher, endpointStreaming } = makeScheduler(db);
+    const urlHash = 'f'.repeat(64);
+    const now = 1_000_000;
+    seedSafeEndpoint(endpointStreaming, urlHash, now);
+    await scheduler.runScan(now);
+    expect(publisher.flashCalls).toHaveLength(0);
+
+    // Bascule RISKY via injection de failures en masse.
+    const later = now + 3600;
+    for (let i = 0; i < 80; i++) {
+      endpointStreaming.ingest(urlHash, 'probe', { successDelta: 0, failureDelta: 1, nowSec: later });
+    }
+
+    const result = await scheduler.runScan(later);
+    const endpointRes = result.perType.find((p) => p.entityType === 'endpoint')!;
+    expect(endpointRes.published).toBe(1);
+    expect(endpointRes.flashesPublished).toBe(1);
+    expect(publisher.flashCalls).toHaveLength(1);
+    expect(publisher.flashCalls[0].fromVerdict).toBe('SAFE');
+    expect(publisher.flashCalls[0].toVerdict).toBe('RISKY');
+    expect(publisher.flashCalls[0].entityType).toBe('endpoint');
+    expect(publisher.flashCalls[0].entityId).toBe(urlHash);
+  });
+
+  it('flash failure : le scheduler comptabilise flashErrors, endorsement reste OK', async () => {
+    const { scheduler, publisher, endpointStreaming } = makeScheduler(db);
+    const urlHash = 'a'.repeat(64);
+    const now = 1_000_000;
+    seedSafeEndpoint(endpointStreaming, urlHash, now);
+    await scheduler.runScan(now);
+
+    const later = now + 3600;
+    for (let i = 0; i < 80; i++) {
+      endpointStreaming.ingest(urlHash, 'probe', { successDelta: 0, failureDelta: 1, nowSec: later });
+    }
+    publisher.nextFlashShouldFail = true;
+
+    const result = await scheduler.runScan(later);
+    const endpointRes = result.perType.find((p) => p.entityType === 'endpoint')!;
+    expect(endpointRes.published).toBe(1); // endorsement OK
+    expect(endpointRes.flashesPublished).toBe(0);
+    expect(endpointRes.flashErrors).toBe(1);
+  });
+
+  it('isVerdictTransition : first publish, same verdict, INSUFFICIENT → pas un flash', () => {
+    expect(isVerdictTransition(null, 'SAFE')).toBe(false);
+    expect(isVerdictTransition('SAFE', 'SAFE')).toBe(false);
+    expect(isVerdictTransition('INSUFFICIENT', 'SAFE')).toBe(false);
+    expect(isVerdictTransition('SAFE', 'INSUFFICIENT')).toBe(false);
+    expect(isVerdictTransition('SAFE', 'RISKY')).toBe(true);
+    expect(isVerdictTransition('RISKY', 'SAFE')).toBe(true);
+    expect(isVerdictTransition('SAFE', 'UNKNOWN')).toBe(true);
+    expect(isVerdictTransition('UNKNOWN', 'RISKY')).toBe(true);
   });
 
   it('fenêtre scanWindowSec filtre les entités anciennes', async () => {

@@ -19,11 +19,13 @@ import type {
   NodeEndorsementState,
   EndpointEndorsementState,
   ServiceEndorsementState,
+  VerdictFlashState,
 } from './eventBuilders';
 import {
   buildNodeEndorsement,
   buildEndpointEndorsement,
   buildServiceEndorsement,
+  buildVerdictFlash,
 } from './eventBuilders';
 import { logger } from '../logger';
 
@@ -135,8 +137,8 @@ export class NostrMultiKindPublisher {
     return this.connections.length;
   }
 
-  /** Signe et publie un template arbitraire. Exposé pour les kinds 10900
-   *  (C6) qui partagent la plomberie mais pas le schema Endorsement. */
+  /** Signe et publie un template arbitraire. Exposé pour les flashes kind
+   *  20900 (C6) qui partagent la plomberie mais pas le schema Endorsement. */
   async publishTemplate(template: EventTemplate): Promise<PublishResult> {
     if (this.connections.length === 0) await this.connect();
     const bindings = await this.ensureBindings();
@@ -185,6 +187,14 @@ export class NostrMultiKindPublisher {
   /** Kind 30384 — endorsement d'un service logique (regroupe N endpoints). */
   async publishServiceEndorsement(state: ServiceEndorsementState, createdAt?: number): Promise<PublishResult> {
     const template = buildServiceEndorsement(state, createdAt ?? nowUnix());
+    return this.publishTemplate(template);
+  }
+
+  /** Kind 20900 — flash éphémère signalant un basculement de verdict.
+   *  À appeler *en plus* de publishNode/Endpoint/ServiceEndorsement quand
+   *  le verdict a changé (détection faite par le scheduler). */
+  async publishVerdictFlash(state: VerdictFlashState, createdAt?: number): Promise<PublishResult> {
+    const template = buildVerdictFlash(state, createdAt ?? nowUnix());
     return this.publishTemplate(template);
   }
 }

@@ -52,6 +52,7 @@ import {
   type NodeEndorsementState,
   type EndorsementSource,
   type EventTemplate,
+  type VerdictFlashState,
 } from './eventBuilders';
 import { shouldRepublish } from './shouldRepublish';
 import { computeAdvisoryReport } from '../services/advisoryService';
@@ -74,6 +75,10 @@ export interface EntityScanResult {
   skippedNoChange: number;
   errors: number;
   firstPublish: number;
+  /** Flashes éphémères kind 20900 émis pour les transitions de verdict. */
+  flashesPublished: number;
+  /** Flashes qui auraient dû être émis mais aucun relai n'a ack. */
+  flashErrors: number;
 }
 
 export interface ScanResult {
@@ -117,6 +122,8 @@ export class NostrMultiKindScheduler {
       skippedNoChange: 0,
       errors: 0,
       firstPublish: 0,
+      flashesPublished: 0,
+      flashErrors: 0,
     };
 
     const ids = this.listModifiedEntities('endpoint_streaming_posteriors', 'url_hash', cutoff, limit);
@@ -156,6 +163,29 @@ export class NostrMultiKindScheduler {
           verdict: snapshot.verdict,
           advisory: snapshot.advisory_level,
         }, 'multi-kind endpoint republished');
+
+        // Flash éphémère kind 20900 sur transition de verdict.
+        // Best-effort : on ne rollback pas la publication 30383 si le flash rate.
+        if (isVerdictTransition(previous?.verdict ?? null, snapshot.verdict)) {
+          const flashOk = await this.emitFlash({
+            entity_type: 'endpoint',
+            entity_id: snapshot.url_hash,
+            from_verdict: previous?.verdict ?? null,
+            to_verdict: snapshot.verdict,
+            p_success: snapshot.p_success,
+            ci95_low: snapshot.ci95_low,
+            ci95_high: snapshot.ci95_high,
+            n_obs: snapshot.n_obs,
+            advisory_level: snapshot.advisory_level,
+            risk_score: snapshot.risk_score,
+            source: snapshot.source,
+            time_constant_days: snapshot.time_constant_days,
+            last_update: snapshot.last_update,
+            operator_id: snapshot.operator_id,
+          }, nowSec);
+          if (flashOk) result.flashesPublished++;
+          else result.flashErrors++;
+        }
       } catch (err: unknown) {
         result.errors++;
         const msg = err instanceof Error ? err.message : String(err);
@@ -173,6 +203,8 @@ export class NostrMultiKindScheduler {
       skippedNoChange: 0,
       errors: 0,
       firstPublish: 0,
+      flashesPublished: 0,
+      flashErrors: 0,
     };
 
     const ids = this.listModifiedEntities('node_streaming_posteriors', 'pubkey', cutoff, limit);
@@ -212,6 +244,27 @@ export class NostrMultiKindScheduler {
           verdict: snapshot.verdict,
           advisory: snapshot.advisory_level,
         }, 'multi-kind node republished');
+
+        if (isVerdictTransition(previous?.verdict ?? null, snapshot.verdict)) {
+          const flashOk = await this.emitFlash({
+            entity_type: 'node',
+            entity_id: snapshot.node_pubkey,
+            from_verdict: previous?.verdict ?? null,
+            to_verdict: snapshot.verdict,
+            p_success: snapshot.p_success,
+            ci95_low: snapshot.ci95_low,
+            ci95_high: snapshot.ci95_high,
+            n_obs: snapshot.n_obs,
+            advisory_level: snapshot.advisory_level,
+            risk_score: snapshot.risk_score,
+            source: snapshot.source,
+            time_constant_days: snapshot.time_constant_days,
+            last_update: snapshot.last_update,
+            operator_id: snapshot.operator_id,
+          }, nowSec);
+          if (flashOk) result.flashesPublished++;
+          else result.flashErrors++;
+        }
       } catch (err: unknown) {
         result.errors++;
         const msg = err instanceof Error ? err.message : String(err);
@@ -337,6 +390,37 @@ export class NostrMultiKindScheduler {
     return 'UNKNOWN';
   }
 
+  /** Émet un flash kind 20900 — best effort. Renvoie true si au moins un relai ack. */
+  private async emitFlash(state: VerdictFlashState, nowSec: number): Promise<boolean> {
+    try {
+      const result = await this.publisher.publishVerdictFlash(state, nowSec);
+      if (result.anySuccess) {
+        logger.info({
+          entityType: state.entity_type,
+          entityId: state.entity_id.slice(0, 12),
+          from: state.from_verdict ?? 'NONE',
+          to: state.to_verdict,
+          eventId: result.eventId.slice(0, 12),
+        }, 'verdict flash broadcasted');
+        return true;
+      }
+      logger.warn({
+        entityType: state.entity_type,
+        entityId: state.entity_id.slice(0, 12),
+        acks: result.acks.length,
+      }, 'verdict flash: no relay ack');
+      return false;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({
+        entityType: state.entity_type,
+        entityId: state.entity_id.slice(0, 12),
+        error: msg,
+      }, 'verdict flash publish error');
+      return false;
+    }
+  }
+
   private async publishEndpoint(state: EndpointEndorsementState, nowSec: number): Promise<PublishResult> {
     const result = await this.publisher.publishEndpointEndorsement(state, nowSec);
     if (result.anySuccess) {
@@ -379,6 +463,17 @@ export class NostrMultiKindScheduler {
 }
 
 // --- Helpers purs ---------------------------------------------------------
+
+/** Transition de verdict digne d'un flash. Le premier publish d'une entité
+ *  (previous = null) ne compte pas comme une transition — aucun observateur
+ *  n'avait de state précédent à contredire. Les transitions vers ou depuis
+ *  INSUFFICIENT non plus : c'est du bruit d'échantillonnage, pas un signal. */
+export function isVerdictTransition(from: Verdict | null, to: Verdict): boolean {
+  if (from === null) return false;
+  if (from === to) return false;
+  if (from === 'INSUFFICIENT' || to === 'INSUFFICIENT') return false;
+  return true;
+}
 
 function combineDecayed(decayed: Record<BayesianSource, DecayedPosterior>): {
   combined: { pSuccess: number; ci95Low: number; ci95High: number; nObs: number };

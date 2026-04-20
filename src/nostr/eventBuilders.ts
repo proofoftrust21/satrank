@@ -18,6 +18,10 @@ import type { Verdict, AdvisoryLevel } from '../types/index';
 export const KIND_NODE_ENDORSEMENT = 30382;
 export const KIND_ENDPOINT_ENDORSEMENT = 30383;
 export const KIND_SERVICE_ENDORSEMENT = 30384;
+// Flash éphémère NIP-01 range 20000-29999. Broadcast-only, non persisté par
+// les relais : signale un basculement de verdict significatif (e.g. SAFE → RISKY)
+// pour que les abonnés réagissent sans attendre leur prochain fetch du 30383.
+export const KIND_VERDICT_FLASH = 20900;
 
 /** Source primaire d'un verdict publié — mirror de BayesianSource du core. */
 export type EndorsementSource = 'probe' | 'report' | 'paid';
@@ -135,6 +139,65 @@ export function buildServiceEndorsement(state: ServiceEndorsementState, createdA
   ];
   return {
     kind: KIND_SERVICE_ENDORSEMENT,
+    created_at: createdAt,
+    tags,
+    content: '',
+  };
+}
+
+/** Flash éphémère signalant un basculement de verdict pour une entité.
+ *
+ *  Règles :
+ *   - kind 20900 : ephemeral (NIP-01 range), les relais broadcast sans persister.
+ *   - pas de `d` tag (pas d'addressable) : chaque flash est distinct.
+ *   - `e_type` identifie quel kind replaceable l'event accompagne (30382/30383/30384).
+ *   - `e_id` pointe sur l'identifiant primaire (pubkey ou url_hash).
+ *   - `from_verdict` / `to_verdict` : la transition qui déclenche l'événement.
+ *   - bloc bayésien copié de l'endorsement principal (cohérence snapshot).
+ *   - `last_update` déjà présent dans bayesianTags donne la fraîcheur.
+ *
+ *  Le builder ne décide PAS s'il faut émettre un flash — c'est au scheduler
+ *  de vérifier que from_verdict !== to_verdict avant d'appeler le builder.
+ */
+export interface VerdictFlashState {
+  entity_type: 'node' | 'endpoint' | 'service';
+  entity_id: string;
+  from_verdict: Verdict | null;
+  to_verdict: Verdict;
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  advisory_level: AdvisoryLevel;
+  risk_score: number;
+  source: EndorsementSource;
+  time_constant_days: number;
+  last_update: number;
+  operator_id?: string | null;
+}
+
+export function buildVerdictFlash(state: VerdictFlashState, createdAt: number): EventTemplate {
+  const tags: string[][] = [
+    ['e_type', state.entity_type],
+    ['e_id', state.entity_id],
+    ['from_verdict', state.from_verdict ?? 'NONE'],
+    ['to_verdict', state.to_verdict],
+    ['p_success', fmtProba(state.p_success)],
+    ['ci95_low', fmtProba(state.ci95_low)],
+    ['ci95_high', fmtProba(state.ci95_high)],
+    ['n_obs', fmtInt(state.n_obs)],
+    ['advisory_level', state.advisory_level],
+    ['risk_score', fmtRisk(state.risk_score)],
+    ['source', state.source],
+    ['time_constant_days', fmtInt(state.time_constant_days)],
+    ['last_update', fmtInt(state.last_update)],
+  ];
+  if (state.operator_id) tags.push(['operator_id', state.operator_id]);
+  // Tag NIP-01 `p` quand l'entité est un node — permet aux clients qui filtrent
+  // par pubkey de recevoir le flash sans avoir à filtrer par `e_type`.
+  if (state.entity_type === 'node') tags.push(['p', state.entity_id]);
+  return {
+    kind: KIND_VERDICT_FLASH,
     created_at: createdAt,
     tags,
     content: '',
