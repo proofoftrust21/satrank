@@ -13,6 +13,7 @@ import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
 import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal, operatorsTotal, rateLimitHits } from './middleware/metrics';
+import { createProbeRateLimit } from './middleware/probeRateLimit';
 
 // Repositories
 import { AgentRepository } from './repositories/agentRepository';
@@ -489,7 +490,14 @@ export function createApp() {
   // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the
   // balanceAuth middleware takes 1 credit upstream, probeController debits
   // the remaining 4 atomically. Gated on Aperture like the other paid routes.
-  api.post('/probe', apertureGateAuth, balanceAuth, probeController.probe);
+  // Phase 9 C8 — two rate limiters in front of balanceAuth so rejections
+  // never consume credits. See src/middleware/probeRateLimit.ts for ordering
+  // rationale.
+  const probeLimits = createProbeRateLimit({
+    perTokenPerHour: config.PROBE_RATE_LIMIT_PER_TOKEN_PER_HOUR,
+    globalPerHour: config.PROBE_RATE_LIMIT_GLOBAL_PER_HOUR,
+  });
+  api.post('/probe', apertureGateAuth, probeLimits.perToken, probeLimits.global, balanceAuth, probeController.probe);
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
