@@ -86,25 +86,45 @@ function extractPreimage(authHeader: string): string | null {
 }
 
 export function createBalanceAuth(db: Database.Database) {
-  // Prepared statements for performance (reused across requests)
-  const stmtDecrement = db.prepare(
-    'UPDATE token_balance SET remaining = remaining - 1 WHERE payment_hash = ? AND remaining > 0',
+  // Phase 9: tokens come in two flavours.
+  //  - Phase 9 deposit tokens: rate_sats_per_request IS NOT NULL → the
+  //    decrement axis is `balance_credits` (1 credit per regular request).
+  //  - Legacy tokens (Aperture auto-created + pre-Phase-9 deposits that
+  //    haven't been backfilled yet): rate_sats_per_request IS NULL → the
+  //    decrement axis is `remaining` (the original 1-sat-per-request flow).
+  // Each UPDATE is atomic; we try Phase 9 first and fall back to legacy so a
+  // single prepared stmt per path keeps the hot loop cheap.
+  const stmtDecrementCredits = db.prepare(
+    'UPDATE token_balance SET balance_credits = balance_credits - 1 WHERE payment_hash = ? AND rate_sats_per_request IS NOT NULL AND balance_credits >= 1',
   );
-  const stmtGetBalance = db.prepare(
-    'SELECT remaining FROM token_balance WHERE payment_hash = ?',
+  const stmtDecrementLegacy = db.prepare(
+    'UPDATE token_balance SET remaining = remaining - 1 WHERE payment_hash = ? AND rate_sats_per_request IS NULL AND remaining > 0',
   );
-  // Token lifetime quota ("max"). Deposit tokens start variable (21-10000);
-  // Aperture tokens always start at TOKEN_QUOTA. Surfaced via
-  // X-SatRank-Balance-Max so clients can render "remaining/max" without
-  // guessing. Sim #9 FINDING #14.
-  const stmtGetMax = db.prepare(
-    'SELECT COALESCE(max_quota, remaining) AS max_quota FROM token_balance WHERE payment_hash = ?',
-  );
+  // Unified balance read — normalises current/max onto a single axis regardless
+  // of the underlying column. For Phase 9, max-credits = max_quota / rate;
+  // for legacy, max-credits = max_quota. rate_sats_per_request is returned so
+  // the caller can distinguish the two for logging/diagnostics.
+  const stmtGetBalance = db.prepare(`
+    SELECT
+      CASE WHEN rate_sats_per_request IS NOT NULL
+           THEN balance_credits
+           ELSE remaining
+      END AS current,
+      CASE WHEN rate_sats_per_request IS NOT NULL AND rate_sats_per_request > 0
+           THEN max_quota / rate_sats_per_request
+           ELSE max_quota
+      END AS max,
+      rate_sats_per_request
+    FROM token_balance WHERE payment_hash = ?
+  `);
   const stmtInsert = db.prepare(
     'INSERT OR IGNORE INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES (?, ?, ?, ?)',
   );
-  const stmtRefund = db.prepare(
-    'UPDATE token_balance SET remaining = remaining + 1 WHERE payment_hash = ?',
+  const stmtRefundCredits = db.prepare(
+    'UPDATE token_balance SET balance_credits = balance_credits + 1 WHERE payment_hash = ? AND rate_sats_per_request IS NOT NULL',
+  );
+  const stmtRefundLegacy = db.prepare(
+    'UPDATE token_balance SET remaining = remaining + 1 WHERE payment_hash = ? AND rate_sats_per_request IS NULL',
   );
 
   function scheduleRefund(res: Response, paymentHash: Buffer): void {
@@ -120,7 +140,10 @@ export function createBalanceAuth(db: Database.Database) {
       }
       refunded = true;
       try {
-        stmtRefund.run(paymentHash);
+        // Phase 9 first — UPDATE changes 0 rows if the token is legacy, so we
+        // fall back to the legacy refund statement.
+        const phase9 = stmtRefundCredits.run(paymentHash);
+        if (phase9.changes === 0) stmtRefundLegacy.run(paymentHash);
       } catch (err) {
         logger.warn({ err, statusCode: res.statusCode }, 'balance refund failed');
       }
@@ -147,28 +170,29 @@ export function createBalanceAuth(db: Database.Database) {
     const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
     const now = Math.floor(Date.now() / 1000);
 
-    // Try to decrement existing balance
-    const result = stmtDecrement.run(paymentHash);
-    if (result.changes > 0) {
-      // Decrement succeeded — read remaining balance for header
-      const row = stmtGetBalance.get(paymentHash) as { remaining: number } | undefined;
-      const maxRow = stmtGetMax.get(paymentHash) as { max_quota: number } | undefined;
-      res.setHeader('X-SatRank-Balance', String(row?.remaining ?? 0));
-      if (maxRow?.max_quota) res.setHeader('X-SatRank-Balance-Max', String(maxRow.max_quota));
+    // Try Phase 9 credit path first — changes 0 rows for legacy tokens.
+    let changes = stmtDecrementCredits.run(paymentHash).changes;
+    if (changes === 0) changes = stmtDecrementLegacy.run(paymentHash).changes;
+
+    if (changes > 0) {
+      // Decrement succeeded — read normalised balance for headers
+      const row = stmtGetBalance.get(paymentHash) as { current: number; max: number | null; rate_sats_per_request: number | null } | undefined;
+      res.setHeader('X-SatRank-Balance', String(Math.floor(row?.current ?? 0)));
+      if (row?.max) res.setHeader('X-SatRank-Balance-Max', String(Math.floor(row.max)));
       scheduleRefund(res, paymentHash);
       next();
       return;
     }
 
-    // Decrement failed — either token doesn't exist or remaining = 0
-    const existing = stmtGetBalance.get(paymentHash) as { remaining: number } | undefined;
+    // Decrement failed — either token doesn't exist or balance = 0
+    const existing = stmtGetBalance.get(paymentHash) as { current: number; max: number | null; rate_sats_per_request: number | null } | undefined;
 
     if (existing) {
-      // Token exists but remaining = 0 — exhausted
-      const maxRow = stmtGetMax.get(paymentHash) as { max_quota: number } | undefined;
+      // Token exists but balance = 0 — exhausted
+      const max = Math.floor(existing.max ?? TOKEN_QUOTA);
       res.setHeader('X-SatRank-Balance', '0');
-      if (maxRow?.max_quota) res.setHeader('X-SatRank-Balance-Max', String(maxRow.max_quota));
-      next(new BalanceExhaustedError(maxRow?.max_quota ?? TOKEN_QUOTA, maxRow?.max_quota ?? TOKEN_QUOTA));
+      res.setHeader('X-SatRank-Balance-Max', String(max));
+      next(new BalanceExhaustedError(max, max));
       return;
     }
 

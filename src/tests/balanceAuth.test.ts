@@ -268,3 +268,191 @@ describe('balanceAuth middleware', () => {
     expect(row.remaining).toBe(10);
   });
 });
+
+// Phase 9 — deposit tokens (tier-engraved) decrement balance_credits, not
+// remaining. The legacy `remaining` column is frozen for these rows and acts
+// as a historical record of sats deposited.
+describe('balanceAuth middleware — Phase 9 credit path', () => {
+  let db: InstanceType<typeof Database>;
+  let balanceAuth: ReturnType<typeof createBalanceAuth>;
+
+  beforeAll(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    balanceAuth = createBalanceAuth(db);
+  });
+
+  afterAll(() => db.close());
+
+  /** Insert a Phase 9 token directly (simulates what depositController does
+   *  after a verified deposit). Rate + credits are engraved at creation. */
+  function seedPhase9Token(preimage: string, sats: number, tierId: number, rate: number, credits: number): void {
+    const ph = paymentHashFromPreimage(preimage);
+    db.prepare(`
+      INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(ph, sats, Math.floor(Date.now() / 1000), sats, tierId, rate, credits);
+  }
+
+  function callMiddleware(authHeader?: string): Promise<{ status: number; balance: string | null; balanceMax: string | null; errorCode?: string }> {
+    return new Promise((resolve) => {
+      const req = { headers: { authorization: authHeader } } as express.Request;
+      let capturedBalance: string | null = null;
+      let capturedMax: string | null = null;
+      const emitter = new EventEmitter();
+      const res = Object.assign(emitter, {
+        setHeader: (name: string, value: string) => {
+          if (name === 'X-SatRank-Balance') capturedBalance = value;
+          if (name === 'X-SatRank-Balance-Max') capturedMax = value;
+        },
+      }) as unknown as express.Response;
+      const next = ((err?: unknown) => {
+        if (err && typeof err === 'object' && 'statusCode' in err) {
+          const appErr = err as { statusCode: number; code: string };
+          resolve({ status: appErr.statusCode, balance: capturedBalance, balanceMax: capturedMax, errorCode: appErr.code });
+        } else {
+          resolve({ status: 200, balance: capturedBalance, balanceMax: capturedMax });
+        }
+      }) as express.NextFunction;
+      balanceAuth(req, res, next);
+    });
+  }
+
+  it('decrements balance_credits (not remaining) for a tier-2 token', async () => {
+    // 1000 sats @ tier 2 (rate 0.5) → 2000 credits
+    const preimage = crypto.randomBytes(32).toString('hex');
+    seedPhase9Token(preimage, 1000, 2, 0.5, 2000);
+
+    const r1 = await callMiddleware(makeL402Header(preimage));
+    expect(r1.status).toBe(200);
+    expect(r1.balance).toBe('1999');
+    expect(r1.balanceMax).toBe('2000');
+
+    // Verify the underlying DB row — balance_credits decremented, remaining untouched
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining, balance_credits, rate_sats_per_request FROM token_balance WHERE payment_hash = ?')
+      .get(ph) as { remaining: number; balance_credits: number; rate_sats_per_request: number };
+    expect(row.remaining).toBe(1000); // unchanged (frozen historical sats)
+    expect(row.balance_credits).toBe(1999);
+    expect(row.rate_sats_per_request).toBe(0.5);
+  });
+
+  it('X-SatRank-Balance reports credits for a tier-5 token (rate 0.05)', async () => {
+    // 1_000_000 sats @ tier 5 (rate 0.05) → 20_000_000 credits
+    const preimage = crypto.randomBytes(32).toString('hex');
+    seedPhase9Token(preimage, 1_000_000, 5, 0.05, 20_000_000);
+
+    const r = await callMiddleware(makeL402Header(preimage));
+    expect(r.balance).toBe('19999999');
+    expect(r.balanceMax).toBe('20000000');
+  });
+
+  it('returns BALANCE_EXHAUSTED when balance_credits reaches 0', async () => {
+    // Minimum realistic tier-1 token: 21 sats @ rate 1.0 → 21 credits.
+    const preimage = crypto.randomBytes(32).toString('hex');
+    seedPhase9Token(preimage, 21, 1, 1.0, 21);
+
+    // Drain all 21 credits
+    for (let i = 0; i < 21; i++) {
+      const r = await callMiddleware(makeL402Header(preimage));
+      expect(r.status).toBe(200);
+      expect(r.balance).toBe(String(20 - i));
+    }
+
+    const exhausted = await callMiddleware(makeL402Header(preimage));
+    expect(exhausted.status).toBe(402);
+    expect(exhausted.errorCode).toBe('BALANCE_EXHAUSTED');
+    expect(exhausted.balance).toBe('0');
+    expect(exhausted.balanceMax).toBe('21'); // 21 sats / rate 1.0
+  });
+
+  it('legacy tokens (rate_sats_per_request IS NULL) still decrement remaining', async () => {
+    // Aperture-auto-created token: inserted by middleware itself, rate IS NULL
+    const preimage = crypto.randomBytes(32).toString('hex');
+
+    // First call creates the legacy row with remaining=20
+    const r1 = await callMiddleware(makeL402Header(preimage));
+    expect(r1.balance).toBe('20');
+
+    // Second call decrements remaining, not balance_credits
+    const r2 = await callMiddleware(makeL402Header(preimage));
+    expect(r2.balance).toBe('19');
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining, balance_credits, rate_sats_per_request FROM token_balance WHERE payment_hash = ?')
+      .get(ph) as { remaining: number; balance_credits: number; rate_sats_per_request: number | null };
+    expect(row.remaining).toBe(19);
+    expect(row.balance_credits).toBe(0); // default value, never decremented
+    expect(row.rate_sats_per_request).toBeNull();
+  });
+
+  it('Phase 9 token never touches the legacy remaining field even under drain', async () => {
+    // 1000 sats @ tier 2 → 2000 credits. Drain 5 credits.
+    const preimage = crypto.randomBytes(32).toString('hex');
+    seedPhase9Token(preimage, 1000, 2, 0.5, 2000);
+
+    for (let i = 0; i < 5; i++) await callMiddleware(makeL402Header(preimage));
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining, balance_credits FROM token_balance WHERE payment_hash = ?')
+      .get(ph) as { remaining: number; balance_credits: number };
+    expect(row.remaining).toBe(1000); // untouched
+    expect(row.balance_credits).toBe(1995);
+  });
+
+  it('refund on 400 restores balance_credits (Phase 9)', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+    seedPhase9Token(preimage, 1000, 2, 0.5, 2000);
+
+    // Simulate a 400 response cycle
+    const emitter = new EventEmitter();
+    const res = Object.assign(emitter, {
+      statusCode: 400,
+      setHeader: () => {},
+    }) as unknown as express.Response;
+    const req = { headers: { authorization: makeL402Header(preimage) } } as express.Request;
+    await new Promise<void>((resolve) => balanceAuth(req, res, () => resolve()));
+    (res as unknown as EventEmitter).emit('finish');
+
+    // After a 400, balance_credits should be fully restored (2000).
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT remaining, balance_credits FROM token_balance WHERE payment_hash = ?')
+      .get(ph) as { remaining: number; balance_credits: number };
+    expect(row.remaining).toBe(1000); // unchanged
+    expect(row.balance_credits).toBe(2000);
+  });
+
+  it('refund on 200 does NOT restore balance_credits (Phase 9)', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+    seedPhase9Token(preimage, 1000, 2, 0.5, 2000);
+
+    const emitter = new EventEmitter();
+    const res = Object.assign(emitter, {
+      statusCode: 200,
+      setHeader: () => {},
+    }) as unknown as express.Response;
+    const req = { headers: { authorization: makeL402Header(preimage) } } as express.Request;
+    await new Promise<void>((resolve) => balanceAuth(req, res, () => resolve()));
+    (res as unknown as EventEmitter).emit('finish');
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT balance_credits FROM token_balance WHERE payment_hash = ?')
+      .get(ph) as { balance_credits: number };
+    expect(row.balance_credits).toBe(1999); // one decrement, no refund
+  });
+
+  it('concurrent requests on a Phase 9 token decrement credits atomically', async () => {
+    const preimage = crypto.randomBytes(32).toString('hex');
+    seedPhase9Token(preimage, 1000, 2, 0.5, 2000);
+
+    const promises = Array.from({ length: 20 }, () => callMiddleware(makeL402Header(preimage)));
+    const results = await Promise.all(promises);
+    expect(results.filter(r => r.status === 200).length).toBe(20);
+
+    const ph = paymentHashFromPreimage(preimage);
+    const row = db.prepare('SELECT balance_credits FROM token_balance WHERE payment_hash = ?')
+      .get(ph) as { balance_credits: number };
+    expect(row.balance_credits).toBe(1980);
+  });
+});
