@@ -62,6 +62,17 @@ const configSchema = z.object({
   // Separate from LND_MACAROON_PATH which is readonly. Bake with:
   //   lncli bakemacaroon invoices:read invoices:write --save_to invoice.macaroon
   LND_INVOICE_MACAROON_PATH: z.string().optional(),
+  // LND admin macaroon — needed for /api/probe (payInvoice on L402 challenges).
+  // Scope is deliberately narrower than full admin: offchain:read offchain:write
+  // is sufficient for payInvoice. Keep this file chmod 600 — it can drain the
+  // routing node. Bake with:
+  //   lncli bakemacaroon offchain:read offchain:write --save_to pay.macaroon
+  LND_ADMIN_MACAROON_PATH: z.string().optional(),
+  // Probe safety rails — caps on the L402 invoice SatRank will pay and on the
+  // probe round-trip fetch duration. Per-probe defaults are conservative;
+  // override via env for stress demos.
+  PROBE_MAX_INVOICE_SATS: z.coerce.number().int().positive().default(1000),
+  PROBE_FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   // Zap-receipt mining — builds (nostr_pubkey, ln_pubkey) mappings for Stream B
   ZAP_MINING_RELAYS: z.string().default(
     'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net,wss://relay.nostr.band,wss://nostr.wine,wss://relay.snort.social,wss://nostr-pub.wellorder.net,wss://offchain.pub,wss://eden.nostr.land',

@@ -77,12 +77,17 @@ export interface LndGraphClient {
   queryRoutes(pubkey: string, amountSats: number, sourcePubKey?: string): Promise<LndQueryRoutesResponse>;
   decodePayReq?(payReq: string): Promise<{ destination: string } | null>;
   payInvoice?(paymentRequest: string, feeLimitSat?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
+  canPayInvoices?(): boolean;
 }
 
 export interface LndClientOptions {
   restUrl: string;
   macaroonPath: string;
   timeoutMs: number;
+  /** Path to the admin-scoped macaroon used for payInvoice. The default
+   *  readonly macaroon cannot sign off-chain payments, so this must be set
+   *  separately when /api/probe (or any other pay path) is enabled. */
+  adminMacaroonPath?: string;
 }
 
 // Global semaphore on queryRoutes: LND can handle ~30/s, we cap at 10 concurrent
@@ -97,6 +102,9 @@ const queryRoutesSemaphore = new Semaphore({ max: 10, maxQueue: 50, name: 'lnd_q
 export class HttpLndGraphClient implements LndGraphClient {
   private restUrl: string;
   private macaroonHex: string;
+  /** Admin-scoped macaroon loaded separately from the readonly one. Empty
+   *  string when not configured — payInvoice() then errors cleanly. */
+  private adminMacaroonHex: string;
   private timeoutMs: number;
   private breaker: CircuitBreaker;
 
@@ -117,6 +125,24 @@ export class HttpLndGraphClient implements LndGraphClient {
       logger.warn({ path: options.macaroonPath, error: msg }, 'Failed to read LND macaroon — LND client will not work');
       this.macaroonHex = '';
     }
+
+    this.adminMacaroonHex = '';
+    if (options.adminMacaroonPath) {
+      try {
+        const adminBytes = fs.readFileSync(options.adminMacaroonPath);
+        this.adminMacaroonHex = adminBytes.toString('hex');
+        logger.debug({ path: options.adminMacaroonPath, len: this.adminMacaroonHex.length }, 'LND admin macaroon loaded for payInvoice');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ path: options.adminMacaroonPath, error: msg }, 'Failed to read LND admin macaroon — payInvoice will be unavailable');
+      }
+    }
+  }
+
+  /** True iff the admin macaroon loaded successfully. /api/probe should
+   *  refuse to serve when this is false. */
+  canPayInvoices(): boolean {
+    return this.adminMacaroonHex.length > 0;
   }
 
   isConfigured(): boolean {
@@ -196,7 +222,11 @@ export class HttpLndGraphClient implements LndGraphClient {
   }
 
   async payInvoice(paymentRequest: string, feeLimitSat: number = 10): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }> {
-    if (!this.macaroonHex) throw new Error('LND macaroon not loaded');
+    // Must use the admin-scoped macaroon — the readonly one lacks
+    // offchain:write and would return 401/permission-denied from lnd.
+    if (!this.adminMacaroonHex) {
+      return { paymentPreimage: '', paymentHash: '', paymentError: 'LND admin macaroon not loaded — payInvoice unavailable' };
+    }
     const url = `${this.restUrl}/v1/channels/transactions`;
     const body = JSON.stringify({ payment_request: paymentRequest, fee_limit: { fixed: String(feeLimitSat) } });
     const controller = new AbortController();
@@ -204,7 +234,7 @@ export class HttpLndGraphClient implements LndGraphClient {
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Grpc-Metadata-macaroon': this.macaroonHex, 'Content-Type': 'application/json' },
+        headers: { 'Grpc-Metadata-macaroon': this.adminMacaroonHex, 'Content-Type': 'application/json' },
         body,
         signal: controller.signal,
       });
