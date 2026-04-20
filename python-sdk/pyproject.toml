@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nwc = [
-    "websockets>=12,<14",
+    "websockets>=12,<17",
     "cryptography>=42",
 ]
 dev = [
