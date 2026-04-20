@@ -26,6 +26,13 @@ services:
       # must be owned by uid 1001 (satrank user in Dockerfile). If missing,
       # DualWriteLogger falls back to /app/logs and WARNs at boot.
       - /var/log/satrank:/var/log/satrank
+      # Phase 9 — scoped LND admin macaroon (offchain:read + offchain:write only,
+      # no channel open/close/onchain). Bound read-only. Path on host is
+      # ${REMOTE_DIR}/probe-pay.macaroon, baked out-of-band via:
+      #   lncli bakemacaroon --save_to <remote_dir>/probe-pay.macaroon \
+      #     offchain:read offchain:write
+      # Excluded from rsync (*.macaroon) so the file is per-host.
+      - ./probe-pay.macaroon:/app/macaroons/probe-pay.macaroon:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>r.json()).then(j=>{process.exit(j.data.status==='ok'?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s
