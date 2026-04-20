@@ -12,6 +12,17 @@ import { errorHandler } from '../middleware/errorHandler';
 import { createBayesianVerdictService, ingestBayesianObservation } from './helpers/bayesianTestFactory';
 import { endpointHash } from '../utils/urlCanonical';
 import { sha256 } from '../utils/crypto';
+import { OperatorService } from '../services/operatorService';
+import {
+  OperatorRepository,
+  OperatorIdentityRepository,
+  OperatorOwnershipRepository,
+} from '../repositories/operatorRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
 
 function buildTestApp() {
   const db = new Database(':memory:');
@@ -21,7 +32,15 @@ function buildTestApp() {
   const agentRepo = new AgentRepository(db);
   const serviceEndpointRepo = new ServiceEndpointRepository(db);
   const bayesianVerdict = createBayesianVerdictService(db);
-  const endpointController = new EndpointController(bayesianVerdict, serviceEndpointRepo, agentRepo);
+  const operatorService = new OperatorService(
+    new OperatorRepository(db),
+    new OperatorIdentityRepository(db),
+    new OperatorOwnershipRepository(db),
+    new EndpointStreamingPosteriorRepository(db),
+    new NodeStreamingPosteriorRepository(db),
+    new ServiceStreamingPosteriorRepository(db),
+  );
+  const endpointController = new EndpointController(bayesianVerdict, serviceEndpointRepo, agentRepo, operatorService);
 
   const app = express();
   app.use(express.json());
@@ -30,7 +49,7 @@ function buildTestApp() {
   app.use('/api', api);
   app.use(errorHandler);
 
-  return { db, app, agentRepo, serviceEndpointRepo };
+  return { db, app, agentRepo, serviceEndpointRepo, operatorService };
 }
 
 describe('GET /api/endpoint/:url_hash', () => {
@@ -38,9 +57,10 @@ describe('GET /api/endpoint/:url_hash', () => {
   let app: express.Express;
   let agentRepo: AgentRepository;
   let serviceEndpointRepo: ServiceEndpointRepository;
+  let operatorService: OperatorService;
 
   beforeAll(() => {
-    ({ db, app, agentRepo, serviceEndpointRepo } = buildTestApp());
+    ({ db, app, agentRepo, serviceEndpointRepo, operatorService } = buildTestApp());
   });
 
   afterAll(() => { db.close(); });
@@ -175,5 +195,76 @@ describe('GET /api/endpoint/:url_hash', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.metadata).toBeNull();
     expect(res.body.data.http).toBeNull();
+  });
+
+  // Phase 7 — C11 expose operator_id seulement quand status='verified' ;
+  // C12 émet l'advisory OPERATOR_UNVERIFIED pour pending/rejected, jamais
+  // pour verified. Vérifie aussi qu'un endpoint sans ownership n'a aucune
+  // trace d'operator (ni dans data.operator_id, ni dans advisories).
+  describe('C11/C12 — operator_id + OPERATOR_UNVERIFIED advisory', () => {
+    it('omits operator_id and OPERATOR_UNVERIFIED when endpoint has no operator claim', async () => {
+      const url = 'https://no-operator.example.com/api';
+      const urlHash = endpointHash(url);
+      const res = await request(app).get(`/api/endpoint/${urlHash}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.operator_id).toBeNull();
+      const codes = (res.body.data.advisory.advisories as Array<{ code: string }>).map(a => a.code);
+      expect(codes).not.toContain('OPERATOR_UNVERIFIED');
+    });
+
+    it('emits OPERATOR_UNVERIFIED advisory (info) when ownership claimed but status=pending', async () => {
+      const url = 'https://pending-op.example.com/api';
+      const urlHash = endpointHash(url);
+      const operatorId = 'op-pending-endpoint';
+      operatorService.upsertOperator(operatorId);
+      operatorService.claimOwnership(operatorId, 'endpoint', urlHash);
+
+      const res = await request(app).get(`/api/endpoint/${urlHash}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.operator_id).toBeNull(); // C11 — hidden until verified
+      const adv = (res.body.data.advisory.advisories as Array<{ code: string; level: string; data: { operator_status: string } }>)
+        .find(a => a.code === 'OPERATOR_UNVERIFIED');
+      expect(adv).toBeDefined();
+      expect(adv!.level).toBe('info');
+      expect(adv!.data.operator_status).toBe('pending');
+    });
+
+    it('emits OPERATOR_UNVERIFIED advisory (warning) when operator was explicitly rejected', async () => {
+      const url = 'https://rejected-op.example.com/api';
+      const urlHash = endpointHash(url);
+      const operatorId = 'op-rejected-endpoint';
+      operatorService.upsertOperator(operatorId);
+      operatorService.claimOwnership(operatorId, 'endpoint', urlHash);
+      // Rejected set via repo (no public setter) — simulates admin decision.
+      db.prepare(`UPDATE operators SET status='rejected' WHERE operator_id = ?`).run(operatorId);
+
+      const res = await request(app).get(`/api/endpoint/${urlHash}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.operator_id).toBeNull();
+      const adv = (res.body.data.advisory.advisories as Array<{ code: string; level: string; data: { operator_status: string } }>)
+        .find(a => a.code === 'OPERATOR_UNVERIFIED');
+      expect(adv).toBeDefined();
+      expect(adv!.level).toBe('warning');
+      expect(adv!.data.operator_status).toBe('rejected');
+    });
+
+    it('exposes operator_id and SUPPRESSES OPERATOR_UNVERIFIED when operator is verified', async () => {
+      const url = 'https://verified-op.example.com/api';
+      const urlHash = endpointHash(url);
+      const operatorId = 'op-verified-endpoint';
+      operatorService.upsertOperator(operatorId);
+      operatorService.claimOwnership(operatorId, 'endpoint', urlHash);
+      // Seed 2/3 verified identities → triggers status='verified' recompute.
+      operatorService.claimIdentity(operatorId, 'dns', 'verified-op.example.com');
+      operatorService.markIdentityVerified(operatorId, 'dns', 'verified-op.example.com', 'proof-dns-1');
+      operatorService.claimIdentity(operatorId, 'nip05', 'alice@verified-op.example.com');
+      operatorService.markIdentityVerified(operatorId, 'nip05', 'alice@verified-op.example.com', 'proof-nip05-1');
+
+      const res = await request(app).get(`/api/endpoint/${urlHash}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.operator_id).toBe(operatorId);
+      const codes = (res.body.data.advisory.advisories as Array<{ code: string }>).map(a => a.code);
+      expect(codes).not.toContain('OPERATOR_UNVERIFIED');
+    });
   });
 });

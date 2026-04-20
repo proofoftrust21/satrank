@@ -456,6 +456,11 @@ export interface VerdictResponse extends BayesianScoreBlock {
   /** Phase 4 P6 — uptime probe ratio in [0, 1] on the same 7d window the advisory uses.
    *  null when no probes yet. Complements the binary `unreachable` flag. */
   reachability: number | null;
+  /** Phase 7 C11 — operator_id de l'operator qui possède ce node, **uniquement
+   *  si son status='verified'**. null si le node n'est rattaché à aucun operator,
+   *  OU si l'operator est pending/rejected. Zéro auto-trust : on n'expose pas
+   *  un rattachement non-vérifié comme s'il était une identité. */
+  operator_id: string | null;
 }
 
 // Phase 4 — graduated advisory overlay. `advisory_level` sits alongside
@@ -471,7 +476,11 @@ export type AdvisoryCode =
   | 'LOW_UPTIME'
   | 'DEGRADED_HTTP'
   | 'STALE_HEALTH'
-  | 'INTERMITTENT';
+  | 'INTERMITTENT'
+  /** Phase 7 C12 — la ressource (node ou endpoint) est rattachée à un operator
+   *  dont le status ≠ 'verified' (pending ou rejected). Signalé pour éviter
+   *  l'auto-trust via un rattachement non-prouvé. */
+  | 'OPERATOR_UNVERIFIED';
 
 export interface Advisory {
   code: AdvisoryCode;

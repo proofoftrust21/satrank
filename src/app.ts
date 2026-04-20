@@ -162,7 +162,23 @@ export function createApp() {
   );
 
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+
+  // Phase 7 — operator abstraction construit en amont pour permettre à
+  // VerdictService d'exposer operator_id (C11) et l'advisory OPERATOR_UNVERIFIED
+  // (C12). OperatorController est instancié plus bas (dépend de agentRepo).
+  const operatorRepo = new OperatorRepository(db);
+  const operatorIdentityRepo = new OperatorIdentityRepository(db);
+  const operatorOwnershipRepo = new OperatorOwnershipRepository(db);
+  const operatorService = new OperatorService(
+    operatorRepo,
+    operatorIdentityRepo,
+    operatorOwnershipRepo,
+    endpointStreamingRepo,
+    nodeStreamingRepo,
+    serviceStreamingRepo,
+  );
+
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined, operatorService);
   const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
   const channelFlowService = new ChannelFlowService(channelSnapshotRepo);
   const feeVolatilityService = new FeeVolatilityService(feeSnapshotRepo, agentRepo);
@@ -228,9 +244,10 @@ export function createApp() {
     agentService,
     trendService,
     probeRepo,
+    operatorService,
   });
   const intentController = new IntentController(intentService);
-  const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo);
+  const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
 
@@ -241,20 +258,8 @@ export function createApp() {
   const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11, preimagePoolRepo) : null;
   const serviceRegisterController = new ServiceRegisterController(registryCrawler);
 
-  // Phase 7 — operator abstraction (nodes + endpoints + services sous une
-  // même identité cryptographique). OperatorService agrège les posteriors
-  // Bayesian des ressources owned ; voir le bloc archi en tête de ce fichier.
-  const operatorRepo = new OperatorRepository(db);
-  const operatorIdentityRepo = new OperatorIdentityRepository(db);
-  const operatorOwnershipRepo = new OperatorOwnershipRepository(db);
-  const operatorService = new OperatorService(
-    operatorRepo,
-    operatorIdentityRepo,
-    operatorOwnershipRepo,
-    endpointStreamingRepo,
-    nodeStreamingRepo,
-    serviceStreamingRepo,
-  );
+  // Phase 7 — controller pour /api/operator(s) endpoints. operatorService est
+  // construit plus haut (avant VerdictService pour les besoins C11/C12).
   const operatorController = new OperatorController({
     operatorService,
     operatorRepo,

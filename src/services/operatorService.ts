@@ -252,4 +252,30 @@ export class OperatorService {
       aggregated: this.aggregateBayesianForOperator(operatorId, atTs),
     };
   }
+
+  /** Resolve { operator_id, status } for a node pubkey. null si le node n'est
+   *  claim par aucun operator. Utilisé par /api/agent/:hash/verdict pour :
+   *    1. exposer operator_id (C11, uniquement si status='verified')
+   *    2. emit advisory OPERATOR_UNVERIFIED (C12, si status ≠ 'verified'). */
+  resolveOperatorForNode(nodePubkey: string): OperatorResourceLookup | null {
+    const ownership = this.ownerships.findOperatorForNode(nodePubkey);
+    if (!ownership) return null;
+    const op = this.operators.findById(ownership.operator_id);
+    if (!op) return null;
+    return { operatorId: op.operator_id, status: op.status };
+  }
+
+  /** Symmetric de resolveOperatorForNode, indexé par url_hash (endpoint). */
+  resolveOperatorForEndpoint(urlHash: string): OperatorResourceLookup | null {
+    const ownership = this.ownerships.findOperatorForEndpoint(urlHash);
+    if (!ownership) return null;
+    const op = this.operators.findById(ownership.operator_id);
+    if (!op) return null;
+    return { operatorId: op.operator_id, status: op.status };
+  }
+}
+
+export interface OperatorResourceLookup {
+  operatorId: string;
+  status: OperatorStatus;
 }

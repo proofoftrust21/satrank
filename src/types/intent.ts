@@ -55,6 +55,10 @@ export interface IntentCandidate {
   endpoint_hash: string;
   /** Pubkey LN (66 chars) du node operator. null si URL orpheline. */
   operator_pubkey: string | null;
+  /** Phase 7 — logical operator_id (SatRank operators table) EXPOSÉ uniquement
+   *  si l'operator a passé la règle 2/3 preuves (status='verified'). Null si
+   *  pas d'operator rattaché, ou si status∈{'pending','rejected'}. Zero auto-trust. */
+  operator_id: string | null;
   service_name: string | null;
   /** Prix extrait du BOLT11 — null si inconnu. */
   price_sats: number | null;
