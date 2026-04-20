@@ -1034,6 +1034,36 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 37, 'Phase 7 — operators abstraction: 5 tables (operators + identities + 3 ownership) + operator_id on agents/service_endpoints');
   }
 
+  // v38: Phase 8 — Nostr multi-kind publishing. Cache des derniers events
+  // publiés par kind / entité pour alimenter la décision shouldRepublish()
+  // sans round-trip vers les relais. Une ligne par (entity_type, entity_id) :
+  // le dernier event remplaçable (NIP-33) fait foi, les anciens sont écrasés.
+  //   - event_id     : id Nostr 64 hex du dernier event publié
+  //   - payload_hash : hash des tags/content pour dedup rapide
+  //   - verdict / advisory_level / p_success / n_obs_effective :
+  //     copies des champs décisionnels pour que shouldRepublish() puisse
+  //     comparer sans re-parser le payload.
+  if (!hasVersion(db, 38)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS nostr_published_events (
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('node', 'endpoint', 'service')),
+        entity_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        event_kind INTEGER NOT NULL,
+        published_at INTEGER NOT NULL,
+        payload_hash TEXT NOT NULL,
+        verdict TEXT,
+        advisory_level TEXT,
+        p_success REAL,
+        n_obs_effective REAL,
+        PRIMARY KEY (entity_type, entity_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_nostr_published_updated ON nostr_published_events(published_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_nostr_published_kind ON nostr_published_events(event_kind);
+    `);
+    recordVersion(db, 38, 'Phase 8 — nostr_published_events cache table for shouldRepublish decisions');
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -1043,6 +1073,13 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  38: (db) => {
+    // Rollback Phase 8 — drop cache events publiés. Aucune autre table
+    // n'en dépend (pas de FK), les indexes tombent avec la table.
+    db.exec('DROP INDEX IF EXISTS idx_nostr_published_kind');
+    db.exec('DROP INDEX IF EXISTS idx_nostr_published_updated');
+    db.exec('DROP TABLE IF EXISTS nostr_published_events');
+  },
   37: (db) => {
     // Rollback Phase 7 — operators abstraction. Drop les colonnes operator_id
     // (agents, service_endpoints) puis les 5 tables dans l'ordre inverse de
