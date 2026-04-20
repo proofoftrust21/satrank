@@ -9,6 +9,7 @@ import { config } from '../config';
 import { ValidationError } from '../errors';
 import { logger } from '../logger';
 import { depositPhaseTotal } from '../middleware/metrics';
+import { DepositTierService } from '../services/depositTierService';
 
 const MIN_DEPOSIT_SATS = 21;
 const MAX_DEPOSIT_SATS = 10_000;
@@ -55,9 +56,11 @@ async function lndLookupInvoice(rHashHex: string): Promise<{ settled: boolean; v
 
 export class DepositController {
   private db: Database.Database;
+  private tierService: DepositTierService;
 
   constructor(db: Database.Database) {
     this.db = db;
+    this.tierService = new DepositTierService(db);
   }
 
   /** Two-phase deposit:
@@ -143,25 +146,34 @@ export class DepositController {
     // Atomic check-and-insert in a transaction to prevent race conditions.
     // Two concurrent requests with the same paymentHash: only the first credits,
     // the second gets alreadyRedeemed instead of a duplicate success.
-    const checkAndInsert = this.db.transaction((quota: number) => {
-      const existing = this.db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?')
-        .get(paymentHashBuf) as { remaining: number } | undefined;
-      if (existing) return { alreadyRedeemed: true, balance: existing.remaining };
+    //
+    // Phase 9: engrave tier_id + rate_sats_per_request + balance_credits on the
+    // row at INSERT. Rate is frozen for the lifetime of this token — future
+    // schedule changes can't retroactively charge more.
+    const checkAndInsert = this.db.transaction((quota: number, tierId: number, rate: number, credits: number) => {
+      const existing = this.db.prepare('SELECT remaining, balance_credits, rate_sats_per_request, tier_id FROM token_balance WHERE payment_hash = ?')
+        .get(paymentHashBuf) as { remaining: number; balance_credits: number; rate_sats_per_request: number | null; tier_id: number | null } | undefined;
+      if (existing) return { alreadyRedeemed: true, existing };
 
       const now = Math.floor(Date.now() / 1000);
-      this.db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES (?, ?, ?, ?)')
-        .run(paymentHashBuf, quota, now, quota);
-      return { alreadyRedeemed: false, balance: quota };
+      this.db.prepare(`
+        INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(paymentHashBuf, quota, now, quota, tierId, rate, credits);
+      return { alreadyRedeemed: false as const };
     });
 
     // Quick check outside transaction (avoids LND call for already-redeemed tokens)
-    const preCheck = this.db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?')
-      .get(paymentHashBuf) as { remaining: number } | undefined;
+    const preCheck = this.db.prepare('SELECT remaining, balance_credits, rate_sats_per_request, tier_id FROM token_balance WHERE payment_hash = ?')
+      .get(paymentHashBuf) as { remaining: number; balance_credits: number; rate_sats_per_request: number | null; tier_id: number | null } | undefined;
     if (preCheck) {
       depositPhaseTotal.inc({ phase: 'verify_success_cached' });
       res.json({
         data: {
           balance: preCheck.remaining,
+          balanceCredits: preCheck.balance_credits,
+          rateSatsPerRequest: preCheck.rate_sats_per_request,
+          tierId: preCheck.tier_id,
           paymentHash: body.paymentHash,
           alreadyRedeemed: true,
           instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
@@ -206,7 +218,22 @@ export class DepositController {
       });
       return;
     }
-    const result = checkAndInsert(quota);
+
+    // Phase 9 — look up the engraved tier + compute credits. An amount below
+    // the floor (< 21 sats) is guarded by createInvoice's MIN_DEPOSIT_SATS
+    // check, but we defend again here in case a legacy invoice somehow slipped
+    // through.
+    const tier = this.tierService.lookupTierForAmount(quota);
+    if (!tier) {
+      logger.error({ paymentHash: body.paymentHash.slice(0, 16), quota }, 'Deposit: no applicable tier — refusing to credit');
+      res.status(502).json({
+        error: { code: 'NO_APPLICABLE_TIER', message: 'Amount is below the minimum deposit tier. Retry with a deposit ≥ 21 sats.' },
+        paymentHash: body.paymentHash,
+      });
+      return;
+    }
+    const credits = this.tierService.computeCredits(quota, tier);
+    const result = checkAndInsert(quota, tier.tier_id, tier.rate_sats_per_request, credits);
 
     if (result.alreadyRedeemed) {
       // Race loser: the paymentHash was credited by a concurrent request between
@@ -215,7 +242,10 @@ export class DepositController {
       depositPhaseTotal.inc({ phase: 'verify_success_cached' });
       res.json({
         data: {
-          balance: result.balance,
+          balance: result.existing.remaining,
+          balanceCredits: result.existing.balance_credits,
+          rateSatsPerRequest: result.existing.rate_sats_per_request,
+          tierId: result.existing.tier_id,
           paymentHash: body.paymentHash,
           alreadyRedeemed: true,
           instructions: 'Use Authorization: L402 deposit:<preimage> on paid endpoints.',
@@ -224,12 +254,19 @@ export class DepositController {
       return;
     }
 
-    logger.info({ paymentHash: body.paymentHash.slice(0, 16), quota }, 'Deposit verified and balance credited');
+    logger.info({
+      paymentHash: body.paymentHash.slice(0, 16),
+      quota, tierId: tier.tier_id, rate: tier.rate_sats_per_request, credits,
+    }, 'Deposit verified and balance credited');
     depositPhaseTotal.inc({ phase: 'verify_success_fresh' });
 
     res.status(201).json({
       data: {
         balance: quota,
+        balanceCredits: credits,
+        rateSatsPerRequest: tier.rate_sats_per_request,
+        tierId: tier.tier_id,
+        discountPct: tier.discount_pct,
         paymentHash: body.paymentHash,
         token: `L402 deposit:${body.preimage}`,
         instructions: 'Use the token value as your Authorization header on all paid endpoints.',
