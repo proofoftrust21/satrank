@@ -10,20 +10,28 @@
 
 ---
 
-## Remediation status (Phase 11bis — 2026-04-20)
+## Remediation status (Phase 11bis + 11ter — 2026-04-20)
 
 | ID | Sev | Status | Evidence |
 |----|-----|--------|----------|
-| F-01 | Critical | **Fixed** in `0eeb820` (merge `7488354`) | `fetchSafeExternal` wraps both `/api/probe` fetches. Live validation against `https://satrank.dev/api/probe`: 5/5 scenarios (literal `127.0.0.1`, hostname `localhost`, decimal IP `2130706433`, userinfo `public.com@127.0.0.1`, IMDS `169.254.169.254`) returned `VALIDATION_ERROR: URL_NOT_ALLOWED`. |
-| F-02 | High | **Fixed** in `0eeb820` | `resolveAndPin → fetch(url)` TOCTOU pattern replaced with a single undici `Agent.connect.lookup` hook — one DNS lookup, validated inline before socket open. Applied in `operatorVerificationService`, `serviceHealthCrawler`, `decideService`, `registryCrawler`. |
-| F-03 | High | **Fixed** in `0eeb820` | `fetchSafeExternal` forces `redirect: 'manual'` by default; callers re-validate 3xx themselves. |
-| F-01-bis | Medium | **Fixed** in `0eeb820` + prod env (`2026-04-20`) | `PROBE_RATE_LIMIT_GLOBAL_PER_HOUR` default 100 → 20 (`src/config.ts`); prod `.env.production` updated; `satrank-api` recreated. |
+| F-01 | Critical | **Closed** in `0eeb820` (merge `7488354`) | `fetchSafeExternal` wraps both `/api/probe` fetches. Live validation against `https://satrank.dev/api/probe`: 5/5 scenarios (literal `127.0.0.1`, hostname `localhost`, decimal IP `2130706433`, userinfo `public.com@127.0.0.1`, IMDS `169.254.169.254`) returned `VALIDATION_ERROR: URL_NOT_ALLOWED`. |
+| F-02 | High | **Closed** in `0eeb820` | `resolveAndPin → fetch(url)` TOCTOU pattern replaced with a single undici `Agent.connect.lookup` hook — one DNS lookup, validated inline before socket open. Applied in `operatorVerificationService`, `serviceHealthCrawler`, `decideService`, `registryCrawler`. |
+| F-03 | High | **Closed** in `0eeb820` | `fetchSafeExternal` forces `redirect: 'manual'` by default; callers re-validate 3xx themselves. |
+| F-01-bis | Medium | **Closed** in `0eeb820` + prod env (`2026-04-20`) | `PROBE_RATE_LIMIT_GLOBAL_PER_HOUR` default 100 → 20 (`src/config.ts`); prod `.env.production` updated; `satrank-api` recreated. Rate limit is documented as economic friction only, not a security boundary. |
 | F-07 | Medium | **Partial** in `0eeb820` | `bodyPreview` now forced empty for binary Content-Type (`readBodyCapped` + `BINARY_CT_RE`). Size cap remains 256 B. `bodyHash` and `bodyBytes` still returned — observability trade-off, candidate for P3 hygiene pass. |
-| F-04 | Low | Deferred | `bolt11 → elliptic` transitive — no signature-verify path runs the risky primitive in our code. Tracked for `bolt11@2.x`. |
-| F-05 | Low | Deferred | `SERVER_IP` default `178.104.108.108` kept; also present in DNS. Not P0. |
-| F-06 | Info | Deferred | SSR boot JSON escape — availability issue, not security. |
+| F-04 | Low | **Accepted** (case C — see investigation below) | `bolt11@2.x` does not exist on npm (latest `1.4.1`, 2023-03). `@lightning/bolt11` does not exist (audit error). `light-bolt11-decoder` is a viable migration target but out of P3 scope. No exploit surface in our decode-only path: `GHSA-848j-6mx2-7j84` concerns ECDSA signing under specific conditions, which we never run. Dependabot (Phase 11ter) will flag future bolt11 / elliptic releases automatically. |
+| F-05 | Low | **Closed** in `d68613c` | Hardcoded `'178.104.108.108'` default removed from `src/utils/ssrf.ts`; production boot fails if `SERVER_IP` env is unset (same pattern as `API_KEY`). `.env.example` documents the variable. |
+| F-06 | Info | **Closed** in `cbc5857` | SSR boot JSON escape extracted into `src/utils/safeJsonForScript.ts`; now also covers U+2028 and U+2029. 6 unit tests added. |
 
 **Live validation (2026-04-20)** — test token provisioned on prod (random preimage, 10 credits, rate 1), 5 scenarios curled against `https://satrank.dev/api/probe`, all five returned HTTP 400 with `URL_NOT_ALLOWED: target must be a public http(s) URL (no loopback, private, link-local, CGN, userinfo).` Token balance intact after the run (SSRF block precedes the credit debit). Token purged post-validation.
+
+### F-04 investigation (Phase 11ter)
+
+Three mitigation cases were evaluated:
+
+- **Case A — upgrade `bolt11` to 2.x.** Not possible. `npm view bolt11 versions` returns `1.0.0 … 1.4.1`; the `2.x` line does not exist. The audit's original recommendation ("Defer until `bolt11@2.x` ships a compatible upgrade") was based on an incorrect assumption.
+- **Case B — migrate to an elliptic-free library.** `@lightning/bolt11` referenced by the audit does not exist on npm (404). The closest viable alternative is `light-bolt11-decoder` (fiatjaf, MIT, active, depends only on `@scure/base`). Migration is technically feasible but requires an API shape translation and careful handling of `payeeNodeKey` recovery, signet prefixes, and tagsObject semantics. Medium effort, non-zero regression risk on the L402 discovery path (`registryCrawler`).
+- **Case C — accept the risk with monitoring.** Chosen. Our usage in `src/utils/bolt11Parser.ts` is decode-only: we extract `payment_hash`, `satoshis`, `prefix`, `payeeNodeKey`, `expire_time`, `timestamp`. We never sign. `GHSA-848j-6mx2-7j84` is an ECDSA-signing risk (malleable signatures under specific conditions); decoding BOLT11 does not exercise the risky primitive. Dependabot (added in Phase 11ter C6) will watch weekly for a bolt11 security release or a direct elliptic advisory; this finding will be re-opened automatically if either lands.
 
 ---
 
@@ -250,6 +258,8 @@ SatRank uses `bolt11` only to parse invoice `amount` and `paymentHash` in `src/u
 
 Defer until `bolt11@2.x` ships a compatible upgrade, or replace the parser with `@lightning/bolt11` which removes the elliptic dependency. Not blocking.
 
+> **Phase 11ter note.** Investigation showed `bolt11@2.x` does not exist and `@lightning/bolt11` is not a published npm package. `light-bolt11-decoder` (fiatjaf) is the only viable elliptic-free alternative. See the **F-04 investigation** section above — accepted as case C.
+
 ---
 
 ## F-05 — Low: hardcoded prod server IP in SSRF utility default
@@ -318,9 +328,9 @@ Extend the regex to replace `\u2028` and `\u2029` with their `\u` escapes, or ru
 | P1 | F-02 | Rewrite `resolveAndPin` callers to pin via `undici.Agent` DNS hook or direct-IP fetch with `Host` header. | M (2–3 days) |
 | P1 | F-07 | Remove `bodyHash` and `bodyBytes` from `/api/probe` response; clamp `bodyPreview` to 64 B; add `bodyLooksJson` boolean. | S |
 | P2 | F-01-bis | Update threat-model doc so rate limits are not credited as an SSRF defense; no code change. | XS |
-| P3 | F-04 | Track `bolt11@2.x` availability or replace with `@lightning/bolt11`. | S–M depending on library |
-| P3 | F-05 | Require `SERVER_IP` env in prod, no default. | XS |
-| P3 | F-06 | Extend SSR JSON escape for U+2028/U+2029. | XS |
+| P3 | F-04 | Track `bolt11` releases via Dependabot; migrate to `light-bolt11-decoder` if a signing-path CVE surfaces. | S–M |
+| P3 | F-05 | ~~Require `SERVER_IP` env in prod, no default.~~ **Closed** (`d68613c`). | XS |
+| P3 | F-06 | ~~Extend SSR JSON escape for U+2028/U+2029.~~ **Closed** (`cbc5857`). | XS |
 
 **Sequencing:** P0 first, in a single small PR gated on the new integration tests. P1 in a follow-up. P2/P3 bundled into a hygiene PR.
 
