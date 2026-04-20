@@ -12,7 +12,7 @@ import { runMigrations } from './database/migrations';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
-import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal, rateLimitHits } from './middleware/metrics';
+import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal, operatorsTotal, rateLimitHits } from './middleware/metrics';
 
 // Repositories
 import { AgentRepository } from './repositories/agentRepository';
@@ -416,6 +416,13 @@ export function createApp() {
       const stats = statsService.getNetworkStats();
       agentsTotal.set(stats.totalAgents);
       channelsTotal.set(stats.totalChannels);
+
+      // Phase 7 C13 — operatorsTotal gauge refresh : countByStatus() est
+      // indexé, une requête agrège les 3 buckets.
+      const operatorCounts = operatorRepo.countByStatus();
+      operatorsTotal.set({ status: 'verified' }, operatorCounts.verified);
+      operatorsTotal.set({ status: 'pending' }, operatorCounts.pending);
+      operatorsTotal.set({ status: 'rejected' }, operatorCounts.rejected);
 
       // Refresh cache freshness gauges at scrape time
       const { getFreshnessReport } = await import('./cache/memoryCache');

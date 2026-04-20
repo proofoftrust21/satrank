@@ -24,6 +24,7 @@ import { z } from 'zod';
 import { ValidationError, NotFoundError } from '../errors';
 import { formatZodError } from '../utils/zodError';
 import { logger } from '../logger';
+import { operatorVerificationsTotal } from '../middleware/metrics';
 import { verifyNip98 } from '../middleware/nip98';
 import type { OperatorService } from '../services/operatorService';
 import type { OperatorRepository, OperatorStatus } from '../repositories/operatorRepository';
@@ -185,6 +186,20 @@ export class OperatorController {
   };
 
   private async verifyIdentity(
+    operatorId: string,
+    identity: z.infer<typeof identitySchema>,
+  ): Promise<VerificationReport> {
+    const report = await this.runVerification(operatorId, identity);
+    const result = report.valid ? 'success' : 'failure';
+    operatorVerificationsTotal.inc({ type: identity.type, result });
+    logger.info(
+      { operatorId, type: identity.type, value: identity.value, valid: report.valid, reason: report.reason },
+      'operator identity verification',
+    );
+    return report;
+  }
+
+  private async runVerification(
     operatorId: string,
     identity: z.infer<typeof identitySchema>,
   ): Promise<VerificationReport> {

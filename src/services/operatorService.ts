@@ -65,6 +65,8 @@ import type {
   ServiceStreamingPosteriorRepository,
 } from '../repositories/streamingPosteriorRepository';
 import { DEFAULT_PRIOR_ALPHA, DEFAULT_PRIOR_BETA } from '../config/bayesianConfig';
+import { logger } from '../logger';
+import { operatorClaimsTotal } from '../middleware/metrics';
 
 /** Règle dure du brief : ≥2 identités vérifiées → status='verified'. */
 const MIN_VERIFIED_IDENTITIES_FOR_VERIFIED = 2;
@@ -111,6 +113,7 @@ export class OperatorService {
   claimIdentity(operatorId: string, type: IdentityType, value: string): void {
     this.operators.touch(operatorId);
     this.identities.claim(operatorId, type, value);
+    logger.info({ operatorId, type, value }, 'operator identity claimed');
   }
 
   /** Marque l'identité comme vérifiée + recompute le status global. */
@@ -123,7 +126,12 @@ export class OperatorService {
   ): OperatorStatus {
     this.identities.markVerified(operatorId, type, value, proof, now);
     this.operators.touch(operatorId, now);
-    return this.recomputeStatus(operatorId);
+    const status = this.recomputeStatus(operatorId);
+    logger.info(
+      { operatorId, type, value, status, at: now },
+      'operator identity verified',
+    );
+    return status;
   }
 
   /** Règle dure : count(verified identities) ≥ 2 → 'verified'. Score = count
@@ -156,6 +164,11 @@ export class OperatorService {
     if (resourceType === 'node') this.ownerships.claimNode(operatorId, resourceId, now);
     else if (resourceType === 'endpoint') this.ownerships.claimEndpoint(operatorId, resourceId, now);
     else this.ownerships.claimService(operatorId, resourceId, now);
+    operatorClaimsTotal.inc({ resource_type: resourceType });
+    logger.info(
+      { operatorId, resourceType, resourceId, at: now },
+      'operator ownership claimed',
+    );
   }
 
   verifyOwnership(
