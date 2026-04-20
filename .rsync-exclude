@@ -1,0 +1,68 @@
+# Canonical rsync exclusion list for `make deploy`.
+#
+# Any rsync that ships this repo to prod MUST pass --exclude-from=.rsync-exclude.
+# Every entry here is either a secret, prod-only runtime state, or a binary
+# artifact that would corrupt a deploy if erased by `--delete`.
+#
+# History: two incidents in 2026 (Phase 7 wiped .env.production, Phase 9 wiped
+# probe-pay.macaroon) were caused by ad-hoc rsync commands that forgot one of
+# these exclusions. Keep this list authoritative — never hand-type excludes
+# into an ad-hoc rsync call.
+#
+# Patterns without a leading slash match at any depth.
+# See docs/DEPLOY.md for the deploy procedure.
+
+# ── Secrets (MUST never leave the local machine) ─────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+
+# ── Prod-only runtime state (MUST never be overwritten from local) ───────
+data/
+*.db
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+backups/
+
+# ── Macaroons: LND credentials baked on prod. Never shipped from local. ──
+# Covers probe-pay.macaroon, admin.macaroon, invoice.macaroon, readonly.macaroon.
+*.macaroon
+
+# ── L402/Aperture config (prod-only, references secrets) ─────────────────
+aperture.yaml
+aperture.local.yaml
+
+# ── Build artifacts (rebuilt on prod inside Docker) ──────────────────────
+node_modules/
+dist/
+build/
+
+# ── Python SDK build/cache (do NOT ship venv or bytecode) ────────────────
+python-sdk/.venv/
+python-sdk/build/
+python-sdk/dist/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# ── SDK node_modules (shipped to prod via its own build step) ────────────
+sdk/node_modules/
+sdk/dist/
+
+# ── Git / IDE / Claude / local noise ─────────────────────────────────────
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+.claude/
+*.swp
+*.swo
+coverage/
+
+# ── Log files (prod writes to /var/log/satrank, not the app dir) ─────────
+*.log
+logs/
