@@ -5,10 +5,10 @@
 //      status='verified'.
 //   2. /report with explicit failure ⇒ tx row with source='intent',
 //      status='failed'.
-//   3. /decide then agent disappears past INTENT_OUTCOME_TIMEOUT_HOURS ⇒
-//      decideLogTimeoutWorker scans but writes NOTHING.
+//   3. token query then agent disappears past INTENT_OUTCOME_TIMEOUT_HOURS
+//      ⇒ tokenQueryLogTimeoutWorker scans but writes NOTHING.
 //
-// Classification criterion: a `decide_log` row matching
+// Classification criterion: a `token_query_log` row matching
 // `(payment_hash = sha256(l402_preimage), target_hash = report.target)`.
 // When present, ReportService tags the tx as source='intent' (and uses
 // source_module='decideService' on the NDJSON emit). When absent, the
@@ -29,7 +29,7 @@ import { AttestationRepository } from '../../repositories/attestationRepository'
 import { SnapshotRepository } from '../../repositories/snapshotRepository';
 import { ScoringService } from '../../services/scoringService';
 import { ReportService } from '../../services/reportService';
-import { DecideLogTimeoutWorker } from '../../services/decideLogTimeoutWorker';
+import { TokenQueryLogTimeoutWorker } from '../../services/tokenQueryLogTimeoutWorker';
 import { DualWriteLogger } from '../../utils/dualWriteLogger';
 import { sha256 } from '../../utils/crypto';
 import { DuplicateReportError } from '../../errors';
@@ -71,12 +71,12 @@ function makeAgent(alias: string, hash: string): Agent {
   };
 }
 
-/** Simulate the auth middleware's decide_log insert. Mirrors logTokenQuery
- *  semantics (INSERT OR IGNORE) — tests can seed multiple (token, target)
- *  pairs without worrying about duplicates. */
-function seedDecideLog(db: Database.Database, paymentHash: Buffer, targetHash: string, when: number): void {
+/** Simulate the auth middleware's token_query_log insert. Mirrors
+ *  logTokenQuery semantics (INSERT OR IGNORE) — tests can seed multiple
+ *  (token, target) pairs without worrying about duplicates. */
+function seedTokenQueryLog(db: Database.Database, paymentHash: Buffer, targetHash: string, when: number): void {
   db.prepare(
-    'INSERT OR IGNORE INTO decide_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)',
+    'INSERT OR IGNORE INTO token_query_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)',
   ).run(paymentHash, targetHash, when);
 }
 
@@ -128,8 +128,8 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
   }
 
   // §4 case 1 — /report with verified preimage closes a prior /decide.
-  it('mode=active: verified report + matching decide_log ⇒ source=intent, status=verified', async () => {
-    seedDecideLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
+  it('mode=active: verified report + matching token_query_log ⇒ source=intent, status=verified', async () => {
+    seedTokenQueryLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
     const reportService = new ReportService(
       attestationRepo, agentRepo, txRepo, scoringService, db, 'active',
     );
@@ -146,8 +146,8 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
   });
 
   // §4 case 2 — explicit failure outcome.
-  it('mode=active: failed report + matching decide_log ⇒ source=intent, status=failed', async () => {
-    seedDecideLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
+  it('mode=active: failed report + matching token_query_log ⇒ source=intent, status=failed', async () => {
+    seedTokenQueryLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
     const reportService = new ReportService(
       attestationRepo, agentRepo, txRepo, scoringService, db, 'active',
     );
@@ -159,8 +159,8 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
     expect(row.status).toBe('failed');
   });
 
-  // Regression guard on Commit 6 — no decide_log ⇒ still source='report'.
-  it('no matching decide_log ⇒ falls back to source=report', async () => {
+  // Regression guard on Commit 6 — no token_query_log ⇒ still source='report'.
+  it('no matching token_query_log ⇒ falls back to source=report', async () => {
     const reportService = new ReportService(
       attestationRepo, agentRepo, txRepo, scoringService, db, 'active',
     );
@@ -174,10 +174,10 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
   // L402 token present but bound to a DIFFERENT target (agent queried /decide
   // for X then reports against Y). Only reports *on the same target the
   // token paid for* earn the intent classification.
-  it('decide_log row for different target ⇒ source=report', async () => {
+  it('token_query_log row for different target ⇒ source=report', async () => {
     const otherTarget = sha256('other-target-pubkey');
     agentRepo.insert(makeAgent('other', otherTarget));
-    seedDecideLog(db, PAYMENT_HASH_BUF, otherTarget, FIXED_UNIX - 60);
+    seedTokenQueryLog(db, PAYMENT_HASH_BUF, otherTarget, FIXED_UNIX - 60);
 
     const reportService = new ReportService(
       attestationRepo, agentRepo, txRepo, scoringService, db, 'active',
@@ -189,10 +189,10 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
   });
 
   // API-key auth ⇒ no L402 paymentHash on the request, so classifySource
-  // must short-circuit to 'report' even if a decide_log row happens to
+  // must short-circuit to 'report' even if a token_query_log row happens to
   // exist for the (unrelated) paymentHash.
   it('no l402PaymentHash on ReportRequest ⇒ source=report', async () => {
-    seedDecideLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
+    seedTokenQueryLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
     const reportService = new ReportService(
       attestationRepo, agentRepo, txRepo, scoringService, db, 'active',
     );
@@ -206,7 +206,7 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
   // create a second tx row. DuplicateReportError fires inside the 1h
   // attestation dedup window; either way, exactly one tx stays.
   it('2× submit of same intent-closing report ⇒ 1 tx row, source=intent preserved', async () => {
-    seedDecideLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
+    seedTokenQueryLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
     const reportService = new ReportService(
       attestationRepo, agentRepo, txRepo, scoringService, db, 'active',
     );
@@ -224,7 +224,7 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
   // reports). The audit script uses this to distribute traffic by code-path
   // per §6 of the design.
   it('mode=dry_run: intent report emits NDJSON with source_module=decideService', async () => {
-    seedDecideLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
+    seedTokenQueryLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 60);
     const logPath = path.join(tmpDir, 'primary.ndjson');
     const dualLogger = new DualWriteLogger(logPath, tmpDir);
     const reportService = new ReportService(
@@ -241,12 +241,12 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
     expect(emit.legacy_inserted).toBe(true);
   });
 
-  // §4 case 3 — timeout worker no-op invariant. An expired decide_log row
+  // §4 case 3 — timeout worker no-op invariant. An expired token_query_log row
   // with no matching /report must NEVER trigger an INSERT into
   // `transactions`. We seed 3 rows (1 expired+unresolved, 1 resolved by a
   // prior /report, 1 still pending) and assert: transactions row count is
   // unchanged, and the classification counters match reality.
-  it('DecideLogTimeoutWorker scan is a strict no-op on transactions', async () => {
+  it('TokenQueryLogTimeoutWorker scan is a strict no-op on transactions', async () => {
     const other = sha256('other-pubkey');
     const pending = sha256('pending-pubkey');
     agentRepo.insert(makeAgent('other', other));
@@ -256,9 +256,9 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
     const phResolved = PAYMENT_HASH_BUF;
     const phPending = createHash('sha256').update(Buffer.from('c'.repeat(64), 'hex')).digest();
 
-    seedDecideLog(db, phExpired, other, FIXED_UNIX - 48 * 3600); // expired
-    seedDecideLog(db, phResolved, targetHash, FIXED_UNIX - 3600); // to be resolved
-    seedDecideLog(db, phPending, pending, FIXED_UNIX - 60); // still pending
+    seedTokenQueryLog(db, phExpired, other, FIXED_UNIX - 48 * 3600); // expired
+    seedTokenQueryLog(db, phResolved, targetHash, FIXED_UNIX - 3600); // to be resolved
+    seedTokenQueryLog(db, phPending, pending, FIXED_UNIX - 60); // still pending
 
     // Resolve the second entry by submitting a matching /report — this
     // writes a tx with source='intent' that the worker must recognize as
@@ -271,7 +271,7 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
     const txCountBefore = (db.prepare('SELECT COUNT(*) as c FROM transactions').get() as { c: number }).c;
     expect(txCountBefore).toBe(1); // only the resolved intent's tx
 
-    const worker = new DecideLogTimeoutWorker(db, 24);
+    const worker = new TokenQueryLogTimeoutWorker(db, 24);
     const scanResult = worker.scan(FIXED_UNIX);
 
     expect(scanResult.expired).toBe(1);
@@ -284,9 +284,9 @@ describe('DecideService dual-write (source=intent) × timeout worker', () => {
 
   // Running the worker multiple times must also be a no-op — it should not
   // accumulate state. Re-scans return the same classification.
-  it('DecideLogTimeoutWorker scan is idempotent across multiple runs', async () => {
-    seedDecideLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 48 * 3600);
-    const worker = new DecideLogTimeoutWorker(db, 24);
+  it('TokenQueryLogTimeoutWorker scan is idempotent across multiple runs', async () => {
+    seedTokenQueryLog(db, PAYMENT_HASH_BUF, targetHash, FIXED_UNIX - 48 * 3600);
+    const worker = new TokenQueryLogTimeoutWorker(db, 24);
 
     const first = worker.scan(FIXED_UNIX);
     const second = worker.scan(FIXED_UNIX);

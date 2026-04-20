@@ -1,5 +1,5 @@
 // Sim #5 finding #7 — reportAuth must normalize a pubkey-form target to its
-// hash form before looking up decide_log (which stores hashed targets only).
+// hash form before looking up token_query_log (which stores hashed targets only).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
@@ -52,14 +52,14 @@ describe('reportAuth — target normalization', () => {
     });
   }
 
-  it('accepts a pubkey-form target when decide_log has the hashed form', async () => {
+  it('accepts a pubkey-form target when token_query_log has the hashed form', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
     const paymentHash = paymentHashFromPreimage(preimage);
 
-    // Seed: token_balance + decide_log entry keyed on the HASH (as /decide stores it)
+    // Seed: token_balance + token_query_log entry keyed on the HASH (as /decide stores it)
     db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
       .run(paymentHash, 20, Math.floor(Date.now() / 1000));
-    db.prepare('INSERT INTO decide_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)')
+    db.prepare('INSERT INTO token_query_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)')
       .run(paymentHash, targetHash, Math.floor(Date.now() / 1000));
 
     // Client submits with pubkey (66 chars, 03 prefix) — must be normalized to hash for lookup
@@ -77,7 +77,7 @@ describe('reportAuth — target normalization', () => {
 
     db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
       .run(paymentHash, 20, Math.floor(Date.now() / 1000));
-    db.prepare('INSERT INTO decide_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)')
+    db.prepare('INSERT INTO token_query_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)')
       .run(paymentHash, targetHash, Math.floor(Date.now() / 1000));
 
     const result = await callMiddleware(makeL402Header(preimage), {
@@ -88,11 +88,11 @@ describe('reportAuth — target normalization', () => {
     expect(result.status).toBe(200);
   });
 
-  it('rejects a pubkey-form target with UNAUTHORIZED when no decide_log binding exists', async () => {
+  it('rejects a pubkey-form target with UNAUTHORIZED when no token_query_log binding exists', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
     const paymentHash = paymentHashFromPreimage(preimage);
 
-    // Token exists but no decide_log — never queried this target
+    // Token exists but no token_query_log — never queried this target
     db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
       .run(paymentHash, 20, Math.floor(Date.now() / 1000));
 

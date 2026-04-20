@@ -64,7 +64,7 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
 // Reports are free (no quota consumed) but require a non-exhausted token.
 export function createReportAuth(db: Database.Database) {
   const stmtCheck = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?');
-  const stmtDecideLog = db.prepare('SELECT 1 FROM decide_log WHERE payment_hash = ? AND target_hash = ?');
+  const stmtTokenQueryLog = db.prepare('SELECT 1 FROM token_query_log WHERE payment_hash = ? AND target_hash = ?');
 
   return function reportAuth(req: Request, _res: Response, next: NextFunction): void {
     // Path A: API key (existing behavior)
@@ -88,15 +88,15 @@ export function createReportAuth(db: Database.Database) {
           next(new AuthenticationError('Report requires a target field'));
           return;
         }
-        // decide_log stores the normalized hash (sha256 of a pubkey, or the
-        // 64-char hash as-is). Agents often submit the pubkey in both /decide
-        // and /report — we must apply the same normalization here or the
-        // lookup silently misses. See sim #5 finding #7.
+        // token_query_log stores the normalized hash (sha256 of a pubkey, or
+        // the 64-char hash as-is). Agents often submit the pubkey — we must
+        // apply the same normalization here or the lookup silently misses.
+        // See sim #5 finding #7.
         const normalizedTargetHash = normalizeIdentifier(rawTarget).hash;
         // Verify this token has looked up the target. Post Phase 10 the log
         // is populated by /api/profile, /api/agent/:hash/verdict, and
         // /api/verdicts — any paid target query works.
-        const queried = stmtDecideLog.get(paymentHash, normalizedTargetHash);
+        const queried = stmtTokenQueryLog.get(paymentHash, normalizedTargetHash);
         if (!queried) {
           next(new AuthenticationError(
             'Report rejected: this L402 token has no record of querying the target. ' +

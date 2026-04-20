@@ -41,7 +41,7 @@
 //     distinction sera matérialisée.
 //   - 'report' → streaming + buckets (weight selon tier défaut, voir --reporter-tier)
 //   - 'observer' → buckets only (CHECK constraint SQL sur streaming)
-//   - 'intent' → skip complet (contrat Phase 3 : intents = decide_log, pas d'obs)
+//   - 'intent' → skip complet (contrat Phase 3 : intents = token_query_log, pas d'obs)
 //   - source IS NULL → skip (legacy pré-v31, sans enrichment)
 //
 // Exit codes : 0 = success, 1 = erreur fatale.

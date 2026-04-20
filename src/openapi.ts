@@ -375,7 +375,7 @@ export const openapiSpec = {
       post: {
         summary: 'Report transaction outcome',
         operationId: 'report',
-        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously decided on this target — see decide_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
+        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously queried this target — see token_query_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
         tags: ['Reports'],
         security: [{ apiKey: [] }, { l402: [] }],
         requestBody: {
@@ -388,8 +388,8 @@ export const openapiSpec = {
             content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/ReportResponse' } } } } },
           },
           '400': { $ref: '#/components/responses/ValidationError' },
-          '401': { description: 'Missing or invalid auth (no X-API-Key and no decide-scoped L402 token for this target)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-          '403': { description: 'L402 token not scoped to this target (no decide_log row linking token→target within the auth window)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '401': { description: 'Missing or invalid auth (no X-API-Key and no query-scoped L402 token for this target)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '403': { description: 'L402 token not scoped to this target (no token_query_log row linking token→target within the auth window)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '404': { $ref: '#/components/responses/NotFound' },
           '409': { description: 'Duplicate report — same reporter+target within 1 hour (error.code = DUPLICATE_REPORT)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },

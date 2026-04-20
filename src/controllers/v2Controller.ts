@@ -84,7 +84,7 @@ export class V2Controller {
 
       // L402 token's payment_hash (raw sha256 digest Buffer) — null under
       // API-key auth. Consumed by both ReportService (source classification
-      // via decide_log lookup) and the Tier 2 bonus credit path; hoisted
+      // via token_query_log lookup) and the Tier 2 bonus credit path; hoisted
       // above submit() so it's available to both without re-parsing the
       // header.
       const l402PaymentHash = extractL402PaymentHashFromAuth(req.headers.authorization);

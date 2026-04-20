@@ -616,8 +616,9 @@ export interface ReportRequest {
   /** Raw sha256 digest of the L402 Authorization preimage, when the caller
    *  is using L402 auth. Populated by the v2Controller from the request's
    *  Authorization header; undefined for API-key auth / direct callers.
-   *  ReportService cross-references this against `decide_log` to tag the tx
-   *  row as `source='intent'` when the report closes out a prior /decide. */
+   *  ReportService cross-references this against `token_query_log` to tag
+   *  the tx row as `source='intent'` when the report closes out a prior
+   *  paid target query. */
   l402PaymentHash?: Buffer;
 }
 

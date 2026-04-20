@@ -1167,6 +1167,22 @@ export function runMigrations(db: Database.Database): void {
     })();
   }
 
+  // v41 : rename decide_log → token_query_log. Le nom historique `decide_log`
+  // date de v25 quand seul /api/decide écrivait dans la table ; depuis 2026-04-16
+  // tous les paid target-query paths la peuplent (logTokenQuery), et /api/decide
+  // est retiré en Phase 10 C2. Le nouveau nom reflète le rôle réel : log des
+  // queries L402 → target pour scoper les reports.
+  if (!hasVersion(db, 41)) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE decide_log RENAME TO token_query_log;
+        DROP INDEX IF EXISTS idx_decide_log_ph;
+        CREATE INDEX IF NOT EXISTS idx_token_query_log_ph ON token_query_log(payment_hash);
+      `);
+      recordVersion(db, 41, 'Phase 10 C5 — rename decide_log → token_query_log');
+    })();
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -1176,6 +1192,16 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  41: (db) => {
+    // Rollback Phase 10 C5 — rename token_query_log back to decide_log.
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE token_query_log RENAME TO decide_log;
+        DROP INDEX IF EXISTS idx_token_query_log_ph;
+        CREATE INDEX IF NOT EXISTS idx_decide_log_ph ON decide_log(payment_hash);
+      `);
+    })();
+  },
   40: (db) => {
     // Rollback Phase 9 C7 — restore the narrower source CHECK (no 'paid').
     // Any row with source='paid' is rewritten to 'probe' (closest sibling:

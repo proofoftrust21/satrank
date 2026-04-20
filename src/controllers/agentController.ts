@@ -39,9 +39,9 @@ export class AgentController {
     private agentRepo: AgentRepository,
     private verdictService: VerdictService,
     private autoIndexService: AutoIndexService | null = null,
-    // Optional DB handle — used to write decide_log entries from verdict/batch
-    // paths so the /api/report endpoint accepts tokens whose history lives on
-    // those endpoints rather than /api/decide.
+    // Optional DB handle — used to write token_query_log entries from
+    // verdict/batch paths so /api/report accepts tokens whose query history
+    // lives on those endpoints.
     private db?: Database.Database,
   ) {}
 
