@@ -1,7 +1,8 @@
 // Decision API controller — report, profile
 // Phase 10 (2026-04-20) — `/api/decide` and `/api/best-route` were removed;
 // their 410 Gone handlers live in controllers/legacyGoneController.ts.
-// The DecideService remains internal (consumed by IntentService and ReportService).
+// The DecideService remains alive but no longer injected here (IntentService
+// and mcp/server wire their own instances).
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';
@@ -15,13 +16,11 @@ function extractL402PaymentHashFromAuth(authHeader: string | undefined): Buffer 
   if (!match) return null;
   return crypto.createHash('sha256').update(Buffer.from(match[1], 'hex')).digest();
 }
-import type { DecideService } from '../services/decideService';
 import type { ReportService } from '../services/reportService';
 import type { AgentService } from '../services/agentService';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
-import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { PreimagePoolRepository } from '../repositories/preimagePoolRepository';
 import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
 import { logger } from '../logger';
@@ -31,7 +30,6 @@ import type { RiskService } from '../services/riskService';
 import type { SurvivalService } from '../services/survivalService';
 import type { ChannelFlowService } from '../services/channelFlowService';
 import type { FeeVolatilityService } from '../services/feeVolatilityService';
-import type { VerdictService } from '../services/verdictService';
 import type { ReportBonusService } from '../services/reportBonusService';
 import { agentIdentifierSchema, reportSchema, anonymousReportSchema } from '../middleware/validation';
 import { formatZodError } from '../utils/zodError';
@@ -46,7 +44,6 @@ import { logTokenQuery } from '../utils/tokenQueryLog';
 
 export class V2Controller {
   constructor(
-    private decideService: DecideService,
     private reportService: ReportService,
     private agentService: AgentService,
     private agentRepo: AgentRepository,
@@ -58,8 +55,6 @@ export class V2Controller {
     private survivalService?: SurvivalService,
     private channelFlowService?: ChannelFlowService,
     private feeVolatilityService?: FeeVolatilityService,
-    private verdictService?: VerdictService,
-    private serviceEndpointRepo?: ServiceEndpointRepository,
     private db?: Database.Database,
     // Tier 2 economic incentive. Optional so dev/test can skip it; when omitted
     // the controller never attempts to credit bonuses (identical to

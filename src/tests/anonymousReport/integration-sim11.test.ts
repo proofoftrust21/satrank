@@ -25,8 +25,6 @@ import { ProbeRepository } from '../../repositories/probeRepository';
 import { ScoringService } from '../../services/scoringService';
 import { TrendService } from '../../services/trendService';
 import { RiskService } from '../../services/riskService';
-import { VerdictService } from '../../services/verdictService';
-import { DecideService } from '../../services/decideService';
 import { ReportService } from '../../services/reportService';
 import { AgentService } from '../../services/agentService';
 import { createReportDispatchAuth } from '../../middleware/auth';
@@ -99,15 +97,13 @@ function buildContext(db: Database.Database) {
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const riskService = new RiskService();
   const bayesianVerdictService = createBayesianVerdictService(db);
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo);
-  const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db, 'off');
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
 
   const v2 = new V2Controller(
-    decideService, reportService, agentService, agentRepo, attestationRepo, scoringService,
-    trendService, riskService, probeRepo, undefined, undefined, undefined, verdictService,
-    undefined, db, undefined, preimagePoolRepo,
+    reportService, agentService, agentRepo, attestationRepo, scoringService,
+    trendService, riskService, probeRepo, undefined, undefined, undefined,
+    db, undefined, preimagePoolRepo,
   );
 
   const legacyAuth: RequestHandler = (_req, _res, next) => {
