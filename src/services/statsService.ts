@@ -15,22 +15,36 @@ import { featureFlags } from '../config';
 import { logger } from '../logger';
 import { lndReachable } from '../middleware/metrics';
 
-/** Critical caches monitored for staleness. Each entry expects a fresh refresh
- *  every TTL — if ageSec exceeds TTL×3, something is wrong (refresh failing).
+/** Axes exposed by `/api/agents/top?sort_by=…`. Must match `SortByField` in
+ *  agentService.ts — compile-time drift is caught there. */
+export const TOP_SORT_AXES = ['p_success', 'n_obs', 'ci95_width', 'window_freshness'] as const;
+
+/** Leaderboard limits monitored for staleness AND refreshed by the warm-up loop.
+ *  Any other limit is a one-off caller concern (e.g. an ad-hoc `?limit=7`) — its
+ *  entry ages out without refresh, but that's expected, not a health signal. */
+export const TOP_WARMUP_LIMITS = [5, 10, 20] as const;
+
+/** Shared TTL for every critical cache entry (stats:network + the twelve
+ *  leaderboard combos). Kept as a single constant so warm-up cadence and health
+ *  thresholds stay in lock-step. */
+export const CRITICAL_CACHE_TTL_MS = 5 * 60_000;
+
+/** Exact keys the health check treats as critical. Derived from the warm-up plan
+ *  so a key is monitored iff it is guaranteed to be refreshed. A one-off caller
+ *  requesting `?limit=3` populates `agents:top:3:0:p_success`, but since nothing
+ *  refreshes it, its staleness is expected — do NOT flag it.
  *
- *  Rule for membership: only caches whose freshness is driven by a BACKGROUND
- *  refresh (warmup timer / stale-while-revalidate kicked by live traffic).
- *  Caches whose age is bounded by external poll rate (e.g. `health:snapshot`,
- *  3s TTL but only polled every 30s by Docker) self-trigger false positives
- *  because the age reported INSIDE the compute reflects the last-computed
- *  timestamp — always ≥ poll interval. Monitoring /api/health with itself is
- *  a semantic paradox that desensitizes real alerts, so those keys are out.
+ *  Excluded intentionally:
+ *   - `health:snapshot` (3s TTL polled every 30s by Docker → self-triggered
+ *     false positives, see memoryCache.ts freshness notes).
+ *   - Any `agents:top:*` combo outside `TOP_WARMUP_LIMITS × TOP_SORT_AXES`.
  */
-const CRITICAL_CACHES: Array<{ keyPrefix: string; expectedTtlSec: number }> = [
-  { keyPrefix: 'stats:network', expectedTtlSec: 300 },   // 5 min TTL, warmed on boot + on-demand refresh
-  { keyPrefix: 'agents:top', expectedTtlSec: 300 },      // 5 min TTL, warmed on boot + on-demand refresh
-  // health:snapshot intentionally NOT listed — see rule above.
-];
+export const CRITICAL_CACHE_KEYS: readonly string[] = Object.freeze([
+  'stats:network',
+  ...TOP_WARMUP_LIMITS.flatMap(limit =>
+    TOP_SORT_AXES.map(axis => `agents:top:${limit}:0:${axis}`),
+  ),
+]);
 
 const startTime = Date.now();
 
@@ -38,7 +52,7 @@ const NETWORK_STATS_CACHE_KEY = 'stats:network';
 // 5 minutes — long enough that refresh blocks are rare given the ~15s rebuild
 // cost, short enough that values reflect recent crawler activity. Data freshness
 // is ultimately bounded by the 30-min probe cycle anyway.
-const NETWORK_STATS_TTL_MS = 5 * 60_000;
+const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 
 // Must match the latest migration version in migrations.ts
 const EXPECTED_SCHEMA_VERSION = 37;
@@ -129,15 +143,20 @@ export class StatsService {
         logger.warn({ schemaVersion, expected: EXPECTED_SCHEMA_VERSION }, 'Schema version mismatch — health will report error');
       }
 
-      // Cache freshness: flag any critical cache that's > 3x its TTL old or failing repeatedly
-      const freshness = getFreshnessReport();
+      // Cache freshness: flag any critical cache that's > 3x its TTL old or failing
+      // repeatedly. Exact-key match against CRITICAL_CACHE_KEYS — never a prefix.
+      // A caller-populated one-off (e.g. `agents:top:3:0:p_success`) is NOT here,
+      // so its staleness doesn't poison health. Keys absent from the freshness
+      // map (never populated yet, e.g. right after cold boot) are skipped — the
+      // warm-up will fill them within seconds and subsequent polls take over.
+      const expectedTtlSec = Math.round(CRITICAL_CACHE_TTL_MS / 1000);
+      const freshnessByKey = new Map(getFreshnessReport().map(f => [f.key, f]));
       const critical: Array<{ key: string; ageSec: number; consecutiveFailures: number }> = [];
-      for (const { keyPrefix, expectedTtlSec } of CRITICAL_CACHES) {
-        const matches = freshness.filter(f => f.key.startsWith(keyPrefix));
-        for (const m of matches) {
-          if (m.ageSec > expectedTtlSec * 3 || m.consecutiveFailures >= 3) {
-            critical.push(m);
-          }
+      for (const key of CRITICAL_CACHE_KEYS) {
+        const f = freshnessByKey.get(key);
+        if (!f) continue;
+        if (f.ageSec > expectedTtlSec * 3 || f.consecutiveFailures >= 3) {
+          critical.push(f);
         }
       }
       const cacheHealth = { degraded: critical.length > 0, critical };
