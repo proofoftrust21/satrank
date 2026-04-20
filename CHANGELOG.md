@@ -1,13 +1,52 @@
 # Changelog
 
-All notable changes to the SatRank SDKs (`@satrank/sdk` and `satrank`) are
-documented in this file.
+All notable changes to the SatRank HTTP API (`satrank.dev`) and the SatRank
+SDKs (`@satrank/sdk` and `satrank`) are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
-this project adheres to [Semantic Versioning](https://semver.org/).
+this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
+API and each SDK are versioned independently; entries are prefixed with
+`API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
-The HTTP API (`satrank.dev`) has its own deployment timeline; breaking changes
-to the wire format are tracked in [docs/PHASE-5-REPORT.md](docs/PHASE-5-REPORT.md).
+## [API 1.0.0] — 2026-04-20
+
+First stable release of the HTTP API. Phase 10 retired the last legacy
+surfaces so the external contract is narrow and settled. Callers pinned to
+1.x will not see breaking endpoint removals, response envelope changes, or
+incompatible schema bumps until 2.0.
+
+See [docs/MIGRATION-TO-1.0.md](docs/MIGRATION-TO-1.0.md) for a step-by-step
+migration from 0.x.
+
+### Removed (BREAKING)
+
+- **`POST /api/decide`** now returns **410 Gone**. Use `POST /api/intent`
+  for neutral discovery or `GET /api/agent/:hash/verdict` for trust checks.
+- **`POST /api/best-route`** now returns **410 Gone**. Use
+  `GET /api/services/best?serviceUrl=...` for a known URL, or
+  `POST /api/intent` for goal-based discovery with composite ranking.
+- `src/utils/deprecation.ts` helpers and the `DeprecationAwareV2Controller`
+  sunset fields were removed (orphan cleanup — no consumers remained after
+  the two endpoints above were deleted).
+
+### Changed
+
+- Database: `decide_log` → `token_query_log` via migration **v41**
+  (schema version 40 → 41). Table structure unchanged; only the name and
+  the supporting index were renamed. Down migration supported. External
+  tooling reading this table directly (unusual) must update the name.
+- OpenAPI `info.version` and MCP `server.version` bumped to `1.0.0`.
+- `package.json` `version` bumped to `1.0.0` (the rate-limited
+  `/api/version` endpoint now reports 1.0.0).
+
+### Intentionally not changed
+
+- **`GET /api/agent/:hash`** response fields remain camelCase (audited in
+  C6). Probe, deposit, and intent responses are also camelCase.
+- `snake_case` fields on operator / endpoint / intent / stats endpoints
+  (e.g. `url_hash`, `verification_score`, `n_obs`, `p_success`,
+  `lnp_rank`, `hubness_rank`) are part of the stable contract and will
+  not be renamed in 1.x.
 
 ## [1.0.0-rc.1] — 2026-04-19
 
