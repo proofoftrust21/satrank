@@ -73,6 +73,10 @@ export interface EntityScanResult {
   scanned: number;
   published: number;
   skippedNoChange: number;
+  /** Entités où shouldRepublish() a dit oui mais le payload_hash du template
+   *  calculé correspond exactement à celui en cache — évite un round-trip
+   *  publish pour rien (e.g. shifts sous le seuil d'arrondi des tags). */
+  skippedHashIdentical: number;
   errors: number;
   firstPublish: number;
   /** Flashes éphémères kind 20900 émis pour les transitions de verdict. */
@@ -120,6 +124,7 @@ export class NostrMultiKindScheduler {
       scanned: 0,
       published: 0,
       skippedNoChange: 0,
+      skippedHashIdentical: 0,
       errors: 0,
       firstPublish: 0,
       flashesPublished: 0,
@@ -147,6 +152,18 @@ export class NostrMultiKindScheduler {
           result.skippedNoChange++;
           continue;
         }
+
+        // Fast-path C7 : si le template calculé hash exactement au même
+        // payload_hash que ce qu'on a en cache, pas la peine de republier —
+        // les relais vont de toute façon ignorer (NIP-33 replaceable = même
+        // kind+pubkey+d-tag → ils gardent le plus récent created_at, mais
+        // notre payload est identique).
+        const expectedHash = payloadHash(buildTemplateForHash(snapshot, 'endpoint'));
+        if (previous && previous.payload_hash === expectedHash) {
+          result.skippedHashIdentical++;
+          continue;
+        }
+
         if (decision.reason === 'first_publish') result.firstPublish++;
 
         const published = await this.publishEndpoint(snapshot, nowSec);
@@ -201,6 +218,7 @@ export class NostrMultiKindScheduler {
       scanned: 0,
       published: 0,
       skippedNoChange: 0,
+      skippedHashIdentical: 0,
       errors: 0,
       firstPublish: 0,
       flashesPublished: 0,
@@ -228,6 +246,14 @@ export class NostrMultiKindScheduler {
           result.skippedNoChange++;
           continue;
         }
+
+        // Fast-path C7 : same story côté node — bypass si template identique.
+        const expectedHash = payloadHash(buildTemplateForHash(snapshot, 'node'));
+        if (previous && previous.payload_hash === expectedHash) {
+          result.skippedHashIdentical++;
+          continue;
+        }
+
         if (decision.reason === 'first_publish') result.firstPublish++;
 
         const published = await this.publishNode(snapshot, nowSec);

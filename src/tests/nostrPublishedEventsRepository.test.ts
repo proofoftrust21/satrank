@@ -108,4 +108,23 @@ describe('NostrPublishedEventsRepository', () => {
     expect(counts[30383]).toBe(2);
     expect(counts[30382]).toBe(1);
   });
+
+  it('findByEventId retourne la row ou null', () => {
+    const eid = '7'.repeat(64);
+    repo.recordPublished(baseInput({ entityId: 'a', eventId: eid }));
+    const row = repo.findByEventId(eid);
+    expect(row).not.toBeNull();
+    expect(row!.entity_id).toBe('a');
+    expect(repo.findByEventId('z'.repeat(64))).toBeNull();
+  });
+
+  it('latestPublishedAtByType remonte le max(published_at) par type', () => {
+    repo.recordPublished(baseInput({ entityId: 'e1', publishedAt: 500 }));
+    repo.recordPublished(baseInput({ entityId: 'e2', publishedAt: 1500 }));
+    repo.recordPublished(baseInput({ entityType: 'node', entityId: 'n1', publishedAt: 1000, eventKind: 30382 }));
+    const latest = repo.latestPublishedAtByType();
+    expect(latest.endpoint).toBe(1500);
+    expect(latest.node).toBe(1000);
+    expect(latest.service).toBeNull();
+  });
 });

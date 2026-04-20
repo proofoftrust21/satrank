@@ -43,15 +43,23 @@ export interface RecordPublishedInput {
 
 export class NostrPublishedEventsRepository {
   private stmtGet;
+  private stmtGetByEventId;
   private stmtUpsert;
   private stmtDelete;
   private stmtListByType;
   private stmtCountByKind;
+  private stmtLatestTimestamps;
 
   constructor(private db: Database.Database) {
     this.stmtGet = db.prepare(
       `SELECT * FROM nostr_published_events
         WHERE entity_type = ? AND entity_id = ?`,
+    );
+    this.stmtGetByEventId = db.prepare(
+      `SELECT * FROM nostr_published_events WHERE event_id = ? LIMIT 1`,
+    );
+    this.stmtLatestTimestamps = db.prepare(
+      `SELECT entity_type, MAX(published_at) as ts FROM nostr_published_events GROUP BY entity_type`,
     );
     // Upsert sur la clé composite — un seul event actif par entité.
     this.stmtUpsert = db.prepare(`
@@ -87,6 +95,14 @@ export class NostrPublishedEventsRepository {
     return row ?? null;
   }
 
+  /** Lookup par event_id — utilisé par C8 (NIP-09) pour vérifier qu'une
+   *  deletion request cible bien un event que nous avons publié avant de
+   *  la signer. */
+  findByEventId(eventId: string): PublishedEventRow | null {
+    const row = this.stmtGetByEventId.get(eventId) as PublishedEventRow | undefined;
+    return row ?? null;
+  }
+
   /** Upsert après un publish réussi. Remplace atomiquement la row précédente. */
   recordPublished(input: RecordPublishedInput): void {
     this.stmtUpsert.run(
@@ -119,6 +135,19 @@ export class NostrPublishedEventsRepository {
     const rows = this.stmtCountByKind.all() as Array<{ event_kind: number; c: number }>;
     const out: Record<number, number> = {};
     for (const r of rows) out[r.event_kind] = r.c;
+    return out;
+  }
+
+  /** Timestamp du dernier publish par entity_type — utile pour / metrics et
+   *  pour l'introspection (combien de temps depuis le dernier événement ?). */
+  latestPublishedAtByType(): Record<PublishedEntityType, number | null> {
+    const rows = this.stmtLatestTimestamps.all() as Array<{ entity_type: PublishedEntityType; ts: number }>;
+    const out: Record<PublishedEntityType, number | null> = {
+      node: null,
+      endpoint: null,
+      service: null,
+    };
+    for (const r of rows) out[r.entity_type] = r.ts;
     return out;
   }
 }

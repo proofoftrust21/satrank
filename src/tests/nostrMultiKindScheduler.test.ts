@@ -345,6 +345,33 @@ describe('NostrMultiKindScheduler', () => {
     expect(isVerdictTransition('UNKNOWN', 'RISKY')).toBe(true);
   });
 
+  it('fast-path payload_hash : shouldRepublish=true mais template identique → skip', async () => {
+    const { scheduler, publisher, endpointStreaming, publishedEvents } = makeScheduler(db);
+    const urlHash = '7'.repeat(64);
+    const now = 1_000_000;
+    seedSafeEndpoint(endpointStreaming, urlHash, now);
+    await scheduler.runScan(now);
+
+    // Force le shouldRepublish à dire "oui" en réécrivant la row cache avec
+    // un verdict différent du snapshot courant, mais garde le payload_hash
+    // identique à celui que produirait le template actuel.
+    const cached = publishedEvents.getLastPublished('endpoint', urlHash)!;
+    const db2 = db.prepare(
+      `UPDATE nostr_published_events SET verdict = 'UNKNOWN', p_success = 0 WHERE entity_type = 'endpoint' AND entity_id = ?`,
+    );
+    db2.run(urlHash);
+
+    publisher.calls.length = 0;
+    const result = await scheduler.runScan(now);
+    const endpointRes = result.perType.find((p) => p.entityType === 'endpoint')!;
+    // shouldRepublish=true (verdict UNKNOWN→SAFE) mais payload_hash identique
+    expect(endpointRes.skippedHashIdentical).toBe(1);
+    expect(endpointRes.published).toBe(0);
+    expect(publisher.calls).toHaveLength(0);
+    // cache inchangé (même payload_hash que précédemment)
+    expect(publishedEvents.getLastPublished('endpoint', urlHash)!.payload_hash).toBe(cached.payload_hash);
+  });
+
   it('fenêtre scanWindowSec filtre les entités anciennes', async () => {
     const { scheduler, endpointStreaming } = makeScheduler(db);
     const oldHash = 'a'.repeat(64);
