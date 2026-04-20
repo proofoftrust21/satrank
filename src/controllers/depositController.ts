@@ -63,6 +63,34 @@ export class DepositController {
     this.tierService = new DepositTierService(db);
   }
 
+  /** GET /api/deposit/tiers — public schedule, no auth required.
+   *  Agents use this to price their deposit before calling POST /api/deposit. */
+  listTiers = (_req: Request, res: Response, next: NextFunction): void => {
+    try {
+      const tiers = this.tierService.listTiers();
+      res.json({
+        data: {
+          tiers: tiers.map(t => ({
+            tierId: t.tier_id,
+            minDepositSats: t.min_deposit_sats,
+            rateSatsPerRequest: t.rate_sats_per_request,
+            discountPct: t.discount_pct,
+            requestsPerDeposit: t.min_deposit_sats / t.rate_sats_per_request,
+          })),
+          currency: 'sats',
+          rateUnit: 'sats per request',
+          notes: [
+            'Rate is engraved on the token at creation — future schedule changes do not affect existing deposits.',
+            'A deposit below the tier-1 floor (21 sats) is rejected with NO_APPLICABLE_TIER.',
+            'requestsPerDeposit shows how many regular requests a deposit exactly at that tier floor would buy.',
+          ],
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
   /** Two-phase deposit:
    *  Phase 1: { amount: N } → returns 402 with BOLT11 invoice
    *  Phase 2: { paymentHash: "...", preimage: "..." } → verifies payment, creates balance */
