@@ -37,6 +37,28 @@ import { windowBucket } from '../utils/dualWriteLogger';
 import { canonicalizeUrl, endpointHash } from '../utils/urlCanonical';
 import { sha256 } from '../utils/crypto';
 import type { Transaction } from '../types';
+import {
+  probeTotal,
+  probeSatsPaidTotal,
+  probeIngestionTotal,
+  probeDuration,
+  probeInvoiceSats,
+} from '../middleware/metrics';
+
+/** Terminal outcome of performProbe — single source of truth for the
+ *  `satrank_probe_total{outcome}` metric so we never disagree with what we
+ *  just logged. Derived from a completed ProbeResult shape. */
+function probeOutcome(result: ProbeResult): string {
+  if (result.target === 'UNREACHABLE') return 'upstream_unreachable';
+  if (result.target === 'NOT_L402') return 'upstream_not_l402';
+  // target === 'L402' — now branch on what we actually did.
+  if (!result.l402Challenge) return 'bolt11_invalid';
+  if (result.payment?.paymentError?.startsWith('invoice amount')) return 'invoice_too_expensive';
+  if (result.payment?.paymentError) return 'payment_failed';
+  if (!result.payment) return 'payment_failed';
+  if (result.secondFetch?.status === 200) return 'success_200';
+  return 'success_non200';
+}
 
 // Total cost of one probe — 1 already taken by balanceAuth + 4 here.
 const PROBE_COST_CREDITS = 5;
@@ -154,10 +176,12 @@ export class ProbeController {
     try {
       const parsed = probeBodySchema.safeParse(req.body);
       if (!parsed.success) {
+        probeTotal.inc({ outcome: 'validation_error' });
         throw new ValidationError(parsed.error.issues.map(i => i.message).join('; '));
       }
 
       if (!this.lndClient.canPayInvoices?.()) {
+        probeTotal.inc({ outcome: 'probe_unavailable' });
         throw new ProbeUnavailableError();
       }
 
@@ -166,6 +190,7 @@ export class ProbeController {
       const auth = req.headers.authorization ?? '';
       const preimageMatch = /^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i.exec(auth);
       if (!preimageMatch) {
+        probeTotal.inc({ outcome: 'validation_error' });
         throw new ValidationError('/api/probe requires an L402 deposit token in Authorization header');
       }
       const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimageMatch[1], 'hex')).digest();
@@ -174,17 +199,33 @@ export class ProbeController {
       // or short on balance, the UPDATE changes 0 rows → 402.
       const debitResult = this.stmtDebit.run(PROBE_EXTRA_CREDITS, paymentHash, PROBE_EXTRA_CREDITS);
       if (debitResult.changes === 0) {
+        probeTotal.inc({ outcome: 'insufficient_credits' });
         throw new InsufficientCreditsError();
       }
 
       const result = await this.performProbe(parsed.data.url);
 
+      // Emit outcome counters + sats paid before ingestion — observability
+      // should be recorded even if ingestion throws on a downstream bug.
+      const outcome = probeOutcome(result);
+      probeTotal.inc({ outcome });
+      probeDuration.observe(result.totalLatencyMs / 1000);
+      if (result.l402Challenge?.invoiceSats !== null && result.l402Challenge?.invoiceSats !== undefined) {
+        probeInvoiceSats.observe(result.l402Challenge.invoiceSats);
+      }
+      // Only count sats as paid if LND confirmed the preimage.
+      if (result.payment?.preimage && !result.payment.paymentError && result.l402Challenge?.invoiceSats) {
+        probeSatsPaidTotal.inc(result.l402Challenge.invoiceSats);
+      }
+
       // Bayesian integration — only when deps are wired AND the endpoint is a
       // known L402 service. Failures never bubble up to the caller: a probe
       // observation is additive telemetry, not part of the response contract.
       try {
-        this.ingestObservation(parsed.data.url, result);
+        const ingestion = this.ingestObservation(parsed.data.url, result);
+        probeIngestionTotal.inc({ reason: ingestion.reason });
       } catch (err) {
+        probeIngestionTotal.inc({ reason: 'tx-write-failed' });
         logger.error({
           url: parsed.data.url,
           err: err instanceof Error ? err.message : String(err),
@@ -399,12 +440,19 @@ export class ProbeController {
 
     result.totalLatencyMs = Date.now() - t0;
     logger.info({
+      event: 'probe_complete',
       url,
       target: result.target,
+      outcome: probeOutcome(result),
       firstStatus: result.firstFetch.status,
-      invoiceSats: result.l402Challenge?.invoiceSats,
+      firstLatencyMs: result.firstFetch.latencyMs,
+      invoiceSats: result.l402Challenge?.invoiceSats ?? null,
+      paymentHashPrefix: result.payment?.paymentHash?.slice(0, 12) ?? null,
       paidOk: !result.payment?.paymentError,
-      secondStatus: result.secondFetch?.status,
+      paymentDurationMs: result.payment?.durationMs ?? null,
+      secondStatus: result.secondFetch?.status ?? null,
+      secondLatencyMs: result.secondFetch?.latencyMs ?? null,
+      secondBodyBytes: result.secondFetch?.bodyBytes ?? null,
       totalMs: result.totalLatencyMs,
     }, 'probe complete');
 

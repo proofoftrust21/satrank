@@ -368,6 +368,68 @@ export const operatorClaimsTotal = new client.Counter({
   registers: [metricsRegistry],
 });
 
+// --- Phase 9 : /api/probe observability ---
+
+/** Per-probe terminal outcome. Labels:
+ *    - success_200           : second fetch returned 200 (the happy path).
+ *    - success_non200        : paid and retried, upstream returned ≠200 (e.g., 500).
+ *    - bolt11_invalid        : challenge had an unparseable invoice.
+ *    - invoice_too_expensive : amount > PROBE_MAX_INVOICE_SATS.
+ *    - payment_failed        : LND returned paymentError / empty preimage.
+ *    - upstream_not_l402     : first fetch was not a valid L402 challenge.
+ *    - upstream_unreachable  : first fetch threw / timed out.
+ *    - probe_unavailable     : admin macaroon not configured (503 gate).
+ *    - insufficient_credits  : balance_credits < 4 at debit time.
+ *    - validation_error      : body/zod rejection or missing L402 header.
+ *  A spike on `payment_failed` bracketed with a drop on `success_200` is the
+ *  go-to signal that SatRank's routing node is degrading. */
+export const probeTotal = new client.Counter({
+  name: 'satrank_probe_total',
+  help: 'POST /api/probe terminal outcomes',
+  labelNames: ['outcome'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Cumulative sats SatRank has underwritten via /api/probe. Incremented at
+ *  each successful payment, regardless of whether the retry returned 200.
+ *  Dashboards use `rate(satrank_probe_sats_paid_total[1h])` to see current
+ *  burn and `increase(…[24h])` to cross-check against the LND wallet diff. */
+export const probeSatsPaidTotal = new client.Counter({
+  name: 'satrank_probe_sats_paid_total',
+  help: 'Cumulative sats paid by SatRank on external L402 invoices (probe)',
+  registers: [metricsRegistry],
+});
+
+/** Bayesian ingestion outcome. Mirror of ProbeController.IngestionOutcome.reason,
+ *  so every probe produces exactly one increment here. `ingested` = success path;
+ *  other labels indicate why the observation was short-circuited (missing deps,
+ *  endpoint not found, duplicate, tx write failed, etc.). */
+export const probeIngestionTotal = new client.Counter({
+  name: 'satrank_probe_ingestion_total',
+  help: 'Outcome of the Bayesian ingestion step in /api/probe',
+  labelNames: ['reason'] as const,
+  registers: [metricsRegistry],
+});
+
+/** End-to-end probe duration (fetch + pay + retry). The p99 is the user-facing
+ *  latency; a regression suggests an LND slowdown or a flaky target. */
+export const probeDuration = new client.Histogram({
+  name: 'satrank_probe_duration_seconds',
+  help: 'End-to-end /api/probe round-trip duration',
+  buckets: [0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60],
+  registers: [metricsRegistry],
+});
+
+/** Invoice size distribution. Lets us see operators raising prices before
+ *  complaints arrive, and catches a regression where the bolt11 parser starts
+ *  returning wrong amounts. Buckets span the realistic L402 spectrum. */
+export const probeInvoiceSats = new client.Histogram({
+  name: 'satrank_probe_invoice_sats',
+  help: 'Distribution of invoice amounts seen on /api/probe challenges',
+  buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000],
+  registers: [metricsRegistry],
+});
+
 // --- HTTP metrics middleware ---
 
 function normalizeRoute(req: Request): string {
