@@ -147,7 +147,7 @@ Chaque statement est atomique en SQLite, et les clauses `WHERE rate_sats_per_req
 ### 1. Lire la grille de tarifs (public, sans auth)
 
 ```bash
-curl -s https://satrank.io/api/deposit/tiers | jq
+curl -s https://satrank.dev/api/deposit/tiers | jq
 ```
 
 ```json
@@ -166,7 +166,7 @@ curl -s https://satrank.io/api/deposit/tiers | jq
 
 ```bash
 # Step 1 — demander l'invoice
-curl -s -X POST https://satrank.io/api/deposit \
+curl -s -X POST https://satrank.dev/api/deposit \
   -H 'Content-Type: application/json' \
   -d '{"amount": 10000}'
 # { "data": { "invoice": "lnbc100…", "paymentHash": "deadbeef…", "expiresAt": 1776700000 } }
@@ -174,7 +174,7 @@ curl -s -X POST https://satrank.io/api/deposit \
 # Step 2 — payer l'invoice via votre wallet LN
 
 # Step 3 — register le token
-curl -s -X POST https://satrank.io/api/deposit \
+curl -s -X POST https://satrank.dev/api/deposit \
   -H 'Content-Type: application/json' \
   -d '{"paymentHash": "deadbeef…", "preimage": "<hex>"}'
 # { "data": { "balance_credits": 50000, "rate_sats_per_request": 0.2, "tier_id": 3,
@@ -184,7 +184,7 @@ curl -s -X POST https://satrank.io/api/deposit \
 ### 3. Probe d'un endpoint L402 tiers
 
 ```bash
-curl -s -X POST https://satrank.io/api/probe \
+curl -s -X POST https://satrank.dev/api/probe \
   -H "Authorization: L402 deposit:$PREIMAGE" \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://l402.services/geoip/8.8.8.8"}'
@@ -354,7 +354,7 @@ services:
 **Check 1 — /api/deposit/tiers retourne les 5 paliers** :
 
 ```bash
-curl -s https://satrank.io/api/deposit/tiers | jq '.data | length'
+curl -s https://satrank.dev/api/deposit/tiers | jq '.data | length'
 # Attendu : 5
 ```
 
@@ -362,7 +362,7 @@ curl -s https://satrank.io/api/deposit/tiers | jq '.data | length'
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
-  -X POST https://satrank.io/api/probe \
+  -X POST https://satrank.dev/api/probe \
   -H "Authorization: L402 deposit:$PREIMAGE" \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://l402.services/geoip/8.8.8.8"}'
@@ -373,7 +373,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 **Check 3 — /api/health confirme schema v40** :
 
 ```bash
-curl -s https://satrank.io/api/health | jq '.data | {schemaVersion,expectedSchemaVersion,lndStatus}'
+curl -s https://satrank.dev/api/health | jq '.data | {schemaVersion,expectedSchemaVersion,lndStatus}'
 # Attendu : { "schemaVersion": 40, "expectedSchemaVersion": 40, "lndStatus": "ok" }
 ```
 
@@ -381,17 +381,17 @@ curl -s https://satrank.io/api/health | jq '.data | {schemaVersion,expectedSchem
 
 ```bash
 # Deposit 1000 sats → tier 2 → 2000 credits
-INVOICE=$(curl -sX POST https://satrank.io/api/deposit \
+INVOICE=$(curl -sX POST https://satrank.dev/api/deposit \
   -H 'Content-Type: application/json' \
   -d '{"amount":1000}' | jq -r .data.invoice)
 # [payer INVOICE avec son wallet LN]
-TOKEN=$(curl -sX POST https://satrank.io/api/deposit \
+TOKEN=$(curl -sX POST https://satrank.dev/api/deposit \
   -H 'Content-Type: application/json' \
   -d "{\"paymentHash\":\"$HASH\",\"preimage\":\"$PREIMAGE\"}" \
   | jq -r .data.authorization_header)
 
 # Probe (coût : 5 credits + 1 sat LN)
-curl -sX POST https://satrank.io/api/probe \
+curl -sX POST https://satrank.dev/api/probe \
   -H "Authorization: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://l402.services/geoip/8.8.8.8"}' \
