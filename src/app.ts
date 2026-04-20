@@ -13,6 +13,7 @@ import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
 import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal, operatorsTotal, rateLimitHits } from './middleware/metrics';
+import { createProbeRateLimit } from './middleware/probeRateLimit';
 
 // Repositories
 import { AgentRepository } from './repositories/agentRepository';
@@ -50,6 +51,7 @@ import { HealthController } from './controllers/healthController';
 import { V2Controller } from './controllers/v2Controller';
 import { PingController } from './controllers/pingController';
 import { DepositController } from './controllers/depositController';
+import { ProbeController } from './controllers/probeController';
 import { ServiceController } from './controllers/serviceController';
 import { IntentController } from './controllers/intentController';
 import { IntentService } from './services/intentService';
@@ -82,7 +84,7 @@ import {
 } from './repositories/dailyBucketsRepository';
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
-import { createReportAuth, safeEqual } from './middleware/auth';
+import { createReportAuth, apertureGateAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { PreimagePoolRepository } from './repositories/preimagePoolRepository';
 
@@ -125,11 +127,13 @@ export function createApp() {
   const preimagePoolRepo = new PreimagePoolRepository(db);
   const riskService = new RiskService();
 
-  // LND graph client — shared between auto-indexation, pathfinding, and verdict
+  // LND graph client — shared between auto-indexation, pathfinding, verdict,
+  // and Phase 9 /api/probe (which needs the admin macaroon for payInvoice).
   const lndClient = new HttpLndGraphClient({
     restUrl: config.LND_REST_URL,
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
+    adminMacaroonPath: config.LND_ADMIN_MACAROON_PATH,
   });
 
   // statsService needs lndClient for the /api/health LND reachability check;
@@ -238,6 +242,14 @@ export function createApp() {
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
+  const probeController = new ProbeController(db, lndClient, {
+    txRepo,
+    bayesian: bayesianScoringService,
+    serviceEndpointRepo,
+    agentRepo,
+    dualWriteMode: config.TRANSACTIONS_DUAL_WRITE_MODE,
+    dualWriteLogger,
+  });
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
   const intentService = new IntentService({
     serviceEndpointRepo,
@@ -475,6 +487,17 @@ export function createApp() {
   const balanceAuth = createBalanceAuth(db);
   const reportAuth = createReportAuth(db);
   api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // decide, report, deposit, profile
+  // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the
+  // balanceAuth middleware takes 1 credit upstream, probeController debits
+  // the remaining 4 atomically. Gated on Aperture like the other paid routes.
+  // Phase 9 C8 — two rate limiters in front of balanceAuth so rejections
+  // never consume credits. See src/middleware/probeRateLimit.ts for ordering
+  // rationale.
+  const probeLimits = createProbeRateLimit({
+    perTokenPerHour: config.PROBE_RATE_LIMIT_PER_TOKEN_PER_HOUR,
+    globalPerHour: config.PROBE_RATE_LIMIT_GLOBAL_PER_HOUR,
+  });
+  api.post('/probe', apertureGateAuth, probeLimits.perToken, probeLimits.global, balanceAuth, probeController.probe);
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
   api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
   api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)

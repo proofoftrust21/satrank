@@ -62,6 +62,24 @@ const configSchema = z.object({
   // Separate from LND_MACAROON_PATH which is readonly. Bake with:
   //   lncli bakemacaroon invoices:read invoices:write --save_to invoice.macaroon
   LND_INVOICE_MACAROON_PATH: z.string().optional(),
+  // LND admin macaroon — needed for /api/probe (payInvoice on L402 challenges).
+  // Scope is deliberately narrower than full admin: offchain:read offchain:write
+  // is sufficient for payInvoice. Keep this file chmod 600 — it can drain the
+  // routing node. Bake with:
+  //   lncli bakemacaroon offchain:read offchain:write --save_to pay.macaroon
+  LND_ADMIN_MACAROON_PATH: z.string().optional(),
+  // Probe safety rails — caps on the L402 invoice SatRank will pay and on the
+  // probe round-trip fetch duration. Per-probe defaults are conservative;
+  // override via env for stress demos.
+  PROBE_MAX_INVOICE_SATS: z.coerce.number().int().positive().default(1000),
+  PROBE_FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  // Rate limits for /api/probe (Phase 9 C8). Per-token protects individual
+  // token-holders from unbounded spend; global protects the LN node from a
+  // many-tokens distributed attack. Window is a rolling 1h slot. Defaults
+  // sized for legitimate discovery (10/h/token = ~one probe every 6 minutes,
+  // 100/h global = ~one probe every 36 seconds across all callers).
+  PROBE_RATE_LIMIT_PER_TOKEN_PER_HOUR: z.coerce.number().int().positive().default(10),
+  PROBE_RATE_LIMIT_GLOBAL_PER_HOUR: z.coerce.number().int().positive().default(100),
   // Zap-receipt mining — builds (nostr_pubkey, ln_pubkey) mappings for Stream B
   ZAP_MINING_RELAYS: z.string().default(
     'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net,wss://relay.nostr.band,wss://nostr.wine,wss://relay.snort.social,wss://nostr-pub.wellorder.net,wss://offchain.pub,wss://eden.nostr.land',

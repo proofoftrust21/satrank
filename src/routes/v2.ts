@@ -57,6 +57,9 @@ export function createV2Routes(
 
   // Deposit: variable-amount L402 token purchase (bypasses Aperture, free endpoint)
   if (depositController) {
+    // GET /deposit/tiers — public, no rate limit needed (read-only, cheap SELECT).
+    // Register before POST so Express can match the more specific path first.
+    router.get('/deposit/tiers', depositController.listTiers);
     router.post('/deposit', depositRateLimit, depositController.deposit);
   }
 

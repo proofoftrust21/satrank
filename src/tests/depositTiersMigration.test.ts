@@ -1,0 +1,139 @@
+// Tests v39 migration: deposit_tiers seed + token_balance engraved-rate columns.
+// Pins the exact tier table (21/1k/10k/100k/1M sats) and verifies rollback
+// reverses both the new table and the added columns when SQLite supports DROP
+// COLUMN. Any tweak to the tier schedule will break these tests — intentional,
+// because existing deposits have their rate engraved at INSERT time and silent
+// schedule drift would mislead operators reading the seed.
+import { describe, it, expect, beforeEach } from 'vitest';
+import Database from 'better-sqlite3';
+import { runMigrations, rollbackTo } from '../database/migrations';
+
+function hasColumn(db: Database.Database, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some(r => r.name === column);
+}
+
+describe('migration v39 — deposit_tiers seed', () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+  });
+
+  it('creates deposit_tiers table with 5 seeded rows', () => {
+    const count = (db.prepare('SELECT COUNT(*) AS c FROM deposit_tiers').get() as { c: number }).c;
+    expect(count).toBe(5);
+  });
+
+  it('seeds the exact tier schedule (21 / 1k / 10k / 100k / 1M sats)', () => {
+    const rows = db.prepare(`
+      SELECT min_deposit_sats, rate_sats_per_request, discount_pct
+      FROM deposit_tiers ORDER BY min_deposit_sats ASC
+    `).all() as Array<{ min_deposit_sats: number; rate_sats_per_request: number; discount_pct: number }>;
+    expect(rows).toEqual([
+      { min_deposit_sats: 21,      rate_sats_per_request: 1.0,  discount_pct: 0 },
+      { min_deposit_sats: 1000,    rate_sats_per_request: 0.5,  discount_pct: 50 },
+      { min_deposit_sats: 10000,   rate_sats_per_request: 0.2,  discount_pct: 80 },
+      { min_deposit_sats: 100000,  rate_sats_per_request: 0.1,  discount_pct: 90 },
+      { min_deposit_sats: 1000000, rate_sats_per_request: 0.05, discount_pct: 95 },
+    ]);
+  });
+
+  it('UNIQUE constraint on min_deposit_sats prevents duplicate tier thresholds', () => {
+    expect(() =>
+      db.prepare(`
+        INSERT INTO deposit_tiers (min_deposit_sats, rate_sats_per_request, discount_pct, created_at)
+        VALUES (21, 0.9, 10, 0)
+      `).run()
+    ).toThrow(/UNIQUE/);
+  });
+
+  it('is idempotent — running migrations again does not reseed or duplicate rows', () => {
+    runMigrations(db);
+    const count = (db.prepare('SELECT COUNT(*) AS c FROM deposit_tiers').get() as { c: number }).c;
+    expect(count).toBe(5);
+  });
+
+  it('records schema version 39 with the Phase 9 description', () => {
+    const row = db.prepare('SELECT description FROM schema_version WHERE version = 39').get() as { description: string } | undefined;
+    expect(row).toBeDefined();
+    expect(row!.description).toMatch(/Phase 9/);
+  });
+});
+
+describe('migration v39 — token_balance engraved-rate columns', () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+  });
+
+  it('adds rate_sats_per_request (REAL, nullable)', () => {
+    expect(hasColumn(db, 'token_balance', 'rate_sats_per_request')).toBe(true);
+  });
+
+  it('adds tier_id (INTEGER, nullable, FK to deposit_tiers)', () => {
+    expect(hasColumn(db, 'token_balance', 'tier_id')).toBe(true);
+    // Insert a token with a valid tier_id and confirm FK is enforced.
+    db.prepare(`
+      INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+      VALUES (x'01', 21, 0, 21, 1, 1.0, 21)
+    `).run();
+    expect(() =>
+      db.prepare(`
+        INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+        VALUES (x'02', 21, 0, 21, 99999, 1.0, 21)
+      `).run()
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it('adds balance_credits (REAL NOT NULL DEFAULT 0)', () => {
+    expect(hasColumn(db, 'token_balance', 'balance_credits')).toBe(true);
+    // Insert without specifying balance_credits — default must kick in.
+    db.prepare(`
+      INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota)
+      VALUES (x'aa', 21, 0, 21)
+    `).run();
+    const row = db.prepare("SELECT balance_credits FROM token_balance WHERE payment_hash = x'aa'").get() as { balance_credits: number };
+    expect(row.balance_credits).toBe(0);
+  });
+
+  it('supports floating-point credits (not truncated to INTEGER)', () => {
+    // A 999-sat deposit at tier 0 (rate=1.0) gives exactly 999 credits; a
+    // 500-sat deposit at rate=0.5 would give 1000. We want to prove the
+    // column type can hold a non-integer so downstream "remaining credits"
+    // after partial decrements stays accurate.
+    db.prepare(`
+      INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+      VALUES (x'bb', 0, 0, 0, 2, 0.5, 1999.5)
+    `).run();
+    const row = db.prepare("SELECT balance_credits FROM token_balance WHERE payment_hash = x'bb'").get() as { balance_credits: number };
+    expect(row.balance_credits).toBe(1999.5);
+  });
+});
+
+describe('migration v39 — rollback', () => {
+  it('down() drops deposit_tiers and the new token_balance columns', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    expect(hasColumn(db, 'token_balance', 'balance_credits')).toBe(true);
+
+    rollbackTo(db, 38);
+
+    // deposit_tiers must be gone
+    const tableGone = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deposit_tiers'").get();
+    expect(tableGone).toBeUndefined();
+
+    // schema_version row for 39 must be removed
+    const versionGone = db.prepare('SELECT 1 AS found FROM schema_version WHERE version = 39').get();
+    expect(versionGone).toBeUndefined();
+
+    // Columns dropped on SQLite 3.35+; we run 3.46 in CI/prod so expect them gone.
+    expect(hasColumn(db, 'token_balance', 'balance_credits')).toBe(false);
+    expect(hasColumn(db, 'token_balance', 'tier_id')).toBe(false);
+    expect(hasColumn(db, 'token_balance', 'rate_sats_per_request')).toBe(false);
+  });
+});

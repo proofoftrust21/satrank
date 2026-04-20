@@ -29,8 +29,8 @@ import * as fs from 'node:fs';
 import type { DualWriteLogRow, DualWriteSourceModule } from '../utils/dualWriteLogger';
 import { windowBucket } from '../utils/dualWriteLogger';
 
-const SOURCE_MODULES: DualWriteSourceModule[] = ['crawler', 'reportService', 'decideService', 'serviceProbes'];
-const SOURCE_VALUES = ['probe', 'observer', 'report', 'intent', '__null__'] as const;
+const SOURCE_MODULES: DualWriteSourceModule[] = ['crawler', 'reportService', 'decideService', 'serviceProbes', 'probeCrawler', 'probeController'];
+const SOURCE_VALUES = ['probe', 'observer', 'report', 'intent', 'paid', '__null__'] as const;
 type SourceLabel = (typeof SOURCE_VALUES)[number];
 
 export interface AuditReport {
@@ -68,6 +68,7 @@ function zeroByModule(): Record<DualWriteSourceModule, { count: number; pct: num
     decideService: { count: 0, pct: 0 },
     serviceProbes: { count: 0, pct: 0 },
     probeCrawler: { count: 0, pct: 0 },
+    probeController: { count: 0, pct: 0 },
   };
 }
 
@@ -77,6 +78,7 @@ function zeroBySource(): Record<SourceLabel, { count: number; pct: number }> {
     observer: { count: 0, pct: 0 },
     report: { count: 0, pct: 0 },
     intent: { count: 0, pct: 0 },
+    paid: { count: 0, pct: 0 },
     __null__: { count: 0, pct: 0 },
   };
 }

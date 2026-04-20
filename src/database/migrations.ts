@@ -1064,6 +1064,109 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 38, 'Phase 8 — nostr_published_events cache table for shouldRepublish decisions');
   }
 
+  // v39: Phase 9 — deposit tiers + engraved rate per token_balance.
+  // Jusqu'ici chaque requête authentifiée par deposit token coûte 1 sat
+  // (decremented from token_balance.remaining). Phase 9 introduit un modèle
+  // dégressif : plus l'agent dépose, plus le taux par requête baisse. Le taux
+  // est GRAVÉ à l'INSERT (rate_sats_per_request, tier_id) et ne peut plus être
+  // modifié — SatRank ne peut pas augmenter rétroactivement le prix d'un
+  // deposit existant. La balance passe de `remaining` (unités = sats) à
+  // `balance_credits` (unités = requêtes). Un agent qui dépose 10000 sats au
+  // tier 2 (rate 0.2) obtient 50000 credits, chaque call décrémente de 1 credit.
+  //
+  // deposit_tiers est read-only après seed, sert de table de correspondance
+  // publique (exposée via GET /api/deposit/tiers).
+  if (!hasVersion(db, 39)) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS deposit_tiers (
+        tier_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        min_deposit_sats INTEGER NOT NULL UNIQUE,
+        rate_sats_per_request REAL NOT NULL,
+        discount_pct INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_deposit_tiers_min ON deposit_tiers(min_deposit_sats);
+    `);
+
+    // Seed les 5 paliers Phase 9. AUTOINCREMENT garantit que tier_id restera
+    // stable même si un tier est supprimé plus tard (pas prévu, mais safe).
+    const seed = db.prepare(`
+      INSERT OR IGNORE INTO deposit_tiers (min_deposit_sats, rate_sats_per_request, discount_pct, created_at)
+      VALUES (?, ?, ?, ?)
+    `);
+    const now = Math.floor(Date.now() / 1000);
+    seed.run(21, 1.0, 0, now);
+    seed.run(1000, 0.5, 50, now);
+    seed.run(10000, 0.2, 80, now);
+    seed.run(100000, 0.1, 90, now);
+    seed.run(1000000, 0.05, 95, now);
+
+    // Extension de token_balance pour graver le taux au moment du deposit.
+    // rate_sats_per_request et tier_id sont nullables pour que les tokens
+    // existants (pre-Phase 9) continuent de fonctionner avec `remaining`
+    // jusqu'à ce que le script migrateExistingDepositsToTiers (C4) les
+    // backfille. balance_credits démarre à 0 et sera aussi backfillé.
+    try { db.exec("ALTER TABLE token_balance ADD COLUMN rate_sats_per_request REAL"); } catch { /* exists */ }
+    try { db.exec("ALTER TABLE token_balance ADD COLUMN tier_id INTEGER REFERENCES deposit_tiers(tier_id)"); } catch { /* exists */ }
+    try { db.exec("ALTER TABLE token_balance ADD COLUMN balance_credits REAL NOT NULL DEFAULT 0"); } catch { /* exists */ }
+    try { db.exec("CREATE INDEX IF NOT EXISTS idx_token_balance_tier ON token_balance(tier_id)"); } catch { /* exists */ }
+
+    recordVersion(db, 39, 'Phase 9 — deposit_tiers + engraved rate/tier/balance_credits on token_balance');
+  }
+
+  // v40: Phase 9 C7 — widen transactions.source CHECK to accept 'paid'.
+  // Les paid probes (/api/probe) écrivent une transaction avec source='paid'
+  // et un poids x2.0 dans les streaming_posteriors. SQLite ne permet pas de
+  // modifier une CHECK constraint en place : on reconstruit la table en
+  // copiant toutes les lignes puis on recrée les indexes (pattern v7). La
+  // liste d'indexes replique les CREATE INDEX posés par les migrations
+  // antérieures (v1 → v31).
+  if (!hasVersion(db, 40)) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE transactions_new (
+          tx_id TEXT PRIMARY KEY,
+          sender_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          receiver_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          amount_bucket TEXT NOT NULL CHECK(amount_bucket IN ('micro', 'small', 'medium', 'large')),
+          timestamp INTEGER NOT NULL,
+          payment_hash TEXT NOT NULL,
+          preimage TEXT,
+          status TEXT NOT NULL CHECK(status IN ('verified', 'pending', 'failed', 'disputed')),
+          protocol TEXT NOT NULL CHECK(protocol IN ('l402', 'keysend', 'bolt11')),
+          endpoint_hash TEXT,
+          operator_id TEXT,
+          source TEXT CHECK(source IS NULL OR source IN ('probe', 'observer', 'report', 'intent', 'paid')),
+          window_bucket TEXT
+        );
+
+        INSERT INTO transactions_new (
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id, source, window_bucket
+        )
+        SELECT
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id, source, window_bucket
+        FROM transactions;
+
+        DROP TABLE transactions;
+        ALTER TABLE transactions_new RENAME TO transactions;
+
+        -- Recreate indexes (lost during the table swap)
+        CREATE INDEX IF NOT EXISTS idx_transactions_sender ON transactions(sender_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON transactions(receiver_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
+        CREATE INDEX IF NOT EXISTS idx_transactions_endpoint_window ON transactions(endpoint_hash, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_operator_window ON transactions(operator_id, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_source ON transactions(source);
+      `);
+      recordVersion(db, 40, 'Phase 9 C7 — widen transactions.source CHECK to include paid');
+    })();
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -1073,6 +1176,64 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  40: (db) => {
+    // Rollback Phase 9 C7 — restore the narrower source CHECK (no 'paid').
+    // Any row with source='paid' is rewritten to 'probe' (closest sibling:
+    // same sovereign-probe intent, just without the economic weight x2).
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE transactions_restore (
+          tx_id TEXT PRIMARY KEY,
+          sender_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          receiver_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          amount_bucket TEXT NOT NULL CHECK(amount_bucket IN ('micro', 'small', 'medium', 'large')),
+          timestamp INTEGER NOT NULL,
+          payment_hash TEXT NOT NULL,
+          preimage TEXT,
+          status TEXT NOT NULL CHECK(status IN ('verified', 'pending', 'failed', 'disputed')),
+          protocol TEXT NOT NULL CHECK(protocol IN ('l402', 'keysend', 'bolt11')),
+          endpoint_hash TEXT,
+          operator_id TEXT,
+          source TEXT CHECK(source IS NULL OR source IN ('probe', 'observer', 'report', 'intent')),
+          window_bucket TEXT
+        );
+
+        INSERT INTO transactions_restore (
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id, source, window_bucket
+        )
+        SELECT
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id,
+          CASE WHEN source = 'paid' THEN 'probe' ELSE source END,
+          window_bucket
+        FROM transactions;
+
+        DROP TABLE transactions;
+        ALTER TABLE transactions_restore RENAME TO transactions;
+
+        CREATE INDEX IF NOT EXISTS idx_transactions_sender ON transactions(sender_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON transactions(receiver_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
+        CREATE INDEX IF NOT EXISTS idx_transactions_endpoint_window ON transactions(endpoint_hash, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_operator_window ON transactions(operator_id, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_source ON transactions(source);
+      `);
+    })();
+  },
+  39: (db) => {
+    // Rollback Phase 9 — drop deposit_tiers + les colonnes gravées sur
+    // token_balance. Les tokens existants reviennent à `remaining` uniquement.
+    db.exec('DROP INDEX IF EXISTS idx_token_balance_tier');
+    try { db.exec('ALTER TABLE token_balance DROP COLUMN balance_credits'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE token_balance DROP COLUMN tier_id'); } catch { /* SQLite < 3.35 */ }
+    try { db.exec('ALTER TABLE token_balance DROP COLUMN rate_sats_per_request'); } catch { /* SQLite < 3.35 */ }
+    db.exec('DROP INDEX IF EXISTS idx_deposit_tiers_min');
+    db.exec('DROP TABLE IF EXISTS deposit_tiers');
+  },
   38: (db) => {
     // Rollback Phase 8 — drop cache events publiés. Aucune autre table
     // n'en dépend (pas de FK), les indexes tombent avec la table.
