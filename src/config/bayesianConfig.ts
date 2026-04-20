@@ -21,6 +21,24 @@ export const DEFAULT_PRIOR_BETA = 1.5;
  *  assez serré pour être un prior informatif. */
 export const PRIOR_MIN_EFFECTIVE_OBS = 30;
 
+/** Poids appliqué à l'évidence excédentaire d'un operator prior (Phase 7 — C10,
+ *  Précision 1). Pour un operator qui a accumulé (α, β) sur ses streaming
+ *  posteriors, on adopte comme prior :
+ *
+ *    α_scaled = α₀ + w × (α − α₀)
+ *    β_scaled = β₀ + w × (β − β₀)
+ *
+ *  avec w = OPERATOR_PRIOR_WEIGHT. Divise *la masse d'évidence*, pas la
+ *  moyenne : p_success reste identique (α_scaled / (α_scaled + β_scaled) =
+ *  α / (α + β) quand α₀ = β₀), mais la confiance est bornée. Rationale :
+ *  un operator avec 100 bonnes observations est un signal informatif pour
+ *  ses ressources enfants, mais pas définitif — il peut avoir des nœuds/
+ *  endpoints de qualités hétérogènes. w=0.5 traite chaque ressource comme
+ *  "moitié operator, moitié découverte propre" jusqu'à ce qu'elle ait
+ *  accumulé sa propre évidence. Appliqué uniquement au niveau operator de
+ *  la cascade — service et category gardent le poids plein. */
+export const OPERATOR_PRIOR_WEIGHT = 0.5;
+
 // --- Fenêtres temporelles (LEGACY — à supprimer en fin de chaîne Phase 3) ---
 // Trois horizons parallèles. L'auto-sélection prend la plus courte qui a
 // atteint MIN_N_OBS_FOR_WINDOW — principe : réagir vite si on a des

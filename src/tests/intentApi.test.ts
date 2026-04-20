@@ -16,6 +16,18 @@ import { TrendService } from '../services/trendService';
 import { AgentService } from '../services/agentService';
 import { IntentService } from '../services/intentService';
 import { IntentController } from '../controllers/intentController';
+import { OperatorService } from '../services/operatorService';
+import {
+  OperatorRepository,
+  OperatorIdentityRepository,
+  OperatorOwnershipRepository,
+} from '../repositories/operatorRepository';
+import {
+  EndpointStreamingPosteriorRepository,
+  NodeStreamingPosteriorRepository,
+  ServiceStreamingPosteriorRepository,
+} from '../repositories/streamingPosteriorRepository';
+import { endpointHash } from '../utils/urlCanonical';
 import { errorHandler } from '../middleware/errorHandler';
 import {
   createBayesianVerdictService,
@@ -51,7 +63,7 @@ function makeAgent(hash: string): Agent {
   };
 }
 
-function buildApp(db: Database.Database): express.Express {
+function buildApp(db: Database.Database, withOperators = false): { app: express.Express; operatorService: OperatorService | null } {
   const agentRepo = new AgentRepository(db);
   const serviceRepo = new ServiceEndpointRepository(db);
   const probeRepo = new ProbeRepository(db);
@@ -61,12 +73,23 @@ function buildApp(db: Database.Database): express.Express {
   const bayesianVerdict = createBayesianVerdictService(db);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdict, probeRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
+  const operatorService = withOperators
+    ? new OperatorService(
+        new OperatorRepository(db),
+        new OperatorIdentityRepository(db),
+        new OperatorOwnershipRepository(db),
+        new EndpointStreamingPosteriorRepository(db),
+        new NodeStreamingPosteriorRepository(db),
+        new ServiceStreamingPosteriorRepository(db),
+      )
+    : null;
   const intentService = new IntentService({
     serviceEndpointRepo: serviceRepo,
     agentRepo,
     agentService,
     trendService,
     probeRepo,
+    ...(operatorService ? { operatorService } : {}),
   });
   const controller = new IntentController(intentService);
 
@@ -75,7 +98,7 @@ function buildApp(db: Database.Database): express.Express {
   app.post('/api/intent', controller.resolve);
   app.get('/api/intent/categories', controller.categories);
   app.use(errorHandler);
-  return app;
+  return { app, operatorService };
 }
 
 function seed(db: Database.Database, hash: string, url: string, opts: {
@@ -103,7 +126,7 @@ describe('/api/intent integration', () => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
-    app = buildApp(db);
+    app = buildApp(db).app;
   });
 
   afterEach(() => {
@@ -264,6 +287,73 @@ describe('/api/intent integration', () => {
       expect(res.body.meta.returned).toBe(2);
       expect(res.body.meta.strictness).toBe('strict');
       expect(res.body.meta.warnings).toEqual([]);
+    });
+  });
+
+  // Phase 7 — C11 expose operator_id per candidate (verified only), C12 émet
+  // OPERATOR_UNVERIFIED pour chaque candidat rattaché à un operator non-verified.
+  describe('C11/C12 — operator_id + OPERATOR_UNVERIFIED per candidate', () => {
+    let appWithOps: express.Express;
+    let operatorService: OperatorService;
+
+    beforeEach(() => {
+      const wired = buildApp(db, true);
+      appWithOps = wired.app;
+      operatorService = wired.operatorService!;
+    });
+
+    it('operator_id=null and no OPERATOR_UNVERIFIED when candidate endpoint has no operator', async () => {
+      seed(db, sha256('w-no-op'), 'https://w-no-op.example/api', { name: 'w-no-op', category: 'weather', priceSats: 5, safe: true });
+
+      const res = await request(appWithOps)
+        .post('/api/intent')
+        .send({ category: 'weather' });
+      expect(res.status).toBe(200);
+      expect(res.body.candidates).toHaveLength(1);
+      expect(res.body.candidates[0].operator_id).toBeNull();
+      const codes = (res.body.candidates[0].advisory.advisories as Array<{ code: string }>).map(a => a.code);
+      expect(codes).not.toContain('OPERATOR_UNVERIFIED');
+    });
+
+    it('operator_id=null + OPERATOR_UNVERIFIED (info) quand operator rattaché mais pending', async () => {
+      const url = 'https://w-pending.example/api';
+      seed(db, sha256('w-pending'), url, { name: 'w-pending', category: 'weather', priceSats: 5, safe: true });
+      const opId = 'op-intent-pending';
+      operatorService.upsertOperator(opId);
+      operatorService.claimOwnership(opId, 'endpoint', endpointHash(url));
+
+      const res = await request(appWithOps)
+        .post('/api/intent')
+        .send({ category: 'weather' });
+      expect(res.status).toBe(200);
+      const cand = res.body.candidates[0];
+      expect(cand.operator_id).toBeNull();
+      const adv = (cand.advisory.advisories as Array<{ code: string; level: string; data: { operator_status: string } }>)
+        .find(a => a.code === 'OPERATOR_UNVERIFIED');
+      expect(adv).toBeDefined();
+      expect(adv!.level).toBe('info');
+      expect(adv!.data.operator_status).toBe('pending');
+    });
+
+    it('operator_id exposé + PAS d\'OPERATOR_UNVERIFIED quand operator verified', async () => {
+      const url = 'https://w-verified.example/api';
+      seed(db, sha256('w-verified'), url, { name: 'w-verified', category: 'weather', priceSats: 5, safe: true });
+      const opId = 'op-intent-verified';
+      operatorService.upsertOperator(opId);
+      operatorService.claimOwnership(opId, 'endpoint', endpointHash(url));
+      operatorService.claimIdentity(opId, 'dns', 'w-verified.example');
+      operatorService.markIdentityVerified(opId, 'dns', 'w-verified.example', 'proof-dns');
+      operatorService.claimIdentity(opId, 'nip05', 'op@w-verified.example');
+      operatorService.markIdentityVerified(opId, 'nip05', 'op@w-verified.example', 'proof-nip05');
+
+      const res = await request(appWithOps)
+        .post('/api/intent')
+        .send({ category: 'weather' });
+      expect(res.status).toBe(200);
+      const cand = res.body.candidates[0];
+      expect(cand.operator_id).toBe(opId);
+      const codes = (cand.advisory.advisories as Array<{ code: string }>).map(a => a.code);
+      expect(codes).not.toContain('OPERATOR_UNVERIFIED');
     });
   });
 });

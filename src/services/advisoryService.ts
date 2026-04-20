@@ -27,6 +27,7 @@ import type {
   AdvisoryReport,
   VerdictFlag,
 } from '../types';
+import type { OperatorResourceLookup } from './operatorService';
 
 /** Weights frozen in P2. Sum to 1.0 so risk_score stays in [0, 1]. */
 const W_CRITICAL = 0.40;
@@ -65,6 +66,10 @@ export interface AdvisoryInput {
   reachability?: number;
   /** Delta of p_success over 7d (see trendService.computeDeltas). Missing → 0 (neutral). */
   delta7d?: number | null;
+  /** Phase 7 C12 — lookup operator pour la ressource considérée. Emits
+   *  OPERATOR_UNVERIFIED quand présent ET status ≠ 'verified'.
+   *  Missing/null → pas de rattachement operator, aucun advisory. */
+  operatorLookup?: OperatorResourceLookup | null;
 }
 
 /** Continuous critical-flags factor — 1.0 when *any* critical flag fires.
@@ -113,6 +118,7 @@ function buildAdvisories(
   delta7d: number | null | undefined,
   ci95Low: number,
   ci95High: number,
+  operatorLookup: OperatorResourceLookup | null | undefined,
 ): Advisory[] {
   const advisories: Advisory[] = [];
 
@@ -138,6 +144,22 @@ function buildAdvisories(
   const ciWidth = Math.max(0, ci95High - ci95Low);
   if (ciWidth >= 0.25) {
     advisories.push(info('UNCERTAIN_POSTERIOR', `CI95 width=${ciWidth.toFixed(2)} — low confidence`, uncertaintyFactor(ci95Low, ci95High), { ci95_width: round3(ciWidth) }));
+  }
+
+  // Phase 7 C12 — operator rattaché mais non-vérifié. 'pending' = info (l'operator
+  // pourrait finaliser sa vérification), 'rejected' = warning (un opérateur
+  // explicitement rejeté ne doit pas bénéficier du doute).
+  if (operatorLookup && operatorLookup.status !== 'verified') {
+    const strength = operatorLookup.status === 'rejected' ? 0.6 : 0.3;
+    const factory = operatorLookup.status === 'rejected' ? warning : info;
+    advisories.push(
+      factory(
+        'OPERATOR_UNVERIFIED',
+        `Operator ${operatorLookup.operatorId.slice(0, 12)}… status=${operatorLookup.status} — identity not (yet) cryptographically proven`,
+        strength,
+        { operator_id: operatorLookup.operatorId, operator_status: operatorLookup.status },
+      ),
+    );
   }
 
   return advisories;
@@ -170,6 +192,7 @@ export function computeAdvisoryReport(input: AdvisoryInput): AdvisoryReport {
       input.delta7d,
       input.bayesian.ci95_low,
       input.bayesian.ci95_high,
+      input.operatorLookup,
     ),
   };
 }

@@ -10,6 +10,7 @@ import type { ScoringService, ScoreResult } from './scoringService';
 import type { TrendService } from './trendService';
 import type { RiskService } from './riskService';
 import type { BayesianVerdictService } from './bayesianVerdictService';
+import type { OperatorService, OperatorResourceLookup } from './operatorService';
 import type { VerdictResponse, VerdictFlag, Verdict, PersonalTrust, PathfindingResult } from '../types';
 import { DAY } from '../utils/constants';
 import { computeBaseFlags } from '../utils/flags';
@@ -38,6 +39,11 @@ export class VerdictService {
     private bayesianVerdict: BayesianVerdictService,
     private probeRepo?: ProbeRepository,
     private lndClient?: LndGraphClient,
+    // Phase 7 C11+C12 — optionnel : permet d'exposer operator_id (verified) et
+    // d'attacher un advisory OPERATOR_UNVERIFIED aux verdicts. Optional parce
+    // qu'initialement VerdictService n'avait pas cette dépendance (wire-up
+    // additive dans src/app.ts).
+    private operatorService?: OperatorService,
   ) {}
 
   async getVerdict(
@@ -133,6 +139,16 @@ export class VerdictService {
     const reason = this.buildReason(agent, bayes, flags, ageDays);
 
     const reachability = this.probeRepo?.computeUptime(publicKeyHash, REACHABILITY_WINDOW_SEC) ?? null;
+
+    // Phase 7 C11+C12 : lookup operator par node_pubkey (la raw LN pubkey de
+    // l'agent, pas le hash). On expose operator_id uniquement si status='verified' ;
+    // sinon on passe l'info à computeAdvisoryReport pour qu'il émette l'advisory.
+    const operatorLookup: OperatorResourceLookup | null =
+      this.operatorService && agent.public_key
+        ? this.operatorService.resolveOperatorForNode(agent.public_key)
+        : null;
+    const operator_id = operatorLookup?.status === 'verified' ? operatorLookup.operatorId : null;
+
     const advisory = computeAdvisoryReport({
       bayesian: {
         p_success: bayes.p_success,
@@ -143,6 +159,7 @@ export class VerdictService {
       flags,
       reachability: reachability ?? undefined,
       delta7d: delta.delta7d,
+      operatorLookup,
     });
 
     verdictTotal.inc({ verdict, source });
@@ -167,6 +184,7 @@ export class VerdictService {
       risk_score: advisory.risk_score,
       advisories: advisory.advisories,
       reachability: reachability != null ? Math.round(reachability * 1000) / 1000 : null,
+      operator_id,
     };
   }
 
@@ -339,5 +357,6 @@ function buildMissingAgentResponse(callerPubkey: string | undefined): VerdictRes
     risk_score: advisory.risk_score,
     advisories: advisory.advisories,
     reachability: null,
+    operator_id: null,
   };
 }

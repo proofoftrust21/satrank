@@ -11,7 +11,9 @@ import { z } from 'zod';
 import type { BayesianVerdictService } from '../services/bayesianVerdictService';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { AgentRepository } from '../repositories/agentRepository';
+import type { OperatorService } from '../services/operatorService';
 import type { BayesianScoreBlock } from '../types';
+import { computeAdvisoryReport } from '../services/advisoryService';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 
@@ -24,6 +26,7 @@ export class EndpointController {
     private bayesianVerdict: BayesianVerdictService,
     private serviceEndpointRepo: ServiceEndpointRepository,
     private agentRepo: AgentRepository,
+    private operatorService: OperatorService,
   ) {}
 
   show = (req: Request, res: Response, next: NextFunction): void => {
@@ -76,13 +79,31 @@ export class EndpointController {
           })()
         : null;
 
+      // Phase 7 — C11 : operator_id exposé seulement quand status='verified'
+      // (zero auto-trust). C12 : overlay advisory qui émet OPERATOR_UNVERIFIED
+      // quand un operator est rattaché mais pas encore (ou plus) 2/3.
+      const operatorLookup = this.operatorService.resolveOperatorForEndpoint(urlHash);
+      const operator_id = operatorLookup?.status === 'verified' ? operatorLookup.operatorId : null;
+
+      const advisory = computeAdvisoryReport({
+        bayesian: {
+          p_success: bayesian.p_success,
+          ci95_low: bayesian.ci95_low,
+          ci95_high: bayesian.ci95_high,
+          n_obs: bayesian.n_obs,
+        },
+        operatorLookup,
+      });
+
       res.json({
         data: {
           urlHash,
           bayesian,
+          advisory,
           metadata,
           http,
           node,
+          operator_id,
         },
         meta: { computedAt: v.computed_at },
       });

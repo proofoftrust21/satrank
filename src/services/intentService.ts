@@ -21,6 +21,7 @@ import type {
 } from '../repositories/serviceEndpointRepository';
 import type { AgentService } from './agentService';
 import type { TrendService } from './trendService';
+import type { OperatorResourceLookup, OperatorService } from './operatorService';
 import type { BayesianScoreBlock, Verdict, VerdictFlag } from '../types';
 import type {
   IntentCandidate,
@@ -59,6 +60,11 @@ export interface IntentServiceDeps {
   agentService: AgentService;
   trendService: TrendService;
   probeRepo?: ProbeRepository;
+  /** Phase 7 — optional. Quand fourni, chaque candidat expose operator_id
+   *  (seulement si status='verified') + advisory OPERATOR_UNVERIFIED pour
+   *  les statuts pending/rejected. Absent → fallback strict (operator_id=null,
+   *  aucun advisory operator émis). */
+  operatorService?: OperatorService;
   /** Clock injectable pour tests déterministes. */
   now?: () => number;
 }
@@ -67,6 +73,9 @@ export interface IntentServiceDeps {
 interface EnrichedCandidate {
   svc: ServiceEndpoint;
   operatorPubkey: string | null;
+  /** Phase 7 — résolution operator par url_hash. null si pas de lookup
+   *  possible (operatorService absent) ou pas d'ownership claim. */
+  operatorLookup: OperatorResourceLookup | null;
   bayesian: BayesianScoreBlock;
   flags: VerdictFlag[];
   reachability: number | null;
@@ -193,9 +202,14 @@ export class IntentService {
 
     const medianLatencyMs = this.deps.serviceEndpointRepo.medianHttpLatency7d(svc.url);
 
+    const operatorLookup = this.deps.operatorService
+      ? this.deps.operatorService.resolveOperatorForEndpoint(endpointHash(svc.url))
+      : null;
+
     return {
       svc,
       operatorPubkey: agent?.public_key ?? null,
+      operatorLookup,
       bayesian,
       flags,
       reachability,
@@ -219,6 +233,7 @@ export class IntentService {
       flags: c.flags,
       reachability: c.reachability ?? undefined,
       delta7d: c.delta7d,
+      operatorLookup: c.operatorLookup,
     });
 
     const hasCritical = CRITICAL_FLAGS.some(f => c.flags.includes(f));
@@ -231,11 +246,16 @@ export class IntentService {
       ci95Low: c.bayesian.ci95_low,
     });
 
+    // Phase 7 — C11 : operator_id exposé seulement si verified (zero auto-trust).
+    const operator_id =
+      c.operatorLookup?.status === 'verified' ? c.operatorLookup.operatorId : null;
+
     return {
       rank,
       endpoint_url: c.svc.url,
       endpoint_hash: endpointHash(c.svc.url),
       operator_pubkey: c.operatorPubkey,
+      operator_id,
       service_name: c.svc.name,
       price_sats: c.svc.service_price_sats,
       median_latency_ms: c.medianLatencyMs,

@@ -279,6 +279,41 @@ export const reportBonusRollbackTotal = new client.Counter({
   registers: [metricsRegistry],
 });
 
+// --- Phase 7 : operators abstraction ---
+
+/** Total d'operators par statut. Refreshé au scrape (comme agentsTotal) via
+ *  operatorRepo.countByStatus(). Alerting : passage brutal à 0 sur 'verified'
+ *  = régression (la règle 2/3 échoue soudainement) ; croissance monotone sur
+ *  'rejected' = inflow de claims frauduleux qu'il faut inspecter. */
+export const operatorsTotal = new client.Gauge({
+  name: 'satrank_operators_total',
+  help: 'Total operators indexés par statut (verified/pending/rejected)',
+  labelNames: ['status'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Chaque tentative de vérification d'identité. type ∈ {ln_pubkey, nip05, dns} ;
+ *  result ∈ {success, failure}. Permet de voir quel vecteur cryptographique
+ *  est le plus fragile (ex. DNS propagation qui timeout) et de détecter un
+ *  relai Nostr défaillant si nip05 failure spike isolément. */
+export const operatorVerificationsTotal = new client.Counter({
+  name: 'satrank_operator_verifications_total',
+  help: 'Identités operators vérifiées — par type (ln_pubkey/nip05/dns) et résultat (success/failure)',
+  labelNames: ['type', 'result'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Chaque ownership claim (≠ vérification — claim revendique juste la ressource).
+ *  Labels : resource_type ∈ {node, endpoint, service}. Ratio claims/verifications
+ *  par type donne la "dette de vérification" (volume claim vs confirmation
+ *  cryptographique). */
+export const operatorClaimsTotal = new client.Counter({
+  name: 'satrank_operator_claims_total',
+  help: 'Ownership claims operators émises — par type de ressource (node/endpoint/service)',
+  labelNames: ['resource_type'] as const,
+  registers: [metricsRegistry],
+});
+
 // --- HTTP metrics middleware ---
 
 function normalizeRoute(req: Request): string {

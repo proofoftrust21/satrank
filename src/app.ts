@@ -12,7 +12,7 @@ import { runMigrations } from './database/migrations';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
-import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal, rateLimitHits } from './middleware/metrics';
+import { metricsMiddleware, metricsRegistry, agentsTotal, channelsTotal, operatorsTotal, rateLimitHits } from './middleware/metrics';
 
 // Repositories
 import { AgentRepository } from './repositories/agentRepository';
@@ -54,6 +54,13 @@ import { ServiceController } from './controllers/serviceController';
 import { IntentController } from './controllers/intentController';
 import { IntentService } from './services/intentService';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
+import { OperatorController } from './controllers/operatorController';
+import { OperatorService } from './services/operatorService';
+import {
+  OperatorRepository,
+  OperatorIdentityRepository,
+  OperatorOwnershipRepository,
+} from './repositories/operatorRepository';
 import { EndpointController } from './controllers/endpointController';
 import { WatchlistController } from './controllers/watchlistController';
 import { ReportStatsController } from './controllers/reportStatsController';
@@ -155,7 +162,23 @@ export function createApp() {
   );
 
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined);
+
+  // Phase 7 — operator abstraction construit en amont pour permettre à
+  // VerdictService d'exposer operator_id (C11) et l'advisory OPERATOR_UNVERIFIED
+  // (C12). OperatorController est instancié plus bas (dépend de agentRepo).
+  const operatorRepo = new OperatorRepository(db);
+  const operatorIdentityRepo = new OperatorIdentityRepository(db);
+  const operatorOwnershipRepo = new OperatorOwnershipRepository(db);
+  const operatorService = new OperatorService(
+    operatorRepo,
+    operatorIdentityRepo,
+    operatorOwnershipRepo,
+    endpointStreamingRepo,
+    nodeStreamingRepo,
+    serviceStreamingRepo,
+  );
+
+  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo, lndClient.isConfigured() ? lndClient : undefined, operatorService);
   const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
   const channelFlowService = new ChannelFlowService(channelSnapshotRepo);
   const feeVolatilityService = new FeeVolatilityService(feeSnapshotRepo, agentRepo);
@@ -221,9 +244,10 @@ export function createApp() {
     agentService,
     trendService,
     probeRepo,
+    operatorService,
   });
   const intentController = new IntentController(intentService);
-  const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo);
+  const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
   const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
 
@@ -233,6 +257,15 @@ export function createApp() {
     : undefined;
   const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11, preimagePoolRepo) : null;
   const serviceRegisterController = new ServiceRegisterController(registryCrawler);
+
+  // Phase 7 — controller pour /api/operator(s) endpoints. operatorService est
+  // construit plus haut (avant VerdictService pour les besoins C11/C12).
+  const operatorController = new OperatorController({
+    operatorService,
+    operatorRepo,
+    serviceEndpointRepo,
+    agentRepo,
+  });
 
   // Cache warm-up — fills the stats and leaderboard caches before the first
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
@@ -384,6 +417,13 @@ export function createApp() {
       agentsTotal.set(stats.totalAgents);
       channelsTotal.set(stats.totalChannels);
 
+      // Phase 7 C13 — operatorsTotal gauge refresh : countByStatus() est
+      // indexé, une requête agrège les 3 buckets.
+      const operatorCounts = operatorRepo.countByStatus();
+      operatorsTotal.set({ status: 'verified' }, operatorCounts.verified);
+      operatorsTotal.set({ status: 'pending' }, operatorCounts.pending);
+      operatorsTotal.set({ status: 'rejected' }, operatorCounts.rejected);
+
       // Refresh cache freshness gauges at scrape time
       const { getFreshnessReport } = await import('./cache/memoryCache');
       const { cacheAgeSeconds, cacheRefreshFailures } = await import('./middleware/metrics');
@@ -469,6 +509,11 @@ export function createApp() {
   api.post('/intent', discoveryRateLimit, intentController.resolve);
   api.get('/intent/categories', discoveryRateLimit, intentController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
+  // Phase 7 — operator registration (NIP-98 gated, rate-limited avec discovery
+  // car endpoint à effort de preuve côté claimant — pas de quota L402).
+  api.post('/operator/register', discoveryRateLimit, operatorController.register);
+  api.get('/operators', discoveryRateLimit, operatorController.list);
+  api.get('/operator/:id', discoveryRateLimit, operatorController.show);
   api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
