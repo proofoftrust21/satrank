@@ -10,7 +10,7 @@ import { logger } from '../logger';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { PreimagePoolRepository } from '../repositories/preimagePoolRepository';
 import { sha256 } from '../utils/crypto';
-import { isSafeUrl } from '../utils/ssrf';
+import { isSafeUrl, fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
 import { validateCategoryOrNull } from '../utils/categoryValidation';
 
@@ -166,11 +166,13 @@ export class RegistryCrawler {
    *  Decode the invoice to extract the payee node pubkey. Return SHA256(pubkey) as agent_hash. */
   private async discoverNodeFromUrl(serviceUrl: string): Promise<string | null> {
     try {
-      const resp = await fetch(serviceUrl, {
+      // SSRF hardening: fetchSafeExternal does connect-time DNS validation so a
+      // user-controlled URL that rebinds to a private IP is rejected before
+      // the socket opens. redirect: 'manual' is the default (no follow).
+      const resp = await fetchSafeExternal(serviceUrl, {
         method: 'GET',
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
-        redirect: 'manual', // SSRF: don't follow redirects (could chain to internal IPs)
       });
 
       if (resp.status !== 402) return null; // not an L402 endpoint
@@ -216,7 +218,10 @@ export class RegistryCrawler {
       }
 
       return null;
-    } catch {
+    } catch (err: unknown) {
+      if (err instanceof SsrfBlockedError) {
+        logger.debug({ url: serviceUrl, reason: err.message }, 'Registry: discoverNodeFromUrl blocked by SSRF guard');
+      }
       return null;
     }
   }

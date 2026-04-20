@@ -77,7 +77,7 @@ export interface DecideServiceOptions {
 }
 
 // SSRF protection: shared helpers from utils/ssrf — resolve DNS once and fetch by IP
-import { resolveAndPin } from '../utils/ssrf';
+import { fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 
 const SERVICE_HEALTH_CACHE_TTL_SEC = 1800; // 30 min
 const SERVICE_HEALTH_TIMEOUT_MS = 3000;
@@ -247,13 +247,11 @@ export class DecideService {
       + pRoutable * 0.15;
     const successRate = Math.max(0, Math.min(1, successRateRaw));
 
-    // Service health check (non-blocking) — resolve DNS once, pin IP to prevent rebinding
+    // Service health check (non-blocking). SSRF protection is applied at the
+    // fetch layer via fetchSafeExternal (connect-time DNS validation).
     let serviceHealth: ServiceHealth | null = null;
     if (serviceUrl && this.serviceEndpointRepo) {
-      const pinnedIp = await resolveAndPin(serviceUrl);
-      if (pinnedIp) {
-        serviceHealth = await this.checkServiceHealth(targetHash, serviceUrl, startMs, pinnedIp);
-      }
+      serviceHealth = await this.checkServiceHealth(targetHash, serviceUrl, startMs);
     }
 
     // GO decision — under Bayesian semantics, SAFE is the only green light.
@@ -338,7 +336,7 @@ export class DecideService {
 
   /** Check HTTP health of a service URL. Non-blocking: if cache miss takes > 500ms,
    *  returns { status: 'checking' } immediately and finishes in background. */
-  private async checkServiceHealth(agentHash: string, url: string, decideStartMs: number, pinnedIp?: string): Promise<ServiceHealth> {
+  private async checkServiceHealth(agentHash: string, url: string, decideStartMs: number): Promise<ServiceHealth> {
     // 1. Check cache
     const cached = this.serviceEndpointRepo!.findByUrl(url);
     const now = Math.floor(Date.now() / 1000);
@@ -368,12 +366,12 @@ export class DecideService {
 
     if (remainingBudget <= 50) {
       // Already spent too long — fire background check, return 'checking'
-      this.fireBackgroundCheck(agentHash, url, pinnedIp);
+      this.fireBackgroundCheck(agentHash, url);
       return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats, httpHealthScore: null, healthFreshness: null };
     }
 
     // Race: live check vs budget timeout
-    const checkPromise = this.doHttpCheck(agentHash, url, pinnedIp);
+    const checkPromise = this.doHttpCheck(agentHash, url);
     const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), remainingBudget));
 
     const result = await Promise.race([checkPromise, timeoutPromise]);
@@ -384,30 +382,22 @@ export class DecideService {
     return { url, status: 'checking', httpCode: null, latencyMs: null, uptimeRatio: null, lastCheckedAt: null, servicePriceSats, httpHealthScore: null, healthFreshness: null };
   }
 
-  private fireBackgroundCheck(agentHash: string, url: string, pinnedIp?: string): void {
-    this.doHttpCheck(agentHash, url, pinnedIp).catch((err: unknown) => {
+  private fireBackgroundCheck(agentHash: string, url: string): void {
+    this.doHttpCheck(agentHash, url).catch((err: unknown) => {
       logger.warn({ url, error: err instanceof Error ? err.message : String(err) }, 'Background service health check failed');
     });
   }
 
-  private async doHttpCheck(agentHash: string, url: string, pinnedIp?: string): Promise<ServiceHealth> {
+  private async doHttpCheck(agentHash: string, url: string): Promise<ServiceHealth> {
     try {
       const start = Date.now();
-      // Use pinned IP to prevent DNS rebinding: replace hostname with resolved IP,
-      // pass original hostname in Host header so TLS/vhost routing still works.
-      let fetchUrl = url;
-      const headers: Record<string, string> = { 'User-Agent': 'SatRank-HealthCheck/1.0' };
-      if (pinnedIp) {
-        const u = new URL(url);
-        headers['Host'] = u.host;
-        u.hostname = pinnedIp;
-        fetchUrl = u.toString();
-      }
-      const resp = await fetch(fetchUrl, {
+      // SSRF protection applied at connect-time lookup inside fetchSafeExternal.
+      // No IP-substitution hack: TLS SNI + certificate validation continue to
+      // use the original hostname.
+      const resp = await fetchSafeExternal(url, {
         method: 'GET',
         signal: AbortSignal.timeout(SERVICE_HEALTH_TIMEOUT_MS),
-        headers,
-        redirect: 'manual',
+        headers: { 'User-Agent': 'SatRank-HealthCheck/1.0' },
       });
       const latencyMs = Date.now() - start;
       const httpCode = resp.status;
@@ -431,7 +421,10 @@ export class DecideService {
         httpHealthScore: computeHttpHealthScore(status, uptimeRatio),
         healthFreshness: computeHealthFreshness(nowSec, nowSec),
       };
-    } catch {
+    } catch (err: unknown) {
+      if (err instanceof SsrfBlockedError) {
+        logger.debug({ url, reason: err.message }, 'decide: service health check blocked by SSRF guard');
+      }
       this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0, 'ad_hoc');
       const nowSec = Math.floor(Date.now() / 1000);
       return {

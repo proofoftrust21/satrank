@@ -73,13 +73,14 @@ const configSchema = z.object({
   // override via env for stress demos.
   PROBE_MAX_INVOICE_SATS: z.coerce.number().int().positive().default(1000),
   PROBE_FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
-  // Rate limits for /api/probe (Phase 9 C8). Per-token protects individual
-  // token-holders from unbounded spend; global protects the LN node from a
-  // many-tokens distributed attack. Window is a rolling 1h slot. Defaults
-  // sized for legitimate discovery (10/h/token = ~one probe every 6 minutes,
-  // 100/h global = ~one probe every 36 seconds across all callers).
+  // Rate limits for /api/probe (Phase 9 C8, tightened in Phase 11bis).
+  // Per-token protects individual token-holders from unbounded spend; global
+  // protects the LN node from a many-tokens distributed attack AND caps the
+  // economic throughput of any remaining SSRF-shaped abuse (F-01-bis audit).
+  // Window is a rolling 1h slot. Defaults: 10/h/token, 20/h global — ~1 probe
+  // every 3 minutes across all callers. Override via env for legit burst use.
   PROBE_RATE_LIMIT_PER_TOKEN_PER_HOUR: z.coerce.number().int().positive().default(10),
-  PROBE_RATE_LIMIT_GLOBAL_PER_HOUR: z.coerce.number().int().positive().default(100),
+  PROBE_RATE_LIMIT_GLOBAL_PER_HOUR: z.coerce.number().int().positive().default(20),
   // Zap-receipt mining — builds (nostr_pubkey, ln_pubkey) mappings for Stream B
   ZAP_MINING_RELAYS: z.string().default(
     'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net,wss://relay.nostr.band,wss://nostr.wine,wss://relay.snort.social,wss://nostr-pub.wellorder.net,wss://offchain.pub,wss://eden.nostr.land',
