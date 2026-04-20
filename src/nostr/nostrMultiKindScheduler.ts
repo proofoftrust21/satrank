@@ -58,6 +58,10 @@ import { shouldRepublish } from './shouldRepublish';
 import { computeAdvisoryReport } from '../services/advisoryService';
 import type { Verdict, AdvisoryLevel } from '../types/index';
 import { logger } from '../logger';
+import {
+  multiKindFlashesTotal,
+  multiKindRepublishSkippedTotal,
+} from '../middleware/metrics';
 
 const DEFAULT_SCAN_WINDOW_SEC = 900; // 15 min
 
@@ -150,6 +154,7 @@ export class NostrMultiKindScheduler {
         );
         if (!decision.shouldRepublish) {
           result.skippedNoChange++;
+          multiKindRepublishSkippedTotal.inc({ reason: 'no_change' });
           continue;
         }
 
@@ -161,6 +166,7 @@ export class NostrMultiKindScheduler {
         const expectedHash = payloadHash(buildTemplateForHash(snapshot, 'endpoint'));
         if (previous && previous.payload_hash === expectedHash) {
           result.skippedHashIdentical++;
+          multiKindRepublishSkippedTotal.inc({ reason: 'hash_identical' });
           continue;
         }
 
@@ -244,6 +250,7 @@ export class NostrMultiKindScheduler {
         );
         if (!decision.shouldRepublish) {
           result.skippedNoChange++;
+          multiKindRepublishSkippedTotal.inc({ reason: 'no_change' });
           continue;
         }
 
@@ -251,6 +258,7 @@ export class NostrMultiKindScheduler {
         const expectedHash = payloadHash(buildTemplateForHash(snapshot, 'node'));
         if (previous && previous.payload_hash === expectedHash) {
           result.skippedHashIdentical++;
+          multiKindRepublishSkippedTotal.inc({ reason: 'hash_identical' });
           continue;
         }
 
@@ -421,6 +429,7 @@ export class NostrMultiKindScheduler {
     try {
       const result = await this.publisher.publishVerdictFlash(state, nowSec);
       if (result.anySuccess) {
+        multiKindFlashesTotal.inc({ type: state.entity_type });
         logger.info({
           entityType: state.entity_type,
           entityId: state.entity_id.slice(0, 12),

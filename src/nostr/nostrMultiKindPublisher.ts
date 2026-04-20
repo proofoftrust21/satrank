@@ -28,6 +28,11 @@ import {
   buildVerdictFlash,
 } from './eventBuilders';
 import { logger } from '../logger';
+import {
+  multiKindEventsPublishedTotal,
+  multiKindRelayErrorsTotal,
+  multiKindPublishDuration,
+} from '../middleware/metrics';
 
 const DEFAULT_PUBLISH_TIMEOUT_MS = 1_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -144,6 +149,8 @@ export class NostrMultiKindPublisher {
     const bindings = await this.ensureBindings();
     const sk = bindings.hexToBytes(this.skHex);
     const signed = bindings.finalizeEvent(template, sk) as { id: string };
+    const startNs = process.hrtime.bigint();
+    const kindLabel = String(template.kind);
 
     const acks: RelayAck[] = await Promise.all(
       this.connections.map(async ({ relay, url }) => {
@@ -158,9 +165,32 @@ export class NostrMultiKindPublisher {
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           const result: RelayAckResult = msg === 'Publish timeout' ? 'timeout' : 'error';
+          multiKindRelayErrorsTotal.inc({ relay: url, result });
           return { relay: url, result, error: msg };
         }
       }),
+    );
+
+    const durationSec = Number(process.hrtime.bigint() - startNs) / 1e9;
+    multiKindPublishDuration.observe({ kind: kindLabel }, durationSec);
+
+    const anySuccess = acks.some((a) => a.result === 'success');
+    multiKindEventsPublishedTotal.inc({
+      kind: kindLabel,
+      result: anySuccess ? 'success' : 'no_ack',
+    });
+
+    // Log structuré par publish : kind, eventId, latency, per-relay outcome.
+    // Les observateurs humains lisent ça dans Loki pour un post-mortem rapide.
+    logger.info(
+      {
+        kind: template.kind,
+        eventId: signed.id.slice(0, 12),
+        latencyMs: Math.round(durationSec * 1000),
+        relays: acks.map((a) => ({ relay: a.relay, result: a.result })),
+        anySuccess,
+      },
+      'nostr multi-kind publish complete',
     );
 
     return {
@@ -168,7 +198,7 @@ export class NostrMultiKindPublisher {
       kind: template.kind,
       publishedAt: template.created_at,
       acks,
-      anySuccess: acks.some((a) => a.result === 'success'),
+      anySuccess,
     };
   }
 
