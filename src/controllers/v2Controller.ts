@@ -1,4 +1,7 @@
-// Decision API controller — decide, report, profile
+// Decision API controller — best-route, report, profile
+// Phase 10 (2026-04-20) — `/api/decide` was removed; its 410 Gone handler
+// lives in controllers/legacyGoneController.ts. The DecideService remains
+// internal (consumed by IntentService and ReportService).
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';
@@ -30,7 +33,7 @@ import type { ChannelFlowService } from '../services/channelFlowService';
 import type { FeeVolatilityService } from '../services/feeVolatilityService';
 import type { VerdictService } from '../services/verdictService';
 import type { ReportBonusService } from '../services/reportBonusService';
-import { agentIdentifierSchema, decideSchema, reportSchema, anonymousReportSchema, bestRouteSchema } from '../middleware/validation';
+import { agentIdentifierSchema, reportSchema, anonymousReportSchema, bestRouteSchema } from '../middleware/validation';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError, ConflictError } from '../errors';
 import { v4 as uuidv4 } from 'uuid';
@@ -71,67 +74,6 @@ export class V2Controller {
     // est validé mais pas stocké.
     private preimagePoolRepo?: PreimagePoolRepository,
   ) {}
-
-  decide = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Phase 5 — signaler la déprécation dès l'entrée, y compris sur 4xx, pour
-    // que les agents détectent l'URL successeur même quand leur requête est
-    // malformée (RFC 8594 n'interdit pas les headers sur les erreurs).
-    markDeprecated(res, '/api/intent');
-    try {
-      const parsed = decideSchema.safeParse(req.body);
-      if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
-
-      const target = resolveIdentifier(parsed.data.target, p => this.agentRepo.findByPubkey(p));
-      const caller = normalizeIdentifier(parsed.data.caller);
-
-      // Resolve pathfinding source: callerNodePubkey > walletProvider > caller's own pubkey
-      const pathfindingSourcePubkey = parsed.data.callerNodePubkey
-        ?? (parsed.data.walletProvider ? WALLET_PROVIDERS[parsed.data.walletProvider] : undefined);
-
-      const result = await this.decideService.decide(
-        target.hash,
-        caller.hash,
-        parsed.data.amountSats,
-        pathfindingSourcePubkey,
-        parsed.data.serviceUrl,
-        parsed.data.walletProvider as WalletProvider | undefined,
-      );
-
-      // Phase 2 voie 2 — si l'agent fournit bolt11Raw (l'invoice qu'il va
-      // payer), pré-alimente le pool pour autoriser un report anonyme
-      // ultérieur via la preimage correspondante. Non-fatal : un BOLT11
-      // malformé n'échoue pas /api/decide (validé par zod en amont).
-      if (parsed.data.bolt11Raw && this.preimagePoolRepo) {
-        try {
-          const parsedInvoice = parseBolt11(parsed.data.bolt11Raw);
-          this.preimagePoolRepo.insertIfAbsent({
-            paymentHash: parsedInvoice.paymentHash,
-            bolt11Raw: parsed.data.bolt11Raw,
-            firstSeen: Math.floor(Date.now() / 1000),
-            confidenceTier: 'medium',
-            source: 'intent',
-          });
-        } catch (err) {
-          if (!(err instanceof InvalidBolt11Error)) {
-            logger.warn({ error: err instanceof Error ? err.message : String(err) }, 'decide: preimage_pool insert failed');
-          }
-        }
-      }
-
-      // Log this target query for /api/report auth. See utils/tokenQueryLog.ts
-      // for why every paid target-query path writes here, not just /api/decide.
-      logTokenQuery(this.db, req.headers.authorization, target.hash, req.requestId);
-
-      // Phase 5 — /api/decide déprécié en faveur de /api/intent. Ne supprime
-      // pas l'endpoint (compat agents existants). Headers Deprecation+Link
-      // déjà set en entrée (s'applique aussi aux 4xx) ; ici on ajoute le log
-      // success-path + le body.meta.deprecated_use.
-      logDeprecatedCall('/api/decide', '/api/intent', { caller: caller.hash });
-      res.json(patchDeprecatedBody({ data: result }, '/api/intent'));
-    } catch (err) {
-      next(err);
-    }
-  };
 
   bestRoute = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Phase 5 — déprécation signalée dès l'entrée (cf. commentaire `decide`).
