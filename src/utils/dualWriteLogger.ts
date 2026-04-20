@@ -26,14 +26,14 @@ import type { Transaction } from '../types';
 export interface DualWriteEnrichment {
   endpoint_hash: string | null;
   operator_id: string | null;
-  source: 'probe' | 'observer' | 'report' | 'intent' | null;
+  source: 'probe' | 'observer' | 'report' | 'intent' | 'paid' | null;
   window_bucket: string | null;
 }
 
 /** Logical origin of the shadow emit — used by the audit script (§6) to
  *  distribute observed traffic by code-path. Distinct from the DB-level
  *  `source` column inside `would_insert` which tags the tx provenance. */
-export type DualWriteSourceModule = 'crawler' | 'reportService' | 'decideService' | 'serviceProbes' | 'probeCrawler';
+export type DualWriteSourceModule = 'crawler' | 'reportService' | 'decideService' | 'serviceProbes' | 'probeCrawler' | 'probeController';
 
 /** NDJSON line format defined by docs/PHASE-1-DESIGN.md §3. Each line is a
  *  self-contained JSON object so a batch can be streamed / grepped / fed to

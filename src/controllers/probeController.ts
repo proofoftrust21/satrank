@@ -28,6 +28,15 @@ import { logger } from '../logger';
 import { ValidationError, AppError } from '../errors';
 import { parseL402Challenge } from '../utils/l402HeaderParser';
 import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
+import type { TransactionRepository, DualWriteMode } from '../repositories/transactionRepository';
+import type { BayesianScoringService } from '../services/bayesianScoringService';
+import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { AgentRepository } from '../repositories/agentRepository';
+import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
+import { windowBucket } from '../utils/dualWriteLogger';
+import { canonicalizeUrl, endpointHash } from '../utils/urlCanonical';
+import { sha256 } from '../utils/crypto';
+import type { Transaction } from '../types';
 
 // Total cost of one probe — 1 already taken by balanceAuth + 4 here.
 const PROBE_COST_CREDITS = 5;
@@ -89,9 +98,38 @@ export interface ProbeResult {
   cost: { creditsDeducted: number };
 }
 
+/** Optional bayesian ingestion dependencies for the paid probe. When present,
+ *  a completed paid round-trip writes one `transactions` row (source='paid')
+ *  and bumps the streaming posteriors with weight=2.0. Left optional so
+ *  controller-only tests (fetch/parse/pay/retry) can still construct the
+ *  class without standing up the full scoring stack. */
+export interface ProbeBayesianDeps {
+  txRepo: TransactionRepository;
+  bayesian: BayesianScoringService;
+  serviceEndpointRepo: ServiceEndpointRepository;
+  agentRepo: AgentRepository;
+  dualWriteMode: DualWriteMode;
+  dualWriteLogger?: DualWriteLogger;
+}
+
+/** Shape returned by the ingestion helper so tests can assert exactly which
+ *  side effects fired (tx insert, bayesian ingest) and for what reason the
+ *  helper short-circuited when they didn't. */
+export interface IngestionOutcome {
+  ingested: boolean;
+  reason: 'ingested' | 'no-deps' | 'not-l402' | 'no-payment' | 'endpoint-not-found'
+        | 'endpoint-no-operator' | 'operator-agent-missing' | 'duplicate'
+        | 'tx-write-failed';
+  success?: boolean;
+  txId?: string;
+  endpointHash?: string;
+  operatorId?: string;
+}
+
 export class ProbeController {
   private readonly db: Database.Database;
   private readonly lndClient: LndGraphClient;
+  private readonly bayesianDeps?: ProbeBayesianDeps;
 
   /** Prepared statement for the extra 4-credit debit. rate_sats_per_request
    *  IS NOT NULL guard ensures this only fires for Phase 9 tokens — a
@@ -99,9 +137,10 @@ export class ProbeController {
    *  endpoint). */
   private readonly stmtDebit;
 
-  constructor(db: Database.Database, lndClient: LndGraphClient) {
+  constructor(db: Database.Database, lndClient: LndGraphClient, bayesianDeps?: ProbeBayesianDeps) {
     this.db = db;
     this.lndClient = lndClient;
+    this.bayesianDeps = bayesianDeps;
     this.stmtDebit = this.db.prepare(`
       UPDATE token_balance
       SET balance_credits = balance_credits - ?
@@ -139,11 +178,106 @@ export class ProbeController {
       }
 
       const result = await this.performProbe(parsed.data.url);
+
+      // Bayesian integration — only when deps are wired AND the endpoint is a
+      // known L402 service. Failures never bubble up to the caller: a probe
+      // observation is additive telemetry, not part of the response contract.
+      try {
+        this.ingestObservation(parsed.data.url, result);
+      } catch (err) {
+        logger.error({
+          url: parsed.data.url,
+          err: err instanceof Error ? err.message : String(err),
+        }, 'paid probe ingestion unexpectedly threw');
+      }
+
       res.json({ data: result });
     } catch (err) {
       next(err);
     }
   };
+
+  /** Write a tx (source='paid') and bump streaming posteriors with weight=2.0.
+   *  Short-circuits early when the endpoint is unknown or the operator
+   *  reference is dangling. Called from the handler on every probe (success
+   *  OR failure on a known L402 endpoint) so the Bayesian layer sees both
+   *  positive and negative signals. Exposed for tests. */
+  ingestObservation(url: string, result: ProbeResult): IngestionOutcome {
+    if (!this.bayesianDeps) return { ingested: false, reason: 'no-deps' };
+    if (result.target !== 'L402') return { ingested: false, reason: 'not-l402' };
+    if (!result.payment) return { ingested: false, reason: 'no-payment' };
+
+    const { txRepo, bayesian, serviceEndpointRepo, agentRepo, dualWriteMode, dualWriteLogger } = this.bayesianDeps;
+
+    // Lookup prefers the canonical form (RFC 3986 normalized) so two URLs
+    // that differ only in casing/trailing-slash collapse onto the same row.
+    // Falls back to the raw URL for compatibility with ad_hoc entries that
+    // may have been stored pre-canonicalization.
+    let canonUrl: string;
+    try {
+      canonUrl = canonicalizeUrl(url);
+    } catch {
+      canonUrl = url;
+    }
+    const endpoint = serviceEndpointRepo.findByUrl(canonUrl) ?? serviceEndpointRepo.findByUrl(url);
+    if (!endpoint) return { ingested: false, reason: 'endpoint-not-found' };
+    if (!endpoint.agent_hash) return { ingested: false, reason: 'endpoint-no-operator' };
+    if (!agentRepo.findByHash(endpoint.agent_hash)) {
+      return { ingested: false, reason: 'operator-agent-missing' };
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const bucket = windowBucket(timestamp);
+    const endpHash = endpointHash(url);
+    // Daily-granularity idempotence: overlapping probes in the same 6h
+    // bucket for the same endpoint collapse onto a single row.
+    const txId = sha256(`paid:${endpHash}:${bucket}`);
+    if (txRepo.findById(txId)) return { ingested: false, reason: 'duplicate' };
+
+    const success = result.secondFetch?.status === 200;
+    const tx: Transaction = {
+      tx_id: txId,
+      sender_hash: endpoint.agent_hash,
+      receiver_hash: endpoint.agent_hash,
+      amount_bucket: 'micro',
+      timestamp,
+      payment_hash: result.payment.paymentHash || sha256(`${txId}:ph`),
+      preimage: null,
+      status: success ? 'verified' : 'failed',
+      protocol: 'l402',
+    };
+
+    const enrichment: DualWriteEnrichment = {
+      endpoint_hash: endpHash,
+      operator_id: endpoint.agent_hash,
+      source: 'paid',
+      window_bucket: bucket,
+    };
+
+    try {
+      txRepo.insertWithDualWrite(tx, enrichment, dualWriteMode, 'probeController', dualWriteLogger);
+    } catch (err) {
+      logger.error({
+        url, txId, err: err instanceof Error ? err.message : String(err),
+      }, 'paid probe tx write failed');
+      return { ingested: false, reason: 'tx-write-failed', success, txId, endpointHash: endpHash, operatorId: endpoint.agent_hash };
+    }
+
+    bayesian.ingestStreaming({
+      success,
+      timestamp,
+      source: 'paid',
+      endpointHash: endpHash,
+      operatorId: endpoint.agent_hash,
+      nodePubkey: endpoint.agent_hash,
+    });
+
+    logger.info({
+      url, txId, success, endpointHash: endpHash, operatorId: endpoint.agent_hash,
+    }, 'paid probe observation ingested');
+
+    return { ingested: true, reason: 'ingested', success, txId, endpointHash: endpHash, operatorId: endpoint.agent_hash };
+  }
 
   /** The core probe pipeline, separated from the controller handler so it
    *  can be unit-tested without Express. */

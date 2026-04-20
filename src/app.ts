@@ -241,7 +241,14 @@ export function createApp() {
   const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
-  const probeController = new ProbeController(db, lndClient);
+  const probeController = new ProbeController(db, lndClient, {
+    txRepo,
+    bayesian: bayesianScoringService,
+    serviceEndpointRepo,
+    agentRepo,
+    dualWriteMode: config.TRANSACTIONS_DUAL_WRITE_MODE,
+    dualWriteLogger,
+  });
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
   const intentService = new IntentService({
     serviceEndpointRepo,

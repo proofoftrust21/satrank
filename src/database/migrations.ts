@@ -1114,6 +1114,59 @@ export function runMigrations(db: Database.Database): void {
     recordVersion(db, 39, 'Phase 9 — deposit_tiers + engraved rate/tier/balance_credits on token_balance');
   }
 
+  // v40: Phase 9 C7 — widen transactions.source CHECK to accept 'paid'.
+  // Les paid probes (/api/probe) écrivent une transaction avec source='paid'
+  // et un poids x2.0 dans les streaming_posteriors. SQLite ne permet pas de
+  // modifier une CHECK constraint en place : on reconstruit la table en
+  // copiant toutes les lignes puis on recrée les indexes (pattern v7). La
+  // liste d'indexes replique les CREATE INDEX posés par les migrations
+  // antérieures (v1 → v31).
+  if (!hasVersion(db, 40)) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE transactions_new (
+          tx_id TEXT PRIMARY KEY,
+          sender_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          receiver_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          amount_bucket TEXT NOT NULL CHECK(amount_bucket IN ('micro', 'small', 'medium', 'large')),
+          timestamp INTEGER NOT NULL,
+          payment_hash TEXT NOT NULL,
+          preimage TEXT,
+          status TEXT NOT NULL CHECK(status IN ('verified', 'pending', 'failed', 'disputed')),
+          protocol TEXT NOT NULL CHECK(protocol IN ('l402', 'keysend', 'bolt11')),
+          endpoint_hash TEXT,
+          operator_id TEXT,
+          source TEXT CHECK(source IS NULL OR source IN ('probe', 'observer', 'report', 'intent', 'paid')),
+          window_bucket TEXT
+        );
+
+        INSERT INTO transactions_new (
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id, source, window_bucket
+        )
+        SELECT
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id, source, window_bucket
+        FROM transactions;
+
+        DROP TABLE transactions;
+        ALTER TABLE transactions_new RENAME TO transactions;
+
+        -- Recreate indexes (lost during the table swap)
+        CREATE INDEX IF NOT EXISTS idx_transactions_sender ON transactions(sender_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON transactions(receiver_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
+        CREATE INDEX IF NOT EXISTS idx_transactions_endpoint_window ON transactions(endpoint_hash, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_operator_window ON transactions(operator_id, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_source ON transactions(source);
+      `);
+      recordVersion(db, 40, 'Phase 9 C7 — widen transactions.source CHECK to include paid');
+    })();
+  }
+
   logger.info('Migrations executed successfully');
 }
 
@@ -1123,6 +1176,54 @@ export function runMigrations(db: Database.Database): void {
 // For older versions, the column simply remains (harmless).
 
 const downMigrations: Record<number, (db: Database.Database) => void> = {
+  40: (db) => {
+    // Rollback Phase 9 C7 — restore the narrower source CHECK (no 'paid').
+    // Any row with source='paid' is rewritten to 'probe' (closest sibling:
+    // same sovereign-probe intent, just without the economic weight x2).
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE transactions_restore (
+          tx_id TEXT PRIMARY KEY,
+          sender_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          receiver_hash TEXT NOT NULL REFERENCES agents(public_key_hash),
+          amount_bucket TEXT NOT NULL CHECK(amount_bucket IN ('micro', 'small', 'medium', 'large')),
+          timestamp INTEGER NOT NULL,
+          payment_hash TEXT NOT NULL,
+          preimage TEXT,
+          status TEXT NOT NULL CHECK(status IN ('verified', 'pending', 'failed', 'disputed')),
+          protocol TEXT NOT NULL CHECK(protocol IN ('l402', 'keysend', 'bolt11')),
+          endpoint_hash TEXT,
+          operator_id TEXT,
+          source TEXT CHECK(source IS NULL OR source IN ('probe', 'observer', 'report', 'intent')),
+          window_bucket TEXT
+        );
+
+        INSERT INTO transactions_restore (
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id, source, window_bucket
+        )
+        SELECT
+          tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+          payment_hash, preimage, status, protocol,
+          endpoint_hash, operator_id,
+          CASE WHEN source = 'paid' THEN 'probe' ELSE source END,
+          window_bucket
+        FROM transactions;
+
+        DROP TABLE transactions;
+        ALTER TABLE transactions_restore RENAME TO transactions;
+
+        CREATE INDEX IF NOT EXISTS idx_transactions_sender ON transactions(sender_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON transactions(receiver_hash);
+        CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
+        CREATE INDEX IF NOT EXISTS idx_transactions_endpoint_window ON transactions(endpoint_hash, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_operator_window ON transactions(operator_id, window_bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_source ON transactions(source);
+      `);
+    })();
+  },
   39: (db) => {
     // Rollback Phase 9 — drop deposit_tiers + les colonnes gravées sur
     // token_balance. Les tokens existants reviennent à `remaining` uniquement.
