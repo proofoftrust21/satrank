@@ -243,7 +243,16 @@ export class HttpLndGraphClient implements LndGraphClient {
       if (data.payment_error) {
         return { paymentPreimage: '', paymentHash: '', paymentError: data.payment_error };
       }
-      return { paymentPreimage: data.payment_preimage ?? '', paymentHash: data.payment_hash ?? '' };
+      // LND REST returns payment_preimage / payment_hash as base64. The L402
+      // spec requires the preimage to be sent as lowercase hex in the
+      // Authorization header — otherwise the upstream rejects the retry
+      // with "Invalid preimage — payment not verified".
+      const preimageB64 = data.payment_preimage ?? '';
+      const hashB64 = data.payment_hash ?? '';
+      return {
+        paymentPreimage: preimageB64 ? Buffer.from(preimageB64, 'base64').toString('hex') : '',
+        paymentHash: hashB64 ? Buffer.from(hashB64, 'base64').toString('hex') : '',
+      };
     } catch (err: unknown) {
       clearTimeout(timeout);
       const msg = err instanceof Error ? err.message : String(err);
