@@ -9,7 +9,7 @@
 // cryptographie et testables sans mock DB.
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { logger } from '../logger';
-import { resolveAndPin } from '../utils/ssrf';
+import { fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 
 /** Challenge canonique signé par la clé LN de l'operator.
  *  Format explicite + versionné : un changement de version (v2) invalide
@@ -92,25 +92,27 @@ export type NostrJsonFetcher = (url: string) => Promise<Record<string, unknown> 
 
 const FETCH_TIMEOUT_MS = 5000;
 
-/** Fetch real-world avec timeout + SSRF + content-type minimal. */
+/** Fetch real-world avec timeout + SSRF (lookup-time validation) + CT minimal. */
 const defaultNostrJsonFetcher: NostrJsonFetcher = async (url) => {
-  const pinned = await resolveAndPin(url);
-  if (pinned === null) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
+    const res = await fetchSafeExternal(url, {
       signal: controller.signal,
-      redirect: 'error', // SSRF : pas de suivi de redirect
       headers: { Accept: 'application/json' },
     });
+    // redirect: 'manual' (default) → 3xx is opaque; treat as unusable.
+    if (res.status >= 300 && res.status < 400) return null;
     if (!res.ok) return null;
     const ct = res.headers.get('content-type') ?? '';
     if (!/json/i.test(ct)) return null;
     const body = (await res.json()) as unknown;
     if (body === null || typeof body !== 'object') return null;
     return body as Record<string, unknown>;
-  } catch {
+  } catch (err: unknown) {
+    if (err instanceof SsrfBlockedError) {
+      logger.debug({ url, reason: err.message }, 'NIP-05 fetch blocked by SSRF guard');
+    }
     return null;
   } finally {
     clearTimeout(timer);

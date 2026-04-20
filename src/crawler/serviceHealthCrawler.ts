@@ -3,7 +3,7 @@
 // and haven't been checked in the last 30 minutes.
 import { logger } from '../logger';
 import { sha256 } from '../utils/crypto';
-import { resolveAndPin } from '../utils/ssrf';
+import { fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 import { canonicalizeUrl, endpointHash } from '../utils/urlCanonical';
 import { windowBucket } from '../utils/dualWriteLogger';
 import type { AgentRepository } from '../repositories/agentRepository';
@@ -37,31 +37,22 @@ export class ServiceHealthCrawler {
       let healthy = false;
 
       try {
-        // SSRF guard: resolve DNS and reject if any returned IP is private/loopback/CGN.
-        // Attacker could register a URL resolving to 169.254.169.254 or 10.0.0.1; without
-        // this check the crawler would expose the internal status back via /api/services.
-        const pinnedIp = await resolveAndPin(endpoint.url);
-        if (pinnedIp === null) {
-          this.repo.upsert(endpoint.agent_hash, endpoint.url, 0, 0);
-          result.down++;
-          result.checked++;
-          if (result.checked < stale.length) {
-            await new Promise(resolve => setTimeout(resolve, CHECK_RATE_MS));
-          }
-          continue;
-        }
-
+        // SSRF guard via fetchSafeExternal — single connect-time DNS lookup
+        // validated inline (no TOCTOU). Attacker-controlled URL resolving to
+        // 169.254.169.254/10.0.0.1 is rejected at the Agent lookup hook.
         const start = Date.now();
-        const resp = await fetch(endpoint.url, {
+        const resp = await fetchSafeExternal(endpoint.url, {
           method: 'GET',
           signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
           headers: { 'User-Agent': 'SatRank-HealthCheck/1.0' },
-          redirect: 'manual',
         });
         latencyMs = Date.now() - start;
         status = resp.status;
         healthy = resp.status === 402 || (resp.status >= 200 && resp.status < 300);
-      } catch {
+      } catch (err: unknown) {
+        if (err instanceof SsrfBlockedError) {
+          logger.debug({ url: endpoint.url, reason: err.message }, 'Health crawler skipped URL (SSRF)');
+        }
         status = 0;
         latencyMs = 0;
         healthy = false;

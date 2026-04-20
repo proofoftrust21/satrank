@@ -36,6 +36,7 @@ import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLog
 import { windowBucket } from '../utils/dualWriteLogger';
 import { canonicalizeUrl, endpointHash } from '../utils/urlCanonical';
 import { sha256 } from '../utils/crypto';
+import { fetchSafeExternal, readBodyCapped, isUrlBlocked, SsrfBlockedError } from '../utils/ssrf';
 import type { Transaction } from '../types';
 import {
   probeTotal,
@@ -63,6 +64,14 @@ function probeOutcome(result: ProbeResult): string {
 // Total cost of one probe — 1 already taken by balanceAuth + 4 here.
 const PROBE_COST_CREDITS = 5;
 const PROBE_EXTRA_CREDITS = PROBE_COST_CREDITS - 1;
+
+// F-07: cap response body to bound memory + keep preview honest. 64 KiB is
+// well above any legitimate L402 JSON challenge or paid body.
+const PROBE_MAX_BODY_BYTES = 64 * 1024;
+// bodyPreview is kept textual; if the server answers with a binary
+// Content-Type, we drop the preview to avoid leaking binary-encoded goo
+// into an attacker-controlled JSON response.
+const BINARY_CT_RE = /^(application\/(octet-stream|pdf|zip|x-(tar|gzip|bzip2|7z-compressed))|image\/|audio\/|video\/|font\/)/i;
 
 const probeBodySchema = z.object({
   url: z.string().url('url must be a valid http(s) URL'),
@@ -178,6 +187,14 @@ export class ProbeController {
       if (!parsed.success) {
         probeTotal.inc({ outcome: 'validation_error' });
         throw new ValidationError(parsed.error.issues.map(i => i.message).join('; '));
+      }
+
+      // F-01: static SSRF pre-check before debiting credits. A DNS-rebinding
+      // target that *resolves* to a private IP is still caught later by the
+      // dispatcher's connect-time lookup inside performProbe.
+      if (isUrlBlocked(parsed.data.url)) {
+        probeTotal.inc({ outcome: 'url_blocked' });
+        throw new ValidationError('URL_NOT_ALLOWED: target must be a public http(s) URL (no loopback, private, link-local, CGN, userinfo).');
       }
 
       if (!this.lndClient.canPayInvoices?.()) {
@@ -336,7 +353,7 @@ export class ProbeController {
     const firstStart = Date.now();
     let firstResponse: Response | globalThis.Response | null = null;
     try {
-      firstResponse = await fetch(url, {
+      firstResponse = await fetchSafeExternal(url, {
         method: 'GET',
         signal: AbortSignal.timeout(config.PROBE_FETCH_TIMEOUT_MS),
       });
@@ -344,12 +361,18 @@ export class ProbeController {
       result.firstFetch.status = firstResponse.status;
     } catch (err: unknown) {
       result.firstFetch.latencyMs = Date.now() - firstStart;
-      result.firstFetch.httpError = err instanceof Error ? err.message : String(err);
+      if (err instanceof SsrfBlockedError) {
+        result.firstFetch.httpError = 'URL_NOT_ALLOWED';
+      } else {
+        result.firstFetch.httpError = err instanceof Error ? err.message : String(err);
+      }
       result.totalLatencyMs = Date.now() - t0;
       return result;
     }
 
     // --- Step 2: detect L402 challenge ---
+    // redirect: 'manual' means 3xx never follow. An L402 challenge is a 402,
+    // so a 3xx from the target is not an L402 flow — treat as NOT_L402.
     if (firstResponse.status !== 402) {
       result.target = 'NOT_L402';
       result.totalLatencyMs = Date.now() - t0;
@@ -412,29 +435,38 @@ export class ProbeController {
     const authHeader = `L402 ${challenge.macaroon}:${pay.paymentPreimage}`;
     const secondStart = Date.now();
     try {
-      const secondResponse = await fetch(url, {
+      const secondResponse = await fetchSafeExternal(url, {
         method: 'GET',
         headers: { Authorization: authHeader },
         signal: AbortSignal.timeout(config.PROBE_FETCH_TIMEOUT_MS),
       });
-      const bodyBytes = await secondResponse.arrayBuffer();
-      const body = Buffer.from(bodyBytes);
+      // F-07: cap the read, detect binary Content-Type, and never echo binary
+      // bytes as a decoded "preview" string — a malicious target could craft a
+      // payload that looks meaningful when decoded as UTF-8.
+      const { body, truncated, capturedBytes } = await readBodyCapped(secondResponse, PROBE_MAX_BODY_BYTES);
       const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
-      const preview = body.subarray(0, 256).toString('utf8').replace(/[\x00-\x1f\x7f]/g, '.');
+      const contentType = secondResponse.headers.get('content-type') ?? '';
+      const isBinary = BINARY_CT_RE.test(contentType);
+      const preview = isBinary
+        ? ''
+        : body.subarray(0, 256).toString('utf8').replace(/[\x00-\x1f\x7f]/g, '.');
       result.secondFetch = {
         status: secondResponse.status,
         latencyMs: Date.now() - secondStart,
-        bodyBytes: body.length,
+        bodyBytes: capturedBytes + (truncated ? 0 : 0),
         bodyHash,
         bodyPreview: preview,
       };
     } catch (err: unknown) {
+      const errMsg = err instanceof SsrfBlockedError
+        ? 'URL_NOT_ALLOWED'
+        : err instanceof Error ? err.message : String(err);
       result.secondFetch = {
         status: 0,
         latencyMs: Date.now() - secondStart,
         bodyBytes: 0,
         bodyHash: '',
-        bodyPreview: `retry failed: ${err instanceof Error ? err.message : String(err)}`,
+        bodyPreview: `retry failed: ${errMsg}`,
       };
     }
 
