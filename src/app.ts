@@ -102,6 +102,7 @@ import { logger } from './logger';
 import { setFresh as cacheSetFresh, getStale as cacheGetStale } from './cache/memoryCache';
 import { TOP_SORT_AXES, TOP_WARMUP_LIMITS, CRITICAL_CACHE_TTL_MS } from './services/statsService';
 import { DualWriteLogger } from './utils/dualWriteLogger';
+import { safeJsonForScript } from './utils/safeJsonForScript';
 
 export function createApp() {
   const app = express();
@@ -377,12 +378,7 @@ export function createApp() {
     const stats = cacheGetStale<Record<string, unknown>>('stats:network');
     const top = cacheGetStale<{ data: unknown[] }>('agents:top:10:0:score');
     const boot = { stats: stats ?? null, leaderboard: top ?? null };
-    // Escape </script>, <, >, & in JSON to prevent XSS via malicious node
-    // aliases (e.g. `</script><script>alert(1)//`) injected via LND gossip.
-    const safeJson = JSON.stringify(boot)
-      .replace(/</g, '\\u003c')
-      .replace(/>/g, '\\u003e')
-      .replace(/&/g, '\\u0026');
+    const safeJson = safeJsonForScript(boot);
     const script = `<script>window.__SATRANK_BOOT__=${safeJson}</script>`;
     res.type('html').send(indexTemplate.replace('</head>', script + '\n</head>'));
   });
