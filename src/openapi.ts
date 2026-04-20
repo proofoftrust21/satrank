@@ -3,7 +3,7 @@ export const openapiSpec = {
   openapi: '3.1.0',
   info: {
     title: 'SatRank API',
-    version: '0.1.0',
+    version: '1.0.0',
     description: 'Trust score for AI agents on Bitcoin Lightning. The PageRank of the agentic economy.',
     license: { name: 'AGPL-3.0' },
   },
@@ -371,74 +371,11 @@ export const openapiSpec = {
         },
       },
     },
-    // --- Decision endpoints ---
-    '/best-route': {
-      post: {
-        summary: 'Find the best route among N candidates (deprecated — use /api/intent)',
-        operationId: 'bestRoute',
-        description: 'DEPRECATED (Phase 5). Use POST /api/intent for structured discovery. Responses include header `Deprecation: true`, `Link: </api/intent>; rel="successor-version"`, and `meta.deprecated_use`. Endpoint remains functional for migration.\n\nTakes up to 50 target hashes and a caller pubkey. Runs queryRoutes in parallel for each target from the caller position. Returns the top 3 reachable candidates sorted by a composite of score, hops, and fee.',
-        tags: ['Decision'],
-        deprecated: true,
-        security: [{ l402: [] }],
-        requestBody: { required: true, content: { 'application/json': { schema: {
-          type: 'object', required: ['targets', 'caller'],
-          properties: {
-            targets: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50, description: 'Target hashes or Lightning pubkeys' },
-            caller: { type: 'string', description: 'Caller hash or Lightning pubkey (for personalized pathfinding)' },
-            amountSats: { type: 'integer', minimum: 1, description: 'Payment amount for fee estimation' },
-            walletProvider: { type: 'string', enum: ['phoenix', 'wos', 'strike', 'blink', 'breez', 'zeus', 'coinos', 'cashapp'], description: 'Wallet provider name. SatRank computes pathfinding from the provider hub node.' },
-            callerNodePubkey: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$', description: 'Lightning pubkey to use as pathfinding source. Overrides walletProvider.' },
-            serviceUrls: { type: 'object', additionalProperties: { type: 'string', format: 'uri' }, description: 'Map of targetHash → L402 service URL for HTTP health enrichment. SSRF-protected.' },
-          },
-        } } } },
-        responses: {
-          '200': { description: 'Top 3 routable candidates', content: { 'application/json': { schema: {
-            type: 'object', properties: {
-              data: { type: 'object', properties: {
-                candidates: { type: 'array', items: { type: 'object', properties: {
-                  publicKeyHash: { type: 'string' }, alias: { type: ['string', 'null'] },
-                  bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
-                  pathfinding: { $ref: '#/components/schemas/PathfindingResult' },
-                } } },
-                totalQueried: { type: 'integer', description: 'Number of targets submitted' },
-                reachableCount: { type: 'integer', description: 'Targets reachable from the SatRank node' },
-                unreachableCount: { type: 'integer', description: 'Targets not reachable from the SatRank node (may be reachable from yours)' },
-                pathfindingContext: { type: 'string', description: 'Explains that reachability depends on SatRank node graph position, not target quality' },
-                latencyMs: { type: 'integer' },
-              } },
-            },
-          } } } },
-        },
-      },
-    },
-    '/decide': {
-      post: {
-        summary: 'GO / NO-GO decision (deprecated — use /api/intent)',
-        operationId: 'decide',
-        description: 'DEPRECATED (Phase 5). Use POST /api/intent for structured discovery + ranked candidates. Responses include header `Deprecation: true`, `Link: </api/intent>; rel="successor-version"`, and `meta.deprecated_use`. Endpoint remains functional for migration.\n\nReturns a boolean go/no-go, success rate (0-1), and the 4 probability components.',
-        tags: ['Decision'],
-        deprecated: true,
-        security: [{ l402: [] }],
-        requestBody: {
-          required: true,
-          content: { 'application/json': { schema: { $ref: '#/components/schemas/DecideRequest' } } },
-        },
-        responses: {
-          '200': {
-            description: 'Decision result',
-            content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/DecideResponse' } } } } },
-          },
-          '400': { $ref: '#/components/responses/ValidationError' },
-          '402': { $ref: '#/components/responses/PaymentRequired' },
-          '404': { $ref: '#/components/responses/NotFound' },
-        },
-      },
-    },
     '/report': {
       post: {
         summary: 'Report transaction outcome',
         operationId: 'report',
-        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously decided on this target — see decide_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
+        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously queried this target — see token_query_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
         tags: ['Reports'],
         security: [{ apiKey: [] }, { l402: [] }],
         requestBody: {
@@ -451,8 +388,8 @@ export const openapiSpec = {
             content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/ReportResponse' } } } } },
           },
           '400': { $ref: '#/components/responses/ValidationError' },
-          '401': { description: 'Missing or invalid auth (no X-API-Key and no decide-scoped L402 token for this target)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
-          '403': { description: 'L402 token not scoped to this target (no decide_log row linking token→target within the auth window)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '401': { description: 'Missing or invalid auth (no X-API-Key and no query-scoped L402 token for this target)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '403': { description: 'L402 token not scoped to this target (no token_query_log row linking token→target within the auth window)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '404': { $ref: '#/components/responses/NotFound' },
           '409': { description: 'Duplicate report — same reporter+target within 1 hour (error.code = DUPLICATE_REPORT)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },
@@ -863,7 +800,7 @@ export const openapiSpec = {
       },
       BayesianScoreBlock: {
         type: 'object',
-        description: 'Canonical Bayesian posterior block — shared shape across all public endpoints (verdict, decide, profile, best-route, service, endpoint). Phase 3 C9 : streaming exponential decay (τ=7d), plus de champ `window` — l\'ancienne fenêtre a été remplacée par `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`.',
+        description: 'Canonical Bayesian posterior block — shared shape across all public endpoints (verdict, intent, profile, service, endpoint). Phase 3 C9 : streaming exponential decay (τ=7d), plus de champ `window` — l\'ancienne fenêtre a été remplacée par `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`.',
         required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile'],
         properties: {
           p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Beta-Binomial posterior mean (streaming, décroissance τ=7j).' },
@@ -1218,7 +1155,7 @@ export const openapiSpec = {
             properties: {
               '402index': { type: 'integer', description: 'Endpoints auto-discovered from 402index.io' },
               self_registered: { type: 'integer', description: 'Endpoints declared by operators via /api/declare-provider' },
-              ad_hoc: { type: 'integer', description: 'Endpoints observed on-the-fly through /api/decide serviceUrl checks' },
+              ad_hoc: { type: 'integer', description: 'Endpoints observed on-the-fly via legacy serviceUrl checks (historical, no new entries since Phase 10)' },
             },
           },
         },
@@ -1275,62 +1212,6 @@ export const openapiSpec = {
           buildDate: { type: 'string' },
           version: { type: 'string' },
         },
-      },
-      // --- Decision schemas ---
-      DecideRequest: {
-        type: 'object',
-        required: ['target', 'caller'],
-        properties: {
-          target: { type: 'string', description: '64-char SHA256 hash or 66-char Lightning pubkey of the target agent' },
-          caller: { type: 'string', description: '64-char SHA256 hash or 66-char Lightning pubkey of the calling agent' },
-          amountSats: { type: 'integer', minimum: 1, description: 'Optional: transaction amount in sats for fee estimation' },
-          walletProvider: { type: 'string', enum: ['phoenix', 'wos', 'strike', 'blink', 'breez', 'zeus', 'coinos', 'cashapp'], description: 'Wallet provider name. SatRank computes P_path from the provider hub node instead of from SatRank. Agents using NWC/Phoenixd/custodial wallets should set this for accurate pathfinding.' },
-          callerNodePubkey: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$', description: 'Lightning pubkey to use as pathfinding source. Overrides walletProvider. Use when the agent knows its own node pubkey or its LSP pubkey.' },
-          serviceUrl: { type: 'string', format: 'uri', description: 'URL of the L402 service behind the target node. SatRank checks HTTP health and returns serviceHealth in the response. SSRF-protected (private IPs blocked).' },
-        },
-      },
-      DecideResponse: {
-        type: 'object',
-        description: 'GO / NO-GO decision. Embeds the canonical Bayesian posterior (p_success, ci95, sources, convergence) plus operational overlays (path, flags, riskProfile).',
-        properties: {
-          go: { type: 'boolean', description: 'true = proceed with transaction, false = abort' },
-          successRate: { type: 'number', minimum: 0, maximum: 1, description: 'Caller-personalised success probability (0-1). Anchors on Bayesian p_success and adjusts for caller path/availability.' },
-          components: {
-            type: 'object',
-            properties: {
-              routable: { type: 'number', description: 'P_routable — route exists from caller to target (0 or 1)' },
-              available: { type: 'number', description: 'P_available — probe uptime over 7 days' },
-              pathQuality: { type: 'number', description: 'P_path — personalized path quality from caller to target (0-1, based on hops, fee, alternatives)' },
-            },
-          },
-          p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Bayesian posterior success probability (hierarchical Beta-Binomial).' },
-          ci95_low: { type: 'number', minimum: 0, maximum: 1, description: '95% credible interval lower bound.' },
-          ci95_high: { type: 'number', minimum: 0, maximum: 1, description: '95% credible interval upper bound.' },
-          n_obs: { type: 'integer', minimum: 0, description: 'Observations effectives (excès d\'évidence au-delà du prior) — somme décayée τ=7j des 3 sources.' },
-          time_constant_days: { type: 'number', description: 'Constante τ exposée (décroissance exponentielle, jours). Actuellement 7.' },
-          last_update: { type: 'number', description: 'Unix seconds de la dernière ingestion connue. 0 si aucune observation.' },
-          sources: { type: 'object', description: 'Per-source breakdown (probe / report / paid). Null when no data for that source.' },
-          convergence: { type: 'object', description: 'Whether ≥2 independent sources converge on p ≥ threshold.' },
-          recent_activity: { type: 'object', description: 'n_obs cumulé 24h/7d/30d (daily_buckets, observer inclus).' },
-          risk_profile: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'], description: 'Trend delta success_rate 7j récents vs 23j antérieurs.' },
-          verdict: { type: 'string', enum: ['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT'] },
-          flags: { type: 'array', items: { type: 'string' } },
-          pathfinding: { oneOf: [{ $ref: '#/components/schemas/PathfindingResult' }, { type: 'null' }] },
-          riskProfile: { $ref: '#/components/schemas/RiskProfile' },
-          reason: { type: 'string' },
-          survival: { $ref: '#/components/schemas/SurvivalResult' },
-          targetFeeStability: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Fee stability of the target node only, not the full route (0 = highly volatile, 1 = perfectly stable). Null when no fee data is available.' },
-          maxRoutableAmount: { type: ['integer', 'null'], description: 'Highest amount in sats for which a route was found in recent multi-amount probes (1k/10k/100k/1M). Null when no multi-amount probe data is available for this node. Agents should compare this with their intended payment amount.' },
-          lastProbeAgeMs: { type: ['integer', 'null'], description: 'Milliseconds since the last probe for this node. Null if never probed.' },
-          serviceHealth: { oneOf: [{ type: 'object', properties: {
-            url: { type: 'string' }, status: { type: 'string', enum: ['healthy', 'degraded', 'down', 'checking', 'unknown'] },
-            httpCode: { type: ['integer', 'null'] }, latencyMs: { type: ['integer', 'null'] },
-            uptimeRatio: { type: ['number', 'null'] }, lastCheckedAt: { type: ['integer', 'null'] },
-            servicePriceSats: { type: ['integer', 'null'], description: 'Price from BOLT11 invoice' },
-          } }, { type: 'null' }], description: 'HTTP health of the service behind this node. Null when serviceUrl not provided.' },
-          latencyMs: { type: 'integer', description: 'Total decision computation time in ms' },
-        },
-        required: ['go', 'successRate', 'components', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile', 'verdict', 'flags', 'reason', 'survival', 'latencyMs'],
       },
       SurvivalResult: {
         type: 'object',

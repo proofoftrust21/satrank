@@ -1,4 +1,4 @@
-// API tests — decide, report, profile
+// API tests — report, profile + /decide and /best-route 410 Gone (Phase 10)
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import request from 'supertest';
@@ -17,6 +17,7 @@ import { RiskService } from '../services/riskService';
 import { DecideService } from '../services/decideService';
 import { ReportService } from '../services/reportService';
 import { V2Controller } from '../controllers/v2Controller';
+import { createGoneHandler } from '../controllers/legacyGoneController';
 import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 // createV2Routes not imported — routes mounted directly to avoid IP rate limiter in tests
 import { errorHandler } from '../middleware/errorHandler';
@@ -87,17 +88,27 @@ function buildTestApp() {
   const bayesianVerdictService = createBayesianVerdictService(db);
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
   const riskService = new RiskService();
-  const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, bayesianVerdictService, probeRepo);
-  const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
   const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
-  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
+  const v2Controller = new V2Controller(reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo);
 
   app = express();
   app.use(express.json());
   // Mount controller handlers directly — skip IP rate limiter to avoid
   // cross-test 429s. Business-level rate limiting is tested via ReportService.
   const v2 = Router();
-  v2.post('/decide', v2Controller.decide);
+  // Phase 10 — /api/decide and /api/best-route retired (410 Gone). See legacyGoneController.
+  v2.post('/decide', createGoneHandler({
+    from: '/api/decide',
+    to: '/api/intent',
+    removedOn: '2026-04-20',
+    docs: 'https://satrank.dev/docs/migration-to-1.0',
+  }));
+  v2.post('/best-route', createGoneHandler({
+    from: '/api/best-route',
+    to: '/api/intent',
+    removedOn: '2026-04-20',
+    docs: 'https://satrank.dev/docs/migration-to-1.0',
+  }));
   v2.post('/report', v2Controller.report);
   v2.get('/profile/:id', v2Controller.profile);
   app.use('/api', v2);
@@ -118,139 +129,65 @@ function buildTestApp() {
 beforeAll(() => { buildTestApp(); });
 afterAll(() => { db.close(); });
 
-// --- POST /api/decide ---
+// --- POST /api/decide (Phase 10 — 410 Gone) ---
 
-describe('POST /api/decide', () => {
-  it('returns go=true for a well-known agent', async () => {
+describe('POST /api/decide — 410 Gone', () => {
+  it('répond 410 avec code ENDPOINT_REMOVED et pointeur vers /api/intent', async () => {
     const res = await request(app)
       .post('/api/decide')
       .send({ target: sha256('bob'), caller: sha256('alice') })
       .set('Content-Type', 'application/json');
 
-    expect(res.status).toBe(200);
-    expect(res.body.data).toBeDefined();
-    expect(typeof res.body.data.go).toBe('boolean');
-    expect(typeof res.body.data.successRate).toBe('number');
-    expect(res.body.data.successRate).toBeGreaterThanOrEqual(0);
-    expect(res.body.data.successRate).toBeLessThanOrEqual(1);
-    expect(res.body.data.components).toBeDefined();
-    expect(res.body.data.components.pathQuality).toBeGreaterThanOrEqual(0);
-    expect(typeof res.body.data.p_success).toBe('number');
-    expect(res.body.data.verdict).toBeDefined();
-    expect(res.body.data.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe('ENDPOINT_REMOVED');
+    expect(res.body.error.message).toContain('2026-04-20');
+    expect(res.body.error.message).toContain('/api/intent');
+    expect(res.body.error.migration).toEqual({
+      from: '/api/decide',
+      to: '/api/intent',
+      see: 'https://satrank.dev/docs/migration-to-1.0',
+    });
   });
 
-  // Phase 5 — /api/decide est déprécié en faveur de /api/intent. Aucune
-  // suppression : l'endpoint reste fonctionnel, mais chaque réponse porte
-  // les signaux de déprécation (headers RFC 8594 + body.meta.deprecated_use).
-  it('signale la déprécation via headers et body.meta.deprecated_use', async () => {
-    const res = await request(app)
-      .post('/api/decide')
-      .send({ target: sha256('bob'), caller: sha256('alice') })
-      .set('Content-Type', 'application/json');
-
-    expect(res.status).toBe(200);
-    expect(res.headers['deprecation']).toBe('true');
-    expect(res.headers['link']).toBe('</api/intent>; rel="successor-version"');
-    expect(res.body.meta?.deprecated_use).toBe('/api/intent');
-  });
-
-  // Les headers de déprécation doivent tomber aussi sur les 4xx — sinon un
-  // agent qui envoie un body mal formé ne voit jamais l'URL successeur.
-  it('signale la déprécation même sur 400 (body invalide)', async () => {
+  it('répond 410 même avec un body vide — le endpoint n\'est plus routé au contrôleur', async () => {
     const res = await request(app)
       .post('/api/decide')
       .send({})
       .set('Content-Type', 'application/json');
 
-    expect(res.status).toBe(400);
-    expect(res.headers['deprecation']).toBe('true');
-    expect(res.headers['link']).toBe('</api/intent>; rel="successor-version"');
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe('ENDPOINT_REMOVED');
   });
+});
 
-  it('returns go=false for unknown target', async () => {
+// --- POST /api/best-route (Phase 10 — 410 Gone) ---
+
+describe('POST /api/best-route — 410 Gone', () => {
+  it('répond 410 avec code ENDPOINT_REMOVED et pointeur vers /api/intent', async () => {
     const res = await request(app)
-      .post('/api/decide')
-      .send({ target: sha256('unknown-agent'), caller: sha256('alice') })
+      .post('/api/best-route')
+      .send({ targets: [sha256('bob')], caller: sha256('alice') })
       .set('Content-Type', 'application/json');
 
-    expect(res.status).toBe(200);
-    // Unknown agent → INSUFFICIENT verdict → low success rate → go=false
-    expect(res.body.data.go).toBe(false);
-    expect(res.body.data.verdict).toBe('INSUFFICIENT');
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe('ENDPOINT_REMOVED');
+    expect(res.body.error.message).toContain('2026-04-20');
+    expect(res.body.error.message).toContain('/api/intent');
+    expect(res.body.error.migration).toEqual({
+      from: '/api/best-route',
+      to: '/api/intent',
+      see: 'https://satrank.dev/docs/migration-to-1.0',
+    });
   });
 
-  it('validates input — rejects missing target', async () => {
+  it('répond 410 même avec un body vide — le endpoint n\'est plus routé au contrôleur', async () => {
     const res = await request(app)
-      .post('/api/decide')
-      .send({ caller: sha256('alice') })
+      .post('/api/best-route')
+      .send({})
       .set('Content-Type', 'application/json');
 
-    expect(res.status).toBe(400);
-  });
-
-  it('validation error names the offending field, expected format, and received length', async () => {
-    // 11-char caller — Romain's canonical example
-    const res = await request(app)
-      .post('/api/decide')
-      .send({ target: sha256('bob'), caller: 'shortstring' })
-      .set('Content-Type', 'application/json');
-
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('VALIDATION_ERROR');
-    const msg: string = res.body.error.message;
-    expect(msg).toContain('caller');
-    expect(msg).toContain('64-char SHA256 hash');
-    expect(msg).toContain('66-char Lightning pubkey');
-    expect(msg).toContain('got 11 chars');
-  });
-
-  it('validation error reports missing caller as required', async () => {
-    const res = await request(app)
-      .post('/api/decide')
-      .send({ target: sha256('bob') })
-      .set('Content-Type', 'application/json');
-
-    expect(res.status).toBe(400);
-    const msg: string = res.body.error.message;
-    expect(msg).toContain('caller');
-    expect(msg).toContain('required');
-  });
-
-  it('validation error reports amountSats range violation', async () => {
-    const res = await request(app)
-      .post('/api/decide')
-      .send({ target: sha256('bob'), caller: sha256('alice'), amountSats: 0 })
-      .set('Content-Type', 'application/json');
-
-    expect(res.status).toBe(400);
-    const msg: string = res.body.error.message;
-    expect(msg).toContain('amountSats');
-    expect(msg).toContain('got 0');
-  });
-
-  it('accepts 66-char Lightning pubkeys', async () => {
-    // Register agent with a pubkey
-    const pubkey = '02' + sha256('lightning-agent');
-    const hash = sha256(pubkey);
-    agentRepo.insert(makeAgent('lightning-agent', { public_key_hash: hash, public_key: pubkey }));
-
-    const res = await request(app)
-      .post('/api/decide')
-      .send({ target: pubkey, caller: sha256('alice') })
-      .set('Content-Type', 'application/json');
-
-    expect(res.status).toBe(200);
-    expect(res.body.data).toBeDefined();
-  });
-
-  it('accepts amountSats parameter', async () => {
-    const res = await request(app)
-      .post('/api/decide')
-      .send({ target: sha256('bob'), caller: sha256('alice'), amountSats: 50000 })
-      .set('Content-Type', 'application/json');
-
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe('ENDPOINT_REMOVED');
   });
 });
 

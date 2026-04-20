@@ -25,8 +25,6 @@ function buildApp(): { app: express.Express; db: Database.Database } {
   // v2Controller is passed as an any-shaped stub because listTiers doesn't
   // route through it — the route wiring lives on depositController.
   const stubV2 = {
-    decide: (_r: express.Request, res: express.Response) => res.sendStatus(204),
-    bestRoute: (_r: express.Request, res: express.Response) => res.sendStatus(204),
     report: (_r: express.Request, res: express.Response) => res.sendStatus(204),
     profile: (_r: express.Request, res: express.Response) => res.sendStatus(204),
   } as unknown as import('../controllers/v2Controller').V2Controller;

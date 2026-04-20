@@ -5,7 +5,7 @@
 //   (b) anonymous report (submitAnonymous) → same
 //   (c) Q1 contract: mode='off' must still ingest into streaming (scoring
 //       signal decoupled from dualWriteMode flag).
-//   (d) Q3 neighbor: intent (decide_log hit) is classified source='intent'
+//   (d) Q3 neighbor: intent (token_query_log hit) is classified source='intent'
 //       and MUST NOT ingest (intent is not an observation of success/failure).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
@@ -184,7 +184,7 @@ describe('ReportService bayesian bridge', () => {
     expect(bucket.n_failure).toBe(1);
   });
 
-  it('intent classification skips ingestion (decide_log hit → source=intent, no streaming)', () => {
+  it('intent classification skips ingestion (token_query_log hit → source=intent, no streaming)', () => {
     const reporterHash = '55'.repeat(32);
     const targetHash = '66'.repeat(32);
     const l402PaymentHash = Buffer.from('77'.repeat(32), 'hex');
@@ -192,9 +192,9 @@ describe('ReportService bayesian bridge', () => {
     agentRepo.insert(makeAgent(reporterHash));
     agentRepo.insert(makeAgent(targetHash));
 
-    // Seed a decide_log row so classifySource returns 'intent'
+    // Seed a token_query_log row so classifySource returns 'intent'
     db.prepare(`
-      INSERT INTO decide_log (payment_hash, target_hash, decided_at)
+      INSERT INTO token_query_log (payment_hash, target_hash, decided_at)
       VALUES (?, ?, ?)
     `).run(l402PaymentHash, targetHash, NOW);
 

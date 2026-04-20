@@ -1,16 +1,15 @@
-// Token → target query log. Historically named `decide_log` because only
-// /api/decide wrote to it; as of 2026-04-16 every paid target-query path
-// populates it so any L402 token that ever looked up a target can later
-// report on that target.
+// Token → target query log. Persists "token X queried target Y" facts so
+// that /api/report can scope reports to targets the token has actually
+// looked at.
 //
-// Why widen it: report adoption was blocked because 61% of paying tokens
-// never hit /api/decide (they used verdict / profile / best-route). Under
-// the old rule those tokens could not submit reports even though the user
-// had clearly interacted with the target.
+// Historique (enlevé Phase 10) : la table s'appelait `decide_log` du temps
+// où seul /api/decide l'alimentait. /api/decide supprimé en Phase 10 C2 ;
+// renommée `token_query_log` en migration v41 pour refléter son rôle réel
+// (tous les paid target-query paths la peuplent : verdict, profile, verdicts).
 //
-// Rate-limit / dedup / anti-spam is still enforced downstream in
-// reportService.submit (per-reporter window, per-target dedup); this file
-// only establishes the "has this token ever looked at this target" fact.
+// Rate-limit / dedup / anti-spam est enforced downstream dans
+// reportService.submit (per-reporter window, per-target dedup); ce fichier
+// n'établit que le fait "ce token a-t-il déjà consulté cette target".
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { logger } from '../logger';
@@ -34,14 +33,14 @@ function getStmt(db: Database.Database): Database.Statement<[Buffer, string, num
   let stmt = preparedCache.get(db);
   if (!stmt) {
     stmt = db.prepare<[Buffer, string, number]>(
-      'INSERT OR IGNORE INTO decide_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)',
+      'INSERT OR IGNORE INTO token_query_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)',
     );
     preparedCache.set(db, stmt);
   }
   return stmt;
 }
 
-/** Insert a `(payment_hash, target_hash)` row into decide_log. Idempotent
+/** Insert a `(payment_hash, target_hash)` row into token_query_log. Idempotent
  *  (INSERT OR IGNORE). Safe to call on every paid target-query request —
  *  failures are logged at warn but never raised: observability matters
  *  more than strict consistency of the log. */
@@ -60,6 +59,6 @@ export function logTokenQuery(
     getStmt(db).run(paymentHash, targetHash, now);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: msg, targetHash, requestId }, 'decide_log insert failed');
+    logger.warn({ error: msg, targetHash, requestId }, 'token_query_log insert failed');
   }
 }

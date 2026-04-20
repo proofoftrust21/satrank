@@ -98,6 +98,16 @@ export const cacheRefreshFailures = new client.Gauge({
   registers: [metricsRegistry],
 });
 
+/** Counter for calls to removed (410 Gone) legacy endpoints. Tracks how long
+ *  consumers keep hitting removed paths so an operator can decide when it's
+ *  safe to retire the 410 handler itself. Label is the legacy path. */
+export const legacyEndpointCallsTotal = new client.Counter({
+  name: 'satrank_legacy_endpoint_calls_total',
+  help: 'Calls to removed legacy endpoints that now return 410 Gone',
+  labelNames: ['endpoint'] as const,
+  registers: [metricsRegistry],
+});
+
 /** Repository query duration — detect SQL regressions */
 export const dbQueryDuration = new client.Histogram({
   name: 'satrank_db_query_duration_seconds',

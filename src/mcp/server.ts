@@ -160,7 +160,7 @@ const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scor
 
 // MCP server creation (low-level API to avoid TS2589 with .tool())
 const server = new Server(
-  { name: 'satrank', version: '0.1.0' },
+  { name: 'satrank', version: '1.0.0' },
   { capabilities: { tools: {} } },
 );
 

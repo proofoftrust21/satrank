@@ -30,7 +30,6 @@ import { StatsService } from './services/statsService';
 import { TrendService } from './services/trendService';
 import { VerdictService } from './services/verdictService';
 import { RiskService } from './services/riskService';
-import { DecideService } from './services/decideService';
 import { ReportService } from './services/reportService';
 import { ReportBonusService } from './services/reportBonusService';
 import { ReportBonusRepository } from './repositories/reportBonusRepository';
@@ -196,11 +195,6 @@ export function createApp() {
     bayesianVerdictService,
   );
 
-  const decideService = new DecideService({
-    agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService,
-    probeRepo, lndClient: lndClient.isConfigured() ? lndClient : undefined, survivalService,
-    serviceEndpointRepo,
-  });
   // Phase 1 shadow-mode: construct the NDJSON logger only when dry_run is
   // active (mirrors the crawler process — silent contract in off/active, no
   // filesystem setup when not needed). Shared across reportService + future
@@ -239,7 +233,7 @@ export function createApp() {
   const agentController = new AgentController(agentService, agentRepo, verdictService, autoIndexService, db);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
-  const v2Controller = new V2Controller(decideService, reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, verdictService, serviceEndpointRepo, db, reportBonusService, preimagePoolRepo);
+  const v2Controller = new V2Controller(reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, db, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
   const depositController = new DepositController(db);
   const probeController = new ProbeController(db, lndClient, {
