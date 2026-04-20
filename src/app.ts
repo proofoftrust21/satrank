@@ -98,7 +98,8 @@ import { openapiSpec } from './openapi';
 
 // Infra
 import { logger } from './logger';
-import { set as cacheSet, getStale as cacheGetStale } from './cache/memoryCache';
+import { setFresh as cacheSetFresh, getStale as cacheGetStale } from './cache/memoryCache';
+import { TOP_SORT_AXES, TOP_WARMUP_LIMITS, CRITICAL_CACHE_TTL_MS } from './services/statsService';
 import { DualWriteLogger } from './utils/dualWriteLogger';
 
 export function createApp() {
@@ -577,13 +578,18 @@ function runWarmUp(
     logger.warn({ error: msg }, 'Cache warm-up: getNetworkStats failed');
   }
 
-  for (const limit of [5, 10, 20]) {
-    try {
-      const response = agentController.buildTopResponse(limit, 0, 'p_success');
-      cacheSet(`agents:top:${limit}:0:p_success`, response, 5 * 60_000);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ error: msg, limit }, 'Cache warm-up: buildTopResponse failed');
+  // Refresh every (limit × sort_by) combo the health check monitors as critical.
+  // The list lives in statsService so a key cannot be declared critical without
+  // being warmed — warm-up and CRITICAL_CACHE_KEYS share a single source of truth.
+  for (const limit of TOP_WARMUP_LIMITS) {
+    for (const sortBy of TOP_SORT_AXES) {
+      try {
+        const response = agentController.buildTopResponse(limit, 0, sortBy);
+        cacheSetFresh(`agents:top:${limit}:0:${sortBy}`, response, CRITICAL_CACHE_TTL_MS);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ error: msg, limit, sortBy }, 'Cache warm-up: buildTopResponse failed');
+      }
     }
   }
   // Movers cache is served from the controller (empty envelope in Phase 3)
