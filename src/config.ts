@@ -46,6 +46,18 @@ const configSchema = z.object({
   NOSTR_RELAYS: z.string().default(DEFAULT_NOSTR_RELAYS_CSV),
   NOSTR_PUBLISH_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000), // 30 min — delta-only (unchanged agents are skipped)
   NOSTR_MIN_SCORE: z.coerce.number().int().min(0).default(30), // only publish nodes with score >= this
+  // Phase 8 — multi-kind endorsements (30382 node / 30383 endpoint / 30384 service)
+  // Opt-in : OFF par défaut tant que Checkpoint 2 n'est pas validé en prod.
+  // Le scan tourne en parallèle du NIP-85 legacy (kind 30382 single-source) —
+  // les deux coexistent pendant la rollout jusqu'à sunset de l'ancien.
+  NOSTR_MULTI_KIND_ENABLED: z.coerce.boolean().default(false),
+  NOSTR_MULTI_KIND_INTERVAL_MS: z.coerce.number().int().positive().default(300_000), // 5 min
+  NOSTR_MULTI_KIND_SCAN_WINDOW_SEC: z.coerce.number().int().positive().default(900), // 15 min (3× interval avec overlap)
+  NOSTR_MULTI_KIND_MAX_PER_TYPE: z.coerce.number().int().positive().default(500), // safeguard premier boot
+  // NIP-09 deletion requests (kind 5). OFF par défaut — on garde en réserve pour
+  // Phase 8bis ou quand un relai non-NIP-33 est observé en pratique (le NIP-33
+  // replaceable rend la deletion redondante pour les 30382/30383/30384).
+  NOSTR_NIP09_ENABLED: z.coerce.boolean().default(false),
   // LND invoice macaroon — needed for /api/deposit (addInvoice + lookupInvoice)
   // Separate from LND_MACAROON_PATH which is readonly. Bake with:
   //   lncli bakemacaroon invoices:read invoices:write --save_to invoice.macaroon

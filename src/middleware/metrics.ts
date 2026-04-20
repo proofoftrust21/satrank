@@ -279,6 +279,60 @@ export const reportBonusRollbackTotal = new client.Counter({
   registers: [metricsRegistry],
 });
 
+// --- Phase 8 : multi-kind Nostr publishing ---
+
+/** Compteur par kind publié + résultat (success/failure). Couvre les 4 kinds
+ *  (30382/30383/30384/20900/5). Un label `result=no_ack` signale un publish
+ *  qui n'a reçu aucun ack de relai. Le drop soudain d'un kind = soit plus
+ *  d'entités éligibles côté business, soit régression du scheduler. */
+export const multiKindEventsPublishedTotal = new client.Counter({
+  name: 'satrank_nostr_events_published_total',
+  help: 'Events Nostr publiés (Phase 8 multi-kind) par kind et résultat',
+  labelNames: ['kind', 'result'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Compteur de flashes kind 20900 par type d'entité. Labels : type ∈
+ *  {node, endpoint, service}. Un spike signale un événement de marché
+ *  (un endpoint qui flip SAFE→RISKY = alerte utilisateur). */
+export const multiKindFlashesTotal = new client.Counter({
+  name: 'satrank_nostr_flashes_total',
+  help: 'Flashes kind 20900 émis par type d\'entité',
+  labelNames: ['type'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Compteur de skip par raison : `no_change` (shouldRepublish=false),
+ *  `hash_identical` (template byte-équivalent au cache). Ratio
+ *  `skipped/scanned` = efficacité du delta filter. */
+export const multiKindRepublishSkippedTotal = new client.Counter({
+  name: 'satrank_nostr_republish_skipped_total',
+  help: 'Entités scannées mais non republiées (par raison)',
+  labelNames: ['reason'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Compteur d'erreurs de publish au niveau relai. Permet d'identifier le
+ *  relai qui drag (ex. nos.lol timeout systématique) et de le retirer de
+ *  la liste sans attendre une post-mortem. `result` ∈ {timeout, error}. */
+export const multiKindRelayErrorsTotal = new client.Counter({
+  name: 'satrank_nostr_relay_errors_total',
+  help: 'Erreurs publish par relai Nostr (Phase 8)',
+  labelNames: ['relay', 'result'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Histogramme de latence par publish (signing + broadcast). Exposé par
+ *  kind pour distinguer le coût d'un 30383 enrichi (tags price/category)
+ *  d'un 20900 minimal. Utile pour détecter un relai qui ralentit la P99. */
+export const multiKindPublishDuration = new client.Histogram({
+  name: 'satrank_nostr_multi_kind_publish_duration_seconds',
+  help: 'Durée publish Nostr multi-kind (sign + broadcast) en secondes',
+  labelNames: ['kind'] as const,
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [metricsRegistry],
+});
+
 // --- Phase 7 : operators abstraction ---
 
 /** Total d'operators par statut. Refreshé au scrape (comme agentsTotal) via
