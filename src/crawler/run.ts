@@ -667,6 +667,105 @@ async function main(): Promise<void> {
       logger.info('Nostr publisher disabled — NOSTR_PRIVATE_KEY not set');
     }
 
+    // Phase 8 — C5 : scheduler multi-kind (30382/30383) indépendant du legacy
+    // NIP-85 single-source. Gated OFF par défaut tant que Checkpoint 2 n'est
+    // pas validé en prod. Cron 5 min : scan les posteriors modifiés, shouldRepublish,
+    // publish, update cache.
+    let timerNostrMultiKind: ReturnType<typeof setInterval> | null = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let multiKindPublisherRef: any = null;
+    if (config.NOSTR_MULTI_KIND_ENABLED && config.NOSTR_PRIVATE_KEY) {
+      try {
+        const { NostrMultiKindPublisher } = await import('../nostr/nostrMultiKindPublisher');
+        const { NostrMultiKindScheduler } = await import('../nostr/nostrMultiKindScheduler');
+        const { NostrPublishedEventsRepository } = await import('../repositories/nostrPublishedEventsRepository');
+        const { ServiceEndpointRepository } = await import('../repositories/serviceEndpointRepository');
+        const { OperatorService } = await import('../services/operatorService');
+        const {
+          OperatorRepository,
+          OperatorIdentityRepository,
+          OperatorOwnershipRepository,
+        } = await import('../repositories/operatorRepository');
+
+        const multiKindRelays = config.NOSTR_RELAYS.split(',').map((r) => r.trim());
+        const multiKindPublisher = new NostrMultiKindPublisher({
+          privateKeyHex: config.NOSTR_PRIVATE_KEY,
+          relays: multiKindRelays,
+        });
+        multiKindPublisherRef = multiKindPublisher;
+
+        const endpointStreamingMulti = new EndpointStreamingPosteriorRepository(db);
+        const nodeStreamingMulti = new NodeStreamingPosteriorRepository(db);
+        const serviceStreamingMulti = new ServiceStreamingPosteriorRepository(db);
+        const publishedEventsRepo = new NostrPublishedEventsRepository(db);
+        const serviceEndpointRepoMulti = new ServiceEndpointRepository(db);
+        const operatorService = new OperatorService(
+          new OperatorRepository(db),
+          new OperatorIdentityRepository(db),
+          new OperatorOwnershipRepository(db),
+          endpointStreamingMulti,
+          nodeStreamingMulti,
+          serviceStreamingMulti,
+        );
+
+        const multiKindScheduler = new NostrMultiKindScheduler(
+          multiKindPublisher,
+          endpointStreamingMulti,
+          nodeStreamingMulti,
+          publishedEventsRepo,
+          serviceEndpointRepoMulti,
+          operatorService,
+          db,
+        );
+
+        const runMultiKindScan = (): void => {
+          const now = Math.floor(Date.now() / 1000);
+          multiKindScheduler
+            .runScan(now, {
+              scanWindowSec: config.NOSTR_MULTI_KIND_SCAN_WINDOW_SEC,
+              maxPerType: config.NOSTR_MULTI_KIND_MAX_PER_TYPE,
+            })
+            .then((result) => {
+              for (const r of result.perType) {
+                logger.info(
+                  {
+                    entityType: r.entityType,
+                    scanned: r.scanned,
+                    published: r.published,
+                    firstPublish: r.firstPublish,
+                    skippedNoChange: r.skippedNoChange,
+                    errors: r.errors,
+                  },
+                  'nostr multi-kind scan result',
+                );
+              }
+            })
+            .catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'nostr multi-kind scan error');
+            });
+        };
+
+        timerNostrMultiKind = setInterval(runMultiKindScan, config.NOSTR_MULTI_KIND_INTERVAL_MS);
+        timerNostrMultiKind.unref?.();
+        logger.info(
+          {
+            intervalMs: config.NOSTR_MULTI_KIND_INTERVAL_MS,
+            scanWindowSec: config.NOSTR_MULTI_KIND_SCAN_WINDOW_SEC,
+            maxPerType: config.NOSTR_MULTI_KIND_MAX_PER_TYPE,
+            relays: multiKindRelays,
+          },
+          'Nostr multi-kind scheduler started',
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : '';
+        logger.error({ error: msg, stack }, 'Failed to start Nostr multi-kind scheduler');
+      }
+    } else if (!config.NOSTR_MULTI_KIND_ENABLED) {
+      logger.info('Nostr multi-kind scheduler disabled (NOSTR_MULTI_KIND_ENABLED=false)');
+    }
+
     // Run an initial stale sweep so the DB reflects fossils before the first crawl fires
     runStaleSweep(agentRepo);
 
@@ -801,6 +900,13 @@ async function main(): Promise<void> {
       if (timerProbe) clearInterval(timerProbe);
       if (timerNostr) clearInterval(timerNostr);
       if (timerZapMining) clearInterval(timerZapMining);
+      if (timerNostrMultiKind) clearInterval(timerNostrMultiKind);
+      if (multiKindPublisherRef) {
+        multiKindPublisherRef.close().catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn({ error: msg }, 'multi-kind publisher close failed');
+        });
+      }
       clearInterval(timerStaleSweep);
       clearInterval(timerRetention);
       clearInterval(timerWalCheckpoint);
