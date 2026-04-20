@@ -76,6 +76,19 @@ export function set<T>(key: string, data: T, ttlMs: number = DEFAULT_TTL_MS): vo
   evictIfNeeded();
 }
 
+/** Stores a value AND marks the key as freshly refreshed. Mirrors what
+ *  getOrCompute does on a successful background refresh. Use from warm-up
+ *  paths: the value is already computed, and skipping the freshness update
+ *  would leave the health check unable to observe the refresh — making every
+ *  warmed key appear permanently stale once TTL×3 elapses without user hits.
+ */
+export function setFresh<T>(key: string, data: T, ttlMs: number = DEFAULT_TTL_MS): void {
+  store.set(key, { data, expiry: Date.now() + ttlMs, lastAccess: Date.now() });
+  lastFreshAt.set(key, Date.now());
+  refreshFailures.delete(key);
+  evictIfNeeded();
+}
+
 /** LRU eviction: when store exceeds MAX_ENTRIES, remove least-recently-accessed entries. */
 function evictIfNeeded(): void {
   if (store.size <= MAX_ENTRIES) return;
@@ -181,10 +194,14 @@ export function invalidate(key: string): void {
   store.delete(key);
 }
 
-/** Clears every entry. Primarily used in tests. */
+/** Clears every entry AND resets freshness tracking. Primarily used in tests —
+ *  leaking `lastFreshAt` / `refreshFailures` across suites produced spurious
+ *  "cold boot" failures when a prior test registered refresh failures. */
 export function clear(): void {
   store.clear();
   refreshing.clear();
+  lastFreshAt.clear();
+  refreshFailures.clear();
 }
 
 /** Current number of entries. Primarily used in tests / debug. */
