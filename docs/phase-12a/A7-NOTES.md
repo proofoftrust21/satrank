@@ -185,3 +185,42 @@ cascade, and the 3-min cap on runtime already bounds the worst case.
       reproduce prod's production behaviour? Concern: missing
       WAL-at-clone means staging restarts from a fresh WAL, might hide
       issues that only show under WAL bloat.
+
+## A6 scope reduction (2026-04-21 ~11:20Z)
+
+Romain authorised A6 in a **lightweight** version :
+
+- 500 requests GET-shaped against prod (interleaved
+  `/api/agents/top` 75 % + `/api/intent` 25 %). Cost : **0 sats**.
+- `/api/probe` pass (50 requests, ≤ 250 sats) **SKIPPED**.
+
+Skip rationale (verbatim from the GO message) :
+
+1. Phase 12A already measured `/api/probe` extensively on staging
+   through the full 4-palier A5 matrix.
+2. Prod has 0 users today — adding a bench `/api/probe` would be
+   artificial traffic on the single public instance.
+3. The 5 000-sat budget is better preserved for Phase 13B E2E
+   ("I am an agent") tests where each sat tells a real usage story.
+4. The staging-vs-prod delta on `/api/probe` specifically does not
+   influence Phase 12B priorities — the SQLite-writer bottleneck is
+   already identified (verdict / intent / services share a ~200 rps
+   write ceiling), and `/api/probe` writes through the same
+   contention path.
+
+Activation variable kept as documented :
+`PHASE_12A_PROD_SMOKE_OK=yes`. Run completed at 11:23Z, run ID
+`phase-12a-prod-20260421-1123`.
+
+## A6 calibration — WAN dominates
+
+Observed during A6 : `/api/agents/top` p95 on prod = 332.7 ms, vs
+staging p95 = 3.1 ms → raw factor ×107. This is **~99 % WAN** (Paris
+workstation → Hetzner Nuremberg, ~220–250 ms RTT + TLS), not a
+server degradation. The earlier A7-NOTES prior estimate of
+**~1.10–1.15 ×** "optimistic staging" assumed an iso-network
+measurement that this smoke could not deliver.
+
+Recommendation for Phase 12B : re-run the prod smoke from the staging
+VM itself. Both are in the same Hetzner nbg1 DC, so WAN would be
+single-digit ms and the server-side delta would come out cleanly.

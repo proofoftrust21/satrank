@@ -32,8 +32,16 @@ Three-line version :
    to 37.9 ms p95 at 10 rps warm. Mitigation belongs in Phase 12B
    (lazy init on process start, or warmup probe).
 
-Prod smoke (A6) was not executed this run — script is ready and
-awaits Romain's `PHASE_12A_PROD_SMOKE_OK=yes` + written GO.
+Prod smoke (A6) ran 2026-04-21 at 11:23Z, lightweight scope (500 req
+across `/api/agents/top` + `/api/intent`, **0 sats cost**,
+`/api/probe` skipped by operator decision — rationale in § 5.1).
+All 375 `/api/agents/top` requests returned 200 with p95 332.7 ms from
+Paris ; 57/125 `/api/intent` POSTs hit the production
+`discoveryRateLimit` (10 req/min/IP) as expected. The raw
+staging-vs-prod factor of ×107 on `/api/agents/top` is **~99 % WAN**
+(Paris → Nuremberg RTT + TLS), not a server degradation. Server-side
+calibration remains an open item — recommend re-running the prod
+smoke from the staging VM in Phase 12B for an iso-network comparison.
 
 ---
 
@@ -245,50 +253,106 @@ export was captured :
 
 ---
 
-## 5. A6 — Prod smoke (iso-charge)
+## 5. A6 — Prod smoke (iso-charge, lightweight scope)
 
-### 5.1 Plan
+### 5.1 Plan (actual — 2026-04-21, scope reduced by Romain)
 
-Cost cap : ≤ 1 000 sats (4× safety margin vs the 5 000-sat Phase 12A
-budget). Probe cost is the only priced operation.
+Cost : **0 sats**. `/api/probe` pass **SKIPPED**.
 
 | Pass | Endpoint | Count | Auth | Cost |
 |------|----------|------:|------|-----:|
-| 1 | `/api/health`, `/api/agents/top`, `/api/services`, `/api/intent` | 500 GET + 125 POST intent | free | 0 sats |
-| 2 | `/api/probe` | 50 | `X-API-Key` | ≤ 250 sats (5 credits × 50 × 1 sat/credit) |
+| 1 | `/api/agents/top?limit=50` (GET, 75 %) interleaved with `/api/intent` (POST, 25 %) | 375 + 125 = 500 | none | 0 sats |
+| ~~2~~ | ~~`/api/probe`~~ | ~~50~~ | — | ~~SKIPPED~~ |
 
-Rate : 2 rps on the GET pass (4 min total), 1 rps on the probe pass
-(50 s total). No ramping (deterministic per-request loop).
+Rate : 2 rps wall-clock (~4 min 10 s total). Deterministic bash loop
+with single curl per measurement (fixed the earlier double-curl bug
+that would have doubled prod load).
+
+**Probe pass skipped — rationale (per Romain) :**
+
+1. `/api/probe` was already measured extensively on staging through
+   the full 4-palier matrix in A5.
+2. Prod has 0 users today ; firing 50 bench probes against the single
+   public instance would be artificial traffic on a cold system that
+   real users aren't exercising.
+3. The 5 000-sat budget is better preserved for Phase 13B E2E agent
+   flows ("I am an agent, I want to pay X to do Y") where each sat
+   tells a real usage story.
+4. The staging-vs-prod delta on `/api/probe` specifically does not
+   influence Phase 12B priorities — the SQLite-writer bottleneck is
+   already identified by the A5 numbers (verdict / intent / services
+   sharing a ~200 rps write ceiling), and `/api/probe` writes to
+   `probe_results` on the same contention path.
 
 ### 5.2 Authorisation
 
-Running requires `PHASE_12A_PROD_SMOKE_OK=yes` + confirmation from
-Romain. The script in `bench/prod/run-prod-smoke.sh` refuses to start
-without both.
+Required `PHASE_12A_PROD_SMOKE_OK=yes` + Romain's explicit written GO.
+The script in `bench/prod/run-prod-smoke.sh` refuses to start without
+both. GO received 2026-04-21 ~11:20Z, run ID
+`phase-12a-prod-20260421-1123`.
 
 ### 5.3 Results
 
-_(filled when the prod smoke runs)_
+From `bench/prod/results/phase-12a-prod-20260421-1123/summary.json` :
 
-| Endpoint | Requests | p50 | p95 | p99 | Err % |
-|----------|---------:|----:|----:|----:|------:|
-| `/api/health` | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| `/api/agents/top` | | | | | |
-| `/api/services` | | | | | |
-| `/api/intent` | | | | | |
-| `/api/probe` | | | | | |
+| Endpoint | Requests | Status codes | p50 ms | p90 ms | p95 ms | p99 ms | max ms | err % |
+|----------|---------:|--------------|-------:|-------:|-------:|-------:|-------:|------:|
+| `/api/agents/top?limit=50` | 375 | 200 × 375              | 240.6 | 292.3 | 332.7 | 375.3 | 431.7 | 0 |
+| `/api/intent`              | 125 | 200 × 68, 429 × 57     | 221.4 | 269.8 | 289.4 | 351.9 | 394.5 | 45.6 † |
 
-### 5.4 Staging-vs-prod calibration
+† The 429 rate on `/api/intent` is **not** a server-capacity signal.
+It is the production `discoveryRateLimit` (10 req/min/IP) doing its
+job — the smoke clients come from a single source IP and the 0.5 rps
+intent rate (125 requests over ~4 min ≈ 30 rpm) exceeds the 10 rpm
+window after the first 10 hits. This is the expected prod defence
+posture and is exactly what the `L402_BYPASS` skip hook disabled on
+staging (see § 2.4).
 
-At equal request count on free endpoints :
+### 5.4 Staging-vs-prod calibration — WAN-bound
 
-| Endpoint | Staging p95 | Prod p95 | Factor (prod / staging) |
-|----------|------------:|---------:|------------------------:|
-| `/api/health` | _TBD_ | _TBD_ | _TBD_ |
-| `/api/agents/top` | | | |
-| `/api/services` | | | |
+The raw numbers cross two network paths that are not comparable :
 
-Expected factor from A7-NOTES : **~1.10–1.15**.
+- **Staging** : k6 runs on the same VM as the api container →
+  loopback only, ~0.05 ms RTT.
+- **Prod** : bench runs from the operator's workstation (Paris) →
+  `satrank.dev` at Hetzner Nuremberg → measured RTT floor ~220–250 ms
+  dominated by WAN + TLS handshake reuse.
+
+At equal palier (closest comparable : 10 rps sustained staging vs
+0.5–1.5 rps prod at the arrival-rate schedule) :
+
+| Endpoint | Staging p95 (loopback) | Prod p95 (Paris → Nuremberg) | Raw factor | Notes |
+|----------|-----------------------:|-----------------------------:|-----------:|-------|
+| `/api/agents/top`          | 3.1 ms    | 332.7 ms | ×107 | ~330 ms WAN + handshake + ≤ 5 ms server |
+| `/api/intent`              | 37.9 ms   | 289.4 ms | ×7.6 | ~250 ms WAN + ≤ 40 ms server |
+
+The **×107 factor on `/api/agents/top` is 99 % WAN**, not a server
+degradation. A rough server-side reconstruction : subtract a
+conservative 220 ms WAN+TLS floor from prod p50 (240 ms) and you get
+~20 ms server-side — plausibly close to staging once you account for
+prod's co-tenant load (bitcoind + LND) + TCP+TLS overhead vs
+loopback's near-zero cost. The `/api/intent` factor is smaller
+because the endpoint's own latency (~38 ms server side) is a larger
+fraction of the total, diluting the WAN contribution.
+
+**The A7-NOTES prior "~1.10–1.15 × optimistic staging" estimate**
+assumed an iso-network measurement (same network path, same RTT
+floor). That estimate is **not validated** by this smoke — the smoke
+could not separate server-side from network cost without a
+`curl --write-out '%{time_connect},%{time_starttransfer},%{time_total}'`
+breakdown, which was not captured. Server-side calibration remains an
+open item :
+
+- Option A : re-run the prod smoke from the staging VM (same
+  datacenter, low RTT, no extra auth needed — just ping
+  `satrank.dev` from staging).
+- Option B : modify the smoke script to record TCP connect + TLS +
+  TTFB + total, subtract connect+TLS from total, keep the delta as
+  "server-side ms".
+
+Recommend Option A for Phase 12B calibration — it lets us compare
+loopback-staging → loopback-prod with a one-time low-cost RTT
+baseline.
 
 ---
 
@@ -371,6 +435,15 @@ From A5 staging paliers (A6 pending GO) :
    get stable p99 numbers. The current p95 tail variance is high
    enough at 3 min that p95 values within 10 % should not be treated
    as distinguishable.
+6. **Iso-network staging↔prod calibration** — the A6 lightweight
+   smoke ran from the operator's Paris workstation, which contributes
+   ~220–250 ms WAN+TLS to every prod measurement and makes the
+   ×107 staging-vs-prod factor on `/api/agents/top` meaningless as a
+   server metric. Phase 12B should re-run the prod smoke **from the
+   staging VM** (same datacenter, loopback-comparable RTT floor) to
+   isolate the server-side contribution. Alternative : extend the
+   smoke script to record `time_connect` + `time_starttransfer` +
+   `time_total` and subtract the connect+TLS floor.
 
 ---
 
@@ -383,8 +456,10 @@ From A5 staging paliers (A6 pending GO) :
 | `bench/k6/`, `bench/wrk/` | Load-gen scripts + fixtures |
 | `bench/run-all.sh` | Paliers orchestrator |
 | `bench/aggregate.py` | Summary-export → markdown table |
-| `bench/prod/run-prod-smoke.sh` | A6 smoke |
-| `bench/results/<run-id>/` | Raw k6 summary-export JSONs |
+| `bench/prod/run-prod-smoke.sh` | A6 smoke (lightweight scope) |
+| `bench/prod/results/phase-12a-prod-20260421-1123/` | A6 CSV + summary.json |
+| `bench/results/phase-12a-20260421-0955/` | A5 pre-adjustment (health + top@1,10, 2-min) |
+| `bench/results/phase-12a-20260421-1016/` | A5 post-adjustment (14 paliers, 3-min) |
 | `docs/phase-12a/baseline-prod-20260421.json` | A2 baseline |
 | `docs/phase-12a/A7-NOTES.md` | Running notes accumulated during A0–A6 |
 

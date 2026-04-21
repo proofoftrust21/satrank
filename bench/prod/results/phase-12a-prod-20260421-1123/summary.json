@@ -1,0 +1,30 @@
+{
+  "run_id": "phase-12a-prod-20260421-1123",
+  "endpoints": {
+    "/api/agents/top?limit=50": {
+      "requests": 375,
+      "status_codes": {
+        "200": 375
+      },
+      "p50_ms": 240.6,
+      "p90_ms": 292.3,
+      "p95_ms": 332.7,
+      "p99_ms": 375.3,
+      "max_ms": 431.7,
+      "avg_ms": 250.5
+    },
+    "/api/intent": {
+      "requests": 125,
+      "status_codes": {
+        "200": 68,
+        "429": 57
+      },
+      "p50_ms": 221.4,
+      "p90_ms": 269.8,
+      "p95_ms": 289.4,
+      "p99_ms": 351.9,
+      "max_ms": 394.5,
+      "avg_ms": 230.3
+    }
+  }
+}

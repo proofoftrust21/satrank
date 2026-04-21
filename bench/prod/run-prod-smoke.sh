@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # Phase 12A A6 — prod smoke, iso-charge calibration against A5 staging.
 #
-# Budget (hard caps):
-#   - 500 GET requests on free endpoints (/api/health, /api/agents/top,
-#     /api/services, /api/intent)
-#   - 50 POST /api/probe (5 credits/call → 250 sats)
-#   - ≤ 5000 sats total spend (we budget ≤ 1000 sats with 4x safety)
+# Budget (hard caps) — reduced per Romain's 2026-04-21 GO message:
+#   - 500 requests total, interleaved /api/agents/top (GET, 75 %) and
+#     /api/intent (POST, 25 %). That is the exact scope authorised.
+#   - Probe pass SKIPPED. Rationale : already measured extensively on
+#     staging (A5 paliers), prod has 0 users so probe traffic is
+#     artificial on the single public instance, 5000-sat budget better
+#     spent on Phase 13B E2E agent flows, staging-vs-prod delta on
+#     probe doesn't influence the 12B bottleneck priorities.
+#   - Total cost : 0 sats.
 #
 # Design :
 # - No k6 on prod : we want deterministic request counts with a real cap,
 #   not an arrival-rate scheduler that can overshoot on transient hiccups.
-#   A small bash loop with `curl` + `xargs -P` is enough at ≤ 500 requests.
-# - Free GETs are interleaved, 2 rps wall-clock rate. 500 requests ≈ 4 min.
-# - Probes are emitted separately (authenticated) after the GET pass.
+#   A small bash loop with a single `curl` per measurement is enough at
+#   ≤ 500 requests. (The earlier version double-curled — one for
+#   `%{http_code}`, one for `%{time_total}` — effectively doubling the
+#   load. Fixed : single curl with multi-field `-w`.)
+# - Requests at 2 rps wall-clock. 500 requests ≈ 4 min 10 s.
 # - Output : bench/prod/results/<run-id>/*.csv + a summary.json.
 #
 # Required env :
-#   SATRANK_API_KEY     — prod admin key (SAtRank ops only). Fallback : the
-#                         L402 token path via deposit (see --use-deposit).
 #   PHASE_12A_PROD_SMOKE_OK=yes  — kill switch: refuses to run without it.
 #
 # Safety :
@@ -28,7 +32,6 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-https://satrank.dev}"
 MAX_GET="${MAX_GET:-500}"
-MAX_PROBE="${MAX_PROBE:-50}"
 GET_RPS="${GET_RPS:-2}"
 RUN_ID="${RUN_ID:-phase-12a-prod-$(date -u +%Y%m%d-%H%M)}"
 
@@ -51,108 +54,88 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${HERE}/results/${RUN_ID}"
 mkdir -p "${OUT_DIR}"
 
-endpoints=(
-  "/api/health"
-  "/api/agents/top?limit=50"
-  "/api/services?limit=20"
-)
-# /api/intent — POST, same rate class. We intersperse it with the GETs.
+# Restricted scope (Romain 2026-04-21) : only /api/agents/top + /api/intent.
+top_endpoint="/api/agents/top?limit=50"
 intent_bodies=('{"category":"data","limit":5}' '{"category":"tools","limit":5}' '{"category":"bitcoin","limit":5}')
 
 echo "Run ID : ${RUN_ID}"
 echo "Base   : ${BASE_URL}"
-echo "Budget : GET=${MAX_GET} probe=${MAX_PROBE}"
+echo "Scope  : /api/agents/top (75 %) + /api/intent (25 %), total ${MAX_GET}"
+echo "Cost   : 0 sats (probe pass skipped per GO message)"
 echo
 
 # ------------------------------------------------------------------
-# PASS 1 — free GETs (no auth) + /api/intent (POST, discoveryRateLimit)
+# PASS 1 — /api/agents/top (GET, 75 %) + /api/intent (POST, 25 %)
+# Single curl per measurement (http_code + time_total in one call).
 # ------------------------------------------------------------------
-get_csv="${OUT_DIR}/gets.csv"
-echo "timestamp,endpoint,http_code,total_time_ms" > "${get_csv}"
+csv_path="${OUT_DIR}/requests.csv"
+echo "timestamp,endpoint,http_code,total_time_ms" > "${csv_path}"
 sleep_sec=$(awk -v r="${GET_RPS}" 'BEGIN{printf "%.3f", 1/r}')
 
 i=0
 total=$((MAX_GET))
 while (( i < total )); do
-  # rotation: 3 free GETs, 1 POST /api/intent → 25 % of traffic is POST
+  # Rotation : 3 GETs on /api/agents/top, then 1 POST on /api/intent.
   case $(( i % 4 )) in
     0|1|2)
-      ep="${endpoints[$(( (i/3) % ${#endpoints[@]} ))]}"
-      t=$(curl -s -o /dev/null -w '%{time_total}' -m 10 "${BASE_URL}${ep}" || echo "0")
-      code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "${BASE_URL}${ep}" || echo "000")
+      ep="${top_endpoint}"
+      out=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' -m 10 "${BASE_URL}${ep}" 2>/dev/null || echo "000 0")
+      code=$(echo "${out}" | awk '{print $1}')
+      t=$(echo "${out}" | awk '{print $2}')
       ms=$(awk -v t="${t}" 'BEGIN{printf "%.1f", t*1000}')
-      echo "$(date -u +%H:%M:%S.%3N),${ep},${code},${ms}" >> "${get_csv}"
+      echo "$(date -u +%H:%M:%S.%3N),${ep},${code},${ms}" >> "${csv_path}"
       ;;
     3)
       body="${intent_bodies[$(( (i/4) % ${#intent_bodies[@]} ))]}"
-      t=$(curl -s -o /dev/null -w '%{time_total}' -m 10 -X POST \
+      out=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' -m 10 -X POST \
             -H 'content-type: application/json' -d "${body}" \
-            "${BASE_URL}/api/intent" || echo "0")
-      code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST \
-            -H 'content-type: application/json' -d "${body}" \
-            "${BASE_URL}/api/intent" || echo "000")
+            "${BASE_URL}/api/intent" 2>/dev/null || echo "000 0")
+      code=$(echo "${out}" | awk '{print $1}')
+      t=$(echo "${out}" | awk '{print $2}')
       ms=$(awk -v t="${t}" 'BEGIN{printf "%.1f", t*1000}')
-      echo "$(date -u +%H:%M:%S.%3N),/api/intent,${code},${ms}" >> "${get_csv}"
+      echo "$(date -u +%H:%M:%S.%3N),/api/intent,${code},${ms}" >> "${csv_path}"
       ;;
   esac
   i=$(( i + 1 ))
   sleep "${sleep_sec}"
 done
 
-echo "GET pass done : ${MAX_GET} requests → ${get_csv}"
+echo "Request pass done : ${MAX_GET} requests → ${csv_path}"
 
 # ------------------------------------------------------------------
-# PASS 2 — /api/probe (paid, 5 credits/call)
-# ------------------------------------------------------------------
-if [[ -z "${SATRANK_API_KEY:-}" ]]; then
-  echo "NOTE: SATRANK_API_KEY not set — skipping probe pass." >&2
-  echo "To include the probe pass, export SATRANK_API_KEY or pay an L402 token first." >&2
-else
-  probe_csv="${OUT_DIR}/probes.csv"
-  echo "timestamp,target,http_code,total_time_ms" > "${probe_csv}"
-  # Sample targets from the top-50 to guarantee valid hashes. Use the same
-  # fixture we use in bench/k6/verdict.js for cross-bench comparability.
-  targets=( $(jq -r '.[]' "${HERE}/../k6/fixtures/agents.json" | head -n "${MAX_PROBE}") )
-  for t in "${targets[@]}"; do
-    body=$(printf '{"target":"%s","probeType":"liquidity"}' "${t}")
-    start=$(date -u +%s.%N)
-    code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST \
-      -H "X-API-Key: ${SATRANK_API_KEY}" \
-      -H 'content-type: application/json' \
-      -d "${body}" \
-      "${BASE_URL}/api/probe" || echo "000")
-    end=$(date -u +%s.%N)
-    ms=$(awk -v s="${start}" -v e="${end}" 'BEGIN{printf "%.1f", (e-s)*1000}')
-    echo "$(date -u +%H:%M:%S.%3N),${t},${code},${ms}" >> "${probe_csv}"
-    sleep 1
-  done
-  echo "PROBE pass done : ${MAX_PROBE} requests → ${probe_csv}"
-fi
-
-# ------------------------------------------------------------------
-# Summary
+# Summary — per-endpoint rollup.
 # ------------------------------------------------------------------
 summary="${OUT_DIR}/summary.json"
 python3 - "${OUT_DIR}" <<'PY' > "${summary}"
 import csv, json, os, statistics, sys
+from collections import defaultdict
 root = sys.argv[1]
-out = {"run_id": os.path.basename(root), "passes": {}}
-for name in ("gets", "probes"):
-    path = os.path.join(root, f"{name}.csv")
-    if not os.path.exists(path):
-        continue
-    rows = list(csv.DictReader(open(path)))
-    lat = [float(r["total_time_ms"]) for r in rows if r["total_time_ms"]]
-    codes = {}
-    for r in rows:
-        codes[r["http_code"]] = codes.get(r["http_code"], 0) + 1
-    out["passes"][name] = {
-        "requests": len(rows),
-        "status_codes": codes,
-        "p50_ms": statistics.median(lat) if lat else 0,
-        "p95_ms": (sorted(lat)[int(0.95 * len(lat))] if len(lat) >= 20 else max(lat) if lat else 0),
-        "p99_ms": (sorted(lat)[int(0.99 * len(lat))] if len(lat) >= 100 else max(lat) if lat else 0),
-        "avg_ms": statistics.fmean(lat) if lat else 0,
+path = os.path.join(root, "requests.csv")
+rows = list(csv.DictReader(open(path)))
+by_ep = defaultdict(list)
+codes_by_ep = defaultdict(lambda: defaultdict(int))
+for r in rows:
+    by_ep[r["endpoint"]].append(float(r["total_time_ms"]))
+    codes_by_ep[r["endpoint"]][r["http_code"]] += 1
+
+def pct(lst, q):
+    if not lst:
+        return 0.0
+    s = sorted(lst)
+    k = int(q * (len(s) - 1))
+    return s[k]
+
+out = {"run_id": os.path.basename(root), "endpoints": {}}
+for ep, lat in by_ep.items():
+    out["endpoints"][ep] = {
+        "requests": len(lat),
+        "status_codes": dict(codes_by_ep[ep]),
+        "p50_ms": round(pct(lat, 0.50), 1),
+        "p90_ms": round(pct(lat, 0.90), 1),
+        "p95_ms": round(pct(lat, 0.95), 1),
+        "p99_ms": round(pct(lat, 0.99), 1),
+        "max_ms": round(max(lat), 1) if lat else 0.0,
+        "avg_ms": round(statistics.fmean(lat), 1) if lat else 0.0,
     }
 print(json.dumps(out, indent=2))
 PY
