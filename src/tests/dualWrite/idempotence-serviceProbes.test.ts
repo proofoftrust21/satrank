@@ -51,7 +51,7 @@ function makeAgent(alias: string, hash: string): Agent {
     alias,
     first_seen: FIXED_UNIX - 90 * 86400,
     last_seen: FIXED_UNIX - 86400,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,

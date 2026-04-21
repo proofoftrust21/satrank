@@ -3,7 +3,9 @@
 - **Date :** 2026-04-22
 - **Scope :** investigation seule, pas de fix (per kickoff plan).
 - **Severity :** MEDIUM (produit) / HIGH (observabilité)
-- **Status :** **OPEN** — analyse terminée, décision fix reportée au checkpoint 1.
+- **Status :** **SUPERSEDED** par `OBSERVER-SUNSET.md` (2026-04-22) — option 2
+  retenue : sunset complet du code, purge DB, renommage enum. Cette
+  investigation reste archivée comme trace de root-cause analysis.
 
 ---
 
@@ -93,8 +95,9 @@ OBSERVER_API_URL=https://api.observer.casa
 
 Mais :
 - `grep -r OBSERVER_API_URL src/` → **0 matches**. Le code ne lit jamais
-  cette variable. Le client utilise le constant hardcoded
-  `DEFAULT_BASE_URL = 'https://api.observerprotocol.org'`
+  cette variable. Le schéma zod lit `OBSERVER_BASE_URL` (nom différent),
+  pas `OBSERVER_API_URL` → override silencieusement ignoré, fallback sur
+  `DEFAULT_BASE_URL = 'https://api.observerprotocol.org'` hardcoded
   (`observerClient.ts:6`).
 - `dist/` (build Docker prod) ne contient pas non plus la chaîne →
   confirmation que l'override est inopérant.
@@ -183,4 +186,7 @@ curl: (6) Could not resolve host: api.observer.casa
 - `src/crawler/observerClient.ts:6` — `DEFAULT_BASE_URL` hardcoded.
 - `src/crawler/observerClient.ts:52-56` — fetch sans Authorization.
 - `src/crawler/observerClient.ts:33` — path `/observer/transactions` (celui qui 401).
-- `src/config.ts` — `OBSERVER_API_URL` **absent** du schema zod (ignoré silencieusement).
+- `src/config.ts` — le schéma zod lit `OBSERVER_BASE_URL`, pas
+  `OBSERVER_API_URL` (posée en prod) → mismatch de nom, override
+  silencieusement ignoré. Depuis le sunset (2026-04-22), les deux variables
+  sont retirées du schéma.

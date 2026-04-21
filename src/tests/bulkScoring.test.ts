@@ -104,7 +104,7 @@ describe('AgentRepository — bulk scoring queries', async () => {
     // Observer protocol agent — should NOT be included even with high capacity
     await agentRepo.insert({
       ...makeLndAgent('observer-node', { capacity_sats: 100_000_000_000 }),
-      source: 'observer_protocol',
+      source: 'attestation',
       public_key: null,
     });
     // Lightning agent — included

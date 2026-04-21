@@ -237,7 +237,7 @@ for (const row of rows) {
     diversity: row.old_diversity,
   };
 
-  // For observer_protocol / manual / 4tress agents, this calibration is a no-op.
+  // For attestation / manual / 4tress agents, this calibration is a no-op.
   // Their regularity uses tx interval CV and their diversity uses unique counterparties;
   // neither is affected by v15. The probe crawler only probes lightning_graph agents,
   // so they can't even get the old probe bonuses we removed. new_total = old_total.

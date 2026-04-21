@@ -9,7 +9,7 @@
 
 The Lightning Network has no shared reliability oracle. **61 % of public-graph Lightning nodes are phantoms** — they advertise channels in gossip but fail to route payments. Wallets retry the same dead hops. Agents paying for L402 APIs burn their budgets on retries. Gossip is untrusted by construction. Every wallet rediscovers the same failures alone.
 
-For the autonomous-agent economy now emerging on top of 402-style paywalls, every wasted payment is a wasted compute cycle — and worse, it's a wasted *decision*. An AI agent that picks the wrong counterparty has no upstream authority to appeal to.
+For the autonomous-agent economy now emerging on top of 402-style paywalls, every wasted payment is a wasted compute cycle — and worse, it's a wasted *decision*. An autonomous agent that picks the wrong counterparty has no upstream authority to appeal to.
 
 ## Solution
 
@@ -28,7 +28,7 @@ SatRank is a **sovereign trust oracle** for the Lightning payment graph, distrib
 4. **Multi-amount probing and batch pathfinding.** Probes tested at 4 tiers (1 k / 10 k / 100 k / 1 M sats) expose `maxRoutableAmount` per node. `POST /api/best-route` runs parallel pathfinding for up to 50 targets in a single call — an agent screens 100 candidates, narrows to the top 3 by composite rank, and decides on the winner in **3 requests, ~500 ms**.
 5. **Positional pathfinding.** Agents pass `walletProvider` (phoenix, wos, strike, blink, breez, zeus, coinos, cashapp) and SatRank computes pathfinding *from the provider's hub node* instead of from itself. A Phoenix agent paying Binance jumps from P_path = 0.50 (4-hop fallback) to 0.97 (1-hop via ACINQ). `callerNodePubkey` lets any agent pin an arbitrary LN pubkey as the pathfinding origin.
 6. **Sovereign Oracle.** SatRank autonomously crawls 402-style registries (402index, L402Apps), extracts `payee_node_key` from BOLT11, maps endpoints to LN nodes, and health-checks them periodically. `/api/decide` returns `serviceHealth` (HTTP status, uptime, latency, service price in sats) alongside LN routability. **94 paid L402 services** indexed from 402index at the time of writing. An agent gets "can I route the payment?" and "is the service alive?" in a single call.
-7. **Deposit rail.** `POST /api/deposit` buys 21–10 000 requests in a single BOLT11 invoice — the rail AI agents actually need, since 21-sat-per-invoice L402 loops don't amortize across the ~3 000 daily queries a serious agent makes. Tokens live in `token_balance`; quota remaining is surfaced in the `X-SatRank-Balance` response header.
+7. **Deposit rail.** `POST /api/deposit` buys 21–10 000 requests in a single BOLT11 invoice — the rail autonomous agents actually need, since 21-sat-per-invoice L402 loops don't amortize across the ~3 000 daily queries a serious agent makes. Tokens live in `token_balance`; quota remaining is surfaced in the `X-SatRank-Balance` response header.
 
 ## Key metrics (2026-04-16, live)
 

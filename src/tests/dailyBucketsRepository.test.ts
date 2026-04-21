@@ -2,8 +2,7 @@
 //
 // Garanties :
 //   - bump cumule sur (id, source, day) via ON CONFLICT
-//   - observer est accepté (contrat Q3)
-//   - recentActivity agrège toutes les sources (observer inclus)
+//   - recentActivity agrège toutes les sources (probe / report / paid)
 //   - recentActivity(24h/7d/30d) calcule sur les plages UTC attendues
 //   - sumSuccessFailureBetween retourne les cumuls corrects (pour riskProfile C5)
 //   - pruneOlderThan supprime les rows au-delà du cutoff
@@ -70,18 +69,10 @@ describe('EndpointDailyBucketsRepository', async () => {
     expect(rows[0].nFailure).toBe(1);
   });
 
-  it('observer est accepté (contrat Q3)', async () => {
-    await expect(
-      repo.bump('h1', 'observer', { day: '2026-04-18', nObsDelta: 1, nSuccessDelta: 1, nFailureDelta: 0 }),
-    ).resolves.not.toThrow();
-    const rows = await repo.findAllForId('h1');
-    expect(rows[0].source).toBe('observer');
-  });
-
   it('recentActivity agrège toutes les sources sur la plage', async () => {
     // Jour J (2026-04-18)
     await repo.bump('h2', 'probe', { day: '2026-04-18', nObsDelta: 2, nSuccessDelta: 2, nFailureDelta: 0 });
-    await repo.bump('h2', 'observer', { day: '2026-04-18', nObsDelta: 5, nSuccessDelta: 5, nFailureDelta: 0 });
+    await repo.bump('h2', 'paid', { day: '2026-04-18', nObsDelta: 5, nSuccessDelta: 5, nFailureDelta: 0 });
     // Jour J-5 (2026-04-13) — dans 7d, dans 30d, pas dans 24h
     await repo.bump('h2', 'report', { day: '2026-04-13', nObsDelta: 3, nSuccessDelta: 3, nFailureDelta: 0 });
     // Jour J-20 (2026-03-29) — dans 30d, pas dans 7d
@@ -90,7 +81,7 @@ describe('EndpointDailyBucketsRepository', async () => {
     await repo.bump('h2', 'probe', { day: '2026-03-09', nObsDelta: 100, nSuccessDelta: 50, nFailureDelta: 50 });
 
     const activity = await repo.recentActivity('h2', NOW);
-    expect(activity.last_24h).toBe(2 + 5); // probe + observer du jour
+    expect(activity.last_24h).toBe(2 + 5); // probe + paid du jour
     expect(activity.last_7d).toBe(2 + 5 + 3); // + report J-5
     expect(activity.last_30d).toBe(2 + 5 + 3 + 10); // + probe J-20, pas J-40
   });

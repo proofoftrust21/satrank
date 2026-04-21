@@ -4,7 +4,6 @@
 //   - rebuild depuis zéro → streaming + buckets cohérents
 //   - --truncate réinitialise avant rebuild (state déterministe)
 //   - ordre chronologique → décroissance conforme au live
-//   - observer ingéré uniquement dans buckets (pas dans streaming)
 //   - intent skippé complètement
 //   - --dry-run n'écrit rien mais rapporte les compteurs corrects
 //   - --from-ts filtre
@@ -55,7 +54,7 @@ function insertTx(
     tx_id: string;
     target_hash: string;
     ts: number;
-    source: 'probe' | 'report' | 'paid' | 'observer' | 'intent' | null;
+    source: 'probe' | 'report' | 'paid' | 'intent' | null;
     status?: 'verified' | 'failed';
   },
 ) {
@@ -149,32 +148,6 @@ describe.skip('rebuildStreamingPosteriors', async () => {
     const streaming = new EndpointStreamingPosteriorRepository(db);
     const stored = await streaming.findStored(target, 'probe');
     expect(stored?.totalIngestions).toBe(3); // pas 999 + 3
-  });
-
-  it('observer ingéré uniquement dans daily_buckets (streaming CHECK rejette)', async () => {
-    const target = 'cc'.repeat(32);
-    await agentRepo.insert(makeAgent(target));
-
-    for (let i = 0; i < 5; i++) {
-      insertTx(db, {
-        tx_id: `obs-${i}`,
-        target_hash: target,
-        ts: NOW - i * 60,
-        source: 'observer',
-      });
-    }
-
-    const result = runRebuild({ db, truncate: true });
-    expect(result.perSource.observer).toBe(5);
-    expect(result.errors).toBe(0);
-
-    const streaming = new EndpointStreamingPosteriorRepository(db);
-    expect(await streaming.findStored(target, 'probe')).toBeUndefined();
-    expect(await streaming.findStored(target, 'report')).toBeUndefined();
-
-    const buckets = new EndpointDailyBucketsRepository(db);
-    const activity = await buckets.recentActivity(target, NOW);
-    expect(activity.last_30d).toBe(5);
   });
 
   it('intent rows sont skippées complètement (contrat Phase 3)', async () => {

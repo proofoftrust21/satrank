@@ -67,6 +67,42 @@ Issues opérationnelles non-bloquantes détectées lors de phases antérieures,
 
 ---
 
+## Finding D — Observer Protocol sunset
+
+- **Date :** 2026-04-22
+- **Severity :** MEDIUM (produit) / HIGH (observabilité)
+- **Status :** **RESOLVED** — sunset complet exécuté en Phase 12C
+- **Issue :** `api.observerprotocol.org/observer/transactions` retournait
+  401 en continu (~1 440 lignes ERROR/WARN par 24 h). Ingestion Observer
+  à zéro depuis le cut-over Phase 12B ; impossible de dater le moment
+  exact du passage anonymous → auth requis côté upstream. Root-cause
+  détaillée dans `OBSERVER-401-INVESTIGATION.md`.
+- **Décision produit :** option 2 (désactivation complète + retrait code).
+  Motivée par : (a) repositionnement Observer Protocol comme concurrent
+  narratif, (b) aucune clé API jamais négociée, (c) env var orpheline
+  (`OBSERVER_API_URL` vs `OBSERVER_BASE_URL` mismatch) pointant vers un
+  host NXDOMAIN — le coût opérationnel d'un sunset est zéro.
+- **Fix :**
+  1. Suppression complète du code crawler Observer (client + crawler +
+     branches dans services/repositories/tests/scripts).
+  2. Enum `AgentSource` : `observer_protocol` → `attestation`.
+  3. Enum `BucketSource` : retrait de `observer`.
+  4. Purge DB : aucune ligne `source IN ('observer', 'observer_protocol')`
+     à supprimer (ingestion à zéro).
+  5. Config : retrait `OBSERVER_BASE_URL`, `OBSERVER_TIMEOUT_MS`,
+     `CRAWL_INTERVAL_OBSERVER_MS` du schéma zod, `.env.example`, `DEPLOY.md`.
+     Retrait de l'orphelin `OBSERVER_API_URL` de `/root/satrank/.env.production`.
+  6. Narratif : repositionnement « AI agents » → « autonomous agents on
+     Bitcoin Lightning » sur 12 fichiers.
+- **Réactivation :** conditionnelle à un partenariat explicite écrit
+  entre SatRank et Observer Protocol. Par défaut : **pas de réactivation**.
+  Détails dans `OBSERVER-SUNSET.md`.
+- **Side-effect observabilité :** les logs crawler sont nettoyés (plus
+  d'ERROR/WARN 401 en boucle) ; toute alerte basée sur `level>=error`
+  redevient pertinente.
+
+---
+
 ## Finding C — `scoringStale: true` pré-existant détecté avant B5
 
 - **Date :** 2026-04-21

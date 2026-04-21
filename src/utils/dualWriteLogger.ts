@@ -26,7 +26,7 @@ import type { Transaction } from '../types';
 export interface DualWriteEnrichment {
   endpoint_hash: string | null;
   operator_id: string | null;
-  source: 'probe' | 'observer' | 'report' | 'intent' | 'paid' | null;
+  source: 'probe' | 'report' | 'intent' | 'paid' | null;
   window_bucket: string | null;
 }
 

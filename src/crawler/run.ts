@@ -15,8 +15,6 @@ import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
-import { HttpObserverClient } from './observerClient';
-import { Crawler } from './crawler';
 import { HttpMempoolClient } from './mempoolClient';
 import { MempoolCrawler } from './mempoolCrawler';
 import { HttpLndGraphClient } from './lndGraphClient';
@@ -86,25 +84,6 @@ function touchHeartbeat(): void {
 }
 
 // --- Per-source crawl functions ---
-
-async function crawlObserver(crawler: Crawler): Promise<void> {
-  logger.info('Starting Observer Protocol crawl');
-  const hrStart = process.hrtime.bigint();
-  const result = await crawler.run();
-  crawlDuration.observe({ source: 'observer' }, Number(process.hrtime.bigint() - hrStart) / 1e9);
-
-  logger.info({
-    duration: result.finishedAt - result.startedAt,
-    fetched: result.eventsFetched,
-    newTx: result.newTransactions,
-    newAgents: result.newAgents,
-    errors: result.errors.length,
-  }, 'Observer Protocol crawl result');
-
-  if (result.errors.length > 0) {
-    logger.warn({ errors: result.errors }, 'Errors during Observer Protocol crawl');
-  }
-}
 
 async function crawlLightning(lndGraphCrawler: LndGraphCrawler, mempoolCrawler: MempoolCrawler): Promise<void> {
   let lndSuccess = false;
@@ -319,7 +298,6 @@ async function bulkScoreAll(
 // --- Full crawl (all sources once, used for single-run and initial cron boot) ---
 
 async function runFullCrawl(
-  observerCrawler: Crawler,
   lndGraphCrawler: LndGraphCrawler,
   mempoolCrawler: MempoolCrawler,
   lnplusCrawler: LnplusCrawler,
@@ -331,7 +309,6 @@ async function runFullCrawl(
   snapshotRepo: SnapshotRepository,
   nostrPublishFn?: () => Promise<void>,
 ): Promise<void> {
-  await crawlObserver(observerCrawler);
   await crawlLightning(lndGraphCrawler, mempoolCrawler);
 
   // Score immediately after LND crawl — don't wait for LN+ or probes
@@ -419,10 +396,6 @@ async function main(): Promise<void> {
     bayesianScoringServiceMain, endpointStreamingMain, endpointBucketsMain, snapshotRepo,
   );
 
-  const observerClient = new HttpObserverClient({
-    baseUrl: config.OBSERVER_BASE_URL,
-    timeoutMs: config.OBSERVER_TIMEOUT_MS,
-  });
   // Phase 1 shadow-mode rollout: construct the NDJSON logger only when
   // dry_run is active. In `off` and `active` modes the logger is silent by
   // contract, so skipping construction saves a filesystem mkdir + open on
@@ -431,14 +404,6 @@ async function main(): Promise<void> {
   const dualWriteLogger = config.TRANSACTIONS_DUAL_WRITE_MODE === 'dry_run'
     ? new DualWriteLogger(config.TRANSACTIONS_DRY_RUN_LOG_PATH)
     : undefined;
-  const observerCrawler = new Crawler(
-    observerClient,
-    agentRepo,
-    txRepo,
-    config.TRANSACTIONS_DUAL_WRITE_MODE,
-    dualWriteLogger,
-    bayesianScoringServiceMain,
-  );
 
   const lndClient = new HttpLndGraphClient({
     restUrl: config.LND_REST_URL,
@@ -484,14 +449,12 @@ async function main(): Promise<void> {
 
   if (isCron) {
     const intervals = {
-      observer: config.CRAWL_INTERVAL_OBSERVER_MS,
       lndGraph: config.CRAWL_INTERVAL_LND_GRAPH_MS,
       lnplus: config.CRAWL_INTERVAL_LNPLUS_MS,
       probe: config.CRAWL_INTERVAL_PROBE_MS,
     };
 
     logger.info({
-      observerMs: intervals.observer,
       lndGraphMs: intervals.lndGraph,
       lnplusMs: intervals.lnplus,
       probeMs: intervals.probe,
@@ -786,7 +749,7 @@ async function main(): Promise<void> {
 
     // Initial full crawl — Nostr publish happens inside, right after bulk scoring
     await runFullCrawl(
-      observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
+      lndGraphCrawlerInstance, mempoolCrawlerInstance,
       lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService,
       bayesianVerdictServiceMain, snapshotRepo,
       nostrPublishFn,
@@ -798,15 +761,6 @@ async function main(): Promise<void> {
 
     // Per-source timers. Chaque callback est async + try/catch pour respecter
     // la discipline Phase 12B (aucun unhandled rejection depuis setInterval).
-    const timerObserver = setInterval(async () => {
-      try {
-        await crawlObserver(observerCrawler);
-        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
-      } catch (err: unknown) {
-        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Observer crawl error');
-      }
-    }, intervals.observer);
-
     const timerLnd = setInterval(async () => {
       try {
         await crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance);
@@ -911,7 +865,6 @@ async function main(): Promise<void> {
     const shutdown = async () => {
       logger.info('Stopping cron crawler');
       clearInterval(timerHeartbeat);
-      clearInterval(timerObserver);
       clearInterval(timerLnd);
       clearInterval(timerLnplus);
       if (timerProbe) clearInterval(timerProbe);
@@ -937,7 +890,7 @@ async function main(): Promise<void> {
   } else {
     await runStaleSweep(agentRepo);
     await runFullCrawl(
-      observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
+      lndGraphCrawlerInstance, mempoolCrawlerInstance,
       lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService,
       bayesianVerdictServiceMain, snapshotRepo,
     );

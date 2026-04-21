@@ -171,7 +171,7 @@ describe.skip('GET /api/operator/:id', async () => {
       const hash = 'b'.repeat(64);
       await pool.query(
         `INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score)
-         VALUES ($1, $2, 'MyNode', 1000, 5000, 'observer_protocol', 10, 0, 85)`,
+         VALUES ($1, $2, 'MyNode', 1000, 5000, 'attestation', 10, 0, 85)`,
         [hash, pubkey],
       );
 

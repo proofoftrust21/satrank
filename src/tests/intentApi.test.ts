@@ -47,7 +47,7 @@ function makeAgent(hash: string): Agent {
     alias: 'operator',
     first_seen: NOW - 365 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 50,
     total_attestations_received: 0,
     avg_score: 70,

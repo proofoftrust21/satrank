@@ -1,4 +1,4 @@
-# Integrating SatRank into your AI agent
+# Integrating SatRank into your autonomous agent
 
 SatRank provides route reliability scoring for Lightning payments.
 Before paying, ask SatRank for a GO/NO-GO decision. After paying, report the outcome.
@@ -14,7 +14,7 @@ Three integration paths, from easiest to most flexible.
 
 ## 1. Via MCP (Model Context Protocol)
 
-Best for: AI agents using Claude, GPT, or any MCP-compatible runtime.
+Best for: autonomous agents using Claude, GPT, or any MCP-compatible runtime.
 
 ### Setup
 

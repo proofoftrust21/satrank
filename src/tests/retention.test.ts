@@ -27,7 +27,7 @@ function ensureAgent(db: Pool, hash: string): void {
     INSERT INTO agents (
       public_key_hash, alias, first_seen, last_seen, source,
       total_transactions, total_attestations_received, avg_score
-    ) VALUES (?, ?, ?, ?, 'observer_protocol', 0, 0, 0)
+    ) VALUES (?, ?, ?, ?, 'attestation', 0, 0, 0)
   `).run(hash, `agent-${hash.slice(0, 6)}`, 1500000000, 1700000000);
 }
 

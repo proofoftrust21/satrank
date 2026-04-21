@@ -23,7 +23,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     alias: 'test-agent',
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,
@@ -147,10 +147,10 @@ describe('Score evidence', async () => {
     );
   });
 
-  it('returns null lightning_graph for observer_protocol agents', async () => {
+  it('returns null lightning_graph for attestation agents', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('obs-no-ln'),
-      source: 'observer_protocol',
+      source: 'attestation',
     });
     await agentRepo.insert(agent);
 

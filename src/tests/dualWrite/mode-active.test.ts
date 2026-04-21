@@ -24,7 +24,7 @@ function makeAgent(alias: string, hash: string): Agent {
     alias,
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,
@@ -129,12 +129,12 @@ describe.skip('dual-write mode=active', async () => {
   });
 
   // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
-  it.skip('accepts NULL enrichment values (operator unknown, Observer-origin row)', async () => {
+  it.skip('accepts NULL enrichment values (operator unknown)', async () => {
     const repo = new TransactionRepository(db);
     const partial: DualWriteEnrichment = {
       endpoint_hash: null,
       operator_id: null,
-      source: 'observer',
+      source: null,
       window_bucket: '2026-04-18',
     };
     await repo.insertWithDualWrite(makeTx('act-tx-null', sender, receiver), partial, 'active', 'crawler');
@@ -144,7 +144,7 @@ describe.skip('dual-write mode=active', async () => {
     ).get('act-tx-null') as Record<string, unknown>;
     expect(row.endpoint_hash).toBeNull();
     expect(row.operator_id).toBeNull();
-    expect(row.source).toBe('observer');
+    expect(row.source).toBeNull();
     expect(row.window_bucket).toBe('2026-04-18');
   });
 

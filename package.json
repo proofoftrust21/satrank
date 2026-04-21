@@ -1,7 +1,7 @@
 {
   "name": "satrank",
   "version": "1.0.0",
-  "description": "Score de confiance pour agents IA sur Bitcoin Lightning",
+  "description": "Score de confiance pour agents autonomes sur Bitcoin Lightning",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

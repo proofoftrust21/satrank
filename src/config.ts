@@ -27,9 +27,6 @@ const configSchema = z.object({
   API_KEY: z.string().min(1).optional(),
   // Shared secret between Aperture and Express — defense in depth for L402 gate
   APERTURE_SHARED_SECRET: z.string().min(1).optional(),
-  // Observer Protocol crawler
-  OBSERVER_BASE_URL: z.string().url().default('https://api.observerprotocol.org'),
-  OBSERVER_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
   // LND REST API (primary Lightning source)
   LND_REST_URL: z.string().url().default('http://localhost:8080'),
   LND_MACAROON_PATH: z.string().default('/app/data/readonly.macaroon'),
@@ -37,7 +34,6 @@ const configSchema = z.object({
   // Auto-indexation rate limit
   AUTO_INDEX_MAX_PER_MINUTE: z.coerce.number().int().positive().default(10),
   // Crawl intervals (ms) — each source runs on its own timer
-  CRAWL_INTERVAL_OBSERVER_MS: z.coerce.number().int().positive().default(300_000),    // 5 min
   CRAWL_INTERVAL_LND_GRAPH_MS: z.coerce.number().int().positive().default(3_600_000), // 1 hour
   CRAWL_INTERVAL_LNPLUS_MS: z.coerce.number().int().positive().default(86_400_000),   // 24 hours
   CRAWL_INTERVAL_PROBE_MS: z.coerce.number().int().positive().default(60_000),       // 1 min (probe cycles chain continuously)

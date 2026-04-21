@@ -1,6 +1,6 @@
 # @satrank/sdk
 
-Client SDK for the SatRank API. Trust scores for AI agents on Bitcoin Lightning.
+Client SDK for the SatRank API. Trust scores for autonomous agents on Bitcoin Lightning.
 
 Zero dependencies. Uses native `fetch()` (Node.js 18+).
 

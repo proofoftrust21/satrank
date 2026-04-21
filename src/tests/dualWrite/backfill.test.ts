@@ -40,7 +40,6 @@ const EXPECTED_BUCKET = '2026-04-18-12';
 const EMPTY_CHECKPOINT: BackfillCheckpoint = {
   service_probes_last_id: 0,
   attestations_last_cursor: { timestamp: 0, id: '' },
-  transactions_last_cursor: { timestamp: 0, id: '' },
 };
 
 function makeAgent(alias: string, hash: string): Agent {
@@ -50,7 +49,7 @@ function makeAgent(alias: string, hash: string): Agent {
     alias,
     first_seen: FIXED_UNIX - 90 * 86400,
     last_seen: FIXED_UNIX - 86400,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,
@@ -192,7 +191,6 @@ describe.skip('backfillTransactionsV31', async () => {
 
     expect(res.service_probes.updated).toBe(1);
     expect(res.attestations.updated).toBe(1);
-    expect(res.observer.updated).toBe(0);
     const rowProbe = await readTx(pool, 'tx-dry-1');
     const rowReport = await readTx(pool, 'tx-dry-2');
     expect(rowProbe.endpoint_hash).toBeNull();
@@ -297,7 +295,6 @@ describe.skip('backfillTransactionsV31', async () => {
     const saved: BackfillCheckpoint = {
       service_probes_last_id: 42,
       attestations_last_cursor: { timestamp: 7000, id: 'att-x' },
-      transactions_last_cursor: { timestamp: 13000, id: 'tx-x' },
     };
     saveCheckpoint(missing, saved);
     const loaded = loadCheckpoint(missing);
@@ -315,70 +312,4 @@ describe.skip('backfillTransactionsV31', async () => {
     expect(res.service_probes.scanned).toBe(0);
   });
 
-  it('voie #3 observer fallback enriches orphan tx rows (source=observer, operator_id=receiver_hash, window_bucket=UTC date); endpoint_hash stays NULL', async () => {
-    await seedLegacyTx(pool, { tx_id: 'tx-obs-1', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-obs-1', protocol: 'l402' });
-    await seedLegacyTx(pool, { tx_id: 'tx-obs-2', sender: senderHash, receiver: operatorHash, payment_hash: 'ph-obs-2', protocol: 'keysend' });
-
-    const res = await runBackfill({ pool, checkpointPath });
-
-    expect(res.observer.scanned).toBe(2);
-    expect(res.observer.updated).toBe(2);
-
-    const r1 = await readTx(pool, 'tx-obs-1');
-    expect(r1.endpoint_hash).toBeNull();
-    expect(r1.operator_id).toBe(receiverHash);
-    expect(r1.source).toBe('observer');
-    expect(r1.window_bucket).toBe(EXPECTED_BUCKET);
-
-    const r2 = await readTx(pool, 'tx-obs-2');
-    expect(r2.endpoint_hash).toBeNull();
-    expect(r2.operator_id).toBe(operatorHash);
-    expect(r2.source).toBe('observer');
-    expect(r2.window_bucket).toBe(EXPECTED_BUCKET);
-  });
-
-  it('voie #3 second run is a no-op on observer-tagged rows (WHERE source IS NULL guard)', async () => {
-    await seedLegacyTx(pool, { tx_id: 'tx-obs-idem', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-obs-idem' });
-
-    const first = await runBackfill({ pool, checkpointPath });
-    expect(first.observer.updated).toBe(1);
-    const originalRow = await readTx(pool, 'tx-obs-idem');
-
-    saveCheckpoint(checkpointPath, EMPTY_CHECKPOINT);
-    const second = await runBackfill({ pool, checkpointPath });
-    expect(second.observer.scanned).toBe(0);
-    expect(second.observer.updated).toBe(0);
-
-    const afterRow = await readTx(pool, 'tx-obs-idem');
-    expect(afterRow).toEqual(originalRow);
-  });
-
-  it('voie #3 does NOT overwrite rows already tagged by probe (#1) or report (#2)', async () => {
-    const url = 'https://svc.example.com/priority';
-    await seedServiceProbe(pool, { url, agent_hash: operatorHash, payment_hash: 'ph-pri-1' });
-    await seedLegacyTx(pool, { tx_id: 'tx-pri-probe', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-pri-1' });
-
-    await seedLegacyTx(pool, { tx_id: 'tx-pri-report', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-pri-2' });
-    await seedAttestation(pool, { attestation_id: 'att-pri', tx_id: 'tx-pri-report', attester: senderHash, subject: operatorHash });
-
-    await seedLegacyTx(pool, { tx_id: 'tx-pri-orphan', sender: senderHash, receiver: receiverHash, payment_hash: 'ph-pri-3' });
-
-    const res = await runBackfill({ pool, checkpointPath });
-
-    expect(res.service_probes.updated).toBe(1);
-    expect(res.attestations.updated).toBe(1);
-    expect(res.observer.updated).toBe(1);
-
-    const probeRow = await readTx(pool, 'tx-pri-probe');
-    expect(probeRow.source).toBe('probe');
-    expect(probeRow.endpoint_hash).toBe(endpointHash(url));
-
-    const reportRow = await readTx(pool, 'tx-pri-report');
-    expect(reportRow.source).toBe('report');
-    expect(reportRow.operator_id).toBe(operatorHash);
-
-    const orphanRow = await readTx(pool, 'tx-pri-orphan');
-    expect(orphanRow.source).toBe('observer');
-    expect(orphanRow.operator_id).toBe(receiverHash);
-  });
 });

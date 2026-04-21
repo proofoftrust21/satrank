@@ -25,7 +25,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     alias: 'test-agent',
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 50,
     total_attestations_received: 0,
     avg_score: 60,

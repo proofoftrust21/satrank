@@ -2,9 +2,7 @@
 //
 // Les daily_buckets sont "display-only" : ils servent à exposer le recent_activity
 // côté API (n_obs par fenêtre 24h/7d/30d) sans passer par les streaming_posteriors
-// qui sont une mesure continue. Une row par (id, source, day UTC). L'observer
-// est autorisé ici (contrat Q3) — l'activité visible inclut la présence
-// des reports et probes passives, même si elle n'alimente pas le verdict.
+// qui sont une mesure continue. Une row par (id, source, day UTC).
 //
 // Rétention : BUCKET_RETENTION_DAYS (=30) jours glissants, purgés par cron (C12).
 
@@ -12,7 +10,7 @@ import type { Pool, PoolClient } from 'pg';
 
 type Queryable = Pool | PoolClient;
 
-export type BucketSource = 'probe' | 'report' | 'paid' | 'observer';
+export type BucketSource = 'probe' | 'report' | 'paid';
 
 export interface BucketIncrement {
   /** Jour UTC au format 'YYYY-MM-DD'. */
@@ -79,7 +77,7 @@ abstract class BaseDailyBucketsRepository {
 
   /** Compte cumulé n_obs sur les 24h, 7d, 30d derniers jours (inclusif).
    *  `atTs` est le timestamp de référence — la fenêtre est [atTs - Xd, atTs].
-   *  Agrège toutes les sources (observer inclus). */
+   *  Agrège toutes les sources. */
   async recentActivity(id: string, atTs: number): Promise<RecentActivity> {
     const atDay = dayKeyUTC(atTs);
     const day1agoKey = dayKeyUTC(atTs - 86400);

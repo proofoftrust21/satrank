@@ -3,7 +3,6 @@
 // Garanties :
 //   - ingestStreaming écrit dans streaming_posteriors ET daily_buckets quand
 //     source ∈ {probe, report, paid} + repos wired
-//   - source='observer' ne touche pas streaming_posteriors mais bump les buckets
 //   - weightForSource est bien appliqué (probe=1.0, paid=2.0, report tier-based)
 //   - Ingestion multi-niveaux (endpoint + service + operator + route) en un appel
 //   - Absence de repo → no-op silencieux pour ce niveau (rétro-compat)
@@ -109,27 +108,6 @@ describe('ingestStreaming — routage par source', async () => {
       `SELECT * FROM endpoint_streaming_posteriors WHERE url_hash='h3' AND source='report'`,
     )).rows[0];
     expect(streamingRow.posterior_alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + WEIGHT_REPORT_NIP98, 6);
-  });
-
-  it('source=observer bump bucket UNIQUEMENT (streaming vide)', async () => {
-    const r = await svc.ingestStreaming({
-      success: true,
-      timestamp: NOW,
-      source: 'observer',
-      endpointHash: 'h4',
-    });
-    expect(r.endpointUpdates).toBe(0); // pas de streaming_posteriors
-    expect(r.bucketsBumped).toBe(1);
-
-    const streaming = (await db.query<{ c: number }>(
-      `SELECT COUNT(*)::int AS c FROM endpoint_streaming_posteriors WHERE url_hash='h4'`,
-    )).rows[0];
-    expect(streaming.c).toBe(0);
-
-    const bucket = (await db.query<{ n_obs: number }>(
-      `SELECT * FROM endpoint_daily_buckets WHERE url_hash='h4' AND source='observer'`,
-    )).rows[0];
-    expect(bucket.n_obs).toBe(1);
   });
 
   it('ingestion multi-niveaux (endpoint + service + operator + route) en un appel', async () => {

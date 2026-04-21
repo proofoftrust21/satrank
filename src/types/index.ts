@@ -1,6 +1,6 @@
 // Core SatRank types
 
-export type AgentSource = 'observer_protocol' | '4tress' | 'lightning_graph' | 'manual';
+export type AgentSource = 'attestation' | '4tress' | 'lightning_graph' | 'manual';
 export type TransactionStatus = 'verified' | 'pending' | 'failed' | 'disputed';
 export type AmountBucket = 'micro' | 'small' | 'medium' | 'large';
 export type PaymentProtocol = 'l402' | 'keysend' | 'bolt11';
@@ -121,7 +121,7 @@ export interface ReputationBreakdown {
     capacityTrend:   SubSignalContribution;
     feeStability:    SubSignalContribution;
   };
-  /** Populated for `attestations` agents (observer_protocol / manual). */
+  /** Populated for `attestations` agents (attestation / manual). */
   attestations?: {
     /** Number of non-report attestations used in the weighted average. */
     count: number;
@@ -351,7 +351,7 @@ export interface BayesianConvergence {
   threshold: number;
 }
 
-/** n_obs cumulé sur les 3 fenêtres d'affichage — lu depuis daily_buckets, observer inclus.
+/** n_obs cumulé sur les 3 fenêtres d'affichage — lu depuis daily_buckets, toutes sources.
  *  Display-only, indépendant du verdict. */
 export interface BayesianRecentActivity {
   last_24h: number;
@@ -378,7 +378,7 @@ export interface BayesianScoreBlock {
     paid:   BayesianSourceBlock | null;
   };
   convergence: BayesianConvergence;
-  /** n_obs cumulé 24h/7d/30d (observer inclus). */
+  /** n_obs cumulé 24h/7d/30d (toutes sources). */
   recent_activity: BayesianRecentActivity;
   /** Trend success_rate 7j récents vs 23j antérieurs — Option B. */
   risk_profile: BayesianRiskTrend;
