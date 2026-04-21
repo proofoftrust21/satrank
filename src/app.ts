@@ -400,12 +400,17 @@ export function createApp() {
     legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
     message: 'Too many metrics requests',
+    skip: () => config.L402_BYPASS,
     handler: (req, res, _next, options) => {
       rateLimitHits.inc({ limiter: 'metrics' });
       res.status(options.statusCode).end('Too many metrics requests');
     },
   });
   app.get('/metrics', metricsRateLimit, (req, res, next) => {
+    // Phase 12A A3 — staging/bench : L402_BYPASS=true opens /metrics so the
+    // docker-bridge Prometheus can scrape without an API key. Fail-safed
+    // against production by the startup guard in config.ts.
+    if (config.L402_BYPASS) return next();
     const ip = req.ip ?? req.socket.remoteAddress ?? '';
     const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
     if (isLocalhost) return next();
@@ -453,6 +458,7 @@ export function createApp() {
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    skip: () => config.L402_BYPASS,
     message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
     // handler fires AFTER the limiter has decided to reject. Counting here
     // gives us a per-limiter 429 count that HTTP status metrics can't
@@ -474,7 +480,7 @@ export function createApp() {
       next();
     });
   }
-  const balanceAuth = createBalanceAuth(db);
+  const balanceAuth = createBalanceAuth(db, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(db);
   api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // decide, report, deposit, profile
   // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the
@@ -498,6 +504,7 @@ export function createApp() {
   const versionRateLimit = rateLimit({
     windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    skip: () => config.L402_BYPASS,
     message: { error: { code: 'RATE_LIMITED', message: 'Too many version requests, please try again later' } },
     handler: (req, res, _next, options) => {
       rateLimitHits.inc({ limiter: 'version' });
@@ -510,6 +517,7 @@ export function createApp() {
   const discoveryRateLimit = rateLimit({
     windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    skip: () => config.L402_BYPASS,
     message: { error: { code: 'RATE_LIMITED', message: 'Too many discovery requests, please try again later' } },
     handler: (req, res, _next, options) => {
       rateLimitHits.inc({ limiter: 'discovery' });

@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prom12a:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+    editable: false
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki12a:3100
+    editable: false

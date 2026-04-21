@@ -1,0 +1,146 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "liveNow": false,
+  "schemaVersion": 39,
+  "tags": ["satrank", "phase-12a", "sqlite", "cache"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "All", "value": "$__all"},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(satrank_db_query_duration_seconds_sum, env)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "env",
+        "multi": true,
+        "name": "env",
+        "options": [],
+        "query": {"query": "label_values(satrank_db_query_duration_seconds_sum, env)", "refId": "StandardVariableQuery"},
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "SatRank — SQLite & Cache (Phase 12A)",
+  "uid": "satrank-sqlite-p12a",
+  "version": 1,
+  "weekStart": "",
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "DB query rate by repo",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (repo, env) (rate(satrank_db_query_duration_seconds_count{env=~\"$env\"}[1m]))",
+          "legendFormat": "{{env}} {{repo}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "title": "DB query p95 by repo/method",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, repo, method, env) (rate(satrank_db_query_duration_seconds_bucket{env=~\"$env\"}[2m])))",
+          "legendFormat": "{{env}} {{repo}}.{{method}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 3,
+      "title": "Cache events (hit / miss / evict) by namespace",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (namespace, event, env) (rate(satrank_cache_events_total{env=~\"$env\"}[1m]))",
+          "legendFormat": "{{env}} {{namespace}} {{event}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}
+    },
+    {
+      "id": 4,
+      "title": "Cache hit ratio (by namespace)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (namespace, env) (rate(satrank_cache_events_total{env=~\"$env\", event=\"hit\"}[1m])) / clamp_min(sum by (namespace, env) (rate(satrank_cache_events_total{env=~\"$env\", event=~\"hit|miss\"}[1m])), 0.001)",
+          "legendFormat": "{{env}} {{namespace}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "title": "Cache age per key (seconds since last compute)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "satrank_cache_age_seconds{env=~\"$env\"}", "legendFormat": "{{env}} {{key}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "title": "Cache refresh failures (per key)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "satrank_cache_refresh_failures{env=~\"$env\"}", "legendFormat": "{{env}} {{key}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "title": "Score compute duration p95",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, env) (rate(satrank_score_compute_duration_seconds_bucket{env=~\"$env\"}[2m])))", "legendFormat": "p95 {{env}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 8,
+      "title": "Agents / Channels / Operators totals",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "satrank_agents_total{env=~\"$env\"}", "legendFormat": "{{env}} agents", "refId": "A"},
+        {"expr": "satrank_channels_total{env=~\"$env\"}", "legendFormat": "{{env}} channels", "refId": "B"},
+        {"expr": "sum by (status, env) (satrank_operators_total{env=~\"$env\"})", "legendFormat": "{{env}} operators {{status}}", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    }
+  ]
+}

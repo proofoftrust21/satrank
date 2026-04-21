@@ -1,0 +1,42 @@
+# Promtail config — PROD side
+# Tails nginx access + error logs, pushes to staging Loki.
+# No code changes on prod; read-only on /var/log/nginx.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: ${STAGING_LOKI_URL}/loki/api/v1/push
+    batchwait: 5s
+    batchsize: 1048576
+
+scrape_configs:
+  - job_name: nginx
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nginx
+          host: prod
+          env: prod
+          __path__: /var/log/nginx/*.log
+    pipeline_stages:
+      - match:
+          selector: '{job="nginx"}'
+          stages:
+            - regex:
+                expression: '^(?P<remote_addr>[\w\.:]+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>[^"]+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<referer>[^"]*)" "(?P<user_agent>[^"]*)"(?: (?P<request_time>[\d\.]+))?'
+            - labels:
+                method:
+                status:
+            - metrics:
+                nginx_request_time_seconds:
+                  type: Histogram
+                  description: "Nginx $request_time parsed from access log"
+                  source: request_time
+                  config:
+                    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]

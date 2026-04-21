@@ -1,0 +1,187 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "liveNow": false,
+  "schemaVersion": 39,
+  "tags": ["satrank", "phase-12a", "system"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "staging", "value": "staging"},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(node_cpu_seconds_total, env)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "env",
+        "multi": false,
+        "name": "env",
+        "options": [],
+        "query": {"query": "label_values(node_cpu_seconds_total, env)", "refId": "StandardVariableQuery"},
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "SatRank — System (Phase 12A)",
+  "uid": "satrank-system-p12a",
+  "version": 1,
+  "weekStart": "",
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Host CPU usage (%)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "100 * (1 - avg by (instance, env) (rate(node_cpu_seconds_total{mode=\"idle\", env=~\"$env\"}[1m])))",
+          "legendFormat": "{{env}} {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "title": "Host memory used (%)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{env=~\"$env\"} / node_memory_MemTotal_bytes{env=~\"$env\"})",
+          "legendFormat": "{{env}} {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}, "overrides": []}
+    },
+    {
+      "id": 3,
+      "title": "Host disk I/O (MB/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(node_disk_read_bytes_total{env=~\"$env\"}[1m]) / 1048576", "legendFormat": "read {{device}}", "refId": "A"},
+        {"expr": "rate(node_disk_written_bytes_total{env=~\"$env\"}[1m]) / 1048576", "legendFormat": "write {{device}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "MBs"}, "overrides": []}
+    },
+    {
+      "id": 4,
+      "title": "Host network (MB/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(node_network_receive_bytes_total{env=~\"$env\", device!~\"lo|docker.*|veth.*\"}[1m]) / 1048576", "legendFormat": "rx {{device}}", "refId": "A"},
+        {"expr": "rate(node_network_transmit_bytes_total{env=~\"$env\", device!~\"lo|docker.*|veth.*\"}[1m]) / 1048576", "legendFormat": "tx {{device}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "MBs"}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "title": "Container CPU (%)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "100 * sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\", env=~\"$env\"}[1m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "title": "Container memory (MB)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (name) (container_memory_usage_bytes{name!=\"\", env=~\"$env\"}) / 1048576",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "megabytes"}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "title": "Node.js event loop lag (p95 seconds)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_lag_p95_seconds{env=~\"$env\"}",
+          "legendFormat": "{{env}} {{app}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 8,
+      "title": "Node.js GC duration (sum/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (kind, env) (rate(nodejs_gc_duration_seconds_sum{env=~\"$env\"}[1m]))",
+          "legendFormat": "{{env}} {{kind}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 9,
+      "title": "LND inflight queryRoutes (count)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "satrank_lnd_inflight{env=~\"$env\"}", "legendFormat": "{{env}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 10,
+      "title": "LND queryRoutes p95 latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, env) (rate(satrank_lnd_queryroutes_duration_seconds_bucket{env=~\"$env\"}[2m])))", "legendFormat": "p95 {{env}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+    },
+    {
+      "id": 11,
+      "title": "Nostr publish rate by stream (rps)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "sum by (stream, result, env) (rate(satrank_nostr_publish_total{env=~\"$env\"}[5m]))", "legendFormat": "{{env}} stream {{stream}} {{result}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
+    }
+  ]
+}

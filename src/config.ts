@@ -143,12 +143,41 @@ const configSchema = z.object({
   // how old a row must be before the worker classifies it as "timed out"
   // for metrics.
   INTENT_OUTCOME_TIMEOUT_HOURS: z.coerce.number().int().positive().default(24),
+
+  // Phase 12A A3 — staging/bench bypass for the L402 paid-endpoint gate
+  // AND for the /metrics auth. Enabled only on the staging bench VM so
+  // k6/wrk can hit paid routes without minting tokens and Prometheus can
+  // scrape /metrics from the docker bridge gateway.
+  //
+  // Strict parse: only the literal strings "true" or "1" enable the flag.
+  // z.coerce.boolean() would coerce "false" / "no" / "0" to true as well
+  // (non-empty string → true), defeating the fail-safe.
+  //
+  // SAFETY: the fail-safe further down refuses to boot if this is set
+  // together with NODE_ENV=production. Intentional double-gate.
+  L402_BYPASS: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
 });
 
 const parsed = configSchema.safeParse(process.env);
 
 if (!parsed.success) {
   process.stderr.write(`Invalid configuration: ${JSON.stringify(parsed.error.format())}\n`);
+  process.exit(1);
+}
+
+// Phase 12A A3 — hard fail-safe : the L402 bypass is a staging/bench mode
+// only. Refusing the combo NODE_ENV=production + L402_BYPASS=true at boot
+// prevents every worst case where the flag leaks into a production .env
+// (paid endpoints served for free + /metrics exposed without auth).
+if (parsed.data.NODE_ENV === 'production' && parsed.data.L402_BYPASS) {
+  process.stderr.write(
+    'REFUSED: L402_BYPASS=true with NODE_ENV=production. The bypass is a '
+    + 'staging/bench mode only — it would open paid endpoints and /metrics '
+    + 'auth. Unset L402_BYPASS or flip NODE_ENV to development/test.\n'
+  );
   process.exit(1);
 }
 
@@ -229,4 +258,5 @@ export const featureFlags = {
   nostrPublishing: !!parsed.data.NOSTR_PRIVATE_KEY,
   pathfindingProbe: !!parsed.data.LND_MACAROON_PATH,
   nodeChannelHint: !!parsed.data.NODE_PUBKEY,
+  l402Bypass: parsed.data.L402_BYPASS,
 } as const;

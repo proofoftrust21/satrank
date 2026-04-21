@@ -1,0 +1,50 @@
+# Phase 12A alert rules — baseline breakage signals during rampes
+# Tuned for rupture detection, not for page duty (no Alertmanager wired).
+groups:
+  - name: satrank-slo
+    interval: 30s
+    rules:
+      - alert: SatRankHighLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, route, env) (
+              rate(satrank_http_request_duration_seconds_bucket[2m])
+            )
+          ) > 1.0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 HTTP latency > 1s on {{ $labels.route }} ({{ $labels.env }})"
+          description: "Sustained p95 > 1s for 2m on {{ $labels.route }}"
+
+      - alert: SatRankHigh5xxRate
+        expr: |
+          (
+            sum by (env) (rate(satrank_requests_total{status=~"5.."}[2m]))
+            /
+            sum by (env) (rate(satrank_requests_total[2m]))
+          ) > 0.01
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "5xx rate > 1% ({{ $labels.env }})"
+          description: "Sustained server-error ratio above 1% for 2m"
+
+      - alert: StagingMemoryPressure
+        expr: |
+          (
+            1 - (
+              node_memory_MemAvailable_bytes{env="staging"}
+              /
+              node_memory_MemTotal_bytes{env="staging"}
+            )
+          ) > 0.85
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Staging memory > 85% used"
+          description: "Memory pressure on staging VM during ramp — palier may be near rupture"

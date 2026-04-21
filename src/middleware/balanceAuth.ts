@@ -85,7 +85,21 @@ function extractPreimage(authHeader: string): string | null {
   return match ? match[1] : null;
 }
 
-export function createBalanceAuth(db: Database.Database) {
+export interface BalanceAuthOptions {
+  /** Phase 12A A3 — staging/bench short-circuit. When true, the middleware
+   *  calls next() without any DB read/write. Fail-safed against production
+   *  in config.ts (NODE_ENV=production + L402_BYPASS=true → exit at boot). */
+  bypass?: boolean;
+}
+
+export function createBalanceAuth(db: Database.Database, opts: BalanceAuthOptions = {}) {
+  if (opts.bypass) {
+    logger.warn({ component: 'balanceAuth' }, 'L402_BYPASS enabled — paid-endpoint gate short-circuited (staging/bench only)');
+    return function balanceAuthBypass(_req: Request, _res: Response, next: NextFunction): void {
+      next();
+    };
+  }
+
   // Phase 9: tokens come in two flavours.
   //  - Phase 9 deposit tokens: rate_sats_per_request IS NOT NULL → the
   //    decrement axis is `balance_credits` (1 credit per regular request).
