@@ -9,7 +9,15 @@ const configSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default('0.0.0.0'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  DB_PATH: z.string().default('./data/satrank.db'),
+  // Phase 12B — PostgreSQL 16 connection.
+  // Format: postgresql://user:password@host:port/database
+  // Default pool size tuned per worker (see DB_POOL_MAX_API / DB_POOL_MAX_CRAWLER).
+  DATABASE_URL: z.string().default('postgresql://satrank:satrank@localhost:5432/satrank'),
+  DB_POOL_MAX_API: z.coerce.number().int().positive().default(30),
+  DB_POOL_MAX_CRAWLER: z.coerce.number().int().positive().default(20),
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  DB_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
