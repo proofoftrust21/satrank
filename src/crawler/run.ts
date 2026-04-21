@@ -825,6 +825,19 @@ async function main(): Promise<void> {
       ? (invoice: string) => lndClient.decodePayReq!(invoice)
       : undefined;
     const registryCrawler = new RegistryCrawler(serviceEndpointRepo, decodeBolt11);
+
+    // Initial fire — sans cela, un cut-over (Phase 12B) laisse
+    // service_endpoints vide pendant 24h et /api/intent/categories renvoie
+    // []. Fire-and-forget : on ne bloque pas la boucle cron sur cette
+    // première passe (elle peut prendre ~minutes à 500ms/req).
+    (async () => {
+      try {
+        await registryCrawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial registry crawl error');
+      }
+    })();
+
     const timerRegistry = setInterval(async () => {
       try {
         await registryCrawler.run();
