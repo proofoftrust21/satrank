@@ -6,13 +6,14 @@
 // stays as an internal signal for the risk classifier, survival predictor,
 // and top-200 mover candidate set — it is no longer snapshotted (table now
 // holds bayesian-only state) and no longer surfaced in responses.
-import type Database from 'better-sqlite3';
-import type { AgentRepository } from '../repositories/agentRepository';
+import type { Pool } from 'pg';
+import { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
 import type { SnapshotRepository } from '../repositories/snapshotRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type { ScoreComponents, ConfidenceLevel, ReputationBreakdown } from '../types';
+import { withTransaction } from '../database/transaction';
 import { logger } from '../logger';
 // computePopularityBonus removed — query_count is gameable (see modifier block)
 import { scoreComputeDuration } from '../middleware/metrics';
@@ -72,39 +73,39 @@ export class ScoringService {
     private txRepo: TransactionRepository,
     private attestationRepo: AttestationRepository,
     private snapshotRepo: SnapshotRepository,
-    private db?: Database.Database,
+    private pool?: Pool,
     private probeRepo?: ProbeRepository,
-    private channelSnapshotRepo?: { findLatest: (h: string) => { capacity_sats: number } | undefined; findAt: (h: string, ts: number) => { capacity_sats: number } | undefined },
-    private feeSnapshotRepo?: { countFeeChanges: (nodePub: string, afterTimestamp: number) => { changes: number; channels: number } },
+    private channelSnapshotRepo?: { findLatest: (h: string) => Promise<{ capacity_sats: number } | undefined>; findAt: (h: string, ts: number) => Promise<{ capacity_sats: number } | undefined> },
+    private feeSnapshotRepo?: { countFeeChanges: (nodePub: string, afterTimestamp: number) => Promise<{ changes: number; channels: number }> },
   ) {}
 
   // Returns an agent's score. Phase 3 C8: the score_snapshots cache is gone
   // (table now holds bayesian-only state). getScore recomputes on every call.
   // An in-process memo could be added if profiling shows this as a hotspot;
   // the call sites (risk classifier, survival trajectory) are already rare.
-  getScore(agentHash: string): ScoreResult {
+  async getScore(agentHash: string): Promise<ScoreResult> {
     return this.computeScore(agentHash);
   }
 
   // Computes the full score for an agent and persists a snapshot
-  computeScore(agentHash: string): ScoreResult {
+  async computeScore(agentHash: string): Promise<ScoreResult> {
     const startHr = process.hrtime.bigint();
     const now = Math.floor(Date.now() / 1000);
-    const agent = this.agentRepo.findByHash(agentHash);
+    const agent = await this.agentRepo.findByHash(agentHash);
     if (!agent) {
       return { total: 0, totalFine: 0, components: { volume: 0, reputation: 0, seniority: 0, regularity: 0, diversity: 0 }, confidence: 'very_low', computedAt: now };
     }
 
     const isLightningGraph = agent.source === 'lightning_graph';
-    const verifiedTxCount = isLightningGraph ? 0 : this.txRepo.countVerifiedByAgent(agentHash);
-    const maxNetworkChannels = isLightningGraph ? this.agentRepo.maxChannels() : 0;
+    const verifiedTxCount = isLightningGraph ? 0 : await this.txRepo.countVerifiedByAgent(agentHash);
+    const maxNetworkChannels = isLightningGraph ? await this.agentRepo.maxChannels() : 0;
 
     // Compute Reputation and its sub-signal breakdown in one pass. The
     // breakdown is emitted into components JSON so downstream audits can
     // attribute Reputation movements to individual sub-signals.
     const repResult = isLightningGraph
-      ? this.computeLightningReputationBreakdown(agentHash, agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
-      : this.computeReputationWithBreakdown(agentHash, now);
+      ? await this.computeLightningReputationBreakdown(agentHash, agent.hubness_rank, agent.betweenness_rank, agent.capacity_sats, agent.total_transactions)
+      : await this.computeReputationWithBreakdown(agentHash, now);
 
     const components: ScoreComponents = {
       volume: isLightningGraph
@@ -113,11 +114,11 @@ export class ScoringService {
       reputation: repResult.score,
       seniority: this.computeSeniority(agent.first_seen, now),
       regularity: isLightningGraph
-        ? this.computeLightningRegularity(agentHash, agent.last_seen, now)
-        : this.computeRegularity(agentHash),
+        ? await this.computeLightningRegularity(agentHash, agent.last_seen, now)
+        : await this.computeRegularity(agentHash),
       diversity: isLightningGraph
         ? this.computeLightningDiversity(agent.capacity_sats, agent.unique_peers)
-        : this.computeDiversity(agentHash),
+        : await this.computeDiversity(agentHash),
       reputationBreakdown: repResult.breakdown,
     };
 
@@ -163,7 +164,7 @@ export class ScoringService {
 
     // Verified transaction bonus — ×1.0 to ×1.10 based on Observer Protocol txns
     const verifiedForBonus = isLightningGraph
-      ? this.txRepo.countVerifiedByAgent(agentHash)
+      ? await this.txRepo.countVerifiedByAgent(agentHash)
       : verifiedTxCount;
     if (verifiedForBonus > 0) {
       const verifiedMult = Math.min(1.10, 1.0 + verifiedForBonus * 0.003);
@@ -206,7 +207,7 @@ export class ScoringService {
     // tier was probed last. Now the signal aggregates all recent probes by
     // tier, weighted by agent-facing importance (smaller payments matter more).
     if (this.probeRepo) {
-      const baseProbe = this.probeRepo.findLatestAtTier(agentHash, 1000);
+      const baseProbe = await this.probeRepo.findLatestAtTier(agentHash, 1000);
       if (baseProbe && (now - baseProbe.probed_at) < PROBE_FRESHNESS_TTL) {
         if (baseProbe.reachable === 0) {
           // Regime 1 — base tier unreachable: existing dead/zombie/liquidity classification
@@ -228,7 +229,7 @@ export class ScoringService {
           // Regime 2 — base tier reachable: multi-tier liquidity signal
           const SEVEN_DAYS_SEC = 7 * 86400;
           const TIER_WEIGHTS = new Map<number, number>([[1000, 0.4], [10_000, 0.3], [100_000, 0.2]]);
-          const rates = this.probeRepo.computeTierSuccessRates(agentHash, SEVEN_DAYS_SEC);
+          const rates = await this.probeRepo.computeTierSuccessRates(agentHash, SEVEN_DAYS_SEC);
           let weightedSum = 0;
           let weightTotal = 0;
           for (const [tier, weight] of TIER_WEIGHTS) {
@@ -267,14 +268,13 @@ export class ScoringService {
     // survivalService, and the top-200 candidate set for topMovers still read
     // from it. The agents.avg_score column is internal and no longer surfaced
     // in public API responses.
-    const persist = () => {
-      this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, totalFine, agent.first_seen, agent.last_seen);
-    };
-
-    if (this.db) {
-      this.db.transaction(persist)();
+    if (this.pool) {
+      await withTransaction(this.pool, async (client) => {
+        const agRepoTx = new AgentRepository(client);
+        await agRepoTx.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, totalFine, agent.first_seen, agent.last_seen);
+      });
     } else {
-      persist();
+      await this.agentRepo.updateStats(agentHash, agent.total_transactions, agent.total_attestations_received, totalFine, agent.first_seen, agent.last_seen);
     }
 
     scoreComputeDuration.observe(Number(process.hrtime.bigint() - startHr) / 1e9);
@@ -310,7 +310,7 @@ export class ScoringService {
     return Math.round(channelScore * 0.5 + capacityScore * 0.5);
   }
 
-  private computeLightningRegularity(agentHash: string, lastSeen: number, now: number): number {
+  private async computeLightningRegularity(agentHash: string, lastSeen: number, now: number): Promise<number> {
     // Multi-axis consistency measure — uptime is necessary but not sufficient.
     //
     //   regularity = uptime * 70 + latency_consistency * 20 + hop_stability * 10
@@ -326,11 +326,11 @@ export class ScoringService {
     // Nodes without enough probe history (< 3 probes) fall back to the gossip-recency
     // formula so freshly-discovered agents still get a meaningful score.
     if (this.probeRepo) {
-      const totalProbes = this.probeRepo.countByTarget(agentHash);
+      const totalProbes = await this.probeRepo.countByTarget(agentHash);
       if (totalProbes >= 3) {
-        const uptime = this.probeRepo.computeUptime(agentHash, 7 * 86400) ?? 0;
-        const latencyStats = this.probeRepo.getLatencyStats(agentHash, 7 * 86400);
-        const hopStats = this.probeRepo.getHopStats(agentHash, 7 * 86400);
+        const uptime = (await this.probeRepo.computeUptime(agentHash, 7 * 86400)) ?? 0;
+        const latencyStats = await this.probeRepo.getLatencyStats(agentHash, 7 * 86400);
+        const hopStats = await this.probeRepo.getHopStats(agentHash, 7 * 86400);
 
         // latency_consistency: exp(-cv). Neutral 0.5 if sample too small.
         let latencyConsistency = 0.5;
@@ -382,25 +382,25 @@ export class ScoringService {
   }
 
   // Reputation for Lightning nodes: centrality + peer trust + routing quality + capacity trend + fee stability
-  private computeLightningReputation(
+  private async computeLightningReputation(
     agentHash: string,
     hubnessRank: number,
     betweennessRank: number,
     capacitySats: number | null,
     channels: number,
-  ): number {
-    return this.computeLightningReputationBreakdown(agentHash, hubnessRank, betweennessRank, capacitySats, channels).score;
+  ): Promise<number> {
+    return (await this.computeLightningReputationBreakdown(agentHash, hubnessRank, betweennessRank, capacitySats, channels)).score;
   }
 
   /** Same math as computeLightningReputation, but also emits the per-sub-signal
    *  contributions so a downstream audit can answer "why did Reputation move?". */
-  private computeLightningReputationBreakdown(
+  private async computeLightningReputationBreakdown(
     agentHash: string,
     hubnessRank: number,
     betweennessRank: number,
     capacitySats: number | null,
     channels: number,
-  ): { score: number; breakdown: ReputationBreakdown } {
+  ): Promise<{ score: number; breakdown: ReputationBreakdown }> {
     // --- Sub-signal 1: Centrality (0-100) ---
     // PRIMARY: sovereign PageRank computed hourly from the full LND graph.
     // Covers 100% of nodes (vs ~70% with LN+ API). Every node — including
@@ -408,7 +408,7 @@ export class ScoringService {
     // based on WHO it connects to.
     // FALLBACK: LN+ hubness/betweenness ranks when pagerank_score is not
     // yet populated (first crawl after migration, or test environments).
-    const agent = this.agentRepo.findByHash(agentHash);
+    const agent = await this.agentRepo.findByHash(agentHash);
     const pagerankScore = agent?.pagerank_score;
     let centrality: number;
     let centralitySource: 'pagerank' | 'lnplus_ranks' | 'none';
@@ -443,15 +443,15 @@ export class ScoringService {
     // --- Sub-signal 3: Capacity trend (0-100) ---
     // Fallback returns 50 (neutral) when there is no channel_snapshot history
     // — always treated as available; neutral is a legitimate datum.
-    const capTrend = this.computeCapacityTrend(agentHash);
+    const capTrend = await this.computeCapacityTrend(agentHash);
 
     // --- Sub-signal 4: Routing quality (0-100) ---
     // Fallback returns 50 (neutral) when < 3 probes — always treated as available.
-    const routingQuality = this.computeRoutingQuality(agentHash);
+    const routingQuality = await this.computeRoutingQuality(agentHash);
 
     // --- Sub-signal 5: Fee stability (0-100) ---
     // Fallback returns 50 (neutral) when no fee snapshots — always treated as available.
-    const feeStability = this.computeFeeStability(agentHash);
+    const feeStability = await this.computeFeeStability(agentHash);
 
     // Dynamic renormalization:
     //   Nominal weights are centrality 0.20 / peerTrust 0.30 / routingQuality 0.20
@@ -524,14 +524,14 @@ export class ScoringService {
   //   100 = capacity grew by ≥50%
   // The sigmoid curve is centered at 0% change, steepness tuned so a ±20%
   // weekly change maps to ~25/75 on the scale.
-  private computeCapacityTrend(agentHash: string): number {
+  private async computeCapacityTrend(agentHash: string): Promise<number> {
     if (!this.channelSnapshotRepo) return 50; // neutral when no repo injected
 
-    const latest = this.channelSnapshotRepo.findLatest(agentHash);
+    const latest = await this.channelSnapshotRepo.findLatest(agentHash);
     if (!latest) return 50;
 
     const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
-    const older = this.channelSnapshotRepo.findAt(agentHash, sevenDaysAgo);
+    const older = await this.channelSnapshotRepo.findAt(agentHash, sevenDaysAgo);
     if (!older || older.capacity_sats === 0) return 50;
 
     const delta = (latest.capacity_sats - older.capacity_sats) / older.capacity_sats;
@@ -555,12 +555,12 @@ export class ScoringService {
   //
   // Coverage: 13,242 nodes with 100+ probes. Nodes without probe data
   // get neutral (50).
-  private computeRoutingQuality(agentHash: string): number {
+  private async computeRoutingQuality(agentHash: string): Promise<number> {
     if (!this.probeRepo) return 50;
 
     const WINDOW_SEC = 7 * 86400;
-    const hopStats = this.probeRepo.getHopStats(agentHash, WINDOW_SEC);
-    const latStats = this.probeRepo.getLatencyStats(agentHash, WINDOW_SEC);
+    const hopStats = await this.probeRepo.getHopStats(agentHash, WINDOW_SEC);
+    const latStats = await this.probeRepo.getLatencyStats(agentHash, WINDOW_SEC);
 
     // Need at least 3 reachable probes to have meaningful data
     if (hopStats.count < 3 || latStats.count < 3) return 50;
@@ -585,15 +585,15 @@ export class ScoringService {
   //
   // Sigmoid: 0 changes → 100, 1 change/channel → ~73, 3 → ~27, 5+ → ~5
   // Returns neutral 50 when no fee data is available.
-  computeFeeStability(agentHash: string): number {
+  async computeFeeStability(agentHash: string): Promise<number> {
     if (!this.feeSnapshotRepo) return 50; // neutral
 
     // Get the agent's LN pubkey
-    const agent = this.agentRepo.findByHash(agentHash);
+    const agent = await this.agentRepo.findByHash(agentHash);
     if (!agent?.public_key) return 50;
 
     const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
-    const { changes, channels } = this.feeSnapshotRepo.countFeeChanges(agent.public_key, sevenDaysAgo);
+    const { changes, channels } = await this.feeSnapshotRepo.countFeeChanges(agent.public_key, sevenDaysAgo);
 
     if (channels === 0) return 50; // no fee data yet
 
@@ -611,15 +611,15 @@ export class ScoringService {
 
   // Reputation with reinforced anti-gaming
   // Batch attester lookups to avoid N+1 queries
-  private computeReputation(agentHash: string, now: number): number {
-    return this.computeReputationWithBreakdown(agentHash, now).score;
+  private async computeReputation(agentHash: string, now: number): Promise<number> {
+    return (await this.computeReputationWithBreakdown(agentHash, now)).score;
   }
 
   /** Same math as computeReputation, but returns the breakdown (attestation
    *  count + weighted average + report signal) for audit trail. */
-  private computeReputationWithBreakdown(agentHash: string, now: number): { score: number; breakdown: ReputationBreakdown } {
+  private async computeReputationWithBreakdown(agentHash: string, now: number): Promise<{ score: number; breakdown: ReputationBreakdown }> {
     const REPORT_CATEGORIES = new Set(['successful_transaction', 'failed_transaction', 'unresponsive']);
-    const allAttestations = this.attestationRepo.findBySubject(agentHash, MAX_ATTESTATIONS_PER_AGENT, 0);
+    const allAttestations = await this.attestationRepo.findBySubject(agentHash, MAX_ATTESTATIONS_PER_AGENT, 0);
     // Exclude report-category attestations from the general reputation loop —
     // they flow through computeReportSignal() instead (avoids double-counting)
     const attestations = allAttestations.filter(a => !REPORT_CATEGORIES.has(a.category));
@@ -632,7 +632,7 @@ export class ScoringService {
       // as a trust measurement and systematically under-weighted new observer
       // agents (Sim #10 audit: 31 agents stuck at Reputation=0).
       // rs is an adjustment in [-REPORT_SIGNAL_CAP, +REPORT_SIGNAL_CAP].
-      const rs = this.computeReportSignal(agentHash);
+      const rs = await this.computeReportSignal(agentHash);
       const score = Math.min(100, Math.max(0, 50 + rs));
       return {
         score,
@@ -647,17 +647,17 @@ export class ScoringService {
       logger.warn({ agentHash, limit: MAX_ATTESTATIONS_PER_AGENT }, 'Attestation count truncated to limit for agent');
     }
 
-    const mutualAgents = new Set(this.attestationRepo.findMutualAttestations(agentHash));
-    const clusterMembers = new Set(this.attestationRepo.findCircularCluster(agentHash));
+    const mutualAgents = new Set(await this.attestationRepo.findMutualAttestations(agentHash));
+    const clusterMembers = new Set(await this.attestationRepo.findCircularCluster(agentHash));
     // Extended cycle detection — catches 4+ hop cycles (A→B→C→D→A)
-    const extendedCycleMembers = new Set(this.attestationRepo.findCycleMembers(agentHash, 4));
+    const extendedCycleMembers = new Set(await this.attestationRepo.findCycleMembers(agentHash, 4));
 
     // Batch: load all attesters in 1 query. Phase 3 C8 dropped the composite
     // from score_snapshots, so the attester's weighting score reads from the
     // denormalized `agents.avg_score` column, which scoringService still
     // maintains on every computeScore pass.
     const attesterHashes = [...new Set(attestations.map(a => a.attester_hash))];
-    const attesterAgents = this.agentRepo.findByHashes(attesterHashes);
+    const attesterAgents = await this.agentRepo.findByHashes(attesterHashes);
     const attesterMap = new Map(attesterAgents.map(a => [a.public_key_hash, a]));
 
     let weightedSum = 0;
@@ -713,7 +713,7 @@ export class ScoringService {
       // All attesters had their weight pushed to zero by anti-gaming filters.
       // No usable attestation data → neutral 50 baseline + rs adjustment,
       // same semantics as the attestations.length === 0 branch above.
-      const rs = this.computeReportSignal(agentHash);
+      const rs = await this.computeReportSignal(agentHash);
       return {
         score: Math.min(100, Math.max(0, 50 + rs)),
         breakdown: {
@@ -723,7 +723,7 @@ export class ScoringService {
       };
     }
     const attestationScore = Math.round(weightedSum / totalWeight);
-    const reportAdjustment = this.computeReportSignal(agentHash);
+    const reportAdjustment = await this.computeReportSignal(agentHash);
     const finalScore = Math.min(100, Math.max(0, attestationScore + reportAdjustment));
     return {
       score: finalScore,
@@ -751,8 +751,8 @@ export class ScoringService {
    *  cliff-edge behaviour.
    *
    *  Preimage-verified reports receive 2x weight (baked into reportSignalStats). */
-  private computeReportSignal(agentHash: string): number {
-    const stats = this.attestationRepo.reportSignalStats(agentHash);
+  private async computeReportSignal(agentHash: string): Promise<number> {
+    const stats = await this.attestationRepo.reportSignalStats(agentHash);
     if (stats.total < 1) return 0;
 
     const totalWeighted = stats.weightedSuccesses + stats.weightedFailures;
@@ -775,8 +775,8 @@ export class ScoringService {
     return Math.round(score);
   }
 
-  private computeRegularity(agentHash: string): number {
-    const timestamps = this.txRepo.getTimestampsByAgent(agentHash);
+  private async computeRegularity(agentHash: string): Promise<number> {
+    const timestamps = await this.txRepo.getTimestampsByAgent(agentHash);
     if (timestamps.length < 3) return 0;
 
     // Ensure ascending order — DB returns ORDER BY timestamp ASC but defensive sort
@@ -799,8 +799,8 @@ export class ScoringService {
     return Math.min(100, Math.round(score));
   }
 
-  private computeDiversity(agentHash: string): number {
-    const count = this.txRepo.countUniqueCounterparties(agentHash);
+  private async computeDiversity(agentHash: string): Promise<number> {
+    const count = await this.txRepo.countUniqueCounterparties(agentHash);
     if (count === 0) return 0;
     const score = (Math.log(count + 1) / Math.log(DIVERSITY_LOG_BASE)) * 100;
     return Math.min(100, Math.round(score));

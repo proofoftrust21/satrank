@@ -13,9 +13,9 @@ export class SurvivalService {
     private snapshotRepo: SnapshotRepository,
   ) {}
 
-  compute(agentHashOrAgent: string | Agent): SurvivalResult {
+  async compute(agentHashOrAgent: string | Agent): Promise<SurvivalResult> {
     const agent = typeof agentHashOrAgent === 'string'
-      ? this.agentRepo.findByHash(agentHashOrAgent)
+      ? await this.agentRepo.findByHash(agentHashOrAgent)
       : agentHashOrAgent;
 
     if (!agent) {
@@ -29,9 +29,9 @@ export class SurvivalService {
     // Slope thresholds are on the p_success scale (0..1) and mirror the previous
     // points-per-day thresholds scaled by 1/100. -0.02/day ≈ -2pt/day on the old
     // composite — same clinical meaning for the survival classifier.
-    const latestSnap = this.snapshotRepo.findLatestByAgent(agent.public_key_hash);
+    const latestSnap = await this.snapshotRepo.findLatestByAgent(agent.public_key_hash);
     const pSuccessNow = latestSnap?.p_success ?? null;
-    const pSuccess7dAgo = this.snapshotRepo.findPSuccessAt(agent.public_key_hash, now - SEVEN_DAYS_SEC);
+    const pSuccess7dAgo = await this.snapshotRepo.findPSuccessAt(agent.public_key_hash, now - SEVEN_DAYS_SEC);
     let trajectoryLabel: string;
 
     if (pSuccessNow !== null && pSuccess7dAgo !== null) {
@@ -45,11 +45,11 @@ export class SurvivalService {
     }
 
     // Signal 2 — Probe Stability (weight 40%)
-    const probeStats = this.probeRepo.computeUptime(agent.public_key_hash, SEVEN_DAYS_SEC);
+    const probeStats = await this.probeRepo.computeUptime(agent.public_key_hash, SEVEN_DAYS_SEC);
     let probeLabel: string;
 
     if (probeStats !== null) {
-      const totalProbes = this.probeRepo.countByTarget(agent.public_key_hash);
+      const totalProbes = await this.probeRepo.countByTarget(agent.public_key_hash);
       if (probeStats === 0) { adjustment -= 40; probeLabel = `0% (0/${totalProbes})`; }
       else if (probeStats < 0.5) { adjustment -= 30; probeLabel = `${Math.round(probeStats * 100)}% (${totalProbes} probes)`; }
       else if (probeStats < 0.8) { adjustment -= 15; probeLabel = `${Math.round(probeStats * 100)}% (${totalProbes} probes)`; }

@@ -1,44 +1,48 @@
 // Business logic for attestations
 import { v4 as uuid } from 'uuid';
-import type Database from 'better-sqlite3';
-import type { AttestationRepository } from '../repositories/attestationRepository';
-import type { AgentRepository } from '../repositories/agentRepository';
+import type { Pool } from 'pg';
+import { AttestationRepository } from '../repositories/attestationRepository';
+import { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
+import { withTransaction } from '../database/transaction';
 import type { Attestation, CreateAttestationInput } from '../types';
 import { NotFoundError, ValidationError, DuplicateReportError } from '../errors';
+
+/** Postgres unique_violation code (duplicate primary key / unique index). */
+const PG_UNIQUE_VIOLATION = '23505';
 
 export class AttestationService {
   constructor(
     private attestationRepo: AttestationRepository,
     private agentRepo: AgentRepository,
     private txRepo: TransactionRepository,
-    private db?: Database.Database,
+    private pool?: Pool,
   ) {}
 
-  getBySubject(subjectHash: string, limit: number, offset: number) {
-    const agent = this.agentRepo.findByHash(subjectHash);
+  async getBySubject(subjectHash: string, limit: number, offset: number) {
+    const agent = await this.agentRepo.findByHash(subjectHash);
     if (!agent) throw new NotFoundError('Agent', subjectHash);
 
-    const attestations = this.attestationRepo.findBySubject(subjectHash, limit, offset);
-    const total = this.attestationRepo.countBySubject(subjectHash);
+    const attestations = await this.attestationRepo.findBySubject(subjectHash, limit, offset);
+    const total = await this.attestationRepo.countBySubject(subjectHash);
 
     return { attestations, total };
   }
 
-  create(input: CreateAttestationInput): Attestation {
+  async create(input: CreateAttestationInput): Promise<Attestation> {
     // Verify attester exists
-    if (!this.agentRepo.findByHash(input.attesterHash)) {
+    if (!(await this.agentRepo.findByHash(input.attesterHash))) {
       throw new NotFoundError('Agent (attester)', input.attesterHash);
     }
 
     // Verify subject exists — keep the reference for stats update
-    const subject = this.agentRepo.findByHash(input.subjectHash);
+    const subject = await this.agentRepo.findByHash(input.subjectHash);
     if (!subject) {
       throw new NotFoundError('Agent (subject)', input.subjectHash);
     }
 
     // Verify the referenced transaction exists
-    const tx = this.txRepo.findById(input.txId);
+    const tx = await this.txRepo.findById(input.txId);
     if (!tx) {
       throw new NotFoundError('Transaction', input.txId);
     }
@@ -69,19 +73,23 @@ export class AttestationService {
       weight: 1.0,
     };
 
-    // Insert + stats update in an atomic transaction
-    const insertAndUpdate = () => {
+    // Insert + stats update in an atomic transaction.
+    const doInsertAndUpdate = async (
+      attRepo: AttestationRepository,
+      agRepo: AgentRepository,
+    ): Promise<void> => {
       try {
-        this.attestationRepo.insert(attestation);
+        await attRepo.insert(attestation);
       } catch (err: unknown) {
-        if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === PG_UNIQUE_VIOLATION) {
           throw new DuplicateReportError('Attestation already submitted for this transaction by this attester');
         }
         throw err;
       }
 
-      const newCount = this.attestationRepo.countBySubject(input.subjectHash);
-      this.agentRepo.updateStats(
+      const newCount = await attRepo.countBySubject(input.subjectHash);
+      await agRepo.updateStats(
         input.subjectHash,
         subject.total_transactions,
         newCount,
@@ -91,10 +99,14 @@ export class AttestationService {
       );
     };
 
-    if (this.db) {
-      this.db.transaction(insertAndUpdate)();
+    if (this.pool) {
+      await withTransaction(this.pool, async (client) => {
+        const attRepo = new AttestationRepository(client);
+        const agRepo = new AgentRepository(client);
+        await doInsertAndUpdate(attRepo, agRepo);
+      });
     } else {
-      insertAndUpdate();
+      await doInsertAndUpdate(this.attestationRepo, this.agentRepo);
     }
 
     return attestation;

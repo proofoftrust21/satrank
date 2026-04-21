@@ -16,7 +16,6 @@
 //   - prior_source → operator/service/flat (hiérarchie du prior)
 
 import { randomUUID } from 'crypto';
-import type { Database } from 'better-sqlite3';
 import {
   BayesianScoringService,
   type VerdictResult,
@@ -102,7 +101,6 @@ export interface BayesianVerdictResponse {
 
 export class BayesianVerdictService {
   constructor(
-    private db: Database,
     private bayesian: BayesianScoringService,
     private endpointStreamingRepo: EndpointStreamingPosteriorRepository,
     private endpointBucketsRepo: EndpointDailyBucketsRepository,
@@ -119,12 +117,12 @@ export class BayesianVerdictService {
    *  Le champ `window` en DB reste présent (v33 column) mais n'a plus de sens
    *  en streaming : on écrit '7d' comme constante sentinel (τ=7 correspond).
    *  Le nettoyage de colonne se fait en C14. */
-  snapshotAndPersist(agentHash: string): BayesianVerdictResponse {
-    const response = this.buildVerdict({ targetHash: agentHash });
+  async snapshotAndPersist(agentHash: string): Promise<BayesianVerdictResponse> {
+    const response = await this.buildVerdict({ targetHash: agentHash });
     if (!this.snapshotRepo) return response;
 
     const now = Math.floor(Date.now() / 1000);
-    const latest = this.snapshotRepo.findLatestByAgent(agentHash);
+    const latest = await this.snapshotRepo.findLatestByAgent(agentHash);
     const changed = !latest
       || Math.abs(latest.p_success - response.p_success) >= SNAPSHOT_CHANGE_THRESHOLD;
     const stale = !latest
@@ -133,7 +131,7 @@ export class BayesianVerdictService {
     if (changed || stale) {
       const posteriorAlpha = DEFAULT_PRIOR_ALPHA + response.n_obs * response.p_success;
       const posteriorBeta = DEFAULT_PRIOR_BETA + response.n_obs * (1 - response.p_success);
-      this.snapshotRepo.insert({
+      await this.snapshotRepo.insert({
         snapshot_id: randomUUID(),
         agent_hash: agentHash,
         p_success: response.p_success,
@@ -151,13 +149,13 @@ export class BayesianVerdictService {
   }
 
   /** Point d'entrée public — retourne la réponse complète pour une cible. */
-  buildVerdict(query: BayesianVerdictQuery): BayesianVerdictResponse {
+  async buildVerdict(query: BayesianVerdictQuery): Promise<BayesianVerdictResponse> {
     const now = Math.floor(Date.now() / 1000);
 
     // 1. Lecture directe des posteriors décayés pour les 3 sources.
     //    Les repos appliquent la décroissance exponentielle τ=7j au moment
     //    de la lecture (pas de relecture des transactions).
-    const decayed = this.endpointStreamingRepo.readAllSourcesDecayed(query.targetHash, now);
+    const decayed = await this.endpointStreamingRepo.readAllSourcesDecayed(query.targetHash, now);
 
     // 2. Per-source blocks — null quand totalIngestions == 0.
     const sources = {
@@ -207,21 +205,20 @@ export class BayesianVerdictService {
     let categoryName: string | null = null;
     let categorySiblingHashes: string[] | null = null;
     if (query.serviceHash && this.serviceEndpointRepo) {
-      categoryName = this.serviceEndpointRepo.findCategoryByUrlHash(query.serviceHash);
+      categoryName = await this.serviceEndpointRepo.findCategoryByUrlHash(query.serviceHash);
       if (categoryName) {
-        categorySiblingHashes = this.serviceEndpointRepo
-          .listUrlHashesByCategory(categoryName)
-          .filter(h => h !== query.serviceHash);
+        const siblings = await this.serviceEndpointRepo.listUrlHashesByCategory(categoryName);
+        categorySiblingHashes = siblings.filter(h => h !== query.serviceHash);
       }
     }
-    const prior = this.bayesian.resolveHierarchicalPrior({
+    const prior = await this.bayesian.resolveHierarchicalPrior({
       operatorId: query.operatorId,
       serviceHash: query.serviceHash,
       categoryName,
       categorySiblingHashes,
     });
-    const recent_activity = this.endpointBucketsRepo.recentActivity(query.targetHash, now);
-    const riskProfileResult = this.bayesian.computeRiskProfile(
+    const recent_activity = await this.endpointBucketsRepo.recentActivity(query.targetHash, now);
+    const riskProfileResult = await this.bayesian.computeRiskProfile(
       this.endpointBucketsRepo,
       query.targetHash,
       now,

@@ -56,16 +56,16 @@ export class AgentService {
     private probeRepo?: ProbeRepository,
   ) {}
 
-  getAgentScore(publicKeyHash: string): AgentScoreResponse {
-    const agent = this.agentRepo.findByHash(publicKeyHash);
+  async getAgentScore(publicKeyHash: string): Promise<AgentScoreResponse> {
+    const agent = await this.agentRepo.findByHash(publicKeyHash);
     if (!agent) throw new NotFoundError('Agent', publicKeyHash);
 
-    const verifiedTx = this.txRepo.countVerifiedByAgent(publicKeyHash);
-    const uniqueCounterparties = this.txRepo.countUniqueCounterparties(publicKeyHash);
-    const attestationsCount = this.attestationRepo.countBySubject(publicKeyHash);
-    const avgAttestationScore = this.attestationRepo.avgScoreBySubject(publicKeyHash);
+    const verifiedTx = await this.txRepo.countVerifiedByAgent(publicKeyHash);
+    const uniqueCounterparties = await this.txRepo.countUniqueCounterparties(publicKeyHash);
+    const attestationsCount = await this.attestationRepo.countBySubject(publicKeyHash);
+    const avgAttestationScore = await this.attestationRepo.avgScoreBySubject(publicKeyHash);
 
-    const bayesian = this.toBayesianBlock(publicKeyHash);
+    const bayesian = await this.toBayesianBlock(publicKeyHash);
 
     return {
       agent: {
@@ -83,15 +83,15 @@ export class AgentService {
         attestationsReceived: attestationsCount,
         avgAttestationScore: Math.round(avgAttestationScore * 10) / 10,
       },
-      evidence: this.buildEvidence(agent, verifiedTx),
+      evidence: await this.buildEvidence(agent, verifiedTx),
       alerts: [],
     };
   }
 
   /** Project the BayesianVerdictService output onto the canonical public shape
    *  (BayesianScoreBlock). Source-of-truth adapter for every agent response. */
-  toBayesianBlock(publicKeyHash: string): BayesianScoreBlock {
-    const v = this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
+  async toBayesianBlock(publicKeyHash: string): Promise<BayesianScoreBlock> {
+    const v = await this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
     return {
       p_success: v.p_success,
       ci95_low: v.ci95_low,
@@ -107,17 +107,17 @@ export class AgentService {
     };
   }
 
-  buildEvidence(agentHashOrAgent: string | Agent, verifiedTxCount?: number): ScoreEvidence {
+  async buildEvidence(agentHashOrAgent: string | Agent, verifiedTxCount?: number): Promise<ScoreEvidence> {
     const agent = typeof agentHashOrAgent === 'string'
-      ? this.agentRepo.findByHash(agentHashOrAgent)
+      ? await this.agentRepo.findByHash(agentHashOrAgent)
       : agentHashOrAgent;
     if (!agent) {
       return { transactions: { count: 0, verifiedCount: 0, sample: [] }, lightningGraph: null, reputation: null, popularity: { queryCount: 0, bonusApplied: 0 }, probe: null };
     }
     if (verifiedTxCount === undefined) {
-      verifiedTxCount = this.txRepo.countVerifiedByAgent(agent.public_key_hash);
+      verifiedTxCount = await this.txRepo.countVerifiedByAgent(agent.public_key_hash);
     }
-    const recentTx = this.txRepo.findRecentByAgent(agent.public_key_hash, 5);
+    const recentTx = await this.txRepo.findRecentByAgent(agent.public_key_hash, 5);
     const totalTxCount = agent.total_transactions;
 
     const isLightning = agent.source === 'lightning_graph';
@@ -155,15 +155,15 @@ export class AgentService {
         queryCount: agent.query_count,
         bonusApplied: popularityBonus,
       },
-      probe: this.buildProbeData(agent.public_key_hash),
+      probe: await this.buildProbeData(agent.public_key_hash),
     };
   }
 
-  private buildProbeData(agentHash: string): ProbeData | null {
+  private async buildProbeData(agentHash: string): Promise<ProbeData | null> {
     if (!this.probeRepo) return null;
     // tier-1k for display reachability — consistent with scoring & verdict.
     // Fall back to any latest probe for timestamps if no tier-1k data.
-    const latest = this.probeRepo.findLatestAtTier(agentHash, 1000) ?? this.probeRepo.findLatest(agentHash);
+    const latest = (await this.probeRepo.findLatestAtTier(agentHash, 1000)) ?? (await this.probeRepo.findLatest(agentHash));
     if (!latest) return null;
     return {
       reachable: latest.reachable === 1,
@@ -175,28 +175,33 @@ export class AgentService {
     };
   }
 
-  getTopAgents(limit: number, offset: number, sortBy: SortByField = 'p_success'): TopAgentEntry[] {
+  async getTopAgents(limit: number, offset: number, sortBy: SortByField = 'p_success'): Promise<TopAgentEntry[]> {
     // Candidate pool: every sort axis is Bayesian, so we pull a wider pool and
     // re-sort in JS. Pre-DB Bayesian aggregation lands in Commit 8; for now
     // the 5-min leaderboard cache absorbs the O(N) posterior computation.
     const POOL_CAP = 500;
     const poolSize = Math.min(POOL_CAP, limit + offset + 100);
-    const agents = this.agentRepo.findTopByScore(poolSize, 0);
+    const agents = await this.agentRepo.findTopByScore(poolSize, 0);
     if (agents.length === 0) return [];
 
-    const enriched: TopAgentEntry[] = agents.map(a => ({
-      publicKeyHash: a.public_key_hash,
-      alias: a.alias,
-      totalTransactions: a.total_transactions,
-      source: a.source,
-      bayesian: this.toBayesianBlock(a.public_key_hash),
-    }));
+    // Enrich sequentially to stay under the pool cap when called from code that
+    // already runs concurrent agent queries (search, batch flows).
+    const enriched: TopAgentEntry[] = [];
+    for (const a of agents) {
+      enriched.push({
+        publicKeyHash: a.public_key_hash,
+        alias: a.alias,
+        totalTransactions: a.total_transactions,
+        source: a.source,
+        bayesian: await this.toBayesianBlock(a.public_key_hash),
+      });
+    }
 
     enriched.sort((a, b) => compareByAxis(a, b, sortBy));
     return enriched.slice(offset, offset + limit);
   }
 
-  searchByAlias(alias: string, limit: number, offset: number) {
-    return this.agentRepo.searchByAlias(alias, limit, offset);
+  async searchByAlias(alias: string, limit: number, offset: number) {
+    return await this.agentRepo.searchByAlias(alias, limit, offset);
   }
 }

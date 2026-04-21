@@ -11,7 +11,9 @@
 // never alter an existing deposit's rate — rediscovering tiers at call time
 // would violate that guarantee.
 
-import type Database from 'better-sqlite3';
+import type { Pool, PoolClient } from 'pg';
+
+type Queryable = Pool | PoolClient;
 
 export interface DepositTier {
   tier_id: number;
@@ -21,33 +23,37 @@ export interface DepositTier {
 }
 
 export class DepositTierService {
-  private readonly db: Database.Database;
+  private readonly pool: Queryable;
 
-  constructor(db: Database.Database) {
-    this.db = db;
+  constructor(pool: Queryable) {
+    this.pool = pool;
   }
 
   /** Returns all tiers ordered by min_deposit_sats ascending (public schedule). */
-  listTiers(): DepositTier[] {
-    return this.db.prepare(`
+  async listTiers(): Promise<DepositTier[]> {
+    const { rows } = await this.pool.query<DepositTier>(`
       SELECT tier_id, min_deposit_sats, rate_sats_per_request, discount_pct
       FROM deposit_tiers
       ORDER BY min_deposit_sats ASC
-    `).all() as DepositTier[];
+    `);
+    return rows;
   }
 
   /** Returns the applicable tier for an amount, or null if below the floor.
    *  "Applicable" = largest min_deposit_sats ≤ amount. */
-  lookupTierForAmount(amountSats: number): DepositTier | null {
+  async lookupTierForAmount(amountSats: number): Promise<DepositTier | null> {
     if (!Number.isFinite(amountSats) || amountSats <= 0) return null;
-    const row = this.db.prepare(`
+    const { rows } = await this.pool.query<DepositTier>(
+      `
       SELECT tier_id, min_deposit_sats, rate_sats_per_request, discount_pct
       FROM deposit_tiers
-      WHERE min_deposit_sats <= ?
+      WHERE min_deposit_sats <= $1
       ORDER BY min_deposit_sats DESC
       LIMIT 1
-    `).get(amountSats) as DepositTier | undefined;
-    return row ?? null;
+      `,
+      [amountSats],
+    );
+    return rows[0] ?? null;
   }
 
   /** Credits a deposit gets = amount / rate. Float — a 500-sat deposit at

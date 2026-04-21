@@ -96,8 +96,8 @@ export class IntentService {
 
   /** GET /api/intent/categories — liste des catégories vivantes avec compte
    *  total + compte actif (≥3 probes ET uptime ≥ 0.5). */
-  listCategories(): IntentCategoriesResponse {
-    const rows = this.deps.serviceEndpointRepo.findCategoriesWithActive();
+  async listCategories(): Promise<IntentCategoriesResponse> {
+    const rows = await this.deps.serviceEndpointRepo.findCategoriesWithActive();
     return {
       categories: rows.map(r => ({
         name: r.category,
@@ -109,40 +109,48 @@ export class IntentService {
 
   /** Liste plate des noms de catégories valides — utilisée par le controller
    *  pour valider la request AVANT de lancer le tri. */
-  knownCategoryNames(): Set<string> {
-    return new Set(this.deps.serviceEndpointRepo.findCategories().map(c => c.category));
+  async knownCategoryNames(): Promise<Set<string>> {
+    const categories = await this.deps.serviceEndpointRepo.findCategories();
+    return new Set(categories.map(c => c.category));
   }
 
   /** POST /api/intent — résout l'intention en candidats triés. */
-  resolveIntent(req: IntentRequest, rawLimit: number | undefined): IntentResponse {
+  async resolveIntent(req: IntentRequest, rawLimit: number | undefined): Promise<IntentResponse> {
     const limit = Math.min(
       Math.max(1, rawLimit ?? INTENT_LIMIT_DEFAULT),
       INTENT_LIMIT_MAX,
     );
     const keywords = (req.keywords ?? []).map(k => k.trim()).filter(k => k.length > 0);
 
-    const pool = this.deps.serviceEndpointRepo.findServices({
+    const poolResult = await this.deps.serviceEndpointRepo.findServices({
       category: req.category,
       sort: 'uptime',
       limit: MAX_POOL_SCAN,
       offset: 0,
-    }).services;
+    });
+    const pool = poolResult.services;
 
-    const matched = pool.filter(svc => {
-      if (keywords.length > 0 && !keywordsMatchAll(svc, keywords)) return false;
+    // Filter matches — sequential because each iteration may hit the DB for
+    // median latency. Keep order deterministic and respect pool-max.
+    const matched: ServiceEndpoint[] = [];
+    for (const svc of pool) {
+      if (keywords.length > 0 && !keywordsMatchAll(svc, keywords)) continue;
       if (req.budget_sats != null) {
-        if (svc.service_price_sats == null) return false;
-        if (svc.service_price_sats > req.budget_sats) return false;
+        if (svc.service_price_sats == null) continue;
+        if (svc.service_price_sats > req.budget_sats) continue;
       }
       if (req.max_latency_ms != null) {
-        const median = this.deps.serviceEndpointRepo.medianHttpLatency7d(svc.url);
-        if (median == null) return false;
-        if (median > req.max_latency_ms) return false;
+        const median = await this.deps.serviceEndpointRepo.medianHttpLatency7d(svc.url);
+        if (median == null) continue;
+        if (median > req.max_latency_ms) continue;
       }
-      return true;
-    });
+      matched.push(svc);
+    }
 
-    const enriched = matched.map(svc => this.enrich(svc));
+    const enriched: EnrichedCandidate[] = [];
+    for (const svc of matched) {
+      enriched.push(await this.enrich(svc));
+    }
 
     const { pool: tierPool, strictness, warnings } = applyStrictness(enriched);
 
@@ -171,14 +179,14 @@ export class IntentService {
     };
   }
 
-  private enrich(svc: ServiceEndpoint): EnrichedCandidate {
-    const agent = svc.agent_hash ? this.deps.agentRepo.findByHash(svc.agent_hash) : null;
+  private async enrich(svc: ServiceEndpoint): Promise<EnrichedCandidate> {
+    const agent = svc.agent_hash ? await this.deps.agentRepo.findByHash(svc.agent_hash) : null;
     const bayesian = svc.agent_hash
-      ? this.deps.agentService.toBayesianBlock(svc.agent_hash)
+      ? await this.deps.agentService.toBayesianBlock(svc.agent_hash)
       : neutralBayesian(this.now());
 
     const delta = svc.agent_hash
-      ? this.deps.trendService.computeDeltas(svc.agent_hash, bayesian.p_success)
+      ? await this.deps.trendService.computeDeltas(svc.agent_hash, bayesian.p_success)
       : null;
     const delta7d = delta?.delta7d ?? null;
 
@@ -187,7 +195,7 @@ export class IntentService {
       : [];
 
     const reachability = svc.agent_hash && this.deps.probeRepo
-      ? this.deps.probeRepo.computeUptime(svc.agent_hash, REACHABILITY_WINDOW_SEC)
+      ? await this.deps.probeRepo.computeUptime(svc.agent_hash, REACHABILITY_WINDOW_SEC)
       : null;
 
     const httpStatus = classifyHttpStatus(svc.last_http_status);
@@ -200,10 +208,10 @@ export class IntentService {
       ? Math.max(0, this.now() - svc.last_checked_at)
       : null;
 
-    const medianLatencyMs = this.deps.serviceEndpointRepo.medianHttpLatency7d(svc.url);
+    const medianLatencyMs = await this.deps.serviceEndpointRepo.medianHttpLatency7d(svc.url);
 
     const operatorLookup = this.deps.operatorService
-      ? this.deps.operatorService.resolveOperatorForEndpoint(endpointHash(svc.url))
+      ? await this.deps.operatorService.resolveOperatorForEndpoint(endpointHash(svc.url))
       : null;
 
     return {

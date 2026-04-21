@@ -184,7 +184,7 @@ export interface RiskProfileResult {
 /** Interface minimale du bucket repo pour computeRiskProfile — permet au
  *  service de tourner avec n'importe laquelle des 5 tables sans surcharge. */
 export interface RiskProfileBucketRepo {
-  sumSuccessFailureBetween(id: string, fromDay: string, toDay: string): { nSuccess: number; nFailure: number; nObs: number };
+  sumSuccessFailureBetween(id: string, fromDay: string, toDay: string): Promise<{ nSuccess: number; nFailure: number; nObs: number }>;
 }
 
 export class BayesianScoringService {
@@ -217,7 +217,7 @@ export class BayesianScoringService {
    *  Critère d'héritage pour chaque niveau :
    *    `n_obs_effective = (α + β) − (α₀ + β₀) ≥ PRIOR_MIN_EFFECTIVE_OBS`.
    *  Sous ce seuil, on remonte d'un cran dans la cascade. */
-  resolveHierarchicalPrior(ctx: PriorContext): ResolvedPrior {
+  async resolveHierarchicalPrior(ctx: PriorContext): Promise<ResolvedPrior> {
     const now = Math.floor(Date.now() / 1000);
 
     // Niveau 1 : operator — somme des 3 sources sur le streaming opérateur.
@@ -228,7 +228,7 @@ export class BayesianScoringService {
     // par 2 dans le prior transmis. p_success inchangé, confiance bornée.
     if (ctx.operatorId) {
       const summed = sumDecayedAcrossSources(
-        this.operatorStreamingRepo.readAllSourcesDecayed(ctx.operatorId, now),
+        await this.operatorStreamingRepo.readAllSourcesDecayed(ctx.operatorId, now),
       );
       if (summed.nObsEffective >= PRIOR_MIN_EFFECTIVE_OBS) {
         const scaledAlpha = DEFAULT_PRIOR_ALPHA + OPERATOR_PRIOR_WEIGHT * (summed.alpha - DEFAULT_PRIOR_ALPHA);
@@ -240,7 +240,7 @@ export class BayesianScoringService {
     // Niveau 2 : service — somme des 3 sources sur le streaming service.
     if (ctx.serviceHash) {
       const summed = sumDecayedAcrossSources(
-        this.serviceStreamingRepo.readAllSourcesDecayed(ctx.serviceHash, now),
+        await this.serviceStreamingRepo.readAllSourcesDecayed(ctx.serviceHash, now),
       );
       if (summed.nObsEffective >= PRIOR_MIN_EFFECTIVE_OBS) {
         return { alpha: summed.alpha, beta: summed.beta, source: 'service' };
@@ -253,8 +253,11 @@ export class BayesianScoringService {
     if (ctx.categorySiblingHashes && ctx.categorySiblingHashes.length > 0) {
       let excessAlpha = 0;
       let excessBeta = 0;
+      // Sequential for-of — category fan-out is already bounded by the seed
+      // list but we stay sequential to respect the pool cap when called inside
+      // the verdict hot path.
       for (const hash of ctx.categorySiblingHashes) {
-        const d = this.endpointStreamingRepo.readAllSourcesDecayed(hash, now);
+        const d = await this.endpointStreamingRepo.readAllSourcesDecayed(hash, now);
         for (const src of ['probe', 'report', 'paid'] as const) {
           excessAlpha += d[src].posteriorAlpha - DEFAULT_PRIOR_ALPHA;
           excessBeta += d[src].posteriorBeta - DEFAULT_PRIOR_BETA;
@@ -360,7 +363,7 @@ export class BayesianScoringService {
    *    - 'probe' / 'paid' / 'report' → streaming_posteriors ET daily_buckets
    *    - 'observer'                  → daily_buckets UNIQUEMENT (CHECK SQL
    *                                     sur streaming_posteriors rejette observer) */
-  ingestStreaming(input: StreamingIngestionInput): StreamingIngestionResult {
+  async ingestStreaming(input: StreamingIngestionInput): Promise<StreamingIngestionResult> {
     const result: StreamingIngestionResult = {
       endpointUpdates: 0,
       serviceUpdates: 0,
@@ -394,47 +397,47 @@ export class BayesianScoringService {
     // endpoint
     if (input.endpointHash) {
       if (input.source !== 'observer') {
-        this.endpointStreamingRepo.ingest(input.endpointHash, input.source, streamingDeltas);
+        await this.endpointStreamingRepo.ingest(input.endpointHash, input.source, streamingDeltas);
         result.endpointUpdates++;
       }
-      this.endpointBucketsRepo.bump(input.endpointHash, input.source as BucketSource, bucketDeltas);
+      await this.endpointBucketsRepo.bump(input.endpointHash, input.source as BucketSource, bucketDeltas);
       result.bucketsBumped++;
     }
     // service
     if (input.serviceHash) {
       if (input.source !== 'observer') {
-        this.serviceStreamingRepo.ingest(input.serviceHash, input.source, streamingDeltas);
+        await this.serviceStreamingRepo.ingest(input.serviceHash, input.source, streamingDeltas);
         result.serviceUpdates++;
       }
-      this.serviceBucketsRepo.bump(input.serviceHash, input.source as BucketSource, bucketDeltas);
+      await this.serviceBucketsRepo.bump(input.serviceHash, input.source as BucketSource, bucketDeltas);
       result.bucketsBumped++;
     }
     // operator
     if (input.operatorId) {
       if (input.source !== 'observer') {
-        this.operatorStreamingRepo.ingest(input.operatorId, input.source, streamingDeltas);
+        await this.operatorStreamingRepo.ingest(input.operatorId, input.source, streamingDeltas);
         result.operatorUpdates++;
       }
-      this.operatorBucketsRepo.bump(input.operatorId, input.source as BucketSource, bucketDeltas);
+      await this.operatorBucketsRepo.bump(input.operatorId, input.source as BucketSource, bucketDeltas);
       result.bucketsBumped++;
     }
     // node
     if (input.nodePubkey) {
       if (input.source !== 'observer') {
-        this.nodeStreamingRepo.ingest(input.nodePubkey, input.source, streamingDeltas);
+        await this.nodeStreamingRepo.ingest(input.nodePubkey, input.source, streamingDeltas);
         result.nodeUpdates++;
       }
-      this.nodeBucketsRepo.bump(input.nodePubkey, input.source as BucketSource, bucketDeltas);
+      await this.nodeBucketsRepo.bump(input.nodePubkey, input.source as BucketSource, bucketDeltas);
       result.bucketsBumped++;
     }
     // route (caller + target requis)
     if (input.callerHash && input.targetHash) {
       const routeKey = `${input.callerHash}:${input.targetHash}`;
       if (input.source !== 'observer') {
-        this.routeStreamingRepo.ingest(routeKey, input.callerHash, input.targetHash, input.source, streamingDeltas);
+        await this.routeStreamingRepo.ingest(routeKey, input.callerHash, input.targetHash, input.source, streamingDeltas);
         result.routeUpdates++;
       }
-      this.routeBucketsRepo.bump(routeKey, input.callerHash, input.targetHash, input.source as BucketSource, bucketDeltas);
+      await this.routeBucketsRepo.bump(routeKey, input.callerHash, input.targetHash, input.source as BucketSource, bucketDeltas);
       result.bucketsBumped++;
     }
 
@@ -452,7 +455,7 @@ export class BayesianScoringService {
    *  Source mélangée (toutes sources confondues) — c'est du display, pas du
    *  verdict, donc l'activité globale est le bon signal pour "ce nœud est-il
    *  en train de se dégrader ?". */
-  computeRiskProfile(bucketRepo: RiskProfileBucketRepo, id: string, atTs: number): RiskProfileResult {
+  async computeRiskProfile(bucketRepo: RiskProfileBucketRepo, id: string, atTs: number): Promise<RiskProfileResult> {
     const atDay = dayKeyUTC(atTs);
     const recentFromDay = dayKeyUTC(atTs - (RISK_PROFILE_RECENT_WINDOW_DAYS - 1) * 86400);
     // Fenêtre antérieure : les RISK_PROFILE_PRIOR_WINDOW_DAYS jours AVANT la fenêtre récente.
@@ -460,8 +463,8 @@ export class BayesianScoringService {
     const priorToDay = dayKeyUTC(priorToTs);
     const priorFromDay = dayKeyUTC(priorToTs - (RISK_PROFILE_PRIOR_WINDOW_DAYS - 1) * 86400);
 
-    const recent = bucketRepo.sumSuccessFailureBetween(id, recentFromDay, atDay);
-    const prior = bucketRepo.sumSuccessFailureBetween(id, priorFromDay, priorToDay);
+    const recent = await bucketRepo.sumSuccessFailureBetween(id, recentFromDay, atDay);
+    const prior = await bucketRepo.sumSuccessFailureBetween(id, priorFromDay, priorToDay);
 
     const totalObs = recent.nObs + prior.nObs;
     if (totalObs < RISK_PROFILE_MIN_N_OBS) {

@@ -77,8 +77,8 @@ export class AutoIndexService {
     // Compute initial score + persist bayesian snapshot so the agent starts
     // appearing in posterior-driven endpoints immediately after indexation.
     const hash = sha256(pubkey);
-    this.scoringService.computeScore(hash);
-    this.bayesianVerdict?.snapshotAndPersist(hash);
+    await this.scoringService.computeScore(hash);
+    await this.bayesianVerdict?.snapshotAndPersist(hash);
 
     logger.info({ pubkey: pubkey.slice(0, 16), result }, 'Auto-indexation completed');
   }

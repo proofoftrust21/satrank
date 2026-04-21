@@ -19,12 +19,13 @@
 //    poisons the scoring at zero cost — hence the gate and the auto-rollback.
 //  - Preimage verification in reportService is cryptographic, not an LN proof.
 //    The gate is what actually makes the bonus defensible.
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import type { Request } from 'express';
-import type { ReportBonusRepository } from '../repositories/reportBonusRepository';
+import { ReportBonusRepository } from '../repositories/reportBonusRepository';
 import type { ScoringService } from './scoringService';
 import type { NpubAgeCache } from '../nostr/npubAgeCache';
 import { verifyNip98 } from '../middleware/nip98';
+import { withTransaction } from '../database/transaction';
 import { logger } from '../logger';
 import { config } from '../config';
 import {
@@ -64,21 +65,14 @@ export class ReportBonusService {
   private readonly GUARD_MIN_VERDICTS = 100; // below this, window is too noisy
   private samples: Array<{ ts: number; safe: number; total: number }> = [];
 
-  // Prepared statements for hot-path token balance crediting. Typed as the
-  // 2-arg variant so better-sqlite3's inference doesn't collapse to .run().
-  private stmtCreditBalance: Database.Statement<[number, Buffer]>;
-
   constructor(
-    private db: Database.Database,
+    private pool: Pool,
     private repo: ReportBonusRepository,
     private scoringService: ScoringService,
     private npubAges: NpubAgeCache,
     private opts: ReportBonusServiceOptions,
   ) {
     this.enabled = opts.enabledFromEnv;
-    this.stmtCreditBalance = db.prepare<[number, Buffer]>(
-      'UPDATE token_balance SET remaining = remaining + ? WHERE payment_hash = ?',
-    );
     reportBonusEnabledGauge.set(this.enabled ? 1 : 0);
     if (this.enabled) {
       // Seed the sample ring with the starting state so the guard has a
@@ -100,7 +94,8 @@ export class ReportBonusService {
   ): Promise<{ eligible: boolean; gate: EligibilityGate }> {
     // Gate A: reporter has a meaningful SatRank score. Cheapest path — just
     // one snapshot lookup. Covers the dominant legitimate-user case.
-    const score = this.scoringService.getScore(reporterHash).total;
+    const scoreResult = await this.scoringService.getScore(reporterHash);
+    const score = scoreResult.total;
     if (score >= this.opts.minReporterScore) {
       return { eligible: true, gate: 'score' };
     }
@@ -170,7 +165,7 @@ export class ReportBonusService {
       return { credited: false, gate, reason: 'no_payment_hash' };
     }
     // Narrow once for the closure — TS cannot track non-null through
-    // `this.db.transaction(...)`, so we bind a local non-null reference.
+    // `withTransaction(...)`, so we bind a local non-null reference.
     const paymentHash: Buffer = params.paymentHash;
 
     const utcDay = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -178,25 +173,32 @@ export class ReportBonusService {
 
     // Atomic: read-modify-write the counter + balance in a single tx so two
     // concurrent reports cannot double-credit the same threshold crossing.
-    const creditResult: { credited: boolean; sats?: number; reason?: string } = this.db.transaction(() => {
-      const before = this.repo.findToday(params.reporterHash, utcDay);
-      if (before && before.bonuses_credited >= this.opts.dailyCap) {
-        return { credited: false, reason: 'daily_cap_reached' };
-      }
-      const newCount = this.repo.incrementEligibleCount(params.reporterHash, utcDay);
-      if (newCount % this.opts.threshold !== 0) {
-        return { credited: false, reason: 'below_threshold' };
-      }
-      // Threshold crossed — pay out.
-      this.repo.recordBonusCredit(params.reporterHash, utcDay, this.opts.satsPerBonus, nowUnix);
-      const result = this.stmtCreditBalance.run(this.opts.satsPerBonus, paymentHash);
-      if (result.changes === 0) {
-        // Token gone (rare race — L402 revoked between report insert and credit).
-        // Rollback the bonus counter so the user isn't charged against their cap.
-        throw new Error('Balance credit targeted a missing token');
-      }
-      return { credited: true, sats: this.opts.satsPerBonus };
-    })();
+    const creditResult: { credited: boolean; sats?: number; reason?: string } = await withTransaction(
+      this.pool,
+      async (client) => {
+        const repoInTx = new ReportBonusRepository(client);
+        const before = await repoInTx.findToday(params.reporterHash, utcDay);
+        if (before && before.bonuses_credited >= this.opts.dailyCap) {
+          return { credited: false, reason: 'daily_cap_reached' };
+        }
+        const newCount = await repoInTx.incrementEligibleCount(params.reporterHash, utcDay);
+        if (newCount % this.opts.threshold !== 0) {
+          return { credited: false, reason: 'below_threshold' };
+        }
+        // Threshold crossed — pay out.
+        await repoInTx.recordBonusCredit(params.reporterHash, utcDay, this.opts.satsPerBonus, nowUnix);
+        const result = await client.query(
+          'UPDATE token_balance SET remaining = remaining + $1 WHERE payment_hash = $2',
+          [this.opts.satsPerBonus, paymentHash],
+        );
+        if ((result.rowCount ?? 0) === 0) {
+          // Token gone (rare race — L402 revoked between report insert and credit).
+          // Rollback the bonus counter so the user isn't charged against their cap.
+          throw new Error('Balance credit targeted a missing token');
+        }
+        return { credited: true, sats: this.opts.satsPerBonus };
+      },
+    );
 
     if (creditResult.credited) {
       reportBonusTotal.inc();
