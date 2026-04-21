@@ -17,6 +17,8 @@
 //     enforced at insert time; no DB row to seed.
 //
 // Run: `npx tsx src/scripts/seedBootstrap.ts` (or `npm run seed:bootstrap`).
+// Dry-run: `npx tsx src/scripts/seedBootstrap.ts --dry-run` — logs what WOULD
+// be inserted (resolved rowCounts via SELECT) without touching the DB.
 // Safe to re-run — every INSERT uses ON CONFLICT DO NOTHING.
 
 import { getPool, closePools } from '../database/connection';
@@ -39,14 +41,36 @@ const DEPOSIT_TIERS: DepositTierSeed[] = [
 export interface SeedSummary {
   depositTiersInserted: number;
   depositTiersExisting: number;
+  dryRun: boolean;
 }
 
-export async function runSeed(): Promise<SeedSummary> {
+export async function runSeed(options: { dryRun?: boolean } = {}): Promise<SeedSummary> {
   const pool = getPool();
   const now = Date.now();
-  const summary: SeedSummary = { depositTiersInserted: 0, depositTiersExisting: 0 };
+  const dryRun = options.dryRun === true;
+  const summary: SeedSummary = {
+    depositTiersInserted: 0,
+    depositTiersExisting: 0,
+    dryRun,
+  };
 
   for (const tier of DEPOSIT_TIERS) {
+    if (dryRun) {
+      // Dry-run : on vérifie la présence sans modifier la DB.
+      const existing = await pool.query<{ c: number }>(
+        'SELECT COUNT(*)::int AS c FROM deposit_tiers WHERE min_deposit_sats = $1',
+        [tier.min_deposit_sats],
+      );
+      if ((existing.rows[0]?.c ?? 0) === 0) {
+        summary.depositTiersInserted++;
+        logger.info({ tier, action: 'WOULD_INSERT' }, 'dry-run');
+      } else {
+        summary.depositTiersExisting++;
+        logger.info({ tier, action: 'SKIP_EXISTING' }, 'dry-run');
+      }
+      continue;
+    }
+
     const { rowCount } = await pool.query(
       `INSERT INTO deposit_tiers (min_deposit_sats, rate_sats_per_request, discount_pct, created_at)
        VALUES ($1, $2, $3, $4)
@@ -57,12 +81,13 @@ export async function runSeed(): Promise<SeedSummary> {
     else summary.depositTiersExisting++;
   }
 
-  logger.info(summary, 'seed bootstrap complete');
+  logger.info(summary, dryRun ? 'seed bootstrap DRY-RUN complete' : 'seed bootstrap complete');
   return summary;
 }
 
 if (require.main === module) {
-  runSeed()
+  const dryRun = process.argv.includes('--dry-run');
+  runSeed({ dryRun })
     .then(async () => {
       await closePools();
       process.exit(0);
