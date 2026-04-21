@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS score_snapshots (
   p_success         DOUBLE PRECISION,
   ci95_low          DOUBLE PRECISION,
   ci95_high         DOUBLE PRECISION,
-  n_obs             BIGINT,
+  n_obs             DOUBLE PRECISION,
   "window"          TEXT,
   updated_at        BIGINT
 );
