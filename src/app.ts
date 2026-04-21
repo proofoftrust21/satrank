@@ -406,6 +406,10 @@ export function createApp() {
     },
   });
   app.get('/metrics', metricsRateLimit, (req, res, next) => {
+    // Phase 12A A3 — staging/bench : L402_BYPASS=true opens /metrics so the
+    // docker-bridge Prometheus can scrape without an API key. Fail-safed
+    // against production by the startup guard in config.ts.
+    if (config.L402_BYPASS) return next();
     const ip = req.ip ?? req.socket.remoteAddress ?? '';
     const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
     if (isLocalhost) return next();
@@ -474,7 +478,7 @@ export function createApp() {
       next();
     });
   }
-  const balanceAuth = createBalanceAuth(db);
+  const balanceAuth = createBalanceAuth(db, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(db);
   api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // decide, report, deposit, profile
   // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the

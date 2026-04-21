@@ -1,0 +1,56 @@
+# Phase 12A A3 — staging-only compose for the SatRank api container.
+# Runs ONLY the api service (crawler deliberately excluded so the cloned
+# prod DB stays frozen for bench reproducibility). Uses bench/staging/.env.staging
+# rather than .env.production.
+#
+# Listens on 0.0.0.0:8080 so:
+#   - k6 / wrk on the staging host can hit the API directly (bypass nginx)
+#   - the observability stack (separate docker network) can scrape
+#     host.docker.internal:8080/metrics
+#
+# The public external risk is mitigated by:
+#   - Hetzner cloud firewall default-deny on 8080 from internet
+#   - L402_BYPASS=true opens /metrics without auth — staging only, fail-safed
+#     against NODE_ENV=production in src/config.ts.
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-phase-12a-bench}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    container_name: satrank-api-staging
+    restart: unless-stopped
+    ports:
+      - "8080:3000"
+    env_file:
+      - .env.staging
+    environment:
+      - GIT_COMMIT=${GIT_COMMIT:-phase-12a-bench}
+      - BUILD_DATE=${BUILD_DATE:-unknown}
+    volumes:
+      # The prod DB clone landed at /var/lib/satrank/satrank.db during A0.
+      # Bind-mounted read-write because the api writes
+      # (token_balance, decide_log, token_query_log, etc.). We accept some
+      # drift on the clone during benches — the cloned DB is ephemeral.
+      - /var/lib/satrank:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>r.json()).then(j=>{process.exit(j.data.status==='ok'?0:1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3
+    stop_grace_period: 30s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
