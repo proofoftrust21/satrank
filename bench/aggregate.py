@@ -12,8 +12,10 @@ summary-export (top-level `metrics` dict) and extracts :
 
   - requests (http_reqs count)
   - actual rps (http_reqs rate)
-  - p50 / p95 / p99 http_req_duration
-  - error rate (http_req_failed rate) when present
+  - p50 / p90 / p95 http_req_duration (k6 summary-export does not
+    carry p99 by default — use --summary-trend-stats if needed)
+  - max http_req_duration
+  - error rate (http_req_failed value — the Rate metric's final ratio)
 
 It does NOT try to re-derive paliers by filename pattern; the filename
 tag (e.g. verdict_rps100.json) becomes the row label.
@@ -49,9 +51,10 @@ def extract_row(tag: str, data: dict) -> dict:
         "requests": int(reqs.get("count", 0)),
         "rps": reqs.get("rate", 0.0),
         "p50_ms": dur.get("med", 0.0),
+        "p90_ms": dur.get("p(90)", 0.0),
         "p95_ms": dur.get("p(95)", 0.0),
-        "p99_ms": dur.get("p(99)", 0.0),
-        "error_rate": failed.get("rate", 0.0),
+        "max_ms": dur.get("max", 0.0),
+        "error_rate": failed.get("value", failed.get("rate", 0.0)),
     }
 
 
@@ -85,12 +88,12 @@ def main() -> int:
     # Markdown table
     print(f"# Phase 12A bench — {root.name}")
     print()
-    print("| tag | requests | rps | p50 ms | p95 ms | p99 ms | err rate |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| tag | requests | rps | p50 ms | p90 ms | p95 ms | max ms | err rate |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in rows:
         print(
             f"| {r['tag']} | {r['requests']} | {r['rps']:.2f} "
-            f"| {r['p50_ms']:.1f} | {r['p95_ms']:.1f} | {r['p99_ms']:.1f} "
+            f"| {r['p50_ms']:.1f} | {r['p90_ms']:.1f} | {r['p95_ms']:.1f} | {r['max_ms']:.1f} "
             f"| {r['error_rate']:.4f} |"
         )
     return 0
