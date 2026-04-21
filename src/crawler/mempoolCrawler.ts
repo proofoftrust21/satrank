@@ -46,7 +46,7 @@ export class MempoolCrawler {
 
     for (const node of nodes) {
       try {
-        const indexed = this.indexNode(node);
+        const indexed = await this.indexNode(node);
         if (indexed === 'created') result.newAgents++;
         else if (indexed === 'updated') result.updatedAgents++;
       } catch (err: unknown) {
@@ -67,22 +67,25 @@ export class MempoolCrawler {
     return result;
   }
 
-  private indexNode(node: MempoolNode): 'created' | 'updated' | 'skipped' {
+  private async indexNode(node: MempoolNode): Promise<'created' | 'updated' | 'skipped'> {
     if (!node.publicKey || !node.alias) {
       throw new Error('Missing publicKey or alias');
     }
 
     const publicKeyHash = sha256(node.publicKey);
-    const existing = this.agentRepo.findByHash(publicKeyHash);
+    // TOCTOU fix: pre-check before idempotent INSERT. `agentRepo.insert` uses
+    // ON CONFLICT DO NOTHING so parallel crawlers never raise; the pre-check
+    // only decides whether to take the update branch (existing) vs insert.
+    const existing = await this.agentRepo.findByHash(publicKeyHash);
 
     if (existing) {
       // Always store/refresh the original pubkey for LN+ lookups
       if (!existing.public_key) {
-        this.agentRepo.updatePublicKey(publicKeyHash, node.publicKey);
+        await this.agentRepo.updatePublicKey(publicKeyHash, node.publicKey);
       }
       if (existing.source === 'lightning_graph') {
         // Full update for Lightning nodes: channels, capacity, alias, lastSeen
-        this.agentRepo.updateLightningStats(
+        await this.agentRepo.updateLightningStats(
           publicKeyHash,
           node.channels,
           node.capacity,
@@ -91,7 +94,7 @@ export class MempoolCrawler {
         );
       } else {
         // Other sources: only enrich with capacity and refresh lastSeen
-        this.agentRepo.updateCapacity(publicKeyHash, node.capacity, node.updatedAt);
+        await this.agentRepo.updateCapacity(publicKeyHash, node.capacity, node.updatedAt);
       }
       return 'updated';
     }
@@ -99,14 +102,14 @@ export class MempoolCrawler {
     // Cross-source consolidation: if an agent with the same alias already exists
     // (e.g. from Observer Protocol which hashes alias, not pubkey), enrich it
     // instead of creating a duplicate entry
-    const aliasMatch = this.agentRepo.findByExactAlias(node.alias);
+    const aliasMatch = await this.agentRepo.findByExactAlias(node.alias);
     if (aliasMatch && aliasMatch.public_key_hash !== publicKeyHash) {
-      this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacity, node.updatedAt);
+      await this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacity, node.updatedAt);
       logger.info({ existingHash: aliasMatch.public_key_hash.slice(0, 12), alias: node.alias }, 'Cross-source enrichment (alias match)');
       return 'updated';
     }
 
-    this.agentRepo.insert({
+    await this.agentRepo.insert({
       public_key_hash: publicKeyHash,
       public_key: node.publicKey,
       alias: node.alias,

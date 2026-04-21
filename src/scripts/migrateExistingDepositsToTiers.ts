@@ -23,9 +23,14 @@
 //
 // Idempotence : the script only writes rows where rate_sats_per_request IS
 // NULL. Re-running it after success finds zero candidates.
+//
+// Phase 12B : porté vers pg async. payment_hash reste BYTEA côté Postgres ;
+// on passe les Buffer directement en paramètre de la requête paramétrée.
 
-import Database from 'better-sqlite3';
-import path from 'path';
+import type { Pool, PoolClient } from 'pg';
+import { getPool, closePools } from '../database/connection';
+import { runMigrations } from '../database/migrations';
+import { withTransaction } from '../database/transaction';
 import { DepositTierService, type DepositTier } from '../services/depositTierService';
 
 interface MigrationRow {
@@ -44,17 +49,17 @@ interface MigrationReport {
   dryRun: boolean;
 }
 
-export function migrateExistingDeposits(
-  db: Database.Database,
-  options: { dryRun: boolean },
-): MigrationReport {
-  const tierService = new DepositTierService(db);
+type Queryable = Pool | PoolClient;
 
-  const rows = db.prepare(`
+async function collectUpdates(
+  db: Queryable,
+  tierService: DepositTierService,
+): Promise<{ updates: Array<[number, number, number, Buffer]>; report: MigrationReport }> {
+  const { rows } = await db.query<MigrationRow>(`
     SELECT payment_hash, remaining, max_quota
     FROM token_balance
     WHERE rate_sats_per_request IS NULL
-  `).all() as MigrationRow[];
+  `);
 
   const report: MigrationReport = {
     scanned: rows.length,
@@ -63,24 +68,17 @@ export function migrateExistingDeposits(
     skippedNullMaxQuota: 0,
     tierDistribution: {},
     totalCreditsGranted: 0,
-    dryRun: options.dryRun,
+    dryRun: false, // caller sets
   };
 
-  const stmt = db.prepare(`
-    UPDATE token_balance
-    SET tier_id = ?, rate_sats_per_request = ?, balance_credits = ?
-    WHERE payment_hash = ? AND rate_sats_per_request IS NULL
-  `);
-
-  type Update = [number, number, number, Buffer];
-  const updates: Update[] = [];
+  const updates: Array<[number, number, number, Buffer]> = [];
 
   for (const row of rows) {
     if (row.max_quota === null || row.max_quota === undefined) {
       report.skippedNullMaxQuota++;
       continue;
     }
-    const tier: DepositTier | null = tierService.lookupTierForAmount(row.max_quota);
+    const tier: DepositTier | null = await tierService.lookupTierForAmount(row.max_quota);
     if (!tier) {
       report.skippedBelowFloor++;
       continue;
@@ -92,40 +90,65 @@ export function migrateExistingDeposits(
     report.totalCreditsGranted += credits;
   }
 
-  if (!options.dryRun && updates.length > 0) {
-    const txn = db.transaction((list: Update[]) => {
-      for (const u of list) stmt.run(...u);
-    });
-    txn(updates);
+  return { updates, report };
+}
+
+export async function migrateExistingDeposits(
+  pool: Pool,
+  options: { dryRun: boolean },
+): Promise<MigrationReport> {
+  // Scan + planning = read-only, on peut le faire hors tx.
+  const planTierService = new DepositTierService(pool);
+  const { updates, report } = await collectUpdates(pool, planTierService);
+  report.dryRun = options.dryRun;
+
+  if (options.dryRun || updates.length === 0) {
+    return report;
   }
+
+  // Écriture atomique : soit toutes les rows migrent, soit aucune.
+  await withTransaction(pool, async (client) => {
+    for (const u of updates) {
+      await client.query(
+        `UPDATE token_balance
+            SET tier_id = $1, rate_sats_per_request = $2, balance_credits = $3
+          WHERE payment_hash = $4 AND rate_sats_per_request IS NULL`,
+        u,
+      );
+    }
+  });
 
   return report;
 }
 
 // CLI entrypoint — skipped when imported by tests.
-if (require.main === module) {
+async function main(): Promise<void> {
   const dryRun = process.argv.includes('--dry-run');
-  const dbPath = process.env.DB_PATH ?? path.join(process.cwd(), 'data', 'satrank.db');
 
-  let db: Database.Database;
-  try {
-    db = new Database(dbPath);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`Cannot open database at ${dbPath}: ${msg}`);
-    process.exit(1);
-  }
-
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  const pool = getPool();
+  await runMigrations(pool);
 
   try {
-    const report = migrateExistingDeposits(db, { dryRun });
-    console.log(JSON.stringify(report, null, 2));
+    const report = await migrateExistingDeposits(pool, { dryRun });
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
     if (dryRun) {
-      console.log('\n(dry-run — no rows written. Re-run without --dry-run to apply.)');
+      process.stdout.write('\n(dry-run — no rows written. Re-run without --dry-run to apply.)\n');
     }
   } finally {
-    db.close();
+    await closePools();
   }
+}
+
+const isMain =
+  typeof require !== 'undefined' &&
+  typeof module !== 'undefined' &&
+  require.main === module;
+
+if (isMain) {
+  main().catch(async (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[migrate-deposits] FATAL: ${msg}\n`);
+    await closePools();
+    process.exit(1);
+  });
 }

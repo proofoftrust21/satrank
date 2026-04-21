@@ -103,8 +103,8 @@ export class SatRankDvm {
    *  Mirrors AgentService.toBayesianBlock — duplicated here to keep the DVM
    *  self-contained in the Nostr module (no dependency back onto the HTTP
    *  service layer). */
-  private toBayesianBlock(publicKeyHash: string): BayesianScoreBlock {
-    const v = this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
+  private async toBayesianBlock(publicKeyHash: string): Promise<BayesianScoreBlock> {
+    const v = await this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
     return {
       p_success: v.p_success,
       ci95_low: v.ci95_low,
@@ -437,11 +437,11 @@ export class SatRankDvm {
   }> {
     const { sha256 } = await import('../utils/crypto');
     const hash = sha256(lnPubkey);
-    const agent = this.agentRepo.findByHash(hash);
+    const agent = await this.agentRepo.findByHash(hash);
 
     if (agent) {
-      const bayesian = this.toBayesianBlock(hash);
-      const probe = this.probeRepo.findLatestAtTier(hash, 1000);
+      const bayesian = await this.toBayesianBlock(hash);
+      const probe = await this.probeRepo.findLatestAtTier(hash, 1000);
       const reachable = probe ? probe.reachable === 1 : null;
       verdictTotal.inc({ verdict: bayesian.verdict, source: 'dvm' });
 

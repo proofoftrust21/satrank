@@ -10,9 +10,9 @@ import { webcrypto } from 'node:crypto';
 if (!(globalThis as { crypto?: unknown }).crypto) {
   (globalThis as { crypto: unknown }).crypto = webcrypto;
 }
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import {
   OperatorRepository,
   OperatorIdentityRepository,
@@ -34,6 +34,7 @@ import {
 } from '../nostr/operatorCrawler';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { buildLnChallenge } from '../services/operatorVerificationService';
+let testDb: TestDb;
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -58,38 +59,6 @@ function makeEvent(overrides: Partial<OperatorNostrEvent> & { tags: string[][] }
     content: overrides.content ?? '',
     sig: overrides.sig ?? 'd'.repeat(128),
   };
-}
-
-interface Ctx {
-  db: Database.Database;
-  service: OperatorService;
-  operators: OperatorRepository;
-  identities: OperatorIdentityRepository;
-  ownerships: OperatorOwnershipRepository;
-}
-
-function setup(): Ctx {
-  const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
-
-  const operators = new OperatorRepository(db);
-  const identities = new OperatorIdentityRepository(db);
-  const ownerships = new OperatorOwnershipRepository(db);
-  const endpointPosteriors = new EndpointStreamingPosteriorRepository(db);
-  const nodePosteriors = new NodeStreamingPosteriorRepository(db);
-  const servicePosteriors = new ServiceStreamingPosteriorRepository(db);
-
-  const service = new OperatorService(
-    operators,
-    identities,
-    ownerships,
-    endpointPosteriors,
-    nodePosteriors,
-    servicePosteriors,
-  );
-
-  return { db, service, operators, identities, ownerships };
 }
 
 // ---------------------------------------------------------------------------
@@ -192,261 +161,282 @@ describe('parseOperatorEvent', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ingestOperatorEvent — intégration avec DB in-memory
+// DB-backed tests: ingestOperatorEvent et OperatorCrawler partagent le pool
 // ---------------------------------------------------------------------------
 
-describe('ingestOperatorEvent', () => {
-  let ctx: Ctx;
-  beforeEach(() => { ctx = setup(); });
-  afterEach(() => ctx.db.close());
+describe('OperatorCrawler DB-backed suite', async () => {
+  let pool: Pool;
+  let operators: OperatorRepository;
+  let identities: OperatorIdentityRepository;
+  let ownerships: OperatorOwnershipRepository;
+  let service: OperatorService;
 
-  it('crée un operator pending avec identity LN valide → status verified après 2nde preuve', async () => {
-    const operatorId = 'op-ln-1';
-    const { pubkeyHex, sigHex } = makeLnSignature(operatorId);
-
-    const ev = makeEvent({
-      tags: [
-        ['d', operatorId],
-        ['identity', 'ln_pubkey', pubkeyHex, sigHex],
-        ['identity', 'dns', 'example.com', ''],
-      ],
-    });
-    const parsed = parseOperatorEvent(ev)!;
-
-    const stubDns = async (): Promise<string[][]> => [[`satrank-operator=${operatorId}`]];
-    const result = await ingestOperatorEvent(parsed, ctx.service, { dnsTxtResolver: stubDns });
-
-    expect(result.identitiesClaimed).toBe(2);
-    expect(result.identitiesVerified).toBe(2);
-
-    const op = ctx.operators.findById(operatorId);
-    expect(op?.status).toBe('verified');
-    expect(op?.verification_score).toBe(2);
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    operators = new OperatorRepository(pool);
+    identities = new OperatorIdentityRepository(pool);
+    ownerships = new OperatorOwnershipRepository(pool);
+    const endpointPosteriors = new EndpointStreamingPosteriorRepository(pool);
+    const nodePosteriors = new NodeStreamingPosteriorRepository(pool);
+    const servicePosteriors = new ServiceStreamingPosteriorRepository(pool);
+    service = new OperatorService(
+      operators,
+      identities,
+      ownerships,
+      endpointPosteriors,
+      nodePosteriors,
+      servicePosteriors,
+    );
   });
 
-  it('claim identity même si vérification échoue', async () => {
-    const ev = makeEvent({
-      tags: [
-        ['d', 'op-bad-sig'],
-        ['identity', 'ln_pubkey', '02' + 'a'.repeat(64), 'd'.repeat(128)],
-      ],
-    });
-    const parsed = parseOperatorEvent(ev)!;
-    const result = await ingestOperatorEvent(parsed, ctx.service);
-
-    expect(result.identitiesClaimed).toBe(1);
-    expect(result.identitiesVerified).toBe(0);
-    expect(result.verifications[0].valid).toBe(false);
-
-    const identities = ctx.identities.findByOperator('op-bad-sig');
-    expect(identities).toHaveLength(1);
-    expect(identities[0].verified_at).toBeNull();
+  afterAll(async () => {
+    await teardownTestPool(testDb);
   });
 
-  it('claim les ownerships (node/endpoint/service)', async () => {
-    const ev = makeEvent({
-      tags: [
-        ['d', 'op-owns'],
-        ['identity', 'dns', 'example.com', ''],
-        ['owns', 'node', '02' + 'a'.repeat(64)],
-        ['owns', 'endpoint', 'url-hash-1'],
-        ['owns', 'service', 'svc-hash-1'],
-      ],
-    });
-    const parsed = parseOperatorEvent(ev)!;
-    await ingestOperatorEvent(parsed, ctx.service);
-
-    expect(ctx.ownerships.listNodes('op-owns')).toHaveLength(1);
-    expect(ctx.ownerships.listEndpoints('op-owns')).toHaveLength(1);
-    expect(ctx.ownerships.listServices('op-owns')).toHaveLength(1);
+  beforeEach(async () => {
+    await truncateAll(pool);
   });
 
-  it('idempotent sur re-ingestion du même event', async () => {
-    const ev = makeEvent({
-      tags: [
-        ['d', 'op-idem'],
-        ['identity', 'dns', 'example.com', ''],
-        ['owns', 'endpoint', 'url-hash-1'],
-      ],
+  describe('ingestOperatorEvent', async () => {
+    it('crée un operator pending avec identity LN valide → status verified après 2nde preuve', async () => {
+      const operatorId = 'op-ln-1';
+      const { pubkeyHex, sigHex } = makeLnSignature(operatorId);
+
+      const ev = makeEvent({
+        tags: [
+          ['d', operatorId],
+          ['identity', 'ln_pubkey', pubkeyHex, sigHex],
+          ['identity', 'dns', 'example.com', ''],
+        ],
+      });
+      const parsed = parseOperatorEvent(ev)!;
+
+      const stubDns = async (): Promise<string[][]> => [[`satrank-operator=${operatorId}`]];
+      const result = await ingestOperatorEvent(parsed, service, { dnsTxtResolver: stubDns });
+
+      expect(result.identitiesClaimed).toBe(2);
+      expect(result.identitiesVerified).toBe(2);
+
+      const op = await operators.findById(operatorId);
+      expect(op?.status).toBe('verified');
+      expect(op?.verification_score).toBe(2);
     });
-    const parsed = parseOperatorEvent(ev)!;
-    const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-idem`]];
 
-    await ingestOperatorEvent(parsed, ctx.service, { dnsTxtResolver: stubDns });
-    await ingestOperatorEvent(parsed, ctx.service, { dnsTxtResolver: stubDns });
+    it('claim identity même si vérification échoue', async () => {
+      const ev = makeEvent({
+        tags: [
+          ['d', 'op-bad-sig'],
+          ['identity', 'ln_pubkey', '02' + 'a'.repeat(64), 'd'.repeat(128)],
+        ],
+      });
+      const parsed = parseOperatorEvent(ev)!;
+      const result = await ingestOperatorEvent(parsed, service);
 
-    expect(ctx.identities.findByOperator('op-idem')).toHaveLength(1);
-    expect(ctx.ownerships.listEndpoints('op-idem')).toHaveLength(1);
+      expect(result.identitiesClaimed).toBe(1);
+      expect(result.identitiesVerified).toBe(0);
+      expect(result.verifications[0].valid).toBe(false);
+
+      const idList = await identities.findByOperator('op-bad-sig');
+      expect(idList).toHaveLength(1);
+      expect(idList[0].verified_at).toBeNull();
+    });
+
+    it('claim les ownerships (node/endpoint/service)', async () => {
+      const ev = makeEvent({
+        tags: [
+          ['d', 'op-owns'],
+          ['identity', 'dns', 'example.com', ''],
+          ['owns', 'node', '02' + 'a'.repeat(64)],
+          ['owns', 'endpoint', 'url-hash-1'],
+          ['owns', 'service', 'svc-hash-1'],
+        ],
+      });
+      const parsed = parseOperatorEvent(ev)!;
+      await ingestOperatorEvent(parsed, service);
+
+      expect(await ownerships.listNodes('op-owns')).toHaveLength(1);
+      expect(await ownerships.listEndpoints('op-owns')).toHaveLength(1);
+      expect(await ownerships.listServices('op-owns')).toHaveLength(1);
+    });
+
+    it('idempotent sur re-ingestion du même event', async () => {
+      const ev = makeEvent({
+        tags: [
+          ['d', 'op-idem'],
+          ['identity', 'dns', 'example.com', ''],
+          ['owns', 'endpoint', 'url-hash-1'],
+        ],
+      });
+      const parsed = parseOperatorEvent(ev)!;
+      const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-idem`]];
+
+      await ingestOperatorEvent(parsed, service, { dnsTxtResolver: stubDns });
+      await ingestOperatorEvent(parsed, service, { dnsTxtResolver: stubDns });
+
+      expect(await identities.findByOperator('op-idem')).toHaveLength(1);
+      expect(await ownerships.listEndpoints('op-idem')).toHaveLength(1);
+    });
+
+    it('NIP-05 vérifie via fetcher stub', async () => {
+      const nostrPk = 'f'.repeat(64);
+      const stubFetcher = async (): Promise<Record<string, unknown> | null> => ({
+        names: { alice: nostrPk },
+      });
+      const ev = makeEvent({
+        tags: [
+          ['d', 'op-nip05'],
+          ['identity', 'nip05', 'alice@example.com', nostrPk],
+        ],
+      });
+      const parsed = parseOperatorEvent(ev)!;
+      const result = await ingestOperatorEvent(parsed, service, { nostrJsonFetcher: stubFetcher });
+
+      expect(result.identitiesVerified).toBe(1);
+    });
+
+    it('NIP-05 avec proof manquant → not verified', async () => {
+      const ev = makeEvent({
+        tags: [
+          ['d', 'op-nip05-noproof'],
+          ['identity', 'nip05', 'alice@example.com'],
+        ],
+      });
+      const parsed = parseOperatorEvent(ev)!;
+      const result = await ingestOperatorEvent(parsed, service);
+
+      expect(result.identitiesClaimed).toBe(1);
+      expect(result.identitiesVerified).toBe(0);
+      expect(result.verifications[0].reason).toBe('expected_pubkey_missing');
+    });
   });
 
-  it('NIP-05 vérifie via fetcher stub', async () => {
-    const nostrPk = 'f'.repeat(64);
-    const stubFetcher = async (): Promise<Record<string, unknown> | null> => ({
-      names: { alice: nostrPk },
-    });
-    const ev = makeEvent({
-      tags: [
-        ['d', 'op-nip05'],
-        ['identity', 'nip05', 'alice@example.com', nostrPk],
-      ],
-    });
-    const parsed = parseOperatorEvent(ev)!;
-    const result = await ingestOperatorEvent(parsed, ctx.service, { nostrJsonFetcher: stubFetcher });
+  describe('OperatorCrawler', async () => {
+    interface FakeRelay extends RelayHandle {
+      events: OperatorNostrEvent[];
+    }
 
-    expect(result.identitiesVerified).toBe(1);
-  });
+    function makeFakeRelay(events: OperatorNostrEvent[]): FakeRelay {
+      return {
+        events,
+        subscribe(_filters, handlers) {
+          for (const ev of events) handlers.onevent(ev);
+          handlers.oneose?.();
+          return { close: () => { /* noop */ } };
+        },
+        close() { /* noop */ },
+      };
+    }
 
-  it('NIP-05 avec proof manquant → not verified', async () => {
-    const ev = makeEvent({
-      tags: [
-        ['d', 'op-nip05-noproof'],
-        ['identity', 'nip05', 'alice@example.com'],
-      ],
-    });
-    const parsed = parseOperatorEvent(ev)!;
-    const result = await ingestOperatorEvent(parsed, ctx.service);
+    it('ingère les events collectés depuis un fake relay', async () => {
+      const ev1 = makeEvent({
+        id: 'e1',
+        tags: [
+          ['d', 'op-crawl-1'],
+          ['identity', 'dns', 'example.com', ''],
+          ['owns', 'endpoint', 'hash-1'],
+        ],
+      });
+      const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-crawl-1`]];
+      const crawler = new OperatorCrawler(service, {
+        relays: ['wss://fake.relay'],
+        relayFactory: async () => makeFakeRelay([ev1]),
+        dnsTxtResolver: stubDns,
+        subscribeTimeoutMs: 1000,
+      });
 
-    expect(result.identitiesClaimed).toBe(1);
-    expect(result.identitiesVerified).toBe(0);
-    expect(result.verifications[0].reason).toBe('expected_pubkey_missing');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// OperatorCrawler — fake relay factory pour injecter des events synthétiques
-// ---------------------------------------------------------------------------
-
-interface FakeRelay extends RelayHandle {
-  events: OperatorNostrEvent[];
-}
-
-function makeFakeRelay(events: OperatorNostrEvent[]): FakeRelay {
-  return {
-    events,
-    subscribe(_filters, handlers) {
-      // Simule un relay qui livre tous les events puis envoie EOSE.
-      for (const ev of events) handlers.onevent(ev);
-      handlers.oneose?.();
-      return { close: () => { /* noop */ } };
-    },
-    close() { /* noop */ },
-  };
-}
-
-describe('OperatorCrawler', () => {
-  let ctx: Ctx;
-  beforeEach(() => { ctx = setup(); });
-  afterEach(() => ctx.db.close());
-
-  it('ingère les events collectés depuis un fake relay', async () => {
-    const ev1 = makeEvent({
-      id: 'e1',
-      tags: [
-        ['d', 'op-crawl-1'],
-        ['identity', 'dns', 'example.com', ''],
-        ['owns', 'endpoint', 'hash-1'],
-      ],
-    });
-    const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-crawl-1`]];
-    const crawler = new OperatorCrawler(ctx.service, {
-      relays: ['wss://fake.relay'],
-      relayFactory: async () => makeFakeRelay([ev1]),
-      dnsTxtResolver: stubDns,
-      subscribeTimeoutMs: 1000,
+      const summary = await crawler.crawl();
+      expect(summary.relaysQueried).toBe(1);
+      expect(summary.eventsReceived).toBe(1);
+      expect(summary.eventsIngested).toBe(1);
+      expect(summary.operatorsTouched.has('op-crawl-1')).toBe(true);
+      expect(summary.identitiesVerified).toBe(1);
+      expect(summary.ownershipsClaimed).toBe(1);
     });
 
-    const summary = await crawler.crawl();
-    expect(summary.relaysQueried).toBe(1);
-    expect(summary.eventsReceived).toBe(1);
-    expect(summary.eventsIngested).toBe(1);
-    expect(summary.operatorsTouched.has('op-crawl-1')).toBe(true);
-    expect(summary.identitiesVerified).toBe(1);
-    expect(summary.ownershipsClaimed).toBe(1);
-  });
+    it('dedup les events par id entre relays', async () => {
+      const shared = makeEvent({
+        id: 'shared-id',
+        tags: [['d', 'op-dedup'], ['identity', 'dns', 'example.com', '']],
+      });
+      const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-dedup`]];
 
-  it('dedup les events par id entre relays', async () => {
-    const shared = makeEvent({
-      id: 'shared-id',
-      tags: [['d', 'op-dedup'], ['identity', 'dns', 'example.com', '']],
-    });
-    const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-dedup`]];
+      const crawler = new OperatorCrawler(service, {
+        relays: ['wss://r1', 'wss://r2'],
+        relayFactory: async () => makeFakeRelay([shared]),
+        dnsTxtResolver: stubDns,
+        subscribeTimeoutMs: 1000,
+      });
 
-    const crawler = new OperatorCrawler(ctx.service, {
-      relays: ['wss://r1', 'wss://r2'],
-      relayFactory: async () => makeFakeRelay([shared]),
-      dnsTxtResolver: stubDns,
-      subscribeTimeoutMs: 1000,
+      const summary = await crawler.crawl();
+      expect(summary.relaysQueried).toBe(2);
+      expect(summary.eventsReceived).toBe(1);
+      expect(summary.eventsIngested).toBe(1);
     });
 
-    const summary = await crawler.crawl();
-    expect(summary.relaysQueried).toBe(2);
-    // Même ev.id livré par 2 relays → 1 seul ingéré.
-    expect(summary.eventsReceived).toBe(1);
-    expect(summary.eventsIngested).toBe(1);
-  });
+    it('skip events avec signature invalide (verifyEvent=false)', async () => {
+      const ev = makeEvent({
+        tags: [['d', 'op-badsig'], ['identity', 'dns', 'example.com', '']],
+      });
+      const crawler = new OperatorCrawler(service, {
+        relays: ['wss://fake'],
+        relayFactory: async () => makeFakeRelay([ev]),
+        verifyEvent: () => false,
+        subscribeTimeoutMs: 1000,
+      });
 
-  it('skip events avec signature invalide (verifyEvent=false)', async () => {
-    const ev = makeEvent({
-      tags: [['d', 'op-badsig'], ['identity', 'dns', 'example.com', '']],
-    });
-    const crawler = new OperatorCrawler(ctx.service, {
-      relays: ['wss://fake'],
-      relayFactory: async () => makeFakeRelay([ev]),
-      verifyEvent: () => false,
-      subscribeTimeoutMs: 1000,
+      const summary = await crawler.crawl();
+      expect(summary.eventsReceived).toBe(0);
+      expect(summary.eventsIngested).toBe(0);
     });
 
-    const summary = await crawler.crawl();
-    expect(summary.eventsReceived).toBe(0);
-    expect(summary.eventsIngested).toBe(0);
-  });
+    it('relay qui throw ne casse pas le crawl global', async () => {
+      const ok = makeEvent({
+        id: 'ok',
+        tags: [['d', 'op-resilient'], ['identity', 'dns', 'example.com', '']],
+      });
+      const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-resilient`]];
+      let callCount = 0;
+      const crawler = new OperatorCrawler(service, {
+        relays: ['wss://broken', 'wss://ok'],
+        relayFactory: async (_url) => {
+          callCount += 1;
+          if (callCount === 1) throw new Error('relay down');
+          return makeFakeRelay([ok]);
+        },
+        dnsTxtResolver: stubDns,
+        subscribeTimeoutMs: 1000,
+      });
 
-  it('relay qui throw ne casse pas le crawl global', async () => {
-    const ok = makeEvent({
-      id: 'ok',
-      tags: [['d', 'op-resilient'], ['identity', 'dns', 'example.com', '']],
-    });
-    const stubDns = async (): Promise<string[][]> => [[`satrank-operator=op-resilient`]];
-    let callCount = 0;
-    const crawler = new OperatorCrawler(ctx.service, {
-      relays: ['wss://broken', 'wss://ok'],
-      relayFactory: async (_url) => {
-        callCount += 1;
-        if (callCount === 1) throw new Error('relay down');
-        return makeFakeRelay([ok]);
-      },
-      dnsTxtResolver: stubDns,
-      subscribeTimeoutMs: 1000,
-    });
-
-    const summary = await crawler.crawl();
-    expect(summary.relaysQueried).toBe(1);
-    expect(summary.eventsIngested).toBe(1);
-  });
-
-  it('règle 2/3 : event avec 2 preuves valides → status verified', async () => {
-    const operatorId = 'op-2of3';
-    const { pubkeyHex, sigHex } = makeLnSignature(operatorId);
-    const ev = makeEvent({
-      tags: [
-        ['d', operatorId],
-        ['identity', 'ln_pubkey', pubkeyHex, sigHex],
-        ['identity', 'dns', 'example.com', ''],
-      ],
-    });
-    const stubDns = async (): Promise<string[][]> => [[`satrank-operator=${operatorId}`]];
-
-    const crawler = new OperatorCrawler(ctx.service, {
-      relays: ['wss://fake'],
-      relayFactory: async () => makeFakeRelay([ev]),
-      dnsTxtResolver: stubDns,
-      subscribeTimeoutMs: 1000,
+      const summary = await crawler.crawl();
+      expect(summary.relaysQueried).toBe(1);
+      expect(summary.eventsIngested).toBe(1);
     });
 
-    await crawler.crawl();
+    it('règle 2/3 : event avec 2 preuves valides → status verified', async () => {
+      const operatorId = 'op-2of3';
+      const { pubkeyHex, sigHex } = makeLnSignature(operatorId);
+      const ev = makeEvent({
+        tags: [
+          ['d', operatorId],
+          ['identity', 'ln_pubkey', pubkeyHex, sigHex],
+          ['identity', 'dns', 'example.com', ''],
+        ],
+      });
+      const stubDns = async (): Promise<string[][]> => [[`satrank-operator=${operatorId}`]];
 
-    const op = ctx.operators.findById(operatorId);
-    expect(op?.status).toBe('verified');
-    expect(op?.verification_score).toBe(2);
+      const crawler = new OperatorCrawler(service, {
+        relays: ['wss://fake'],
+        relayFactory: async () => makeFakeRelay([ev]),
+        dnsTxtResolver: stubDns,
+        subscribeTimeoutMs: 1000,
+      });
+
+      await crawler.crawl();
+
+      const op = await operators.findById(operatorId);
+      expect(op?.status).toBe('verified');
+      expect(op?.verification_score).toBe(2);
+    });
   });
 });

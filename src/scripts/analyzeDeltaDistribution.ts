@@ -24,15 +24,16 @@
 //
 // Usage
 // -----
-//   npx tsx src/scripts/analyzeDeltaDistribution.ts           # dataset synthétique
-//   DB_PATH=/path/to/prod.db npx tsx src/scripts/analyzeDeltaDistribution.ts
+//   npx tsx src/scripts/analyzeDeltaDistribution.ts                      # dataset synthétique
+//   USE_DB=1 npx tsx src/scripts/analyzeDeltaDistribution.ts             # charge depuis $DATABASE_URL
 //
 // Exit codes :
 //   0 → seuils dans les plages cibles
 //   1 → distribution trop plate pour calibrer (documenter profil à retirer)
 //   2 → erreur setup / DB absent
 
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
+import { getPool, closePools } from '../database/connection';
 
 interface DeltaObservation {
   currentP: number;
@@ -145,42 +146,43 @@ function clamp01(x: number): number {
 
 /** Charge les deltas 7j depuis le DB prod — une ligne par agent_hash, current p_success
  *  et snapshot le plus proche de (now - 7d). Retourne seulement les paires valides. */
-function loadDeltasFromDb(dbPath: string): DeltaObservation[] {
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    const now = Math.floor(Date.now() / 1000);
-    const sevenDaysAgo = now - 7 * 86400;
-    const rows = db.prepare(`
-      SELECT
-        cur.agent_hash,
-        cur.p_success AS current_p,
-        prev.p_success AS past_p,
-        a.first_seen
-      FROM (
-        SELECT s.agent_hash, s.p_success, s.computed_at,
-          ROW_NUMBER() OVER (PARTITION BY s.agent_hash ORDER BY s.computed_at DESC) AS rn
-        FROM score_snapshots s
-        WHERE s.p_success IS NOT NULL
-      ) cur
-      LEFT JOIN (
-        SELECT s.agent_hash, s.p_success, s.computed_at,
-          ROW_NUMBER() OVER (PARTITION BY s.agent_hash ORDER BY s.computed_at DESC) AS rn
-        FROM score_snapshots s
-        WHERE s.p_success IS NOT NULL AND s.computed_at <= ?
-      ) prev ON prev.agent_hash = cur.agent_hash AND prev.rn = 1
-      LEFT JOIN agents a ON a.public_key_hash = cur.agent_hash
-      WHERE cur.rn = 1 AND prev.p_success IS NOT NULL
-    `).all(sevenDaysAgo) as { agent_hash: string; current_p: number; past_p: number; first_seen: number }[];
+async function loadDeltasFromDb(pool: Pool): Promise<DeltaObservation[]> {
+  const now = Math.floor(Date.now() / 1000);
+  const sevenDaysAgo = now - 7 * 86400;
+  const { rows } = await pool.query<{
+    agent_hash: string;
+    current_p: number;
+    past_p: number;
+    first_seen: number;
+  }>(
+    `SELECT
+      cur.agent_hash,
+      cur.p_success AS current_p,
+      prev.p_success AS past_p,
+      a.first_seen
+    FROM (
+      SELECT s.agent_hash, s.p_success, s.computed_at,
+        ROW_NUMBER() OVER (PARTITION BY s.agent_hash ORDER BY s.computed_at DESC) AS rn
+      FROM score_snapshots s
+      WHERE s.p_success IS NOT NULL
+    ) cur
+    LEFT JOIN (
+      SELECT s.agent_hash, s.p_success, s.computed_at,
+        ROW_NUMBER() OVER (PARTITION BY s.agent_hash ORDER BY s.computed_at DESC) AS rn
+      FROM score_snapshots s
+      WHERE s.p_success IS NOT NULL AND s.computed_at <= $1
+    ) prev ON prev.agent_hash = cur.agent_hash AND prev.rn = 1
+    LEFT JOIN agents a ON a.public_key_hash = cur.agent_hash
+    WHERE cur.rn = 1 AND prev.p_success IS NOT NULL`,
+    [sevenDaysAgo],
+  );
 
-    return rows.map(r => ({
-      currentP: r.current_p,
-      pastP: r.past_p,
-      delta7d: r.current_p - r.past_p,
-      ageDaysAtCurrent: (now - r.first_seen) / 86400,
-    }));
-  } finally {
-    db.close();
-  }
+  return rows.map((r) => ({
+    currentP: r.current_p,
+    pastP: r.past_p,
+    delta7d: r.current_p - r.past_p,
+    ageDaysAtCurrent: (now - r.first_seen) / 86400,
+  }));
 }
 
 function percentiles(values: number[]): Percentiles {
@@ -283,17 +285,22 @@ const isMain =
   typeof module !== 'undefined' &&
   require.main === module;
 
-if (isMain) {
-  const dbPath = process.env.DB_PATH;
+async function main(): Promise<void> {
+  const useDb = Boolean(process.env.USE_DB);
   const sampleSize = Number(process.env.SAMPLE_SIZE ?? '2000');
   const seed = Number(process.env.SEED ?? '42');
 
   let observations: DeltaObservation[];
   let source: string;
   try {
-    if (dbPath) {
-      observations = loadDeltasFromDb(dbPath);
-      source = `prod DB ${dbPath}`;
+    if (useDb) {
+      const pool = getPool();
+      try {
+        observations = await loadDeltasFromDb(pool);
+      } finally {
+        await closePools();
+      }
+      source = 'prod DB ($DATABASE_URL)';
     } else {
       const rng = makeRng(seed);
       observations = generateSyntheticDeltas(rng, sampleSize);
@@ -346,6 +353,13 @@ if (isMain) {
   }
   process.stdout.write('\n[PASS] All thresholds in target population range.\n');
   process.exit(0);
+}
+
+if (isMain) {
+  main().catch((err) => {
+    process.stderr.write(`[ERROR] ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(2);
+  });
 }
 
 export { calibrate, generateSyntheticDeltas, loadDeltasFromDb, makeRng, percentiles };

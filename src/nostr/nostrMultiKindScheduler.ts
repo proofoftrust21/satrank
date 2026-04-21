@@ -14,7 +14,7 @@
 // table de métadonnées `services` fournissant `name` — pré-requis pour
 // construire un template 30384 non-bégayant. Réintroduit quand la Phase 9
 // (service registry) livre la shape.
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import type { BayesianSource } from '../config/bayesianConfig';
 import {
   CONVERGENCE_MIN_SOURCES,
@@ -103,7 +103,7 @@ export class NostrMultiKindScheduler {
     private publishedEvents: NostrPublishedEventsRepository,
     private serviceEndpointRepo: ServiceEndpointRepository | null,
     private operatorService: OperatorService | null,
-    private db: Database.Database,
+    private pool: Pool,
   ) {}
 
   async runScan(nowSec: number, opts: SchedulerOptions = {}): Promise<ScanResult> {
@@ -135,14 +135,14 @@ export class NostrMultiKindScheduler {
       flashErrors: 0,
     };
 
-    const ids = this.listModifiedEntities('endpoint_streaming_posteriors', 'url_hash', cutoff, limit);
+    const ids = await this.listModifiedEntities('endpoint_streaming_posteriors', 'url_hash', cutoff, limit);
     result.scanned = ids.length;
 
     for (const urlHash of ids) {
       try {
-        const snapshot = this.buildEndpointSnapshot(urlHash, nowSec);
+        const snapshot = await this.buildEndpointSnapshot(urlHash, nowSec);
         if (!snapshot) { result.errors++; continue; }
-        const previous = this.publishedEvents.getLastPublished('endpoint', urlHash);
+        const previous = await this.publishedEvents.getLastPublished('endpoint', urlHash);
         const decision = shouldRepublish(
           previous ? toShouldRepublishSnapshot(previous) : null,
           {
@@ -231,14 +231,14 @@ export class NostrMultiKindScheduler {
       flashErrors: 0,
     };
 
-    const ids = this.listModifiedEntities('node_streaming_posteriors', 'pubkey', cutoff, limit);
+    const ids = await this.listModifiedEntities('node_streaming_posteriors', 'pubkey', cutoff, limit);
     result.scanned = ids.length;
 
     for (const pubkey of ids) {
       try {
-        const snapshot = this.buildNodeSnapshot(pubkey, nowSec);
+        const snapshot = await this.buildNodeSnapshot(pubkey, nowSec);
         if (!snapshot) { result.errors++; continue; }
-        const previous = this.publishedEvents.getLastPublished('node', pubkey);
+        const previous = await this.publishedEvents.getLastPublished('node', pubkey);
         const decision = shouldRepublish(
           previous ? toShouldRepublishSnapshot(previous) : null,
           {
@@ -309,18 +309,21 @@ export class NostrMultiKindScheduler {
   }
 
   /** Récupère les entity_id distincts dont au moins une row a `last_update_ts >= cutoff`. */
-  private listModifiedEntities(table: string, idColumn: string, cutoff: number, limit?: number): string[] {
+  private async listModifiedEntities(table: string, idColumn: string, cutoff: number, limit?: number): Promise<string[]> {
+    // Phase 12B: Postgres rejects ORDER BY on columns not in SELECT DISTINCT.
+    // Use GROUP BY + MAX(last_update_ts) instead to preserve most-recent-first ordering.
     const sql = limit
-      ? `SELECT DISTINCT ${idColumn} FROM ${table} WHERE last_update_ts >= ? ORDER BY last_update_ts DESC LIMIT ?`
-      : `SELECT DISTINCT ${idColumn} FROM ${table} WHERE last_update_ts >= ? ORDER BY last_update_ts DESC`;
-    const rows = (limit ? this.db.prepare(sql).all(cutoff, limit) : this.db.prepare(sql).all(cutoff)) as Array<Record<string, string>>;
+      ? `SELECT ${idColumn} FROM ${table} WHERE last_update_ts >= $1 GROUP BY ${idColumn} ORDER BY MAX(last_update_ts) DESC LIMIT $2`
+      : `SELECT ${idColumn} FROM ${table} WHERE last_update_ts >= $1 GROUP BY ${idColumn} ORDER BY MAX(last_update_ts) DESC`;
+    const params = limit ? [cutoff, limit] : [cutoff];
+    const { rows } = await this.pool.query<Record<string, string>>(sql, params);
     return rows.map((r) => r[idColumn]);
   }
 
   /** Construit le state complet d'un endpoint — verdict + advisory + posterior +
    *  enrichissements (url, operator_id, category, price_sats). */
-  private buildEndpointSnapshot(urlHash: string, nowSec: number): EndpointEndorsementState | null {
-    const decayed = this.endpointStreaming.readAllSourcesDecayed(urlHash, nowSec);
+  private async buildEndpointSnapshot(urlHash: string, nowSec: number): Promise<EndpointEndorsementState | null> {
+    const decayed = await this.endpointStreaming.readAllSourcesDecayed(urlHash, nowSec);
     const { combined, perSource } = combineDecayed(decayed);
     if (combined.nObs === 0) return null;
 
@@ -336,8 +339,8 @@ export class NostrMultiKindScheduler {
     const source = dominantSource(decayed);
     const lastUpdate = Math.max(decayed.probe.lastUpdateTs, decayed.report.lastUpdateTs, decayed.paid.lastUpdateTs);
 
-    const endpointRow = this.serviceEndpointRepo?.findByUrlHash(urlHash) ?? null;
-    const operatorLookup = this.operatorService?.resolveOperatorForEndpoint(urlHash) ?? null;
+    const endpointRow = this.serviceEndpointRepo ? (await this.serviceEndpointRepo.findByUrlHash(urlHash)) ?? null : null;
+    const operatorLookup = this.operatorService ? await this.operatorService.resolveOperatorForEndpoint(urlHash) : null;
     const operatorId = operatorLookup?.status === 'verified' ? operatorLookup.operatorId : null;
 
     return {
@@ -361,8 +364,8 @@ export class NostrMultiKindScheduler {
     };
   }
 
-  private buildNodeSnapshot(pubkey: string, nowSec: number): NodeEndorsementState | null {
-    const decayed = this.nodeStreaming.readAllSourcesDecayed(pubkey, nowSec);
+  private async buildNodeSnapshot(pubkey: string, nowSec: number): Promise<NodeEndorsementState | null> {
+    const decayed = await this.nodeStreaming.readAllSourcesDecayed(pubkey, nowSec);
     const { combined, perSource } = combineDecayed(decayed);
     if (combined.nObs === 0) return null;
 
@@ -378,7 +381,7 @@ export class NostrMultiKindScheduler {
     const source = dominantSource(decayed);
     const lastUpdate = Math.max(decayed.probe.lastUpdateTs, decayed.report.lastUpdateTs, decayed.paid.lastUpdateTs);
 
-    const operatorLookup = this.operatorService?.resolveOperatorForNode(pubkey) ?? null;
+    const operatorLookup = this.operatorService ? await this.operatorService.resolveOperatorForNode(pubkey) : null;
     const operatorId = operatorLookup?.status === 'verified' ? operatorLookup.operatorId : null;
 
     return {
@@ -460,7 +463,7 @@ export class NostrMultiKindScheduler {
     const result = await this.publisher.publishEndpointEndorsement(state, nowSec);
     if (result.anySuccess) {
       const template = buildTemplateForHash(state, 'endpoint');
-      this.publishedEvents.recordPublished({
+      await this.publishedEvents.recordPublished({
         entityType: 'endpoint',
         entityId: state.url_hash,
         eventId: result.eventId,
@@ -480,7 +483,7 @@ export class NostrMultiKindScheduler {
     const result = await this.publisher.publishNodeEndorsement(state, nowSec);
     if (result.anySuccess) {
       const template = buildTemplateForHash(state, 'node');
-      this.publishedEvents.recordPublished({
+      await this.publishedEvents.recordPublished({
         entityType: 'node',
         entityId: state.node_pubkey,
         eventId: result.eventId,

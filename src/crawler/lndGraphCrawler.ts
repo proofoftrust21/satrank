@@ -95,7 +95,7 @@ export class LndGraphCrawler {
           uniquePeers: stats.uniquePeers,
           disabledChannels: stats.disabledChannels,
         };
-        const action = this.indexNode(parsed);
+        const action = await this.indexNode(parsed);
         if (action === 'created') result.newAgents++;
         else if (action === 'updated') result.updatedAgents++;
       } catch (err: unknown) {
@@ -113,7 +113,7 @@ export class LndGraphCrawler {
         capacity_sats: stats.capacitySats,
         snapshot_at: now,
       }));
-      this.channelSnapshotRepo.insertBatch(snapshots);
+      await this.channelSnapshotRepo.insertBatch(snapshots);
       logger.info({ count: snapshots.length }, 'Channel snapshots stored');
     }
 
@@ -144,7 +144,7 @@ export class LndGraphCrawler {
         }
       }
       if (feeSnapshots.length > 0) {
-        const inserted = this.feeSnapshotRepo.insertBatchDeduped(feeSnapshots);
+        const inserted = await this.feeSnapshotRepo.insertBatchDeduped(feeSnapshots);
         logger.info({ candidates: feeSnapshots.length, inserted }, 'Fee snapshots stored (deduped)');
       }
     }
@@ -153,7 +153,7 @@ export class LndGraphCrawler {
     // for the centrality sub-signal. Covers 100% of nodes (vs ~70% with LN+).
     if (graph.edges.length > 0) {
       const prResult = computePageRank(graph.edges);
-      this.agentRepo.updatePageRankBatch(prResult.scores);
+      await this.agentRepo.updatePageRankBatch(prResult.scores);
     }
 
     result.finishedAt = Math.floor(Date.now() / 1000);
@@ -191,7 +191,7 @@ export class LndGraphCrawler {
       disabledChannels: 0, // Same — updated on next full crawl
     };
 
-    return this.indexNode(parsed);
+    return await this.indexNode(parsed);
   }
 
   private aggregateEdges(edges: LndEdge[]): Map<string, { channels: number; capacitySats: number; uniquePeers: number; disabledChannels: number }> {
@@ -238,11 +238,14 @@ export class LndGraphCrawler {
     return stats;
   }
 
-  private indexNode(node: ParsedNode): 'created' | 'updated' | 'skipped' {
+  private async indexNode(node: ParsedNode): Promise<'created' | 'updated' | 'skipped'> {
     if (!node.pubKey) throw new Error('Missing pubKey');
 
     const publicKeyHash = sha256(node.pubKey);
-    const existing = this.agentRepo.findByHash(publicKeyHash);
+    // TOCTOU fix: pre-check before idempotent INSERT. `agentRepo.insert` uses
+    // ON CONFLICT DO NOTHING so parallel crawlers never raise; the pre-check
+    // only decides whether to take the update branch (existing) vs insert.
+    const existing = await this.agentRepo.findByHash(publicKeyHash);
     const now = Math.floor(Date.now() / 1000);
     // Only use lastUpdate if it's a real gossip timestamp (> 0).
     // Never inject Date.now() as proxy — it corrupts regularity scoring for dead nodes.
@@ -250,11 +253,11 @@ export class LndGraphCrawler {
 
     if (existing) {
       if (!existing.public_key) {
-        this.agentRepo.updatePublicKey(publicKeyHash, node.pubKey);
+        await this.agentRepo.updatePublicKey(publicKeyHash, node.pubKey);
       }
       const lastSeen = validLastUpdate ?? existing.last_seen;
       if (existing.source === 'lightning_graph') {
-        this.agentRepo.updateLightningStats(
+        await this.agentRepo.updateLightningStats(
           publicKeyHash,
           node.channels,
           node.capacitySats,
@@ -264,21 +267,21 @@ export class LndGraphCrawler {
           node.disabledChannels,
         );
       } else {
-        this.agentRepo.updateCapacity(publicKeyHash, node.capacitySats, lastSeen);
+        await this.agentRepo.updateCapacity(publicKeyHash, node.capacitySats, lastSeen);
       }
       return 'updated';
     }
 
     // Cross-source consolidation — only merge if existing agent has no public_key
     // (aliases are user-chosen and non-unique, so matching on alias alone is unsafe)
-    const aliasMatch = this.agentRepo.findByExactAlias(node.alias);
+    const aliasMatch = await this.agentRepo.findByExactAlias(node.alias);
     if (aliasMatch && aliasMatch.public_key_hash !== publicKeyHash && !aliasMatch.public_key) {
-      this.agentRepo.updatePublicKey(aliasMatch.public_key_hash, node.pubKey);
-      this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacitySats, validLastUpdate ?? aliasMatch.last_seen);
+      await this.agentRepo.updatePublicKey(aliasMatch.public_key_hash, node.pubKey);
+      await this.agentRepo.updateCapacity(aliasMatch.public_key_hash, node.capacitySats, validLastUpdate ?? aliasMatch.last_seen);
       return 'updated';
     }
 
-    this.agentRepo.insert({
+    await this.agentRepo.insert({
       public_key_hash: publicKeyHash,
       public_key: node.pubKey,
       alias: node.alias,

@@ -2,20 +2,19 @@
 // Goal: confirm the tier schedule is surfaced as the canonical source of
 // truth for pricing (no auth, no rate limit, deterministic shape).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import express from 'express';
 import request from 'supertest';
-import { runMigrations } from '../database/migrations';
 import { DepositController } from '../controllers/depositController';
 import { createV2Routes } from '../routes/v2';
 import { errorHandler } from '../middleware/errorHandler';
 import { requestIdMiddleware } from '../middleware/requestId';
+let testDb: TestDb;
 
-function buildApp(): { app: express.Express; db: Database.Database } {
-  const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
-
+async function buildApp(): Promise<{ app: express.Express; db: Pool }> {
+  testDb = await setupTestPool();
+  const db = testDb.pool;
   const depositController = new DepositController(db);
   const app = express();
   app.use(express.json());
@@ -35,17 +34,17 @@ function buildApp(): { app: express.Express; db: Database.Database } {
   return { app, db };
 }
 
-describe('GET /api/deposit/tiers', () => {
+describe('GET /api/deposit/tiers', async () => {
   let app: express.Express;
-  let db: Database.Database;
+  let db: Pool;
 
-  beforeEach(() => {
-    const ctx = buildApp();
+  beforeEach(async () => {
+    const ctx = await buildApp();
     app = ctx.app;
     db = ctx.db;
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
   it('returns 200 with 5 tiers ordered ascending by minDepositSats', async () => {
     const res = await request(app).get('/api/deposit/tiers');

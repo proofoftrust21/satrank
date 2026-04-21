@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -14,6 +14,7 @@ import { SurvivalService } from '../services/survivalService';
 import { DecideService } from '../services/decideService';
 import { createBayesianVerdictService, seedSafeBayesianObservations } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
+let testDb: TestDb;
 
 // --- computePathQuality unit tests (exported for direct testing) ---
 // The function is private in decideService — we test it indirectly via
@@ -36,40 +37,40 @@ function computePathQuality(
 }
 
 describe('computePathQuality', () => {
-  it('returns 0.5 (neutral) when pathfinding is null', () => {
+  it('returns 0.5 (neutral) when pathfinding is null', async () => {
     expect(computePathQuality(null, undefined)).toBe(0.5);
   });
 
-  it('returns 0.0 when route is not reachable', () => {
+  it('returns 0.0 when route is not reachable', async () => {
     expect(computePathQuality({ reachable: false, hops: null, estimatedFeeMsat: null, alternatives: 0 }, undefined)).toBe(0.0);
   });
 
-  it('returns near 1.0 for 1-hop direct channel with 0 fee', () => {
+  it('returns near 1.0 for 1-hop direct channel with 0 fee', async () => {
     const pq = computePathQuality({ reachable: true, hops: 1, estimatedFeeMsat: 0, alternatives: 1 }, 1000);
     // hopPenalty=1.0 altBonus=0.9 feeScore=1.0 → 0.5+0.27+0.2=0.97
     expect(pq).toBeCloseTo(0.97, 2);
   });
 
-  it('degrades for 5-hop route', () => {
+  it('degrades for 5-hop route', async () => {
     const pq = computePathQuality({ reachable: true, hops: 5, estimatedFeeMsat: 0, alternatives: 1 }, 1000);
     // hopPenalty=0.68 altBonus=0.9 feeScore=1.0 → 0.34+0.27+0.20=0.81
     expect(pq).toBeLessThan(0.85);
     expect(pq).toBeGreaterThan(0.5);
   });
 
-  it('rewards multiple alternatives', () => {
+  it('rewards multiple alternatives', async () => {
     const pq1 = computePathQuality({ reachable: true, hops: 3, estimatedFeeMsat: 0, alternatives: 1 }, 1000);
     const pq3 = computePathQuality({ reachable: true, hops: 3, estimatedFeeMsat: 0, alternatives: 3 }, 1000);
     expect(pq3).toBeGreaterThan(pq1);
   });
 
-  it('penalises high fees relative to amount', () => {
+  it('penalises high fees relative to amount', async () => {
     const pqLow = computePathQuality({ reachable: true, hops: 2, estimatedFeeMsat: 100, alternatives: 1 }, 1000);
     const pqHigh = computePathQuality({ reachable: true, hops: 2, estimatedFeeMsat: 50000, alternatives: 1 }, 1000);
     expect(pqLow).toBeGreaterThan(pqHigh);
   });
 
-  it('uses default 1000 sats when amountSats is undefined', () => {
+  it('uses default 1000 sats when amountSats is undefined', async () => {
     // feeBudget = 1000 * 0.01 * 1000 = 10000 msat = 10 sats
     const pq = computePathQuality({ reachable: true, hops: 1, estimatedFeeMsat: 5000, alternatives: 1 }, undefined);
     // feeScore = 1 - 5000/10000 = 0.5
@@ -79,16 +80,16 @@ describe('computePathQuality', () => {
 });
 
 // --- Non-regression: ACINQ-like agent should keep high successRate ---
-describe('decide / pathQuality non-regression', () => {
-  let db: InstanceType<typeof Database>;
+describe('decide / pathQuality non-regression', async () => {
+  let db: Pool;
   let decideService: DecideService;
   const testPubkey = '03aaaa025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f';
   const testHash = sha256(testPubkey);
 
-  beforeAll(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     const agentRepo = new AgentRepository(db);
     const txRepo = new TransactionRepository(db);
     const attestationRepo = new AttestationRepository(db);
@@ -107,14 +108,15 @@ describe('decide / pathQuality non-regression', () => {
     const now = Math.floor(Date.now() / 1000);
     // Directly insert a pre-scored agent via raw SQL to bypass INSERT
     // column requirements that vary across migrations.
-    db.prepare(`
-      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source,
+    await db.query(
+      `INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source,
         total_transactions, avg_score, capacity_sats, hubness_rank, betweenness_rank, lnplus_rank, unique_peers)
-      VALUES (?, ?, 'ACINQ-test', ?, ?, 'lightning_graph', 2000, 97, 38000000000, 4, 1, 10, 500)
-    `).run(testHash, testPubkey, now - 8 * 365 * 86400, now);
+       VALUES ($1, $2, 'ACINQ-test', $3, $4, 'lightning_graph', 2000, 97, 38000000000, 4, 1, 10, 500)`,
+      [testHash, testPubkey, now - 8 * 365 * 86400, now],
+    );
 
     // Bayesian posterior snapshot consistent with a high-trust ACINQ-like node.
-    snapshotRepo.insert({
+    await snapshotRepo.insert({
       snapshot_id: 'test-snap-1',
       agent_hash: testHash,
       p_success: 0.97,
@@ -128,7 +130,7 @@ describe('decide / pathQuality non-regression', () => {
       updated_at: now,
     });
     // Reachable probe
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: testHash,
       probed_at: now,
       reachable: 1,
@@ -139,10 +141,10 @@ describe('decide / pathQuality non-regression', () => {
     });
     // Bayesian posterior: seed converging observations so verdict is SAFE.
     // Under the new decide semantics, go=true requires verdict=SAFE.
-    seedSafeBayesianObservations(db, testHash, { now });
+    await seedSafeBayesianObservations(db, testHash, { now });
   });
 
-  afterAll(() => db.close());
+  afterAll(async () => { await teardownTestPool(testDb); });
 
   it('ACINQ-like agent keeps successRate >= 0.50 and go=true (non-regression)', async () => {
     const callerHash = sha256('test-caller');

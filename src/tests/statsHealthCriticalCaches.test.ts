@@ -4,8 +4,8 @@
 // outside the warm-up plan) aged out forever and flipped health to "error"
 // without any real degradation. These tests pin the new contract.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -20,8 +20,9 @@ import {
 } from '../services/statsService';
 import * as memoryCache from '../cache/memoryCache';
 import type { HealthResponse } from '../types';
+let testDb: TestDb;
 
-function buildStatsService(db: Database.Database): StatsService {
+function buildStatsService(db: Pool): StatsService {
   const agentRepo = new AgentRepository(db);
   const txRepo = new TransactionRepository(db);
   const attestationRepo = new AttestationRepository(db);
@@ -48,7 +49,7 @@ function populateAllCriticalKeys(now: Date): void {
 }
 
 describe('CRITICAL_CACHE_KEYS shape', () => {
-  it('contains stats:network + exactly 3 limits × 4 sort_by leaderboard combos', () => {
+  it('contains stats:network + exactly 3 limits × 4 sort_by leaderboard combos', async () => {
     expect(CRITICAL_CACHE_KEYS).toContain('stats:network');
     expect(CRITICAL_CACHE_KEYS).toHaveLength(1 + TOP_WARMUP_LIMITS.length * TOP_SORT_AXES.length);
     for (const limit of TOP_WARMUP_LIMITS) {
@@ -58,7 +59,7 @@ describe('CRITICAL_CACHE_KEYS shape', () => {
     }
   });
 
-  it('excludes one-off leaderboard variants outside the warm-up plan', () => {
+  it('excludes one-off leaderboard variants outside the warm-up plan', async () => {
     expect(CRITICAL_CACHE_KEYS).not.toContain('agents:top:3:0:p_success');
     expect(CRITICAL_CACHE_KEYS).not.toContain('agents:top:7:0:n_obs');
     expect(CRITICAL_CACHE_KEYS).not.toContain('agents:top:100:0:window_freshness');
@@ -69,41 +70,41 @@ describe('CRITICAL_CACHE_KEYS shape', () => {
   });
 });
 
-describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
-  let db: Database.Database;
+describe('StatsService.getHealth cacheHealth (exact-key match)', async () => {
+  let db: Pool;
   let statsService: StatsService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     statsService = buildStatsService(db);
     memoryCache.clear();
     vi.useFakeTimers({ toFake: ['Date'] });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
     memoryCache.clear();
-    db.close();
+    await teardownTestPool(testDb);
   });
 
-  it('reports cacheHealth.degraded=false when every critical key is fresh', () => {
+  it('reports cacheHealth.degraded=false when every critical key is fresh', async () => {
     populateAllCriticalKeys(new Date('2026-04-20T12:00:00Z'));
     // 10s later — well within TTL×3
     vi.setSystemTime(new Date('2026-04-20T12:00:10Z'));
 
-    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    const cacheHealth = cacheHealthOf(await statsService.getHealth());
     expect(cacheHealth.degraded).toBe(false);
     expect(cacheHealth.critical).toEqual([]);
   });
 
-  it('reports cacheHealth.degraded=true when ANY critical key exceeds TTL×3', () => {
+  it('reports cacheHealth.degraded=true when ANY critical key exceeds TTL×3', async () => {
     populateAllCriticalKeys(new Date('2026-04-20T12:00:00Z'));
     // Advance past TTL×3 (= 900s at 300s TTL)
     vi.setSystemTime(new Date('2026-04-20T12:15:01Z'));
 
-    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    const cacheHealth = cacheHealthOf(await statsService.getHealth());
     expect(cacheHealth.degraded).toBe(true);
     expect(cacheHealth.critical.length).toBeGreaterThan(0);
     // Every flagged key must be in CRITICAL_CACHE_KEYS (no prefix spill-over)
@@ -112,7 +113,7 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     }
   });
 
-  it('keeps cacheHealth.degraded=false when only a non-critical one-off key is stale', () => {
+  it('keeps cacheHealth.degraded=false when only a non-critical one-off key is stale', async () => {
     const now = new Date('2026-04-20T12:00:00Z');
     populateAllCriticalKeys(now);
     // One-off caller populates a limit=3 variant — NOT in CRITICAL_CACHE_KEYS.
@@ -129,7 +130,7 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     // limit=3 key last touched at 12:00 → 40 min stale.
     vi.setSystemTime(new Date('2026-04-20T12:40:00Z'));
 
-    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    const cacheHealth = cacheHealthOf(await statsService.getHealth());
     expect(cacheHealth.degraded).toBe(false);
     expect(cacheHealth.critical).toEqual([]);
   });
@@ -152,37 +153,37 @@ describe('StatsService.getHealth cacheHealth (exact-key match)', () => {
     // observes the post-failure state rather than a pre-failure snapshot.
     memoryCache.invalidate('health:snapshot');
 
-    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    const cacheHealth = cacheHealthOf(await statsService.getHealth());
     const flagged = cacheHealth.critical.find(c => c.key === boomKey);
     expect(flagged).toBeDefined();
     expect(flagged!.consecutiveFailures).toBeGreaterThanOrEqual(3);
     expect(cacheHealth.degraded).toBe(true);
   });
 
-  it('keeps cacheHealth.degraded=false on cold boot when critical keys have never been populated', () => {
+  it('keeps cacheHealth.degraded=false on cold boot when critical keys have never been populated', async () => {
     // memoryCache.clear() in beforeEach guarantees no freshness entries exist.
     // Before warm-up completes, the health check must NOT report degraded —
     // otherwise every boot would fail for ~1s until warm-up finishes.
     vi.setSystemTime(new Date('2026-04-20T12:00:00Z'));
 
-    const cacheHealth = cacheHealthOf(statsService.getHealth());
+    const cacheHealth = cacheHealthOf(await statsService.getHealth());
     expect(cacheHealth.degraded).toBe(false);
     expect(cacheHealth.critical).toEqual([]);
   });
 });
 
 describe('memoryCache.setFresh', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     memoryCache.clear();
     vi.useFakeTimers({ toFake: ['Date'] });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
     memoryCache.clear();
   });
 
-  it('stores the value AND marks the key as freshly refreshed', () => {
+  it('stores the value AND marks the key as freshly refreshed', async () => {
     vi.setSystemTime(new Date('2026-04-20T12:00:00Z'));
     memoryCache.setFresh('k', { a: 1 }, 10_000);
     expect(memoryCache.get<{ a: number }>('k')).toEqual({ a: 1 });
@@ -194,7 +195,7 @@ describe('memoryCache.setFresh', () => {
     expect(entry!.consecutiveFailures).toBe(0);
   });
 
-  it('advances the freshness clock on every call (unlike plain set)', () => {
+  it('advances the freshness clock on every call (unlike plain set)', async () => {
     vi.setSystemTime(new Date('2026-04-20T12:00:00Z'));
     memoryCache.setFresh('k', 'v1', 60_000);
 
@@ -207,7 +208,7 @@ describe('memoryCache.setFresh', () => {
     expect(entry!.ageSec).toBe(0);
   });
 
-  it('plain set() does NOT touch freshness tracking', () => {
+  it('plain set() does NOT touch freshness tracking', async () => {
     vi.setSystemTime(new Date('2026-04-20T12:00:00Z'));
     memoryCache.set('plain', 'v', 60_000);
 

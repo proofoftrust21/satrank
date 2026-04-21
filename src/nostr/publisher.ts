@@ -101,10 +101,13 @@ export class NostrPublisher {
   }
 
   /** Construit le payload bayésien pour un agent donné. Exposé pour les tests. */
-  buildScoreEvent(agent: { public_key: string | null; public_key_hash: string; alias: string | null }): ScoreEvent | null {
+  async buildScoreEvent(
+    agent: { public_key: string | null; public_key_hash: string; alias: string | null },
+    reachableSet?: Set<string>,
+  ): Promise<ScoreEvent | null> {
     if (!agent.public_key) return null;
 
-    const verdict = this.bayesianVerdictService.buildVerdict({
+    const verdict = await this.bayesianVerdictService.buildVerdict({
       targetHash: agent.public_key_hash,
     });
 
@@ -112,15 +115,18 @@ export class NostrPublisher {
     // inutile de polluer les relais avec du INSUFFICIENT pour chaque node du graph.
     if (verdict.verdict === 'INSUFFICIENT') return null;
 
-    const reachable = this.probeRepo
-      ? this.getReachableHashes().includes(agent.public_key_hash)
-      : false;
+    // Le set est pré-calculé par publishScores pour éviter un re-scan O(n²)
+    // des reachable hashes à chaque event. Sans set injecté (e.g. depuis un
+    // test unitaire), on retombe sur le calcul par agent.
+    const reachable = reachableSet
+      ? reachableSet.has(agent.public_key_hash)
+      : (await this.getReachableHashes()).includes(agent.public_key_hash);
 
     // Agent complet requis pour survivalService.compute → on va chercher l'objet
     // complet. Pour les tests légers on tolère un fallback 'unknown'.
-    const fullAgent = this.agentRepo.findByHash(agent.public_key_hash);
+    const fullAgent = await this.agentRepo.findByHash(agent.public_key_hash);
     const survival = fullAgent
-      ? this.survivalService.compute(fullAgent).prediction
+      ? (await this.survivalService.compute(fullAgent)).prediction
       : 'unknown';
 
     return {
@@ -167,11 +173,16 @@ export class NostrPublisher {
     const { hexToBytes } = await import('@noble/hashes/utils');
     const sk = hexToBytes(this.skHex);
 
-    const agents = this.agentRepo.findScoredAbove(this.minScore);
+    const agents = await this.agentRepo.findScoredAbove(this.minScore);
+
+    // Pré-calcul du set de reachables en amont de la boucle : sinon
+    // buildScoreEvent(agent) ré-exécute computeUptime pour tous les nœuds
+    // à chaque invocation — O(n²) sur ~14k nodes.
+    const reachableSet = new Set(await this.getReachableHashes());
 
     const allEvents: ScoreEvent[] = [];
     for (const agent of agents) {
-      const ev = this.buildScoreEvent(agent);
+      const ev = await this.buildScoreEvent(agent, reachableSet);
       if (ev) allEvents.push(ev);
     }
 
@@ -331,11 +342,11 @@ export class NostrPublisher {
     return { published, errors, skipped, total: allEvents.length };
   }
 
-  private getReachableHashes(): string[] {
-    const agents = this.agentRepo.findLightningAgentsWithPubkey();
+  private async getReachableHashes(): Promise<string[]> {
+    const agents = await this.agentRepo.findLightningAgentsWithPubkey();
     const reachable: string[] = [];
     for (const agent of agents) {
-      const uptime = this.probeRepo.computeUptime(agent.public_key_hash, 7 * 86400);
+      const uptime = await this.probeRepo.computeUptime(agent.public_key_hash, 7 * 86400);
       if (uptime !== null && uptime > 0) {
         reachable.push(agent.public_key_hash);
       }

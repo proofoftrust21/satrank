@@ -26,7 +26,7 @@ export class ServiceHealthCrawler {
 
   async run(): Promise<{ checked: number; healthy: number; down: number }> {
     const result = { checked: 0, healthy: 0, down: 0 };
-    const stale = this.repo.findStale(3, 1800, 500); // >= 3 checks, > 30 min since last
+    const stale = await this.repo.findStale(3, 1800, 500); // >= 3 checks, > 30 min since last
 
     if (stale.length === 0) return result;
     logger.info({ candidates: stale.length }, 'Service health crawl starting');
@@ -58,11 +58,11 @@ export class ServiceHealthCrawler {
         healthy = false;
       }
 
-      this.repo.upsert(endpoint.agent_hash, endpoint.url, status, latencyMs);
+      await this.repo.upsert(endpoint.agent_hash, endpoint.url, status, latencyMs);
       if (healthy) result.healthy++;
       else result.down++;
 
-      this.dualWriteProbeTx(endpoint, healthy);
+      await this.dualWriteProbeTx(endpoint, healthy);
 
       result.checked++;
       if (result.checked < stale.length) {
@@ -85,7 +85,7 @@ export class ServiceHealthCrawler {
    *     (tests, one-off scripts) that don't care about tx writes.
    *   - same tx_id already exists for today — daily-granularity idempotence,
    *     so overlapping cron ticks / restarts don't double-count a probe. */
-  private dualWriteProbeTx(endpoint: ServiceEndpoint, healthy: boolean): void {
+  private async dualWriteProbeTx(endpoint: ServiceEndpoint, healthy: boolean): Promise<void> {
     if (this.dualWriteMode === 'off') return;
     if (!this.txRepo) return;
     if (!endpoint.agent_hash) return;
@@ -94,9 +94,9 @@ export class ServiceHealthCrawler {
     // `public_key_hash` is still referenced by a `service_endpoints.agent_hash`.
     // Without this guard the legacy INSERT throws `FOREIGN KEY constraint failed`
     // (sender_hash → agents.public_key_hash), which is caught below but costs a
-    // SQLite roundtrip per probe and pollutes logs on every cycle. Skip silently
+    // roundtrip per probe and pollutes logs on every cycle. Skip silently
     // when the operator is gone; observed on `l402.lndyn.com/*`, `satring.com/*`.
-    if (this.agentRepo && !this.agentRepo.findByHash(endpoint.agent_hash)) {
+    if (this.agentRepo && !(await this.agentRepo.findByHash(endpoint.agent_hash))) {
       logger.warn(
         { url: endpoint.url, agent_hash: endpoint.agent_hash },
         'Probe dual-write skipped — endpoint.agent_hash references purged agent',
@@ -110,7 +110,7 @@ export class ServiceHealthCrawler {
       const canonical = canonicalizeUrl(endpoint.url);
       const txId = sha256(`probe:${canonical}:${bucket}`);
 
-      if (this.txRepo.findById(txId)) return;
+      if (await this.txRepo.findById(txId)) return;
 
       const tx: Transaction = {
         tx_id: txId,
@@ -131,7 +131,7 @@ export class ServiceHealthCrawler {
         window_bucket: bucket,
       };
 
-      this.txRepo.insertWithDualWrite(tx, enrichment, this.dualWriteMode, 'serviceProbes', this.dualWriteLogger);
+      await this.txRepo.insertWithDualWrite(tx, enrichment, this.dualWriteMode, 'serviceProbes', this.dualWriteLogger);
     } catch (err) {
       // One malformed URL or DB hiccup must not abort the health probe loop.
       // The legacy service_endpoints row was already persisted above.

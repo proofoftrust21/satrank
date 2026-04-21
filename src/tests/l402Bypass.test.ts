@@ -3,13 +3,14 @@
 // boot the process (config refuses, exit != 0), and that the bypass branch
 // of createBalanceAuth calls next() without touching the DB.
 import { describe, it, expect } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import express from 'express';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
 import { createBalanceAuth } from '../middleware/balanceAuth';
+let testDb: TestDb;
 
 const CONFIG_MODULE = path.resolve(__dirname, '../config.ts');
 
@@ -52,13 +53,13 @@ function bootConfig(env: Record<string, string | undefined>): { code: number | n
 }
 
 describe('L402_BYPASS double-gate (config fail-safe)', () => {
-  it('REFUSES to boot when NODE_ENV=production + L402_BYPASS=true', () => {
+  it('REFUSES to boot when NODE_ENV=production + L402_BYPASS=true', async () => {
     const { code, stderr } = bootConfig({ NODE_ENV: 'production', L402_BYPASS: 'true' });
     expect(code).not.toBe(0);
     expect(stderr).toMatch(/REFUSED.*L402_BYPASS.*NODE_ENV=production/s);
   }, 30_000);
 
-  it('BOOTS in development with L402_BYPASS=true (staging/bench mode)', () => {
+  it('BOOTS in development with L402_BYPASS=true (staging/bench mode)', async () => {
     const { code, stderr } = bootConfig({
       NODE_ENV: 'development',
       L402_BYPASS: 'true',
@@ -71,23 +72,21 @@ describe('L402_BYPASS double-gate (config fail-safe)', () => {
     expect(stderr).not.toMatch(/REFUSED/);
   }, 30_000);
 
-  it('BOOTS in production when L402_BYPASS is unset (legacy/default path)', () => {
+  it('BOOTS in production when L402_BYPASS is unset (legacy/default path)', async () => {
     const { code, stderr } = bootConfig({ NODE_ENV: 'production' });
     expect(code, `stderr:\n${stderr}`).toBe(0);
   }, 30_000);
 
-  it('BOOTS in production when L402_BYPASS=false (explicit disable)', () => {
+  it('BOOTS in production when L402_BYPASS=false (explicit disable)', async () => {
     const { code, stderr } = bootConfig({ NODE_ENV: 'production', L402_BYPASS: 'false' });
     expect(code, `stderr:\n${stderr}`).toBe(0);
   }, 30_000);
 });
 
-describe('createBalanceAuth bypass branch', () => {
+describe('createBalanceAuth bypass branch', async () => {
   it('short-circuits to next() without touching the DB when bypass=true', async () => {
-    const db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-
+    const testDb = await setupTestPool();
+    const db = testDb.pool;
     const byPass = createBalanceAuth(db, { bypass: true });
 
     // Real L402 header that would normally hit a DB decrement path —
@@ -110,10 +109,10 @@ describe('createBalanceAuth bypass branch', () => {
 
     expect(called).toBe(true);
     // No DB row created for the synthetic payment_hash
-    const countRow = db.prepare('SELECT COUNT(*) AS c FROM token_balance').get() as { c: number };
-    expect(countRow.c).toBe(0);
+    const { rows: countRows } = await db.query<{ c: string }>('SELECT COUNT(*) AS c FROM token_balance');
+    expect(Number(countRows[0].c)).toBe(0);
     // No balance header emitted (the bypass is transparent, not 21/21)
     expect(headersSet['X-SatRank-Balance']).toBeUndefined();
-    db.close();
+    await teardownTestPool(testDb);
   });
 });

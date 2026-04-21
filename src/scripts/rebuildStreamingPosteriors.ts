@@ -46,7 +46,10 @@
 //
 // Exit codes : 0 = success, 1 = erreur fatale.
 
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { getCrawlerPool, closePools } from '../database/connection';
+import { runMigrations } from '../database/migrations';
+import { withTransaction } from '../database/transaction';
 import {
   BayesianScoringService,
   type StreamingIngestionInput,
@@ -85,7 +88,7 @@ const BUCKET_TABLES = [
 ];
 
 export interface RebuildOptions {
-  db: Database.Database;
+  pool: Pool;
   truncate?: boolean;
   dryRun?: boolean;
   chunkSize?: number;
@@ -119,7 +122,7 @@ interface TxRow {
 }
 
 /** Point d'entrée programmatique — utilisé par les tests et la CLI. */
-export function runRebuild(options: RebuildOptions): RebuildResult {
+export async function runRebuild(options: RebuildOptions): Promise<RebuildResult> {
   const chunkSize = options.chunkSize ?? 10_000;
   const reporterTier: ReportTier = options.reporterTier ?? 'medium';
   const fromTs = options.fromTs ?? 0;
@@ -136,42 +139,45 @@ export function runRebuild(options: RebuildOptions): RebuildResult {
 
   if (options.truncate && !dryRun) {
     for (const table of [...STREAMING_TABLES, ...BUCKET_TABLES]) {
-      options.db.prepare(`DELETE FROM ${table}`).run();
+      await options.pool.query(`DELETE FROM ${table}`);
     }
   }
-
-  const bayesian = new BayesianScoringService(
-    new EndpointStreamingPosteriorRepository(options.db),
-    new ServiceStreamingPosteriorRepository(options.db),
-    new OperatorStreamingPosteriorRepository(options.db),
-    new NodeStreamingPosteriorRepository(options.db),
-    new RouteStreamingPosteriorRepository(options.db),
-    new EndpointDailyBucketsRepository(options.db),
-    new ServiceDailyBucketsRepository(options.db),
-    new OperatorDailyBucketsRepository(options.db),
-    new NodeDailyBucketsRepository(options.db),
-    new RouteDailyBucketsRepository(options.db),
-  );
 
   // Paginate par timestamp ASC pour reproduire la trajectoire chronologique.
   // Cursor tuple (timestamp, tx_id) pour stabilité face à des rows au même ts.
   let cursorTs = fromTs;
   let cursorTxId = '';
-  const query = options.db.prepare(`
-    SELECT tx_id, timestamp, status, endpoint_hash, operator_id, source
-      FROM transactions
-     WHERE (timestamp > ? OR (timestamp = ? AND tx_id > ?))
-       AND source IS NOT NULL
-     ORDER BY timestamp ASC, tx_id ASC
-     LIMIT ?
-  `);
 
   while (true) {
-    const rows = query.all(cursorTs, cursorTs, cursorTxId, chunkSize) as TxRow[];
+    const { rows } = await options.pool.query<TxRow>(
+      `SELECT tx_id, timestamp, status, endpoint_hash, operator_id, source
+         FROM transactions
+        WHERE (timestamp > $1 OR (timestamp = $2 AND tx_id > $3))
+          AND source IS NOT NULL
+        ORDER BY timestamp ASC, tx_id ASC
+        LIMIT $4`,
+      [cursorTs, cursorTs, cursorTxId, chunkSize],
+    );
     if (rows.length === 0) break;
 
-    const ingestChunk = options.db.transaction((chunk: TxRow[]) => {
-      for (const row of chunk) {
+    // Une transaction par chunk — préserve l'atomicité historique du
+    // `db.transaction(fn)` better-sqlite3 tout en gardant la progression
+    // du cursor en mémoire du process (pas dans la DB).
+    await withTransaction(options.pool, async (client) => {
+      const bayesian = new BayesianScoringService(
+        new EndpointStreamingPosteriorRepository(client),
+        new ServiceStreamingPosteriorRepository(client),
+        new OperatorStreamingPosteriorRepository(client),
+        new NodeStreamingPosteriorRepository(client),
+        new RouteStreamingPosteriorRepository(client),
+        new EndpointDailyBucketsRepository(client),
+        new ServiceDailyBucketsRepository(client),
+        new OperatorDailyBucketsRepository(client),
+        new NodeDailyBucketsRepository(client),
+        new RouteDailyBucketsRepository(client),
+      );
+
+      for (const row of rows) {
         result.scanned++;
         cursorTs = row.timestamp;
         cursorTxId = row.tx_id;
@@ -203,7 +209,7 @@ export function runRebuild(options: RebuildOptions): RebuildResult {
             nodePubkey: row.operator_id,
             tier: row.source === 'report' ? reporterTier : undefined,
           };
-          bayesian.ingestStreaming(input);
+          await bayesian.ingestStreaming(input);
           result.ingested++;
         } catch (err) {
           result.errors++;
@@ -214,8 +220,6 @@ export function runRebuild(options: RebuildOptions): RebuildResult {
         }
       }
     });
-
-    ingestChunk(rows);
   }
 
   return result;
@@ -227,11 +231,11 @@ const isMain =
   typeof module !== 'undefined' &&
   require.main === module;
 
-if (isMain) {
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const flag = (name: string) => argv.includes(name);
   const value = (name: string): string | undefined => {
-    const match = argv.find(a => a.startsWith(`${name}=`));
+    const match = argv.find((a) => a.startsWith(`${name}=`));
     return match ? match.slice(name.length + 1) : undefined;
   };
 
@@ -246,35 +250,33 @@ if (isMain) {
       ? reporterTierRaw
       : 'medium';
 
-  try {
-    // Import paresseux pour que `tsx src/scripts/rebuildStreamingPosteriors.ts`
-    // utilise la vraie connexion prod sans exiger d'import dans les tests.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getDatabase } = require('../database/connection') as typeof import('../database/connection');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { runMigrations } = require('../database/migrations') as typeof import('../database/migrations');
-    const db = getDatabase();
-    runMigrations(db);
+  const pool = getCrawlerPool();
+  await runMigrations(pool);
 
-    const result = runRebuild({ db, truncate, dryRun, chunkSize, fromTs, reporterTier });
-    const line = [
-      `scanned=${result.scanned}`,
-      `ingested=${result.ingested}`,
-      `errors=${result.errors}`,
-      `probe=${result.perSource.probe}`,
-      `report=${result.perSource.report}`,
-      `paid=${result.perSource.paid}`,
-      `observer=${result.perSource.observer}`,
-      `intent_skipped=${result.skippedIntent}`,
-      `no_source_skipped=${result.skippedNoSource}`,
-    ].join(' ');
-    process.stdout.write(
-      `[rebuild-streaming] ${dryRun ? 'DRY-RUN ' : ''}${line}\n`,
-    );
-    process.exit(result.errors === 0 ? 0 : 1);
-  } catch (err) {
+  const result = await runRebuild({ pool, truncate, dryRun, chunkSize, fromTs, reporterTier });
+  const line = [
+    `scanned=${result.scanned}`,
+    `ingested=${result.ingested}`,
+    `errors=${result.errors}`,
+    `probe=${result.perSource.probe}`,
+    `report=${result.perSource.report}`,
+    `paid=${result.perSource.paid}`,
+    `observer=${result.perSource.observer}`,
+    `intent_skipped=${result.skippedIntent}`,
+    `no_source_skipped=${result.skippedNoSource}`,
+  ].join(' ');
+  process.stdout.write(
+    `[rebuild-streaming] ${dryRun ? 'DRY-RUN ' : ''}${line}\n`,
+  );
+  await closePools();
+  process.exit(result.errors === 0 ? 0 : 1);
+}
+
+if (isMain) {
+  main().catch(async (err) => {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[rebuild-streaming] FATAL: ${msg}\n`);
+    await closePools();
     process.exit(1);
-  }
+  });
 }

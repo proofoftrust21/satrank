@@ -1,9 +1,18 @@
 // Phase 12B — PostgreSQL 16 connection pools
 // Two singleton pools so API and crawler can be tuned/observed independently.
 // API max=30, crawler max=20 (per Romain's A5 saturation findings).
-import { Pool, type PoolClient, type PoolConfig } from 'pg';
+import { Pool, types, type PoolClient, type PoolConfig } from 'pg';
 import { config } from '../config';
 import { logger } from '../logger';
+
+// BIGINT (OID 20) → parse as JS number. Safe for SatRank: max value capacity_sats
+// 21M BTC × 1e8 sats = 2.1e15, well under 2^53 (9.0e15). Counters are far smaller.
+// Without this, node-pg returns bigint as string → test failures + API contract drift.
+types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+// NUMERIC (OID 1700) → parse as JS number. Used by AVG(), ROUND(), and aggregate
+// queries returning decimals. Otherwise returned as string and breaks assertions
+// that expect numeric equality.
+types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
 
 type PoolName = 'api' | 'crawler';
 

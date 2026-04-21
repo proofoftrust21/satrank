@@ -79,9 +79,9 @@ export class RegistryCrawler {
             };
 
             // Update metadata for URLs already in the registry (even without decoder)
-            const existing = this.serviceEndpointRepo.findByUrl(svc.url);
+            const existing = await this.serviceEndpointRepo.findByUrl(svc.url);
             if (existing) {
-              this.serviceEndpointRepo.updateMetadata(svc.url, meta);
+              await this.serviceEndpointRepo.updateMetadata(svc.url, meta);
               result.updated++;
               continue; // already registered, skip node discovery
             }
@@ -90,8 +90,8 @@ export class RegistryCrawler {
             const agentHash = await this.discoverNodeFromUrl(svc.url);
             if (agentHash) {
               result.discovered++;
-              this.serviceEndpointRepo.upsert(agentHash, svc.url, 0, 0, '402index');
-              this.serviceEndpointRepo.updateMetadata(svc.url, meta);
+              await this.serviceEndpointRepo.upsert(agentHash, svc.url, 0, 0, '402index');
+              await this.serviceEndpointRepo.updateMetadata(svc.url, meta);
             }
           } catch (err: unknown) {
             result.errors++;
@@ -139,11 +139,11 @@ export class RegistryCrawler {
     if (!isSafeUrl(serviceUrl)) return null;
     const agentHash = await this.discoverNodeFromUrl(serviceUrl);
     if (!agentHash) return null;
-    this.serviceEndpointRepo.upsert(agentHash, serviceUrl, 0, 0, 'self_registered');
+    await this.serviceEndpointRepo.upsert(agentHash, serviceUrl, 0, 0, 'self_registered');
 
     const updated: string[] = [];
     if (meta) {
-      const existing = this.serviceEndpointRepo.findByUrl(serviceUrl);
+      const existing = await this.serviceEndpointRepo.findByUrl(serviceUrl);
       // Only fill fields that are currently null — never overwrite trusted crawler data
       const patch = {
         name: existing?.name ?? (meta.name?.trim() || null),
@@ -156,9 +156,9 @@ export class RegistryCrawler {
       if (!existing?.description && patch.description) updated.push('description');
       if (!existing?.category && patch.category) updated.push('category');
       if (!existing?.provider && patch.provider) updated.push('provider');
-      this.serviceEndpointRepo.updateMetadata(serviceUrl, patch);
+      await this.serviceEndpointRepo.updateMetadata(serviceUrl, patch);
     }
-    const ep = this.serviceEndpointRepo.findByUrl(serviceUrl);
+    const ep = await this.serviceEndpointRepo.findByUrl(serviceUrl);
     return { agentHash, priceSats: ep?.service_price_sats ?? null, fieldsUpdated: updated };
   }
 
@@ -189,7 +189,7 @@ export class RegistryCrawler {
       if (this.preimagePoolRepo) {
         try {
           const parsed = parseBolt11(invoice);
-          this.preimagePoolRepo.insertIfAbsent({
+          await this.preimagePoolRepo.insertIfAbsent({
             paymentHash: parsed.paymentHash,
             bolt11Raw: invoice,
             firstSeen: Math.floor(Date.now() / 1000),
@@ -211,7 +211,7 @@ export class RegistryCrawler {
           // Store the price from the invoice
           const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
           if (priceSats && priceSats > 0) {
-            this.serviceEndpointRepo.updatePrice(serviceUrl, priceSats);
+            await this.serviceEndpointRepo.updatePrice(serviceUrl, priceSats);
           }
           return agentHash;
         }

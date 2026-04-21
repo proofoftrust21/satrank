@@ -11,11 +11,11 @@ if (!(globalThis as { crypto?: unknown }).crypto) {
   (globalThis as { crypto: unknown }).crypto = webcrypto;
 }
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import crypto from 'node:crypto';
-import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
-import { runMigrations } from '../database/migrations';
 import { OperatorService } from '../services/operatorService';
 import {
   OperatorRepository,
@@ -36,6 +36,7 @@ import {
 import { errorHandler } from '../middleware/errorHandler';
 // @ts-expect-error — ESM subpath
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
+let testDb: TestDb;
 
 function signNip98(url: string, method: string, body: string): string {
   const sk = generateSecretKey();
@@ -74,7 +75,7 @@ async function readLabeledValue(
   return match?.value ?? 0;
 }
 
-function makeOperatorService(db: Database.Database): OperatorService {
+function makeOperatorService(db: Pool): OperatorService {
   return new OperatorService(
     new OperatorRepository(db),
     new OperatorIdentityRepository(db),
@@ -88,17 +89,17 @@ function makeOperatorService(db: Database.Database): OperatorService {
 const BASE_URL = 'http://127.0.0.1:80';
 const REGISTER_URL = `${BASE_URL}/api/operator/register`;
 
-describe('Phase 7 — C13 operator metrics emission', () => {
-  let db: Database.Database;
+describe('Phase 7 — C13 operator metrics emission', async () => {
+  let db: Pool;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
-  afterEach(() => {
-    db.close();
+    db = testDb.pool;
+});
+
+  afterEach(async () => {
+    await teardownTestPool(testDb);
   });
 
   it('operatorClaimsTotal incrémente par resource_type à chaque claimOwnership', async () => {
@@ -109,11 +110,11 @@ describe('Phase 7 — C13 operator metrics emission', () => {
       service: await readLabeledValue(operatorClaimsTotal, { resource_type: 'service' }),
     };
 
-    service.upsertOperator('op-metrics-claims');
-    service.claimOwnership('op-metrics-claims', 'node', '02' + 'f'.repeat(64));
-    service.claimOwnership('op-metrics-claims', 'endpoint', 'a'.repeat(64));
-    service.claimOwnership('op-metrics-claims', 'endpoint', 'b'.repeat(64));
-    service.claimOwnership('op-metrics-claims', 'service', 'c'.repeat(64));
+    await service.upsertOperator('op-metrics-claims');
+    await service.claimOwnership('op-metrics-claims', 'node', '02' + 'f'.repeat(64));
+    await service.claimOwnership('op-metrics-claims', 'endpoint', 'a'.repeat(64));
+    await service.claimOwnership('op-metrics-claims', 'endpoint', 'b'.repeat(64));
+    await service.claimOwnership('op-metrics-claims', 'service', 'c'.repeat(64));
 
     expect(await readLabeledValue(operatorClaimsTotal, { resource_type: 'node' })).toBe(before.node + 1);
     expect(await readLabeledValue(operatorClaimsTotal, { resource_type: 'endpoint' })).toBe(before.endpoint + 2);
@@ -190,13 +191,13 @@ describe('Phase 7 — C13 operator metrics emission', () => {
       new ServiceStreamingPosteriorRepository(db),
     );
 
-    service.upsertOperator('op-g-pending-a');
-    service.upsertOperator('op-g-pending-b');
-    service.upsertOperator('op-g-rejected');
-    db.prepare(`UPDATE operators SET status='rejected' WHERE operator_id = 'op-g-rejected'`).run();
+    await service.upsertOperator('op-g-pending-a');
+    await service.upsertOperator('op-g-pending-b');
+    await service.upsertOperator('op-g-rejected');
+    await db.query(`UPDATE operators SET status='rejected' WHERE operator_id = 'op-g-rejected'`);
 
     // Simule le refresh de scrape /metrics
-    const counts = repo.countByStatus();
+    const counts = await repo.countByStatus();
     operatorsTotal.set({ status: 'verified' }, counts.verified);
     operatorsTotal.set({ status: 'pending' }, counts.pending);
     operatorsTotal.set({ status: 'rejected' }, counts.rejected);

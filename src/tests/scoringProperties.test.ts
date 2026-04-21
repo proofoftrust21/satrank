@@ -1,8 +1,8 @@
 // Scoring property tests — logical invariants that must hold regardless of tuning
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { v4 as uuid } from 'uuid';
-import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -10,6 +10,7 @@ import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction, Attestation } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -71,18 +72,18 @@ function makeAttestation(attester: string, subject: string, txId: string, overri
   };
 }
 
-describe('Scoring properties', () => {
-  let db: Database.Database;
+describe('Scoring properties', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let txRepo: TransactionRepository;
   let attestationRepo: AttestationRepository;
   let snapshotRepo: SnapshotRepository;
   let scoring: ScoringService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     txRepo = new TransactionRepository(db);
     attestationRepo = new AttestationRepository(db);
@@ -90,33 +91,33 @@ describe('Scoring properties', () => {
     scoring = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(async () => { await teardownTestPool(testDb); });
 
   // --- Volume ---
 
-  it('agent with 1000 channels > agent with 10 channels in volume', () => {
-    agentRepo.insert(makeAgent('big-node', {
+  it('agent with 1000 channels > agent with 10 channels in volume', async () => {
+    await agentRepo.insert(makeAgent('big-node', {
       source: 'lightning_graph',
       total_transactions: 1000,
       first_seen: NOW - 365 * DAY,
     }));
-    agentRepo.insert(makeAgent('small-node', {
+    await agentRepo.insert(makeAgent('small-node', {
       source: 'lightning_graph',
       total_transactions: 10,
       first_seen: NOW - 365 * DAY,
     }));
 
-    const big = scoring.computeScore(sha256('big-node'));
-    const small = scoring.computeScore(sha256('small-node'));
+    const big = await scoring.computeScore(sha256('big-node'));
+    const small = await scoring.computeScore(sha256('small-node'));
 
     expect(big.components.volume).toBeGreaterThan(small.components.volume);
   });
 
   // --- Reputation ---
 
-  it('agent with centrality and capacity > agent without in reputation; LN+ ratings boost total', () => {
+  it('agent with centrality and capacity > agent without in reputation; LN+ ratings boost total', async () => {
     // Reputation now depends on centrality + peer trust, not LN+ rank/ratings
-    agentRepo.insert(makeAgent('top-rated', {
+    await agentRepo.insert(makeAgent('top-rated', {
       source: 'lightning_graph',
       total_transactions: 100,
       capacity_sats: 5_000_000_000, // 50 BTC, 100 ch → 0.5 BTC/ch
@@ -127,7 +128,7 @@ describe('Scoring properties', () => {
       betweenness_rank: 20,
       first_seen: NOW - 365 * DAY,
     }));
-    agentRepo.insert(makeAgent('low-rated', {
+    await agentRepo.insert(makeAgent('low-rated', {
       source: 'lightning_graph',
       total_transactions: 100,
       capacity_sats: 500_000_000, // 5 BTC, 100 ch → 0.05 BTC/ch
@@ -137,8 +138,8 @@ describe('Scoring properties', () => {
       first_seen: NOW - 365 * DAY,
     }));
 
-    const top = scoring.computeScore(sha256('top-rated'));
-    const low = scoring.computeScore(sha256('low-rated'));
+    const top = await scoring.computeScore(sha256('top-rated'));
+    const low = await scoring.computeScore(sha256('low-rated'));
 
     // Top has centrality + higher peer trust → higher reputation
     expect(top.components.reputation).toBeGreaterThan(low.components.reputation);
@@ -146,8 +147,8 @@ describe('Scoring properties', () => {
     expect(top.total).toBeGreaterThan(low.total);
   });
 
-  it('agent with only negative ratings has lower reputation than agent with no ratings', () => {
-    agentRepo.insert(makeAgent('neg-only', {
+  it('agent with only negative ratings has lower reputation than agent with no ratings', async () => {
+    await agentRepo.insert(makeAgent('neg-only', {
       source: 'lightning_graph',
       total_transactions: 100,
       positive_ratings: 0,
@@ -155,7 +156,7 @@ describe('Scoring properties', () => {
       lnplus_rank: 0,
       first_seen: NOW - 365 * DAY,
     }));
-    agentRepo.insert(makeAgent('no-ratings', {
+    await agentRepo.insert(makeAgent('no-ratings', {
       source: 'lightning_graph',
       total_transactions: 100,
       positive_ratings: 0,
@@ -164,8 +165,8 @@ describe('Scoring properties', () => {
       first_seen: NOW - 365 * DAY,
     }));
 
-    const neg = scoring.computeScore(sha256('neg-only'));
-    const none = scoring.computeScore(sha256('no-ratings'));
+    const neg = await scoring.computeScore(sha256('neg-only'));
+    const none = await scoring.computeScore(sha256('no-ratings'));
 
     // Negative-only should be penalized at or below zero-data baseline.
     // Post-2026-04-16 change: both agents have no centrality (no PageRank, no
@@ -181,48 +182,48 @@ describe('Scoring properties', () => {
 
   // --- Seniority ---
 
-  it('agent active 3 years > agent active 1 month in seniority', () => {
-    agentRepo.insert(makeAgent('veteran', {
+  it('agent active 3 years > agent active 1 month in seniority', async () => {
+    await agentRepo.insert(makeAgent('veteran', {
       source: 'lightning_graph',
       first_seen: NOW - 3 * 365 * DAY,
     }));
-    agentRepo.insert(makeAgent('newcomer', {
+    await agentRepo.insert(makeAgent('newcomer', {
       source: 'lightning_graph',
       first_seen: NOW - 30 * DAY,
     }));
 
-    const vet = scoring.computeScore(sha256('veteran'));
-    const newb = scoring.computeScore(sha256('newcomer'));
+    const vet = await scoring.computeScore(sha256('veteran'));
+    const newb = await scoring.computeScore(sha256('newcomer'));
 
     expect(vet.components.seniority).toBeGreaterThan(newb.components.seniority);
   });
 
   // --- Regularity ---
 
-  it('inactive agent (last tx 2 years ago) < active agent (last tx this month) in regularity', () => {
-    agentRepo.insert(makeAgent('stale-ln', {
+  it('inactive agent (last tx 2 years ago) < active agent (last tx this month) in regularity', async () => {
+    await agentRepo.insert(makeAgent('stale-ln', {
       source: 'lightning_graph',
       total_transactions: 50,
       last_seen: NOW - 2 * 365 * DAY,
       first_seen: NOW - 3 * 365 * DAY,
     }));
-    agentRepo.insert(makeAgent('active-ln', {
+    await agentRepo.insert(makeAgent('active-ln', {
       source: 'lightning_graph',
       total_transactions: 50,
       last_seen: NOW - DAY,
       first_seen: NOW - 365 * DAY,
     }));
 
-    const stale = scoring.computeScore(sha256('stale-ln'));
-    const active = scoring.computeScore(sha256('active-ln'));
+    const stale = await scoring.computeScore(sha256('stale-ln'));
+    const active = await scoring.computeScore(sha256('active-ln'));
 
     expect(active.components.regularity).toBeGreaterThan(stale.components.regularity);
   });
 
   // --- Total score bounds ---
 
-  it('total score is between 0 and 110 (100 base + 10 popularity max)', () => {
-    agentRepo.insert(makeAgent('bounded', {
+  it('total score is between 0 and 110 (100 base + 10 popularity max)', async () => {
+    await agentRepo.insert(makeAgent('bounded', {
       source: 'lightning_graph',
       total_transactions: 500,
       positive_ratings: 100,
@@ -235,13 +236,13 @@ describe('Scoring properties', () => {
       query_count: 10000,
     }));
 
-    const result = scoring.computeScore(sha256('bounded'));
+    const result = await scoring.computeScore(sha256('bounded'));
     expect(result.total).toBeGreaterThanOrEqual(0);
     expect(result.total).toBeLessThanOrEqual(110);
   });
 
-  it('all 5 components are between 0 and 100', () => {
-    agentRepo.insert(makeAgent('comp-bounds', {
+  it('all 5 components are between 0 and 100', async () => {
+    await agentRepo.insert(makeAgent('comp-bounds', {
       source: 'lightning_graph',
       total_transactions: 500,
       positive_ratings: 80,
@@ -253,20 +254,20 @@ describe('Scoring properties', () => {
       betweenness_rank: 10,
     }));
 
-    const result = scoring.computeScore(sha256('comp-bounds'));
+    const result = await scoring.computeScore(sha256('comp-bounds'));
     // Skip the non-numeric `reputationBreakdown` audit-trail field which was
     // added to ScoreComponents alongside the numeric slots in 2026-04-16.
     const numericSlots: (keyof typeof result.components)[] = ['volume', 'reputation', 'seniority', 'regularity', 'diversity'];
     for (const name of numericSlots) {
       const value = result.components[name] as number;
-      expect(value, `${name} component`).toBeGreaterThanOrEqual(0);
-      expect(value, `${name} component`).toBeLessThanOrEqual(100);
+      expect(value, `${String(name)} component`).toBeGreaterThanOrEqual(0);
+      expect(value, `${String(name)} component`).toBeLessThanOrEqual(100);
     }
   });
 
   // --- Anti-gaming ---
 
-  it('mutual attestations (A<->B) reduce reputation vs one-way', () => {
+  it('mutual attestations (A<->B) reduce reputation vs one-way', async () => {
     // Setup: agent A with attestation from B (credible, scored attester)
     const aHash = sha256('mutual-a');
     const bHash = sha256('mutual-b');
@@ -274,38 +275,38 @@ describe('Scoring properties', () => {
     const dHash = sha256('oneway-d');
 
     // One-way scenario: D attests C
-    agentRepo.insert(makeAgent('oneway-c', { total_transactions: 50 }));
-    agentRepo.insert(makeAgent('oneway-d', { total_transactions: 50, avg_score: 70, first_seen: NOW - 180 * DAY }));
+    await agentRepo.insert(makeAgent('oneway-c', { total_transactions: 50 }));
+    await agentRepo.insert(makeAgent('oneway-d', { total_transactions: 50, avg_score: 70, first_seen: NOW - 180 * DAY }));
     const txCD = makeTx(dHash, cHash);
-    txRepo.insert(txCD);
-    attestationRepo.insert(makeAttestation(dHash, cHash, txCD.tx_id, { score: 90, timestamp: NOW - DAY }));
+    await txRepo.insert(txCD);
+    await attestationRepo.insert(makeAttestation(dHash, cHash, txCD.tx_id, { score: 90, timestamp: NOW - DAY }));
 
     // Mutual scenario: A attests B AND B attests A
-    agentRepo.insert(makeAgent('mutual-a', { total_transactions: 50 }));
-    agentRepo.insert(makeAgent('mutual-b', { total_transactions: 50, avg_score: 70, first_seen: NOW - 180 * DAY }));
+    await agentRepo.insert(makeAgent('mutual-a', { total_transactions: 50 }));
+    await agentRepo.insert(makeAgent('mutual-b', { total_transactions: 50, avg_score: 70, first_seen: NOW - 180 * DAY }));
     const txAB = makeTx(aHash, bHash);
     const txBA = makeTx(bHash, aHash);
-    txRepo.insert(txAB);
-    txRepo.insert(txBA);
-    attestationRepo.insert(makeAttestation(bHash, aHash, txAB.tx_id, { score: 90, timestamp: NOW - DAY }));
-    attestationRepo.insert(makeAttestation(aHash, bHash, txBA.tx_id, { score: 90, timestamp: NOW - DAY }));
+    await txRepo.insert(txAB);
+    await txRepo.insert(txBA);
+    await attestationRepo.insert(makeAttestation(bHash, aHash, txAB.tx_id, { score: 90, timestamp: NOW - DAY }));
+    await attestationRepo.insert(makeAttestation(aHash, bHash, txBA.tx_id, { score: 90, timestamp: NOW - DAY }));
 
-    const mutual = scoring.computeScore(aHash);
-    const oneway = scoring.computeScore(cHash);
+    const mutual = await scoring.computeScore(aHash);
+    const oneway = await scoring.computeScore(cHash);
 
     expect(mutual.components.reputation).toBeLessThan(oneway.components.reputation);
   });
 
   // --- Popularity ---
 
-  it('popularity bonus at query_count 0 is exactly 0', () => {
-    agentRepo.insert(makeAgent('no-queries', {
+  it('popularity bonus at query_count 0 is exactly 0', async () => {
+    await agentRepo.insert(makeAgent('no-queries', {
       source: 'lightning_graph',
       total_transactions: 100,
       query_count: 0,
     }));
 
-    const result = scoring.computeScore(sha256('no-queries'));
+    const result = await scoring.computeScore(sha256('no-queries'));
     // With 0 queries, the popularity bonus should not have been added
     // Compute base score — standard weights (no renormalization)
     const c = result.components;
@@ -318,28 +319,28 @@ describe('Scoring properties', () => {
 
   // --- Edge cases ---
 
-  it('brand new agent with zero data scores between 0 and 15', () => {
-    agentRepo.insert(makeAgent('empty-agent', {
+  it('brand new agent with zero data scores between 0 and 15', async () => {
+    await agentRepo.insert(makeAgent('empty-agent', {
       first_seen: NOW - DAY,
       last_seen: NOW,
       total_transactions: 0,
     }));
 
-    const result = scoring.computeScore(sha256('empty-agent'));
+    const result = await scoring.computeScore(sha256('empty-agent'));
     expect(result.total).toBeGreaterThanOrEqual(0);
     expect(result.total).toBeLessThanOrEqual(15);
     expect(result.confidence).toBe('very_low');
   });
 
-  it('maximal Lightning agent scores > 85', () => {
+  it('maximal Lightning agent scores > 85', async () => {
     // Insert another agent with fewer channels to establish maxChannels reference
-    agentRepo.insert(makeAgent('ref-node', {
+    await agentRepo.insert(makeAgent('ref-node', {
       source: 'lightning_graph',
       total_transactions: 50,
       first_seen: NOW - 365 * DAY,
     }));
 
-    agentRepo.insert(makeAgent('max-agent', {
+    await agentRepo.insert(makeAgent('max-agent', {
       source: 'lightning_graph',
       total_transactions: 1500,
       positive_ratings: 100,
@@ -352,12 +353,12 @@ describe('Scoring properties', () => {
       betweenness_rank: 1,
     }));
 
-    const result = scoring.computeScore(sha256('max-agent'));
+    const result = await scoring.computeScore(sha256('max-agent'));
     expect(result.total).toBeGreaterThan(85);
   });
 
-  it('score components are deterministic for same input', () => {
-    agentRepo.insert(makeAgent('deterministic', {
+  it('score components are deterministic for same input', async () => {
+    await agentRepo.insert(makeAgent('deterministic', {
       source: 'lightning_graph',
       total_transactions: 200,
       positive_ratings: 30,
@@ -368,23 +369,23 @@ describe('Scoring properties', () => {
     }));
 
     const hash = sha256('deterministic');
-    const first = scoring.computeScore(hash);
+    const first = await scoring.computeScore(hash);
 
     // Clear snapshot cache so it recomputes
-    db.exec('DELETE FROM score_snapshots');
+    await db.query('DELETE FROM score_snapshots');
 
-    const second = scoring.computeScore(hash);
+    const second = await scoring.computeScore(hash);
 
     expect(first.components).toEqual(second.components);
     expect(first.total).toBe(second.total);
   });
 
-  it('positive/negative ratio no longer affects total score (LN+ bonus deprecated 2026-04-16)', () => {
+  it('positive/negative ratio no longer affects total score (LN+ bonus deprecated 2026-04-16)', async () => {
     // LN+ positive ratings used to drive a ×1.0-1.05 post-composite multiplier
     // but the scoring audit flagged them as near-noise (r=0.25 with Reputation,
     // 14% coverage). With the multiplier removed, two agents identical in every
     // objective dimension should score the same regardless of their LN+ ratio.
-    agentRepo.insert(makeAgent('good-ratio', {
+    await agentRepo.insert(makeAgent('good-ratio', {
       source: 'lightning_graph',
       total_transactions: 100,
       capacity_sats: 1_000_000_000, // 10 BTC, 100 ch
@@ -393,7 +394,7 @@ describe('Scoring properties', () => {
       lnplus_rank: 5,
       first_seen: NOW - 365 * DAY,
     }));
-    agentRepo.insert(makeAgent('bad-ratio', {
+    await agentRepo.insert(makeAgent('bad-ratio', {
       source: 'lightning_graph',
       total_transactions: 100,
       capacity_sats: 1_000_000_000,
@@ -403,8 +404,8 @@ describe('Scoring properties', () => {
       first_seen: NOW - 365 * DAY,
     }));
 
-    const good = scoring.computeScore(sha256('good-ratio'));
-    const bad = scoring.computeScore(sha256('bad-ratio'));
+    const good = await scoring.computeScore(sha256('good-ratio'));
+    const bad = await scoring.computeScore(sha256('bad-ratio'));
 
     // Same reputation component (same centrality + peer trust)
     expect(good.components.reputation).toBe(bad.components.reputation);

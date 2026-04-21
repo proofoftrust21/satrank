@@ -7,8 +7,8 @@
 //   - exception publisher → 'publish_failed'
 //   - template kind 5 avec e-tag et k-tag corrects
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { NostrPublishedEventsRepository } from '../repositories/nostrPublishedEventsRepository';
 import {
   NostrDeletionService,
@@ -16,6 +16,7 @@ import {
   KIND_DELETION_REQUEST,
 } from '../nostr/nostrDeletionService';
 import type { NostrMultiKindPublisher, PublishResult } from '../nostr/nostrMultiKindPublisher';
+let testDb: TestDb;
 
 class StubPublisher {
   calls: Array<{ template: { kind: number; tags: string[][]; content: string } }> = [];
@@ -40,8 +41,8 @@ class StubPublisher {
   }
 }
 
-function seedCacheRow(repo: NostrPublishedEventsRepository): void {
-  repo.recordPublished({
+async function seedCacheRow(repo: NostrPublishedEventsRepository): void {
+  await repo.recordPublished({
     entityType: 'endpoint',
     entityId: 'urlhash-aaa',
     eventId: 'e'.repeat(64),
@@ -56,7 +57,7 @@ function seedCacheRow(repo: NostrPublishedEventsRepository): void {
 }
 
 describe('buildDeletionRequest', () => {
-  it('produit un kind 5 avec e-tag et k-tag', () => {
+  it('produit un kind 5 avec e-tag et k-tag', async () => {
     const template = buildDeletionRequest('abc123', 30383, 1700000000, 'test reason');
     expect(template.kind).toBe(KIND_DELETION_REQUEST);
     expect(template.kind).toBe(5);
@@ -66,37 +67,37 @@ describe('buildDeletionRequest', () => {
     expect(template.tags).toContainEqual(['k', '30383']);
   });
 
-  it('content vide par défaut', () => {
+  it('content vide par défaut', async () => {
     const template = buildDeletionRequest('abc', 30382, 1700000000);
     expect(template.content).toBe('');
   });
 });
 
-describe('NostrDeletionService', () => {
-  let db: Database.Database;
+describe('NostrDeletionService', async () => {
+  let db: Pool;
   let repo: NostrPublishedEventsRepository;
   let publisher: StubPublisher;
   let service: NostrDeletionService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     repo = new NostrPublishedEventsRepository(db);
     publisher = new StubPublisher();
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
   it('flag OFF → skipped_disabled, cache intact', async () => {
     service = new NostrDeletionService(publisher as unknown as NostrMultiKindPublisher, repo, false);
-    seedCacheRow(repo);
+    await seedCacheRow(repo);
 
     const result = await service.requestDeletion('endpoint', 'urlhash-aaa', 1700000000);
     expect(result.status).toBe('skipped_disabled');
     expect(result.deletionEventId).toBeNull();
     expect(publisher.calls).toHaveLength(0);
-    expect(repo.getLastPublished('endpoint', 'urlhash-aaa')).not.toBeNull();
+    expect(await repo.getLastPublished('endpoint', 'urlhash-aaa')).not.toBeNull();
   });
 
   it('entité inconnue → skipped_unknown, pas d\'appel publisher', async () => {
@@ -109,7 +110,7 @@ describe('NostrDeletionService', () => {
 
   it('publish OK → cache purgée + statut published', async () => {
     service = new NostrDeletionService(publisher as unknown as NostrMultiKindPublisher, repo, true);
-    seedCacheRow(repo);
+    await seedCacheRow(repo);
 
     const result = await service.requestDeletion('endpoint', 'urlhash-aaa', 1700000000, { reason: 'compromised key' });
 
@@ -121,37 +122,37 @@ describe('NostrDeletionService', () => {
     expect(publisher.calls[0].template.tags).toContainEqual(['e', 'e'.repeat(64)]);
     expect(publisher.calls[0].template.tags).toContainEqual(['k', '30383']);
     expect(publisher.calls[0].template.content).toBe('compromised key');
-    expect(repo.getLastPublished('endpoint', 'urlhash-aaa')).toBeNull();
+    expect(await repo.getLastPublished('endpoint', 'urlhash-aaa')).toBeNull();
   });
 
   it('publish sans ack → publish_failed, cache conservée', async () => {
     service = new NostrDeletionService(publisher as unknown as NostrMultiKindPublisher, repo, true);
-    seedCacheRow(repo);
+    await seedCacheRow(repo);
     publisher.nextShouldFail = true;
 
     const result = await service.requestDeletion('endpoint', 'urlhash-aaa', 1700000000);
 
     expect(result.status).toBe('publish_failed');
-    expect(repo.getLastPublished('endpoint', 'urlhash-aaa')).not.toBeNull();
+    expect(await repo.getLastPublished('endpoint', 'urlhash-aaa')).not.toBeNull();
   });
 
   it('exception publisher → publish_failed, pas de crash', async () => {
     service = new NostrDeletionService(publisher as unknown as NostrMultiKindPublisher, repo, true);
-    seedCacheRow(repo);
+    await seedCacheRow(repo);
     publisher.nextShouldThrow = true;
 
     const result = await service.requestDeletion('endpoint', 'urlhash-aaa', 1700000000);
     expect(result.status).toBe('publish_failed');
-    expect(repo.getLastPublished('endpoint', 'urlhash-aaa')).not.toBeNull();
+    expect(await repo.getLastPublished('endpoint', 'urlhash-aaa')).not.toBeNull();
   });
 
   it('requestDeletionByEventId trouve via lookup event_id', async () => {
     service = new NostrDeletionService(publisher as unknown as NostrMultiKindPublisher, repo, true);
-    seedCacheRow(repo);
+    await seedCacheRow(repo);
 
     const result = await service.requestDeletionByEventId('e'.repeat(64), 1700000000);
     expect(result.status).toBe('published');
-    expect(repo.findByEventId('e'.repeat(64))).toBeNull();
+    expect(await repo.findByEventId('e'.repeat(64))).toBeNull();
   });
 
   it('requestDeletionByEventId → skipped_unknown pour event inconnu', async () => {
@@ -164,7 +165,7 @@ describe('NostrDeletionService', () => {
 
   it('préserve la symétrie : flag OFF peut devenir ON sans code change', async () => {
     service = new NostrDeletionService(publisher as unknown as NostrMultiKindPublisher, repo, false);
-    seedCacheRow(repo);
+    await seedCacheRow(repo);
     const r1 = await service.requestDeletion('endpoint', 'urlhash-aaa', 1700000000);
     expect(r1.status).toBe('skipped_disabled');
 

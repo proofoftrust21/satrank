@@ -4,9 +4,9 @@
 // aggregates+window et ne sont plus appelées (le verdict service calcule
 // ses posteriors par source directement depuis streaming_posteriors).
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, type TestDb } from './helpers/testDatabase';
 import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
@@ -30,47 +30,49 @@ import {
   WEIGHT_REPORT_HIGH,
   WEIGHT_REPORT_NIP98,
 } from '../config/bayesianConfig';
+let testDb: TestDb;
 
-function makeService() {
-  const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
-  const svc = new BayesianScoringService(
-    new EndpointStreamingPosteriorRepository(db),
-    new ServiceStreamingPosteriorRepository(db),
-    new OperatorStreamingPosteriorRepository(db),
-    new NodeStreamingPosteriorRepository(db),
-    new RouteStreamingPosteriorRepository(db),
-    new EndpointDailyBucketsRepository(db),
-    new ServiceDailyBucketsRepository(db),
-    new OperatorDailyBucketsRepository(db),
-    new NodeDailyBucketsRepository(db),
-    new RouteDailyBucketsRepository(db),
-  );
-  return { db, svc };
-}
+describe('weightForSource', async () => {
+  let pool: Pool;
+  let svc: BayesianScoringService;
 
-describe('weightForSource', () => {
-  let env: ReturnType<typeof makeService>;
-  beforeEach(() => { env = makeService(); });
-  afterEach(() => { env.db.close(); });
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    svc = new BayesianScoringService(
+      new EndpointStreamingPosteriorRepository(pool),
+      new ServiceStreamingPosteriorRepository(pool),
+      new OperatorStreamingPosteriorRepository(pool),
+      new NodeStreamingPosteriorRepository(pool),
+      new RouteStreamingPosteriorRepository(pool),
+      new EndpointDailyBucketsRepository(pool),
+      new ServiceDailyBucketsRepository(pool),
+      new OperatorDailyBucketsRepository(pool),
+      new NodeDailyBucketsRepository(pool),
+      new RouteDailyBucketsRepository(pool),
+    );
+  });
+
+  afterAll(async () => {
+    await teardownTestPool(testDb);
+  });
 
   it('probe = 1.0', () => {
-    expect(env.svc.weightForSource('probe')).toBe(WEIGHT_SOVEREIGN_PROBE);
+    expect(svc.weightForSource('probe')).toBe(WEIGHT_SOVEREIGN_PROBE);
   });
 
   it('paid = 2.0 (le plus cher → le plus fort signal)', () => {
-    expect(env.svc.weightForSource('paid')).toBe(WEIGHT_PAID_PROBE);
+    expect(svc.weightForSource('paid')).toBe(WEIGHT_PAID_PROBE);
   });
 
   it('report tiers : low/medium/high/nip98 = 0.3/0.5/0.7/1.0', () => {
-    expect(env.svc.weightForSource('report', 'low')).toBe(WEIGHT_REPORT_LOW);
-    expect(env.svc.weightForSource('report', 'medium')).toBe(WEIGHT_REPORT_MEDIUM);
-    expect(env.svc.weightForSource('report', 'high')).toBe(WEIGHT_REPORT_HIGH);
-    expect(env.svc.weightForSource('report', 'nip98')).toBe(WEIGHT_REPORT_NIP98);
+    expect(svc.weightForSource('report', 'low')).toBe(WEIGHT_REPORT_LOW);
+    expect(svc.weightForSource('report', 'medium')).toBe(WEIGHT_REPORT_MEDIUM);
+    expect(svc.weightForSource('report', 'high')).toBe(WEIGHT_REPORT_HIGH);
+    expect(svc.weightForSource('report', 'nip98')).toBe(WEIGHT_REPORT_NIP98);
   });
 
   it('report sans tier → low (défaut le plus prudent)', () => {
-    expect(env.svc.weightForSource('report')).toBe(WEIGHT_REPORT_LOW);
+    expect(svc.weightForSource('report')).toBe(WEIGHT_REPORT_LOW);
   });
 });

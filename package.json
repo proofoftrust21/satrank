@@ -28,6 +28,7 @@
     "bayesian:prune": "tsx src/scripts/pruneBayesianRetention.ts",
     "bayesian:prune:prod": "node dist/scripts/pruneBayesianRetention.js",
     "demo": "tsx src/scripts/attestationDemo.ts",
+    "seed:bootstrap": "tsx src/scripts/seedBootstrap.ts",
     "nostr:verify": "tsx scripts/nostr-verify.ts",
     "nostr:publish-10040": "tsx scripts/nostr-publish-10040.ts",
     "lint": "tsc --noEmit",

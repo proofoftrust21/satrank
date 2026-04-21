@@ -1,7 +1,7 @@
 // Shared factory for tests that need a BayesianVerdictService.
 // Keeps the wiring in one place so signature changes to BayesianScoringService
 // propagate in a single edit instead of across ~20 test files.
-import type { Database } from 'better-sqlite3';
+import type { Pool, PoolClient } from 'pg';
 import {
   BayesianScoringService,
   type StreamingIngestionInput,
@@ -23,10 +23,12 @@ import {
 } from '../../repositories/dailyBucketsRepository';
 import { sha256 } from '../../utils/crypto';
 
+type Queryable = Pool | PoolClient;
+
 /** Construit un BayesianScoringService test-friendly (tous les 10 repos câblés
  *  sur la même DB). Utilisé par les tests qui ont besoin d'ingérer directement
  *  via `ingestStreaming` sans passer par les crawlers. */
-export function createBayesianScoringService(db: Database): BayesianScoringService {
+export function createBayesianScoringService(db: Queryable): BayesianScoringService {
   return new BayesianScoringService(
     new EndpointStreamingPosteriorRepository(db),
     new ServiceStreamingPosteriorRepository(db),
@@ -45,14 +47,14 @@ export function createBayesianScoringService(db: Database): BayesianScoringServi
  *  (un seul call wire l'ensemble streaming_posteriors + daily_buckets).
  *  À utiliser depuis les tests qui veulent seed un posterior sans passer
  *  par les crawlers ou par la table `transactions`. */
-export function ingestBayesianObservation(
-  db: Database,
+export async function ingestBayesianObservation(
+  db: Queryable,
   input: StreamingIngestionInput,
-): void {
-  createBayesianScoringService(db).ingestStreaming(input);
+): Promise<void> {
+  await createBayesianScoringService(db).ingestStreaming(input);
 }
 
-export function createBayesianVerdictService(db: Database): BayesianVerdictService {
+export function createBayesianVerdictService(db: Queryable): BayesianVerdictService {
   const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(db);
   const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(db);
   const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(db);
@@ -68,7 +70,7 @@ export function createBayesianVerdictService(db: Database): BayesianVerdictServi
     endpointBucketsRepo, serviceBucketsRepo, operatorBucketsRepo, nodeBucketsRepo, routeBucketsRepo,
   );
   return new BayesianVerdictService(
-    db, bayesianScoringService, endpointStreamingRepo, endpointBucketsRepo,
+    bayesianScoringService, endpointStreamingRepo, endpointBucketsRepo,
   );
 }
 
@@ -80,38 +82,44 @@ export function createBayesianVerdictService(db: Database): BayesianVerdictServi
  *
  *  Writes both transactions (legacy compat for tests that still read raw rows)
  *  AND streaming_posteriors (the new verdict source since C9). */
-export function seedSafeBayesianObservations(
-  db: Database,
+export async function seedSafeBayesianObservations(
+  db: Queryable,
   targetHash: string,
   options: { now?: number; nProbe?: number; nReport?: number } = {},
-): void {
+): Promise<void> {
   const now = options.now ?? Math.floor(Date.now() / 1000);
   const nProbe = options.nProbe ?? 30;
   const nReport = options.nReport ?? 30;
 
   const callerHash = sha256(`bayes-caller-${targetHash.slice(0, 8)}`);
-  db.prepare(`
-    INSERT OR IGNORE INTO agents (public_key_hash, first_seen, last_seen, source)
-    VALUES (?, ?, ?, 'manual')
-  `).run(callerHash, now - 365 * 86400, now);
+  await db.query(
+    `INSERT INTO agents (public_key_hash, first_seen, last_seen, source)
+     VALUES ($1, $2, $3, 'manual')
+     ON CONFLICT (public_key_hash) DO NOTHING`,
+    [callerHash, now - 365 * 86400, now],
+  );
 
-  const insert = db.prepare(`
-    INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol, endpoint_hash, source)
-    VALUES (?, ?, ?, 'small', ?, ?, 'verified', 'l402', ?, ?)
-  `);
   for (let i = 0; i < nProbe; i++) {
     const txId = `bayes-probe-${targetHash.slice(0, 8)}-${i}`;
-    insert.run(txId, callerHash, targetHash, now - i * 60, sha256(txId), targetHash, 'probe');
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol, endpoint_hash, source)
+       VALUES ($1, $2, $3, 'small', $4, $5, 'verified', 'l402', $6, $7)`,
+      [txId, callerHash, targetHash, now - i * 60, sha256(txId), targetHash, 'probe'],
+    );
   }
   for (let i = 0; i < nReport; i++) {
     const txId = `bayes-report-${targetHash.slice(0, 8)}-${i}`;
-    insert.run(txId, callerHash, targetHash, now - i * 60, sha256(txId), targetHash, 'report');
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol, endpoint_hash, source)
+       VALUES ($1, $2, $3, 'small', $4, $5, 'verified', 'l402', $6, $7)`,
+      [txId, callerHash, targetHash, now - i * 60, sha256(txId), targetHash, 'report'],
+    );
   }
 
   // Streaming path — direct ingest par le scoring service pour avoir posteriors + buckets.
   const scoring = createBayesianScoringService(db);
   for (let i = 0; i < nProbe; i++) {
-    scoring.ingestStreaming({
+    await scoring.ingestStreaming({
       success: true,
       timestamp: now - i * 60,
       source: 'probe',
@@ -119,7 +127,7 @@ export function seedSafeBayesianObservations(
     });
   }
   for (let i = 0; i < nReport; i++) {
-    scoring.ingestStreaming({
+    await scoring.ingestStreaming({
       success: true,
       timestamp: now - i * 60,
       source: 'report',
