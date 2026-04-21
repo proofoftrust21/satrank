@@ -1,0 +1,114 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "liveNow": false,
+  "schemaVersion": 39,
+  "tags": ["satrank", "phase-12a", "logs"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "All", "value": "$__all"},
+        "datasource": {"type": "loki", "uid": "loki"},
+        "definition": "label_values(host)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "host",
+        "multi": true,
+        "name": "host",
+        "options": [],
+        "query": "label_values(host)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "SatRank — Logs (Phase 12A)",
+  "uid": "satrank-logs-p12a",
+  "version": 1,
+  "weekStart": "",
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Nginx request rate (5xx)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "expr": "sum by (host) (rate({job=\"nginx\", host=~\"$host\"} |~ \" 5\\\\d\\\\d \" [1m]))",
+          "legendFormat": "{{host}} 5xx",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "title": "Nginx request rate (4xx)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "expr": "sum by (host) (rate({job=\"nginx\", host=~\"$host\"} |~ \" 4\\\\d\\\\d \" [1m]))",
+          "legendFormat": "{{host}} 4xx",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
+    },
+    {
+      "id": 3,
+      "title": "Nginx total request rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "expr": "sum by (host) (rate({job=\"nginx\", host=~\"$host\"}[1m]))",
+          "legendFormat": "{{host}} total",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
+    },
+    {
+      "id": 4,
+      "title": "Docker container log rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "expr": "sum by (stream, host) (rate({job=\"docker\", host=~\"$host\"}[1m]))",
+          "legendFormat": "{{host}} {{stream}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "logs/s"}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "title": "Error lines tail (docker + nginx)",
+      "type": "logs",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 24},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "expr": "{host=~\"$host\"} |~ \"(?i)error|panic|fatal|traceback\"",
+          "refId": "A"
+        }
+      ],
+      "options": {"showTime": true, "enableLogDetails": true, "sortOrder": "Descending", "wrapLogMessage": false}
+    }
+  ]
+}

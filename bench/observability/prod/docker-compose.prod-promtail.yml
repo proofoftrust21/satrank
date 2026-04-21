@@ -1,0 +1,20 @@
+# Promtail-only stack on prod — pushes nginx logs to staging Loki.
+# Deploy via bench/observability/deploy-prod-promtail.sh ONLY after explicit
+# validation (this service is the ONE authorized prod-side daemon in Phase 12A).
+services:
+  promtail-prod:
+    image: grafana/promtail:3.3.0
+    container_name: ptail-prod
+    volumes:
+      - ./promtail-prod.yml:/etc/promtail/config.yml:ro
+      - /var/log/nginx:/var/log/nginx:ro
+      - /var/log:/var/log:ro
+      - promtail-prod-positions:/var/lib/promtail
+    command: -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
+    # Push target = staging Loki. IP set via env at deploy time.
+    environment:
+      - STAGING_LOKI_URL=${STAGING_LOKI_URL:-http://178.104.142.150:3100}
+
+volumes:
+  promtail-prod-positions:

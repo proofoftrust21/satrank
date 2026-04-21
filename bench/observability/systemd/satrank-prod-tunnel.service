@@ -1,0 +1,22 @@
+[Unit]
+Description=SSH tunnel staging:18080 -> prod 127.0.0.1:8080 (SatRank /metrics scrape)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/ssh \
+  -NT \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/root/.ssh/known_hosts \
+  -L 0.0.0.0:18080:127.0.0.1:8080 \
+  root@178.104.108.108
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
