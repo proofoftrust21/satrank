@@ -400,6 +400,7 @@ export function createApp() {
     legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
     message: 'Too many metrics requests',
+    skip: () => config.L402_BYPASS,
     handler: (req, res, _next, options) => {
       rateLimitHits.inc({ limiter: 'metrics' });
       res.status(options.statusCode).end('Too many metrics requests');
@@ -457,6 +458,7 @@ export function createApp() {
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    skip: () => config.L402_BYPASS,
     message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
     // handler fires AFTER the limiter has decided to reject. Counting here
     // gives us a per-limiter 429 count that HTTP status metrics can't
@@ -502,6 +504,7 @@ export function createApp() {
   const versionRateLimit = rateLimit({
     windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    skip: () => config.L402_BYPASS,
     message: { error: { code: 'RATE_LIMITED', message: 'Too many version requests, please try again later' } },
     handler: (req, res, _next, options) => {
       rateLimitHits.inc({ limiter: 'version' });
@@ -514,6 +517,7 @@ export function createApp() {
   const discoveryRateLimit = rateLimit({
     windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false,
     keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    skip: () => config.L402_BYPASS,
     message: { error: { code: 'RATE_LIMITED', message: 'Too many discovery requests, please try again later' } },
     handler: (req, res, _next, options) => {
       rateLimitHits.inc({ limiter: 'discovery' });

@@ -79,6 +79,54 @@ After iteration with Romain:
 - Prod observability via: (a) nginx access logs through promtail,
   (b) A6 smoke test (iso-charge replay for calibration).
 
+## L402_BYPASS scope extended (A5 prep)
+
+On first staging smoke (5 RPS / 30 s on `/api/health`), every request got
+HTTP 429 because:
+
+- `apiRateLimit` defaults to 100 req/min/IP (`RATE_LIMIT_MAX=100`,
+  `RATE_LIMIT_WINDOW_MS=60000` — zod defaults).
+- `discoveryRateLimit` is hard-coded to **10 req/min/IP**
+  (`src/app.ts:514`).
+- `versionRateLimit` is hard-coded to 60 req/min/IP.
+- `metricsRateLimit` is hard-coded to 30 req/min/IP.
+
+Every k6 VU in the bench shares one source IP (the staging VM itself),
+so these ceilings make the bench measure the rate limiter and not the
+server.
+
+**Change:** added `skip: () => config.L402_BYPASS` to all four limiters
+in `src/app.ts`. Fail-safe remains the L402_BYPASS double-gate
+(REFUSED if `NODE_ENV=production` + `L402_BYPASS=true`), so this cannot
+be activated in prod.
+
+Alternatives considered:
+- Expose `RATE_LIMIT_*` env knobs for every limiter : larger config
+  surface, same runtime effect.
+- Trust-proxy + `X-Forwarded-For` spoof : would bypass the per-IP key
+  generator but distort the observed 429 telemetry. Rejected.
+
+A5 palier runs measure server behaviour without the limiter in the
+critical path; prod path keeps the limiter intact.
+
+## Staging DB clone ownership — out-of-band fix
+
+The prod DB clone landed at `/var/lib/satrank/satrank.db` during A0
+owned by `root:root`. The staging api container runs as
+`satrank` (UID 1001, `Dockerfile` line ~26), and better-sqlite3's
+`PRAGMA journal_mode = WAL` needs write access to the DB file →
+"attempt to write a readonly database" crash loop on first start.
+
+Fix applied on the staging VM (not tracked in git — ephemeral bench
+artifact):
+
+```
+chown -R 1001:1001 /var/lib/satrank/
+```
+
+Document in the bench runbook so the A0 script for future reruns does
+this at clone time instead of post-hoc.
+
 ## Open questions to address in A7
 
 - [ ] How much of prod's baseline can we infer from nginx logs alone?
