@@ -89,7 +89,7 @@ export class Crawler {
 
       for (const event of dedupedEvents) {
         try {
-          const indexed = this.indexEvent(event);
+          const indexed = await this.indexEvent(event);
           if (indexed.newTx) result.newTransactions++;
           result.newAgents += indexed.newAgents;
         } catch (err: unknown) {
@@ -115,9 +115,9 @@ export class Crawler {
     return result;
   }
 
-  private indexEvent(
+  private async indexEvent(
     event: ObserverEvent,
-  ): { newTx: boolean; newAgents: number } {
+  ): Promise<{ newTx: boolean; newAgents: number }> {
     const validated = observerEventSchema.safeParse(event);
     if (!validated.success) {
       throw new Error(`Invalid Observer data: ${validated.error.errors.map(e => e.message).join(', ')}`);
@@ -131,7 +131,7 @@ export class Crawler {
     }
 
     // Deduplicate by transaction_hash (our tx_id)
-    const existing = this.txRepo.findById(ev.transaction_hash);
+    const existing = await this.txRepo.findById(ev.transaction_hash);
     if (existing) {
       return { newTx: false, newAgents: 0 };
     }
@@ -143,13 +143,13 @@ export class Crawler {
 
     // Derive agent hash from alias
     const agentHash = sha256(ev.agent_alias);
-    newAgents += this.ensureAgent(agentHash, ev.agent_alias, timestamp);
+    newAgents += await this.ensureAgent(agentHash, ev.agent_alias, timestamp);
 
     // Derive counterparty hash
     const counterpartyHash = ev.counterparty_id
       ? sha256(ev.counterparty_id)
       : sha256(`unknown-${ev.transaction_hash}`);
-    newAgents += this.ensureAgent(counterpartyHash, null, timestamp);
+    newAgents += await this.ensureAgent(counterpartyHash, null, timestamp);
 
     // Direction determines sender/receiver
     const senderHash = ev.direction === 'outbound' ? agentHash : counterpartyHash;
@@ -159,7 +159,7 @@ export class Crawler {
     // the operator pubkey, so those two columns are NULL by contract. Source
     // tag distinguishes Observer-ingested rows from probe/report/intent so the
     // Phase 3 aggregator can weight them. window_bucket is UTC YYYY-MM-DD.
-    this.txRepo.insertWithDualWrite(
+    await this.txRepo.insertWithDualWrite(
       {
         tx_id: ev.transaction_hash,
         sender_hash: senderHash,
@@ -190,7 +190,7 @@ export class Crawler {
     // n'est pas disponible côté Observer, on bump sur le receiver_hash comme
     // proxy d'activité — cohérent avec le modèle agent-centric d'Observer.
     if (this.bayesian) {
-      this.bayesian.ingestStreaming({
+      await this.bayesian.ingestStreaming({
         success: ev.verified,
         timestamp,
         source: 'observer',
@@ -198,23 +198,26 @@ export class Crawler {
       });
     }
 
-    this.updateAgentActivity(senderHash, timestamp);
-    this.updateAgentActivity(receiverHash, timestamp);
+    await this.updateAgentActivity(senderHash, timestamp);
+    await this.updateAgentActivity(receiverHash, timestamp);
 
     return { newTx: true, newAgents };
   }
 
-  private ensureAgent(publicKeyHash: string, alias: string | null, eventTimestamp: number): number {
-    const existing = this.agentRepo.findByHash(publicKeyHash);
+  private async ensureAgent(publicKeyHash: string, alias: string | null, eventTimestamp: number): Promise<number> {
+    // TOCTOU fix: pre-check before idempotent INSERT. agentRepo.insert uses
+    // ON CONFLICT DO NOTHING so parallel crawlers never raise. First-sighting
+    // side effects (newAgents counter, debug log) gated on the pre-check result.
+    const existing = await this.agentRepo.findByHash(publicKeyHash);
     if (existing) {
       // Update alias if we now have one and the agent didn't before
       if (alias && !existing.alias) {
-        this.agentRepo.updateAlias(publicKeyHash, alias);
+        await this.agentRepo.updateAlias(publicKeyHash, alias);
       }
       return 0;
     }
 
-    this.agentRepo.insert({
+    await this.agentRepo.insert({
       public_key_hash: publicKeyHash,
       public_key: null,
       alias,
@@ -240,13 +243,13 @@ export class Crawler {
     return 1;
   }
 
-  private updateAgentActivity(agentHash: string, timestamp: number): void {
-    const agent = this.agentRepo.findByHash(agentHash);
+  private async updateAgentActivity(agentHash: string, timestamp: number): Promise<void> {
+    const agent = await this.agentRepo.findByHash(agentHash);
     if (!agent) return;
 
     const newFirstSeen = Math.min(agent.first_seen, timestamp);
     const newLastSeen = Math.max(agent.last_seen, timestamp);
-    this.agentRepo.updateStats(
+    await this.agentRepo.updateStats(
       agentHash,
       agent.total_transactions + 1,
       agent.total_attestations_received,

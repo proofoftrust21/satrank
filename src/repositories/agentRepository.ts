@@ -1,278 +1,340 @@
-// Data access for the agents table
-import type Database from 'better-sqlite3';
+// Data access for the agents table (pg async port, Phase 12B).
+import type { Pool, PoolClient } from 'pg';
 import type { Agent } from '../types';
 import { dbQueryDuration } from '../middleware/metrics';
 
-/** Time a DB call against the `satrank_db_query_duration_seconds` histogram.
- *  Kept inline here (not in a shared utility) so the hot path stays a single
- *  function-call level of indirection — the histogram `.startTimer()` returns
- *  a closure that ends the timer on invocation. */
-function timed<T>(repo: string, method: string, fn: () => T): T {
+/** Either a Pool (autocommit) or a PoolClient (inside withTransaction).
+ *  pg exposes `.query()` on both with the same signature, so we accept either. */
+type Queryable = Pool | PoolClient;
+
+/** Time a DB call against the `satrank_db_query_duration_seconds` histogram. */
+async function timed<T>(repo: string, method: string, fn: () => Promise<T>): Promise<T> {
   const endTimer = dbQueryDuration.startTimer({ repo, method });
   try {
-    return fn();
+    return await fn();
   } finally {
     endTimer();
   }
 }
 
 export class AgentRepository {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Queryable) {}
 
-  findByHash(hash: string): Agent | undefined {
-    return this.db.prepare('SELECT * FROM agents WHERE public_key_hash = ?').get(hash) as Agent | undefined;
+  async findByHash(hash: string): Promise<Agent | undefined> {
+    const { rows } = await this.db.query<Agent>('SELECT * FROM agents WHERE public_key_hash = $1', [hash]);
+    return rows[0];
   }
 
-  findByPubkey(pubkey: string): Agent | undefined {
-    return this.db.prepare('SELECT * FROM agents WHERE public_key = ?').get(pubkey) as Agent | undefined;
+  async findByPubkey(pubkey: string): Promise<Agent | undefined> {
+    const { rows } = await this.db.query<Agent>('SELECT * FROM agents WHERE public_key = $1', [pubkey]);
+    return rows[0];
   }
 
-  findAll(limit: number, offset: number): Agent[] {
-    return this.db.prepare('SELECT * FROM agents WHERE stale = 0 ORDER BY avg_score DESC LIMIT ? OFFSET ?').all(limit, offset) as Agent[];
+  async findAll(limit: number, offset: number): Promise<Agent[]> {
+    const { rows } = await this.db.query<Agent>(
+      'SELECT * FROM agents WHERE stale = 0 ORDER BY avg_score DESC LIMIT $1 OFFSET $2',
+      [limit, offset],
+    );
+    return rows;
   }
 
-  findByHashes(hashes: string[]): Agent[] {
+  async findByHashes(hashes: string[]): Promise<Agent[]> {
     if (hashes.length === 0) return [];
     if (hashes.length > 500) throw new Error('findByHashes: array exceeds 500 elements');
-    const placeholders = hashes.map(() => '?').join(',');
-    // Direct hash lookup — stale filter intentionally omitted so fossils can still be revived via explicit lookup
-    return this.db.prepare(`SELECT * FROM agents WHERE public_key_hash IN (${placeholders})`).all(...hashes) as Agent[];
-  }
-
-  findByExactAlias(alias: string): Agent | undefined {
-    // Direct alias lookup used for cross-source consolidation — stale filter omitted on purpose
-    return this.db.prepare('SELECT * FROM agents WHERE alias = ? LIMIT 1').get(alias) as Agent | undefined;
-  }
-
-  findTopByScore(limit: number, offset: number): Agent[] {
-    return timed('agent', 'findTopByScore', () =>
-      this.db.prepare('SELECT * FROM agents WHERE stale = 0 ORDER BY avg_score DESC LIMIT ? OFFSET ?').all(limit, offset) as Agent[],
+    const { rows } = await this.db.query<Agent>(
+      'SELECT * FROM agents WHERE public_key_hash = ANY($1::text[])',
+      [hashes],
     );
+    return rows;
   }
 
-  findTopByActivity(limit: number): Agent[] {
-    return this.db.prepare('SELECT * FROM agents WHERE stale = 0 ORDER BY total_transactions DESC LIMIT ?').all(limit) as Agent[];
+  async findByExactAlias(alias: string): Promise<Agent | undefined> {
+    const { rows } = await this.db.query<Agent>('SELECT * FROM agents WHERE alias = $1 LIMIT 1', [alias]);
+    return rows[0];
+  }
+
+  async findTopByScore(limit: number, offset: number): Promise<Agent[]> {
+    return timed('agent', 'findTopByScore', async () => {
+      const { rows } = await this.db.query<Agent>(
+        'SELECT * FROM agents WHERE stale = 0 ORDER BY avg_score DESC LIMIT $1 OFFSET $2',
+        [limit, offset],
+      );
+      return rows;
+    });
+  }
+
+  async findTopByActivity(limit: number): Promise<Agent[]> {
+    const { rows } = await this.db.query<Agent>(
+      'SELECT * FROM agents WHERE stale = 0 ORDER BY total_transactions DESC LIMIT $1',
+      [limit],
+    );
+    return rows;
   }
 
   /** Returns all agents that have scorable data (capacity, LN+ ratings, transactions, or attestations)
    *  but currently have avg_score = 0. Used for bulk scoring after crawls. */
-  findUnscoredWithData(): Agent[] {
-    return this.db.prepare(`
+  async findUnscoredWithData(): Promise<Agent[]> {
+    const { rows } = await this.db.query<Agent>(`
       SELECT * FROM agents
       WHERE stale = 0
         AND avg_score = 0
         AND (capacity_sats > 0 OR lnplus_rank > 0 OR positive_ratings > 0
              OR total_transactions > 1 OR total_attestations_received > 0)
-    `).all() as Agent[];
+    `);
+    return rows;
   }
 
-  findScoredAbove(minScore: number): Agent[] {
-    return this.db.prepare('SELECT * FROM agents WHERE stale = 0 AND avg_score >= ? ORDER BY avg_score DESC').all(minScore) as Agent[];
+  async findScoredAbove(minScore: number): Promise<Agent[]> {
+    const { rows } = await this.db.query<Agent>(
+      'SELECT * FROM agents WHERE stale = 0 AND avg_score >= $1 ORDER BY avg_score DESC',
+      [minScore],
+    );
+    return rows;
   }
 
   /** Returns all agents that have been scored (avg_score > 0) for periodic rescore. */
-  findScoredAgents(): Agent[] {
-    return this.db.prepare('SELECT * FROM agents WHERE stale = 0 AND avg_score > 0').all() as Agent[];
+  async findScoredAgents(): Promise<Agent[]> {
+    const { rows } = await this.db.query<Agent>('SELECT * FROM agents WHERE stale = 0 AND avg_score > 0');
+    return rows;
   }
 
-  /** Count of agents with scorable data but avg_score = 0 */
-  countUnscoredWithData(): number {
-    const row = this.db.prepare(`
-      SELECT COUNT(*) as count FROM agents
+  async countUnscoredWithData(): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(`
+      SELECT COUNT(*)::text AS count FROM agents
       WHERE stale = 0
         AND avg_score = 0
         AND (capacity_sats > 0 OR lnplus_rank > 0 OR positive_ratings > 0
              OR total_transactions > 1 OR total_attestations_received > 0)
-    `).get() as { count: number };
-    return row.count;
+    `);
+    return Number(rows[0]?.count ?? 0);
   }
 
-  searchByAlias(alias: string, limit: number, offset: number): Agent[] {
+  async searchByAlias(alias: string, limit: number, offset: number): Promise<Agent[]> {
     const escaped = alias.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-    return this.db.prepare(
-      "SELECT * FROM agents WHERE stale = 0 AND alias LIKE ? ESCAPE '\\' ORDER BY avg_score DESC LIMIT ? OFFSET ?"
-    ).all(`%${escaped}%`, limit, offset) as Agent[];
+    const { rows } = await this.db.query<Agent>(
+      "SELECT * FROM agents WHERE stale = 0 AND alias LIKE $1 ESCAPE '\\' ORDER BY avg_score DESC LIMIT $2 OFFSET $3",
+      [`%${escaped}%`, limit, offset],
+    );
+    return rows;
   }
 
-  countBySource(source: string): number {
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM agents WHERE stale = 0 AND source = ?').get(source) as { count: number };
-    return row.count;
+  async countBySource(source: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM agents WHERE stale = 0 AND source = $1',
+      [source],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  countByAlias(alias: string): number {
+  async countByAlias(alias: string): Promise<number> {
     const escaped = alias.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-    const row = this.db.prepare(
-      "SELECT COUNT(*) as count FROM agents WHERE stale = 0 AND alias LIKE ? ESCAPE '\\'"
-    ).get(`%${escaped}%`) as { count: number };
-    return row.count;
+    const { rows } = await this.db.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM agents WHERE stale = 0 AND alias LIKE $1 ESCAPE '\\'",
+      [`%${escaped}%`],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
   /** Count of active (non-stale) agents. Fossils are excluded. */
-  count(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM agents WHERE stale = 0').get() as { count: number };
-    return row.count;
+  async count(): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM agents WHERE stale = 0',
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  /** Count of all agents including fossils — use for ops/debug only. */
-  countIncludingStale(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
-    return row.count;
+  async countIncludingStale(): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM agents',
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  /** Count of stale (fossil) agents — for ops visibility. */
-  countStale(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM agents WHERE stale = 1').get() as { count: number };
-    return row.count;
+  async countStale(): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM agents WHERE stale = 1',
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  insert(agent: Agent): void {
-    // unique_peers is nullable and defaults to undefined on older test helpers;
-    // coerce to null so SQLite stores a clean NULL (the diversity formula treats
-    // NULL as "fall back to capacity-based scoring", same as 0).
-    this.db.prepare(`
-      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source, total_transactions, total_attestations_received, avg_score, capacity_sats, positive_ratings, negative_ratings, lnplus_rank, hubness_rank, betweenness_rank, hopness_rank, query_count, unique_peers)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      agent.public_key_hash, agent.public_key, agent.alias, agent.first_seen, agent.last_seen, agent.source,
-      agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats,
-      agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.hubness_rank,
-      agent.betweenness_rank, agent.hopness_rank, agent.query_count,
-      agent.unique_peers ?? null,
+  async insert(agent: Agent): Promise<void> {
+    // unique_peers is nullable; coerce undefined → null so pg stores a clean NULL.
+    // Use ON CONFLICT DO NOTHING to make the insert idempotent under concurrent crawler
+    // workers (see docs/phase-12b/CRAWLER-RACE-CHECK.md — H1/H2/H3 TOCTOU fix).
+    await this.db.query(
+      `
+      INSERT INTO agents (
+        public_key_hash, public_key, alias, first_seen, last_seen, source,
+        total_transactions, total_attestations_received, avg_score, capacity_sats,
+        positive_ratings, negative_ratings, lnplus_rank, hubness_rank,
+        betweenness_rank, hopness_rank, query_count, unique_peers
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      ON CONFLICT (public_key_hash) DO NOTHING
+      `,
+      [
+        agent.public_key_hash, agent.public_key, agent.alias, agent.first_seen, agent.last_seen, agent.source,
+        agent.total_transactions, agent.total_attestations_received, agent.avg_score, agent.capacity_sats,
+        agent.positive_ratings, agent.negative_ratings, agent.lnplus_rank, agent.hubness_rank,
+        agent.betweenness_rank, agent.hopness_rank, agent.query_count,
+        agent.unique_peers ?? null,
+      ],
     );
   }
 
-  maxChannels(): number {
-    const row = this.db.prepare(
-      "SELECT MAX(total_transactions) as max FROM agents WHERE stale = 0 AND source = 'lightning_graph'"
-    ).get() as { max: number | null };
-    return row.max ?? 0;
+  async maxChannels(): Promise<number> {
+    const { rows } = await this.db.query<{ max: number | null }>(
+      "SELECT MAX(total_transactions) AS max FROM agents WHERE stale = 0 AND source = 'lightning_graph'",
+    );
+    return rows[0]?.max ?? 0;
   }
 
-  avgScore(): number {
-    const row = this.db.prepare('SELECT ROUND(AVG(avg_score), 1) as avg FROM agents WHERE stale = 0 AND avg_score > 0').get() as { avg: number | null };
-    return row.avg ?? 0;
+  async avgScore(): Promise<number> {
+    const { rows } = await this.db.query<{ avg: string | null }>(
+      'SELECT ROUND(AVG(avg_score)::numeric, 1)::text AS avg FROM agents WHERE stale = 0 AND avg_score > 0',
+    );
+    return Number(rows[0]?.avg ?? 0);
   }
 
-  /** Total channels across all active lightning_graph agents */
-  sumChannels(): number {
-    const row = this.db.prepare(
-      "SELECT COALESCE(SUM(total_transactions), 0) as total FROM agents WHERE stale = 0 AND source = 'lightning_graph'"
-    ).get() as { total: number };
-    return row.total;
+  async sumChannels(): Promise<number> {
+    const { rows } = await this.db.query<{ total: string }>(
+      "SELECT COALESCE(SUM(total_transactions), 0)::text AS total FROM agents WHERE stale = 0 AND source = 'lightning_graph'",
+    );
+    return Number(rows[0]?.total ?? 0);
   }
 
-  /** Count of active agents with LN+ ratings (lnplus_rank > 0) */
-  countWithRatings(): number {
-    const row = this.db.prepare(
-      'SELECT COUNT(*) as count FROM agents WHERE stale = 0 AND lnplus_rank > 0'
-    ).get() as { count: number };
-    return row.count;
+  async countWithRatings(): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM agents WHERE stale = 0 AND lnplus_rank > 0',
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  /** Total active network capacity in BTC */
-  networkCapacityBtc(): number {
-    const row = this.db.prepare(
-      'SELECT COALESCE(SUM(capacity_sats), 0) as total FROM agents WHERE stale = 0 AND capacity_sats > 0'
-    ).get() as { total: number };
-    return Math.round((row.total / 100_000_000) * 10) / 10;
+  async networkCapacityBtc(): Promise<number> {
+    const { rows } = await this.db.query<{ total: string }>(
+      'SELECT COALESCE(SUM(capacity_sats), 0)::text AS total FROM agents WHERE stale = 0 AND capacity_sats > 0',
+    );
+    const total = Number(rows[0]?.total ?? 0);
+    return Math.round((total / 100_000_000) * 10) / 10;
   }
 
-  /** Recompute the stale flag for every agent based on last_seen.
-   *  Invariant after this call: stale == 1 iff last_seen < (now - maxAgeSec).
-   *  Returns the number of rows whose stale value changed. */
-  markStaleByAge(maxAgeSec: number): number {
+  async markStaleByAge(maxAgeSec: number): Promise<number> {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
-    const result = this.db.prepare(`
+    const result = await this.db.query(
+      `
       UPDATE agents
-      SET stale = CASE WHEN last_seen < ? THEN 1 ELSE 0 END
-      WHERE stale != CASE WHEN last_seen < ? THEN 1 ELSE 0 END
-    `).run(cutoff, cutoff);
-    return result.changes;
+      SET stale = CASE WHEN last_seen < $1 THEN 1 ELSE 0 END
+      WHERE stale != CASE WHEN last_seen < $2 THEN 1 ELSE 0 END
+      `,
+      [cutoff, cutoff],
+    );
+    return result.rowCount ?? 0;
   }
 
-  updateAlias(hash: string, alias: string): void {
-    this.db.prepare('UPDATE agents SET alias = ? WHERE public_key_hash = ?').run(alias, hash);
+  async updateAlias(hash: string, alias: string): Promise<void> {
+    await this.db.query('UPDATE agents SET alias = $1 WHERE public_key_hash = $2', [alias, hash]);
   }
 
-  /** Stale cutoff threshold used by update methods — keeps the stale invariant in sync with last_seen. */
   private staleCutoff(): number {
     return Math.floor(Date.now() / 1000) - 90 * 86400;
   }
 
-  updateStats(hash: string, totalTx: number, totalAttestations: number, avgScore: number, firstSeen: number, lastSeen: number): void {
+  async updateStats(
+    hash: string, totalTx: number, totalAttestations: number, avgScore: number, firstSeen: number, lastSeen: number,
+  ): Promise<void> {
     const cutoff = this.staleCutoff();
-    this.db.prepare(`
+    await this.db.query(
+      `
       UPDATE agents
-      SET total_transactions = ?, total_attestations_received = ?, avg_score = ?, first_seen = ?, last_seen = ?,
-          stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
-      WHERE public_key_hash = ?
-    `).run(totalTx, totalAttestations, avgScore, firstSeen, lastSeen, lastSeen, cutoff, hash);
+      SET total_transactions = $1, total_attestations_received = $2, avg_score = $3,
+          first_seen = $4, last_seen = $5,
+          stale = CASE WHEN $6 >= $7 THEN 0 ELSE 1 END
+      WHERE public_key_hash = $8
+      `,
+      [totalTx, totalAttestations, avgScore, firstSeen, lastSeen, lastSeen, cutoff, hash],
+    );
   }
 
-  updateCapacity(hash: string, capacitySats: number, lastSeen: number): void {
-    // last_seen moves forward only; stale is recomputed against the effective (MAX) last_seen
+  async updateCapacity(hash: string, capacitySats: number, lastSeen: number): Promise<void> {
     const cutoff = this.staleCutoff();
-    this.db.prepare(`
+    await this.db.query(
+      `
       UPDATE agents
-      SET capacity_sats = ?, last_seen = MAX(last_seen, ?),
-          stale = CASE WHEN MAX(last_seen, ?) >= ? THEN 0 ELSE 1 END
-      WHERE public_key_hash = ?
-    `).run(capacitySats, lastSeen, lastSeen, cutoff, hash);
+      SET capacity_sats = $1,
+          last_seen = GREATEST(last_seen, $2),
+          stale = CASE WHEN GREATEST(last_seen, $3) >= $4 THEN 0 ELSE 1 END
+      WHERE public_key_hash = $5
+      `,
+      [capacitySats, lastSeen, lastSeen, cutoff, hash],
+    );
   }
 
-  updateLightningStats(hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number, uniquePeers?: number, disabledChannels?: number): void {
+  async updateLightningStats(
+    hash: string, channels: number, capacitySats: number, alias: string, lastSeen: number,
+    uniquePeers?: number, disabledChannels?: number,
+  ): Promise<void> {
     const cutoff = this.staleCutoff();
     if (uniquePeers !== undefined && uniquePeers > 0) {
-      // Schema v28 guarantees unique_peers + disabled_channels columns exist;
-      // the prior try/catch fallback is dead code and has been removed.
-      this.db.prepare(`
+      await this.db.query(
+        `
         UPDATE agents
-        SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?, unique_peers = ?,
-            disabled_channels = ?,
-            stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
-        WHERE public_key_hash = ?
-      `).run(channels, capacitySats, alias, lastSeen, uniquePeers, disabledChannels ?? 0, lastSeen, cutoff, hash);
+        SET total_transactions = $1, capacity_sats = $2, alias = $3, last_seen = $4,
+            unique_peers = $5, disabled_channels = $6,
+            stale = CASE WHEN $7 >= $8 THEN 0 ELSE 1 END
+        WHERE public_key_hash = $9
+        `,
+        [channels, capacitySats, alias, lastSeen, uniquePeers, disabledChannels ?? 0, lastSeen, cutoff, hash],
+      );
       return;
     }
-    this.db.prepare(`
+    await this.db.query(
+      `
       UPDATE agents
-      SET total_transactions = ?, capacity_sats = ?, alias = ?, last_seen = ?,
-          stale = CASE WHEN ? >= ? THEN 0 ELSE 1 END
-      WHERE public_key_hash = ?
-    `).run(channels, capacitySats, alias, lastSeen, lastSeen, cutoff, hash);
+      SET total_transactions = $1, capacity_sats = $2, alias = $3, last_seen = $4,
+          stale = CASE WHEN $5 >= $6 THEN 0 ELSE 1 END
+      WHERE public_key_hash = $7
+      `,
+      [channels, capacitySats, alias, lastSeen, lastSeen, cutoff, hash],
+    );
   }
 
-  updatePublicKey(hash: string, publicKey: string): void {
-    this.db.prepare('UPDATE agents SET public_key = ? WHERE public_key_hash = ?').run(publicKey, hash);
+  async updatePublicKey(hash: string, publicKey: string): Promise<void> {
+    await this.db.query('UPDATE agents SET public_key = $1 WHERE public_key_hash = $2', [publicKey, hash]);
   }
 
-  updatePageRankBatch(scores: Map<string, number>): void {
-    const stmt = this.db.prepare('UPDATE agents SET pagerank_score = ? WHERE public_key = ?');
-    const tx = this.db.transaction((entries: [string, number][]) => {
-      for (const [pubkey, score] of entries) {
-        stmt.run(score, pubkey);
-      }
-    });
-    tx(Array.from(scores.entries()));
+  /** Caller is responsible for wrapping in withTransaction if atomicity is needed.
+   *  We loop inside a single query-per-pair; the UPDATE row lock is sufficient. */
+  async updatePageRankBatch(scores: Map<string, number>): Promise<void> {
+    for (const [pubkey, score] of scores) {
+      await this.db.query('UPDATE agents SET pagerank_score = $1 WHERE public_key = $2', [score, pubkey]);
+    }
   }
 
-  updateLnplusRatings(hash: string, positiveRatings: number, negativeRatings: number, lnplusRank: number, hubnessRank: number, betweennessRank: number, hopnessRank: number): void {
-    this.db.prepare(`
-      UPDATE agents SET positive_ratings = ?, negative_ratings = ?, lnplus_rank = ?, hubness_rank = ?, betweenness_rank = ?, hopness_rank = ?
-      WHERE public_key_hash = ?
-    `).run(positiveRatings, negativeRatings, lnplusRank, hubnessRank, betweennessRank, hopnessRank, hash);
+  async updateLnplusRatings(
+    hash: string, positiveRatings: number, negativeRatings: number,
+    lnplusRank: number, hubnessRank: number, betweennessRank: number, hopnessRank: number,
+  ): Promise<void> {
+    await this.db.query(
+      `
+      UPDATE agents
+      SET positive_ratings = $1, negative_ratings = $2, lnplus_rank = $3,
+          hubness_rank = $4, betweenness_rank = $5, hopness_rank = $6
+      WHERE public_key_hash = $7
+      `,
+      [positiveRatings, negativeRatings, lnplusRank, hubnessRank, betweennessRank, hopnessRank, hash],
+    );
   }
 
-  findLightningAgentsWithPubkey(): Agent[] {
-    return this.db.prepare(
-      "SELECT * FROM agents WHERE stale = 0 AND source = 'lightning_graph' AND public_key IS NOT NULL"
-    ).all() as Agent[];
+  async findLightningAgentsWithPubkey(): Promise<Agent[]> {
+    const { rows } = await this.db.query<Agent>(
+      "SELECT * FROM agents WHERE stale = 0 AND source = 'lightning_graph' AND public_key IS NOT NULL",
+    );
+    return rows;
   }
 
-  /** Returns LN+ crawl candidates: agents already with LN+ data OR top N by capacity.
-   *  Avoids querying all 16k+ nodes — most small nodes don't have LN+ profiles. */
-  findLnplusCandidates(topCapacityLimit: number): Agent[] {
-    return this.db.prepare(`
+  async findLnplusCandidates(topCapacityLimit: number): Promise<Agent[]> {
+    const { rows } = await this.db.query<Agent>(
+      `
       SELECT * FROM agents
       WHERE stale = 0 AND source = 'lightning_graph' AND public_key IS NOT NULL
         AND (
@@ -282,67 +344,87 @@ export class AgentRepository {
             SELECT public_key_hash FROM agents
             WHERE stale = 0 AND source = 'lightning_graph' AND capacity_sats > 0
             ORDER BY capacity_sats DESC
-            LIMIT ?
+            LIMIT $1
           )
         )
-    `).all(topCapacityLimit) as Agent[];
+      `,
+      [topCapacityLimit],
+    );
+    return rows;
   }
 
-  incrementQueryCount(hash: string): void {
-    this.db.prepare('UPDATE agents SET query_count = query_count + 1 WHERE public_key_hash = ?').run(hash);
+  async incrementQueryCount(hash: string): Promise<void> {
+    await this.db.query(
+      'UPDATE agents SET query_count = query_count + 1 WHERE public_key_hash = $1',
+      [hash],
+    );
   }
 
-  touchLastQueried(hash: string): void {
-    this.db.prepare('UPDATE agents SET last_queried_at = ? WHERE public_key_hash = ?').run(Math.floor(Date.now() / 1000), hash);
+  async touchLastQueried(hash: string): Promise<void> {
+    await this.db.query(
+      'UPDATE agents SET last_queried_at = $1 WHERE public_key_hash = $2',
+      [Math.floor(Date.now() / 1000), hash],
+    );
   }
 
-  findHotNodes(withinSec: number): Agent[] {
+  async findHotNodes(withinSec: number): Promise<Agent[]> {
     const cutoff = Math.floor(Date.now() / 1000) - withinSec;
-    return this.db.prepare(
-      "SELECT * FROM agents WHERE stale = 0 AND last_queried_at >= ? AND public_key IS NOT NULL AND source = 'lightning_graph' ORDER BY last_queried_at DESC"
-    ).all(cutoff) as Agent[];
+    const { rows } = await this.db.query<Agent>(
+      "SELECT * FROM agents WHERE stale = 0 AND last_queried_at >= $1 AND public_key IS NOT NULL AND source = 'lightning_graph' ORDER BY last_queried_at DESC",
+      [cutoff],
+    );
+    return rows;
   }
 
-  /** Atomic SQL increment — avoids read-modify-write race (C3) */
-  incrementTotalTransactions(hash: string): void {
-    this.db.prepare('UPDATE agents SET total_transactions = total_transactions + 1 WHERE public_key_hash = ?').run(hash);
+  /** Atomic SQL increment — avoids read-modify-write race. */
+  async incrementTotalTransactions(hash: string): Promise<void> {
+    await this.db.query(
+      'UPDATE agents SET total_transactions = total_transactions + 1 WHERE public_key_hash = $1',
+      [hash],
+    );
   }
 
-  /** H1: narrow update — only refreshes attestation count, leaves avg_score for periodic scoring */
-  updateAttestationCount(hash: string, totalAttestations: number): void {
-    this.db.prepare('UPDATE agents SET total_attestations_received = ? WHERE public_key_hash = ?').run(totalAttestations, hash);
+  async updateAttestationCount(hash: string, totalAttestations: number): Promise<void> {
+    await this.db.query(
+      'UPDATE agents SET total_attestations_received = $1 WHERE public_key_hash = $2',
+      [totalAttestations, hash],
+    );
   }
 
-  /** Rank of an agent by avg_score (1-based, null if not found or stale).
-   *  C1: checks existence first to avoid returning rank 1 for nonexistent agents.
-   *  Rank is computed against active (non-stale) agents only. */
-  getRank(hash: string): number | null {
-    const exists = this.db.prepare('SELECT stale FROM agents WHERE public_key_hash = ?').get(hash) as { stale: number } | undefined;
+  async getRank(hash: string): Promise<number | null> {
+    const { rows: existsRows } = await this.db.query<{ stale: number }>(
+      'SELECT stale FROM agents WHERE public_key_hash = $1',
+      [hash],
+    );
+    const exists = existsRows[0];
     if (!exists) return null;
     if (exists.stale === 1) return null;
-    const row = this.db.prepare(`
-      SELECT COUNT(*) + 1 as rank FROM agents WHERE stale = 0 AND avg_score > (
-        SELECT avg_score FROM agents WHERE public_key_hash = ?
+    const { rows } = await this.db.query<{ rank: string }>(
+      `
+      SELECT (COUNT(*) + 1)::text AS rank FROM agents WHERE stale = 0 AND avg_score > (
+        SELECT avg_score FROM agents WHERE public_key_hash = $1
       )
-    `).get(hash) as { rank: number };
-    return row.rank;
+      `,
+      [hash],
+    );
+    return Number(rows[0]?.rank ?? 1);
   }
 
-  /** Batch version of getRank — 1 SQL query instead of 2N.
-   *  Returns rank for each non-stale agent in the input list. */
-  getRanks(hashes: string[]): Map<string, number> {
+  async getRanks(hashes: string[]): Promise<Map<string, number>> {
     if (hashes.length === 0) return new Map();
     if (hashes.length > 500) throw new Error('getRanks: array exceeds 500 elements');
-    const placeholders = hashes.map(() => '?').join(',');
-    const rows = this.db.prepare(`
+    const { rows } = await this.db.query<{ public_key_hash: string; rank: string }>(
+      `
       SELECT public_key_hash, (
         SELECT COUNT(*) + 1 FROM agents WHERE stale = 0 AND avg_score > a.avg_score
-      ) as rank
+      )::text AS rank
       FROM agents a
-      WHERE stale = 0 AND public_key_hash IN (${placeholders})
-    `).all(...hashes) as Array<{ public_key_hash: string; rank: number }>;
+      WHERE stale = 0 AND public_key_hash = ANY($1::text[])
+      `,
+      [hashes],
+    );
     const result = new Map<string, number>();
-    for (const row of rows) result.set(row.public_key_hash, row.rank);
+    for (const row of rows) result.set(row.public_key_hash, Number(row.rank));
     return result;
   }
 }

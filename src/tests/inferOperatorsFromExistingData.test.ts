@@ -10,153 +10,145 @@
 //   - dry-run : summary correct mais aucune écriture
 //   - agents sans public_key valide → pas de claim node
 //   - edge case : aucune transaction → no-op summary
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { inferOperatorsFromExistingData } from '../scripts/inferOperatorsFromExistingData';
 import { OperatorRepository, OperatorOwnershipRepository } from '../repositories/operatorRepository';
 import { endpointHash } from '../utils/urlCanonical';
 import { sha256 } from '../utils/crypto';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 
-interface Ctx {
-  db: Database.Database;
-  operators: OperatorRepository;
-  ownerships: OperatorOwnershipRepository;
-}
-
-function setup(): Ctx {
-  const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
-  return {
-    db,
-    operators: new OperatorRepository(db),
-    ownerships: new OperatorOwnershipRepository(db),
-  };
-}
-
-function insertAgent(
-  db: Database.Database,
+async function insertAgent(
+  pool: Pool,
   opts: { publicKey: string; alias?: string; firstSeen?: number },
-): string {
+): Promise<string> {
   const hash = sha256(opts.publicKey);
-  db.prepare(`
-    INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source,
-                        total_transactions, total_attestations_received, avg_score)
-    VALUES (?, ?, ?, ?, ?, 'lightning_graph', 0, 0, 0)
-  `).run(
-    hash,
-    opts.publicKey,
-    opts.alias ?? null,
-    opts.firstSeen ?? NOW - 86400,
-    NOW,
+  await pool.query(
+    `INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source,
+                         total_transactions, total_attestations_received, avg_score)
+     VALUES ($1, $2, $3, $4, $5, 'lightning_graph', 0, 0, 0)`,
+    [hash, opts.publicKey, opts.alias ?? null, opts.firstSeen ?? NOW - 86400, NOW],
   );
   return hash;
 }
 
-function insertTx(
-  db: Database.Database,
+async function insertTx(
+  pool: Pool,
   opts: { operatorId: string; senderHash: string; receiverHash: string; timestamp: number },
-): void {
+): Promise<void> {
   const id = 'tx-' + Math.random().toString(36).slice(2, 12);
-  db.prepare(`
-    INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
-                              payment_hash, preimage, status, protocol, operator_id)
-    VALUES (?, ?, ?, 'medium', ?, ?, NULL, 'verified', 'l402', ?)
-  `).run(
-    id,
-    opts.senderHash,
-    opts.receiverHash,
-    opts.timestamp,
-    'p'.repeat(64),
-    opts.operatorId,
+  await pool.query(
+    `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+                               payment_hash, preimage, status, protocol, operator_id)
+     VALUES ($1, $2, $3, 'medium', $4, $5, NULL, 'verified', 'l402', $6)`,
+    [id, opts.senderHash, opts.receiverHash, opts.timestamp, 'p'.repeat(64), opts.operatorId],
   );
 }
 
-function insertServiceEndpoint(
-  db: Database.Database,
+async function insertServiceEndpoint(
+  pool: Pool,
   opts: { agentHash: string; url: string },
-): void {
-  db.prepare(`
-    INSERT INTO service_endpoints (agent_hash, url, created_at, source)
-    VALUES (?, ?, ?, 'self_registered')
-  `).run(opts.agentHash, opts.url, NOW);
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO service_endpoints (agent_hash, url, created_at, source)
+     VALUES ($1, $2, $3, 'self_registered')`,
+    [opts.agentHash, opts.url, NOW],
+  );
 }
 
-describe('inferOperatorsFromExistingData', () => {
-  let ctx: Ctx;
-  beforeEach(() => { ctx = setup(); });
-  afterEach(() => ctx.db.close());
+describe('inferOperatorsFromExistingData', async () => {
+  let pool: Pool;
+  let operators: OperatorRepository;
+  let ownerships: OperatorOwnershipRepository;
 
-  it('no-op summary quand aucune transaction', () => {
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    operators = new OperatorRepository(pool);
+    ownerships = new OperatorOwnershipRepository(pool);
+  });
+
+  afterAll(async () => {
+    await teardownTestPool(testDb);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(pool);
+  });
+
+  it('no-op summary quand aucune transaction', async () => {
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(summary.protoOperatorsScanned).toBe(0);
     expect(summary.operatorsCreated).toBe(0);
   });
 
-  it('crée un operator pending pour chaque proto-operator distinct', () => {
+  it('crée un operator pending pour chaque proto-operator distinct', async () => {
     const pk1 = '02' + 'a'.repeat(64);
     const pk2 = '03' + 'b'.repeat(64);
-    const hash1 = insertAgent(ctx.db, { publicKey: pk1, alias: 'node-1' });
-    const hash2 = insertAgent(ctx.db, { publicKey: pk2, alias: 'node-2' });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64), alias: 'sender' });
+    const hash1 = await insertAgent(pool, { publicKey: pk1, alias: 'node-1' });
+    const hash2 = await insertAgent(pool, { publicKey: pk2, alias: 'node-2' });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64), alias: 'sender' });
 
-    insertTx(ctx.db, { operatorId: hash1, senderHash: sender, receiverHash: hash1, timestamp: NOW - 3600 });
-    insertTx(ctx.db, { operatorId: hash1, senderHash: sender, receiverHash: hash1, timestamp: NOW - 1800 });
-    insertTx(ctx.db, { operatorId: hash2, senderHash: sender, receiverHash: hash2, timestamp: NOW - 7200 });
+    await insertTx(pool, { operatorId: hash1, senderHash: sender, receiverHash: hash1, timestamp: NOW - 3600 });
+    await insertTx(pool, { operatorId: hash1, senderHash: sender, receiverHash: hash1, timestamp: NOW - 1800 });
+    await insertTx(pool, { operatorId: hash2, senderHash: sender, receiverHash: hash2, timestamp: NOW - 7200 });
 
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(summary.protoOperatorsScanned).toBe(2);
     expect(summary.operatorsCreated).toBe(2);
     expect(summary.operatorsAlreadyExisting).toBe(0);
 
-    const op1 = ctx.operators.findById(hash1);
+    const op1 = await operators.findById(hash1);
     expect(op1?.status).toBe('pending');
     expect(op1?.first_seen).toBe(NOW - 3600);
   });
 
-  it('claim node ownership via agents.public_key', () => {
+  it('claim node ownership via agents.public_key', async () => {
     const pk = '02' + 'a'.repeat(64);
-    const hash = insertAgent(ctx.db, { publicKey: pk });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW - 100 });
+    const hash = await insertAgent(pool, { publicKey: pk });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW - 100 });
 
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(summary.nodeOwnershipsClaimed).toBe(1);
 
-    const nodes = ctx.ownerships.listNodes(hash);
+    const nodes = await ownerships.listNodes(hash);
     expect(nodes).toHaveLength(1);
     expect(nodes[0].node_pubkey).toBe(pk);
   });
 
-  it('link agents.operator_id', () => {
+  it('link agents.operator_id', async () => {
     const pk = '02' + 'a'.repeat(64);
-    const hash = insertAgent(ctx.db, { publicKey: pk });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
+    const hash = await insertAgent(pool, { publicKey: pk });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
 
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(summary.agentsLinked).toBe(1);
 
-    const agent = ctx.db.prepare('SELECT operator_id FROM agents WHERE public_key_hash = ?').get(hash) as { operator_id: string };
-    expect(agent.operator_id).toBe(hash);
+    const { rows } = await pool.query<{ operator_id: string }>(
+      'SELECT operator_id FROM agents WHERE public_key_hash = $1',
+      [hash],
+    );
+    expect(rows[0].operator_id).toBe(hash);
   });
 
-  it('claim endpoint ownership via service_endpoints.url', () => {
+  it('claim endpoint ownership via service_endpoints.url', async () => {
     const pk = '02' + 'a'.repeat(64);
-    const hash = insertAgent(ctx.db, { publicKey: pk });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
-    insertServiceEndpoint(ctx.db, { agentHash: hash, url: 'https://api1.example.com/l402' });
-    insertServiceEndpoint(ctx.db, { agentHash: hash, url: 'https://api2.example.com/l402' });
+    const hash = await insertAgent(pool, { publicKey: pk });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
+    await insertServiceEndpoint(pool, { agentHash: hash, url: 'https://api1.example.com/l402' });
+    await insertServiceEndpoint(pool, { agentHash: hash, url: 'https://api2.example.com/l402' });
 
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(summary.endpointOwnershipsClaimed).toBe(2);
     expect(summary.serviceEndpointsLinked).toBe(2);
 
-    const endpoints = ctx.ownerships.listEndpoints(hash);
+    const endpoints = await ownerships.listEndpoints(hash);
     expect(endpoints).toHaveLength(2);
     const hashes = endpoints.map((e) => e.url_hash).sort();
     const expected = [
@@ -166,88 +158,89 @@ describe('inferOperatorsFromExistingData', () => {
     expect(hashes).toEqual(expected);
   });
 
-  it('idempotent sur re-run', () => {
+  it('idempotent sur re-run', async () => {
     const pk = '02' + 'a'.repeat(64);
-    const hash = insertAgent(ctx.db, { publicKey: pk });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
-    insertServiceEndpoint(ctx.db, { agentHash: hash, url: 'https://api.example.com/l402' });
+    const hash = await insertAgent(pool, { publicKey: pk });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
+    await insertServiceEndpoint(pool, { agentHash: hash, url: 'https://api.example.com/l402' });
 
-    const first = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const first = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(first.operatorsCreated).toBe(1);
     expect(first.nodeOwnershipsClaimed).toBe(1);
     expect(first.endpointOwnershipsClaimed).toBe(1);
 
-    const second = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const second = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(second.protoOperatorsScanned).toBe(1);
     expect(second.operatorsAlreadyExisting).toBe(1);
     expect(second.operatorsCreated).toBe(0);
     // Les claim* sont ON CONFLICT DO NOTHING — l'incrément nodeOwnershipsClaimed
     // reflète les tentatives, pas les INSERTs réels. L'état DB reste stable.
-    const nodes = ctx.ownerships.listNodes(hash);
+    const nodes = await ownerships.listNodes(hash);
     expect(nodes).toHaveLength(1);
-    const endpoints = ctx.ownerships.listEndpoints(hash);
+    const endpoints = await ownerships.listEndpoints(hash);
     expect(endpoints).toHaveLength(1);
   });
 
-  it('dry-run : summary rempli mais rien n\'est écrit', () => {
+  it('dry-run : summary rempli mais rien n\'est écrit', async () => {
     const pk = '02' + 'a'.repeat(64);
-    const hash = insertAgent(ctx.db, { publicKey: pk });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
-    insertServiceEndpoint(ctx.db, { agentHash: hash, url: 'https://api.example.com/l402' });
+    const hash = await insertAgent(pool, { publicKey: pk });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
+    await insertServiceEndpoint(pool, { agentHash: hash, url: 'https://api.example.com/l402' });
 
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW, dryRun: true });
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW, dryRun: true });
     expect(summary.protoOperatorsScanned).toBe(1);
     expect(summary.operatorsCreated).toBe(1);
     expect(summary.nodeOwnershipsClaimed).toBe(1);
     expect(summary.endpointOwnershipsClaimed).toBe(1);
 
     // Aucun effet en base malgré le summary.
-    expect(ctx.operators.findById(hash)).toBeNull();
-    expect(ctx.ownerships.listNodes(hash)).toHaveLength(0);
-    expect(ctx.ownerships.listEndpoints(hash)).toHaveLength(0);
+    expect(await operators.findById(hash)).toBeNull();
+    expect(await ownerships.listNodes(hash)).toHaveLength(0);
+    expect(await ownerships.listEndpoints(hash)).toHaveLength(0);
   });
 
-  it('agents sans public_key valide → pas de claim node', () => {
+  it('agents sans public_key valide → pas de claim node', async () => {
     // Insérer un agent avec public_key=NULL (edge case legacy).
     const hash = 'f'.repeat(64);
-    ctx.db.prepare(`
-      INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source,
-                          total_transactions, total_attestations_received, avg_score)
-      VALUES (?, NULL, NULL, ?, ?, 'lightning_graph', 0, 0, 0)
-    `).run(hash, NOW - 86400, NOW);
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
+    await pool.query(
+      `INSERT INTO agents (public_key_hash, public_key, alias, first_seen, last_seen, source,
+                           total_transactions, total_attestations_received, avg_score)
+       VALUES ($1, NULL, NULL, $2, $3, 'lightning_graph', 0, 0, 0)`,
+      [hash, NOW - 86400, NOW],
+    );
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
 
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW });
     expect(summary.operatorsCreated).toBe(1);
     expect(summary.nodeOwnershipsClaimed).toBe(0);
     expect(summary.agentsLinked).toBe(0);
   });
 
-  it('last_activity bump à max(timestamp) des transactions', () => {
+  it('last_activity bump à max(timestamp) des transactions', async () => {
     const pk = '02' + 'a'.repeat(64);
-    const hash = insertAgent(ctx.db, { publicKey: pk });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW - 10000 });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW - 500 });
+    const hash = await insertAgent(pool, { publicKey: pk });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW - 10000 });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW - 500 });
 
-    inferOperatorsFromExistingData(ctx.db, { now: NOW });
-    const op = ctx.operators.findById(hash);
+    await inferOperatorsFromExistingData(pool, { now: NOW });
+    const op = await operators.findById(hash);
     expect(op?.first_seen).toBe(NOW - 10000);
     expect(op?.last_activity).toBe(NOW - 500);
   });
 
-  it('skip URLs malformées sans crash', () => {
+  it('skip URLs malformées sans crash', async () => {
     const pk = '02' + 'a'.repeat(64);
-    const hash = insertAgent(ctx.db, { publicKey: pk });
-    const sender = insertAgent(ctx.db, { publicKey: '02' + 'c'.repeat(64) });
-    insertTx(ctx.db, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
-    insertServiceEndpoint(ctx.db, { agentHash: hash, url: 'not-a-valid-url' });
-    insertServiceEndpoint(ctx.db, { agentHash: hash, url: 'https://api.example.com/l402' });
+    const hash = await insertAgent(pool, { publicKey: pk });
+    const sender = await insertAgent(pool, { publicKey: '02' + 'c'.repeat(64) });
+    await insertTx(pool, { operatorId: hash, senderHash: sender, receiverHash: hash, timestamp: NOW });
+    await insertServiceEndpoint(pool, { agentHash: hash, url: 'not-a-valid-url' });
+    await insertServiceEndpoint(pool, { agentHash: hash, url: 'https://api.example.com/l402' });
 
-    const summary = inferOperatorsFromExistingData(ctx.db, { now: NOW });
+    const summary = await inferOperatorsFromExistingData(pool, { now: NOW });
     // endpointHash tente canonicalizeUrl qui peut throw sur certaines formes.
     // On accepte 1 ou 2 selon le comportement de canonicalizeUrl ; le point est
     // de ne pas crasher.

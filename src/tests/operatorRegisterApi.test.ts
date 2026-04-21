@@ -14,12 +14,12 @@ import { webcrypto } from 'node:crypto';
 if (!(globalThis as { crypto?: unknown }).crypto) {
   (globalThis as { crypto: unknown }).crypto = webcrypto;
 }
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import crypto from 'node:crypto';
-import Database from 'better-sqlite3';
 import request from 'supertest';
 import express from 'express';
-import { runMigrations } from '../database/migrations';
 import {
   OperatorRepository,
   OperatorIdentityRepository,
@@ -37,6 +37,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { buildLnChallenge } from '../services/operatorVerificationService';
 // @ts-expect-error — ESM subpath
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+let testDb: TestDb;
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -63,146 +64,148 @@ function signNip98(url: string, method: string, body: string): string {
   return `Nostr ${Buffer.from(JSON.stringify(signed)).toString('base64')}`;
 }
 
-// Helper — construit l'app Express avec le OperatorController câblé.
-interface Ctx {
-  db: Database.Database;
-  app: express.Express;
-  operators: OperatorRepository;
-  identities: OperatorIdentityRepository;
-  ownerships: OperatorOwnershipRepository;
-}
-
-function setup(options?: {
-  nostrJsonFetcher?: (url: string) => Promise<Record<string, unknown> | null>;
-  dnsTxtResolver?: (hostname: string) => Promise<string[][]>;
-}): Ctx {
-  const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
-
-  const operators = new OperatorRepository(db);
-  const identities = new OperatorIdentityRepository(db);
-  const ownerships = new OperatorOwnershipRepository(db);
-  const endpointPosteriors = new EndpointStreamingPosteriorRepository(db);
-  const nodePosteriors = new NodeStreamingPosteriorRepository(db);
-  const servicePosteriors = new ServiceStreamingPosteriorRepository(db);
-  const service = new OperatorService(
-    operators,
-    identities,
-    ownerships,
-    endpointPosteriors,
-    nodePosteriors,
-    servicePosteriors,
-  );
-  const controller = new OperatorController({
-    operatorService: service,
-    nostrJsonFetcher: options?.nostrJsonFetcher,
-    dnsTxtResolver: options?.dnsTxtResolver,
-  });
-
-  const app = express();
-  app.use(express.json({
-    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
-      if (buf && buf.length > 0) req.rawBody = Buffer.from(buf);
-    },
-  }));
-  app.post('/api/operator/register', controller.register);
-  app.use(errorHandler);
-
-  return { db, app, operators, identities, ownerships };
-}
-
 const BASE_URL = 'http://127.0.0.1:80';
 const REGISTER_URL = `${BASE_URL}/api/operator/register`;
 
-describe('POST /api/operator/register — NIP-98 gate', () => {
-  let ctx: Ctx;
-  beforeEach(() => { ctx = setup(); });
-  afterEach(() => ctx.db.close());
+describe('POST /api/operator/register', async () => {
+  let pool: Pool;
+  let operators: OperatorRepository;
+  let identities: OperatorIdentityRepository;
 
-  it('rejette sans header Authorization (401 NIP98_INVALID)', async () => {
-    const res = await request(ctx.app)
-      .post('/api/operator/register')
-      .set('Host', '127.0.0.1:80')
-      .send({ operator_id: 'op-abc' });
-    expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('NIP98_INVALID');
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    operators = new OperatorRepository(pool);
+    identities = new OperatorIdentityRepository(pool);
   });
 
-  it('rejette un header Nostr malformé (401)', async () => {
-    const res = await request(ctx.app)
-      .post('/api/operator/register')
-      .set('Host', '127.0.0.1:80')
-      .set('Authorization', 'Nostr not-valid-base64!@@')
-      .send({ operator_id: 'op-abc' });
-    expect(res.status).toBe(401);
+  afterAll(async () => {
+    await teardownTestPool(testDb);
   });
 
-  it('rejette body modifié après sign (payload_mismatch → 401)', async () => {
-    const signedBody = JSON.stringify({ operator_id: 'op-victim' });
-    const auth = signNip98(REGISTER_URL, 'POST', signedBody);
-    // On envoie un body différent de celui qui a été signé.
-    const res = await request(ctx.app)
-      .post('/api/operator/register')
-      .set('Host', '127.0.0.1:80')
-      .set('Authorization', auth)
-      .set('Content-Type', 'application/json')
-      .send('{"operator_id":"op-attacker"}');
-    expect(res.status).toBe(401);
-  });
-});
-
-describe('POST /api/operator/register — body validation', () => {
-  let ctx: Ctx;
-  beforeEach(() => { ctx = setup(); });
-  afterEach(() => ctx.db.close());
-
-  it('rejette operator_id absent (400 VALIDATION_ERROR)', async () => {
-    const body = JSON.stringify({});
-    const auth = signNip98(REGISTER_URL, 'POST', body);
-    const res = await request(ctx.app)
-      .post('/api/operator/register')
-      .set('Host', '127.0.0.1:80')
-      .set('Authorization', auth)
-      .set('Content-Type', 'application/json')
-      .send(body);
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  beforeEach(async () => {
+    await truncateAll(pool);
   });
 
-  it('rejette operator_id avec caractères invalides (400)', async () => {
-    const body = JSON.stringify({ operator_id: 'bad id with spaces' });
-    const auth = signNip98(REGISTER_URL, 'POST', body);
-    const res = await request(ctx.app)
-      .post('/api/operator/register')
-      .set('Host', '127.0.0.1:80')
-      .set('Authorization', auth)
-      .set('Content-Type', 'application/json')
-      .send(body);
-    expect(res.status).toBe(400);
+  function buildApp(options?: {
+    nostrJsonFetcher?: (url: string) => Promise<Record<string, unknown> | null>;
+    dnsTxtResolver?: (hostname: string) => Promise<string[][]>;
+  }): express.Express {
+    const ownerships = new OperatorOwnershipRepository(pool);
+    const endpointPosteriors = new EndpointStreamingPosteriorRepository(pool);
+    const nodePosteriors = new NodeStreamingPosteriorRepository(pool);
+    const servicePosteriors = new ServiceStreamingPosteriorRepository(pool);
+    const service = new OperatorService(
+      operators,
+      identities,
+      ownerships,
+      endpointPosteriors,
+      nodePosteriors,
+      servicePosteriors,
+    );
+    const controller = new OperatorController({
+      operatorService: service,
+      nostrJsonFetcher: options?.nostrJsonFetcher,
+      dnsTxtResolver: options?.dnsTxtResolver,
+    });
+
+    const app = express();
+    app.use(express.json({
+      verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+        if (buf && buf.length > 0) req.rawBody = Buffer.from(buf);
+      },
+    }));
+    app.post('/api/operator/register', controller.register);
+    app.use(errorHandler);
+    return app;
+  }
+
+  describe('NIP-98 gate', async () => {
+    it('rejette sans header Authorization (401 NIP98_INVALID)', async () => {
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/operator/register')
+        .set('Host', '127.0.0.1:80')
+        .send({ operator_id: 'op-abc' });
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('NIP98_INVALID');
+    });
+
+    it('rejette un header Nostr malformé (401)', async () => {
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/operator/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', 'Nostr not-valid-base64!@@')
+        .send({ operator_id: 'op-abc' });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejette body modifié après sign (payload_mismatch → 401)', async () => {
+      const app = buildApp();
+      const signedBody = JSON.stringify({ operator_id: 'op-victim' });
+      const auth = signNip98(REGISTER_URL, 'POST', signedBody);
+      // On envoie un body différent de celui qui a été signé.
+      const res = await request(app)
+        .post('/api/operator/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send('{"operator_id":"op-attacker"}');
+      expect(res.status).toBe(401);
+    });
   });
 
-  it('accepte un register minimal (operator_id seul) → crée pending', async () => {
-    const body = JSON.stringify({ operator_id: 'op-solo' });
-    const auth = signNip98(REGISTER_URL, 'POST', body);
-    const res = await request(ctx.app)
-      .post('/api/operator/register')
-      .set('Host', '127.0.0.1:80')
-      .set('Authorization', auth)
-      .set('Content-Type', 'application/json')
-      .send(body);
-    expect(res.status).toBe(201);
-    expect(res.body.data.operator_id).toBe('op-solo');
-    expect(res.body.data.status).toBe('pending');
-    expect(res.body.data.verification_score).toBe(0);
-    expect(ctx.operators.findById('op-solo')!.status).toBe('pending');
-  });
-});
+  describe('body validation', async () => {
+    it('rejette operator_id absent (400 VALIDATION_ERROR)', async () => {
+      const app = buildApp();
+      const body = JSON.stringify({});
+      const auth = signNip98(REGISTER_URL, 'POST', body);
+      const res = await request(app)
+        .post('/api/operator/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
 
-describe('POST /api/operator/register — identity verification', () => {
-  it('LN signature valide → identity verified + score=1', async () => {
-    const ctx = setup();
-    try {
+    it('rejette operator_id avec caractères invalides (400)', async () => {
+      const app = buildApp();
+      const body = JSON.stringify({ operator_id: 'bad id with spaces' });
+      const auth = signNip98(REGISTER_URL, 'POST', body);
+      const res = await request(app)
+        .post('/api/operator/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
+      expect(res.status).toBe(400);
+    });
+
+    it('accepte un register minimal (operator_id seul) → crée pending', async () => {
+      const app = buildApp();
+      const body = JSON.stringify({ operator_id: 'op-solo' });
+      const auth = signNip98(REGISTER_URL, 'POST', body);
+      const res = await request(app)
+        .post('/api/operator/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
+      expect(res.status).toBe(201);
+      expect(res.body.data.operator_id).toBe('op-solo');
+      expect(res.body.data.status).toBe('pending');
+      expect(res.body.data.verification_score).toBe(0);
+      const op = await operators.findById('op-solo');
+      expect(op!.status).toBe('pending');
+    });
+  });
+
+  describe('identity verification', async () => {
+    it('LN signature valide → identity verified + score=1', async () => {
+      const app = buildApp();
       const { secretKey, publicKey } = secp256k1.keygen();
       const pubkeyHex = bytesToHex(publicKey);
       const operatorId = 'op-ln-ok';
@@ -216,7 +219,7 @@ describe('POST /api/operator/register — identity verification', () => {
         ],
       });
       const auth = signNip98(REGISTER_URL, 'POST', body);
-      const res = await request(ctx.app)
+      const res = await request(app)
         .post('/api/operator/register')
         .set('Host', '127.0.0.1:80')
         .set('Authorization', auth)
@@ -228,14 +231,10 @@ describe('POST /api/operator/register — identity verification', () => {
       expect(res.body.data.verifications[0].valid).toBe(true);
       // 1 preuve seule → reste pending (seuil 2/3 non atteint)
       expect(res.body.data.status).toBe('pending');
-    } finally {
-      ctx.db.close();
-    }
-  });
+    });
 
-  it('LN signature invalide → identity claim mais non-verified', async () => {
-    const ctx = setup();
-    try {
+    it('LN signature invalide → identity claim mais non-verified', async () => {
+      const app = buildApp();
       const { publicKey } = secp256k1.keygen();
       const pubkeyHex = bytesToHex(publicKey);
       const body = JSON.stringify({
@@ -246,7 +245,7 @@ describe('POST /api/operator/register — identity verification', () => {
         ],
       });
       const auth = signNip98(REGISTER_URL, 'POST', body);
-      const res = await request(ctx.app)
+      const res = await request(app)
         .post('/api/operator/register')
         .set('Host', '127.0.0.1:80')
         .set('Authorization', auth)
@@ -257,20 +256,16 @@ describe('POST /api/operator/register — identity verification', () => {
       expect(res.body.data.verification_score).toBe(0);
       expect(res.body.data.verifications[0].valid).toBe(false);
       // L'identity est claim en DB mais non-verified
-      const ids = ctx.identities.findByOperator('op-ln-bad');
+      const ids = await identities.findByOperator('op-ln-bad');
       expect(ids).toHaveLength(1);
       expect(ids[0].verified_at).toBeNull();
-    } finally {
-      ctx.db.close();
-    }
-  });
-
-  it('NIP-05 valide (via fetcher stub) → identity verified', async () => {
-    const pubkey = 'a'.repeat(64);
-    const ctx = setup({
-      nostrJsonFetcher: async () => ({ names: { alice: pubkey } }),
     });
-    try {
+
+    it('NIP-05 valide (via fetcher stub) → identity verified', async () => {
+      const pubkey = 'a'.repeat(64);
+      const app = buildApp({
+        nostrJsonFetcher: async () => ({ names: { alice: pubkey } }),
+      });
       const body = JSON.stringify({
         operator_id: 'op-nip05-ok',
         identities: [
@@ -278,7 +273,7 @@ describe('POST /api/operator/register — identity verification', () => {
         ],
       });
       const auth = signNip98(REGISTER_URL, 'POST', body);
-      const res = await request(ctx.app)
+      const res = await request(app)
         .post('/api/operator/register')
         .set('Host', '127.0.0.1:80')
         .set('Authorization', auth)
@@ -288,14 +283,10 @@ describe('POST /api/operator/register — identity verification', () => {
       expect(res.status).toBe(201);
       expect(res.body.data.verifications[0].valid).toBe(true);
       expect(res.body.data.verification_score).toBe(1);
-    } finally {
-      ctx.db.close();
-    }
-  });
+    });
 
-  it('NIP-05 sans expected_pubkey → verified=false (expected_pubkey_missing)', async () => {
-    const ctx = setup();
-    try {
+    it('NIP-05 sans expected_pubkey → verified=false (expected_pubkey_missing)', async () => {
+      const app = buildApp();
       const body = JSON.stringify({
         operator_id: 'op-nip05-no-pk',
         identities: [
@@ -303,7 +294,7 @@ describe('POST /api/operator/register — identity verification', () => {
         ],
       });
       const auth = signNip98(REGISTER_URL, 'POST', body);
-      const res = await request(ctx.app)
+      const res = await request(app)
         .post('/api/operator/register')
         .set('Host', '127.0.0.1:80')
         .set('Authorization', auth)
@@ -313,17 +304,13 @@ describe('POST /api/operator/register — identity verification', () => {
       expect(res.status).toBe(201);
       expect(res.body.data.verifications[0].valid).toBe(false);
       expect(res.body.data.verifications[0].reason).toBe('expected_pubkey_missing');
-    } finally {
-      ctx.db.close();
-    }
-  });
-
-  it('DNS TXT valide (via resolver stub) → identity verified', async () => {
-    const operatorId = 'op-dns-ok';
-    const ctx = setup({
-      dnsTxtResolver: async () => [[`satrank-operator=${operatorId}`]],
     });
-    try {
+
+    it('DNS TXT valide (via resolver stub) → identity verified', async () => {
+      const operatorId = 'op-dns-ok';
+      const app = buildApp({
+        dnsTxtResolver: async () => [[`satrank-operator=${operatorId}`]],
+      });
       const body = JSON.stringify({
         operator_id: operatorId,
         identities: [
@@ -331,7 +318,7 @@ describe('POST /api/operator/register — identity verification', () => {
         ],
       });
       const auth = signNip98(REGISTER_URL, 'POST', body);
-      const res = await request(ctx.app)
+      const res = await request(app)
         .post('/api/operator/register')
         .set('Host', '127.0.0.1:80')
         .set('Authorization', auth)
@@ -340,23 +327,19 @@ describe('POST /api/operator/register — identity verification', () => {
 
       expect(res.status).toBe(201);
       expect(res.body.data.verifications[0].valid).toBe(true);
-    } finally {
-      ctx.db.close();
-    }
-  });
-
-  it('2 preuves convergentes (LN + NIP-05) → status=verified, score=2', async () => {
-    const { secretKey, publicKey } = secp256k1.keygen();
-    const pubkeyHex = bytesToHex(publicKey);
-    const operatorId = 'op-multi-verified';
-    const challenge = buildLnChallenge(operatorId);
-    const sig = secp256k1.sign(new TextEncoder().encode(challenge), secretKey);
-    const nostrPubkey = 'b'.repeat(64);
-
-    const ctx = setup({
-      nostrJsonFetcher: async () => ({ names: { alice: nostrPubkey } }),
     });
-    try {
+
+    it('2 preuves convergentes (LN + NIP-05) → status=verified, score=2', async () => {
+      const { secretKey, publicKey } = secp256k1.keygen();
+      const pubkeyHex = bytesToHex(publicKey);
+      const operatorId = 'op-multi-verified';
+      const challenge = buildLnChallenge(operatorId);
+      const sig = secp256k1.sign(new TextEncoder().encode(challenge), secretKey);
+      const nostrPubkey = 'b'.repeat(64);
+
+      const app = buildApp({
+        nostrJsonFetcher: async () => ({ names: { alice: nostrPubkey } }),
+      });
       const body = JSON.stringify({
         operator_id: operatorId,
         identities: [
@@ -365,7 +348,7 @@ describe('POST /api/operator/register — identity verification', () => {
         ],
       });
       const auth = signNip98(REGISTER_URL, 'POST', body);
-      const res = await request(ctx.app)
+      const res = await request(app)
         .post('/api/operator/register')
         .set('Host', '127.0.0.1:80')
         .set('Authorization', auth)
@@ -377,64 +360,61 @@ describe('POST /api/operator/register — identity verification', () => {
       expect(res.body.data.verification_score).toBe(2);
       expect(res.body.data.verifications).toHaveLength(2);
       expect(res.body.data.verifications.every((v: { valid: boolean }) => v.valid)).toBe(true);
-    } finally {
-      ctx.db.close();
-    }
-  });
-});
-
-describe('POST /api/operator/register — ownerships', () => {
-  let ctx: Ctx;
-  beforeEach(() => { ctx = setup(); });
-  afterEach(() => ctx.db.close());
-
-  it('claim ownerships node/endpoint/service persiste en pending', async () => {
-    const body = JSON.stringify({
-      operator_id: 'op-with-resources',
-      ownerships: [
-        { type: 'node', id: 'pk-node-1' },
-        { type: 'endpoint', id: 'url-hash-1' },
-        { type: 'service', id: 'svc-hash-1' },
-      ],
     });
-    const auth = signNip98(REGISTER_URL, 'POST', body);
-    const res = await request(ctx.app)
-      .post('/api/operator/register')
-      .set('Host', '127.0.0.1:80')
-      .set('Authorization', auth)
-      .set('Content-Type', 'application/json')
-      .send(body);
-
-    expect(res.status).toBe(201);
-    expect(res.body.data.catalog.ownedNodes).toHaveLength(1);
-    expect(res.body.data.catalog.ownedEndpoints).toHaveLength(1);
-    expect(res.body.data.catalog.ownedServices).toHaveLength(1);
-    // verified_at reste NULL (pending)
-    expect(res.body.data.catalog.ownedNodes[0].verified_at).toBeNull();
   });
 
-  it('register est idempotent sur operator_id + identity triplet', async () => {
-    const body1 = JSON.stringify({
-      operator_id: 'op-idempotent',
-      identities: [{ type: 'dns', value: 'example.com' }],
-    });
-    const auth1 = signNip98(REGISTER_URL, 'POST', body1);
-    await request(ctx.app).post('/api/operator/register')
-      .set('Host', '127.0.0.1:80').set('Authorization', auth1)
-      .set('Content-Type', 'application/json').send(body1);
+  describe('ownerships', async () => {
+    it('claim ownerships node/endpoint/service persiste en pending', async () => {
+      const app = buildApp();
+      const body = JSON.stringify({
+        operator_id: 'op-with-resources',
+        ownerships: [
+          { type: 'node', id: 'pk-node-1' },
+          { type: 'endpoint', id: 'url-hash-1' },
+          { type: 'service', id: 'svc-hash-1' },
+        ],
+      });
+      const auth = signNip98(REGISTER_URL, 'POST', body);
+      const res = await request(app)
+        .post('/api/operator/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
 
-    // Deuxième register avec même operator_id + même identity
-    const body2 = JSON.stringify({
-      operator_id: 'op-idempotent',
-      identities: [{ type: 'dns', value: 'example.com' }],
+      expect(res.status).toBe(201);
+      expect(res.body.data.catalog.ownedNodes).toHaveLength(1);
+      expect(res.body.data.catalog.ownedEndpoints).toHaveLength(1);
+      expect(res.body.data.catalog.ownedServices).toHaveLength(1);
+      // verified_at reste NULL (pending)
+      expect(res.body.data.catalog.ownedNodes[0].verified_at).toBeNull();
     });
-    const auth2 = signNip98(REGISTER_URL, 'POST', body2);
-    const res = await request(ctx.app).post('/api/operator/register')
-      .set('Host', '127.0.0.1:80').set('Authorization', auth2)
-      .set('Content-Type', 'application/json').send(body2);
 
-    expect(res.status).toBe(201);
-    // Pas de duplication
-    expect(ctx.identities.findByOperator('op-idempotent')).toHaveLength(1);
+    it('register est idempotent sur operator_id + identity triplet', async () => {
+      const app = buildApp();
+      const body1 = JSON.stringify({
+        operator_id: 'op-idempotent',
+        identities: [{ type: 'dns', value: 'example.com' }],
+      });
+      const auth1 = signNip98(REGISTER_URL, 'POST', body1);
+      await request(app).post('/api/operator/register')
+        .set('Host', '127.0.0.1:80').set('Authorization', auth1)
+        .set('Content-Type', 'application/json').send(body1);
+
+      // Deuxième register avec même operator_id + même identity
+      const body2 = JSON.stringify({
+        operator_id: 'op-idempotent',
+        identities: [{ type: 'dns', value: 'example.com' }],
+      });
+      const auth2 = signNip98(REGISTER_URL, 'POST', body2);
+      const res = await request(app).post('/api/operator/register')
+        .set('Host', '127.0.0.1:80').set('Authorization', auth2)
+        .set('Content-Type', 'application/json').send(body2);
+
+      expect(res.status).toBe(201);
+      // Pas de duplication
+      const ids = await identities.findByOperator('op-idempotent');
+      expect(ids).toHaveLength(1);
+    });
   });
 });

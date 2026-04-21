@@ -4,12 +4,13 @@
 import crypto from 'crypto';
 import { readFileSync } from 'fs';
 import type { Request, Response, NextFunction } from 'express';
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import { config } from '../config';
 import { ValidationError } from '../errors';
 import { logger } from '../logger';
 import { depositPhaseTotal } from '../middleware/metrics';
 import { DepositTierService } from '../services/depositTierService';
+import { withTransaction } from '../database/transaction';
 
 const MIN_DEPOSIT_SATS = 21;
 const MAX_DEPOSIT_SATS = 10_000;
@@ -54,20 +55,27 @@ async function lndLookupInvoice(rHashHex: string): Promise<{ settled: boolean; v
   return resp.json() as Promise<{ settled: boolean; value: string; memo: string }>;
 }
 
+interface TokenBalanceRow {
+  remaining: number;
+  balance_credits: number;
+  rate_sats_per_request: number | null;
+  tier_id: number | null;
+}
+
 export class DepositController {
-  private db: Database.Database;
+  private pool: Pool;
   private tierService: DepositTierService;
 
-  constructor(db: Database.Database) {
-    this.db = db;
-    this.tierService = new DepositTierService(db);
+  constructor(pool: Pool) {
+    this.pool = pool;
+    this.tierService = new DepositTierService(pool);
   }
 
   /** GET /api/deposit/tiers — public schedule, no auth required.
    *  Agents use this to price their deposit before calling POST /api/deposit. */
-  listTiers = (_req: Request, res: Response, next: NextFunction): void => {
+  listTiers = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tiers = this.tierService.listTiers();
+      const tiers = await this.tierService.listTiers();
       res.json({
         data: {
           tiers: tiers.map(t => ({
@@ -171,29 +179,12 @@ export class DepositController {
       throw new ValidationError('preimage does not match paymentHash (SHA256(preimage) != paymentHash)');
     }
 
-    // Atomic check-and-insert in a transaction to prevent race conditions.
-    // Two concurrent requests with the same paymentHash: only the first credits,
-    // the second gets alreadyRedeemed instead of a duplicate success.
-    //
-    // Phase 9: engrave tier_id + rate_sats_per_request + balance_credits on the
-    // row at INSERT. Rate is frozen for the lifetime of this token — future
-    // schedule changes can't retroactively charge more.
-    const checkAndInsert = this.db.transaction((quota: number, tierId: number, rate: number, credits: number) => {
-      const existing = this.db.prepare('SELECT remaining, balance_credits, rate_sats_per_request, tier_id FROM token_balance WHERE payment_hash = ?')
-        .get(paymentHashBuf) as { remaining: number; balance_credits: number; rate_sats_per_request: number | null; tier_id: number | null } | undefined;
-      if (existing) return { alreadyRedeemed: true, existing };
-
-      const now = Math.floor(Date.now() / 1000);
-      this.db.prepare(`
-        INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(paymentHashBuf, quota, now, quota, tierId, rate, credits);
-      return { alreadyRedeemed: false as const };
-    });
-
     // Quick check outside transaction (avoids LND call for already-redeemed tokens)
-    const preCheck = this.db.prepare('SELECT remaining, balance_credits, rate_sats_per_request, tier_id FROM token_balance WHERE payment_hash = ?')
-      .get(paymentHashBuf) as { remaining: number; balance_credits: number; rate_sats_per_request: number | null; tier_id: number | null } | undefined;
+    const preCheckResult = await this.pool.query<TokenBalanceRow>(
+      'SELECT remaining, balance_credits, rate_sats_per_request, tier_id FROM token_balance WHERE payment_hash = $1',
+      [paymentHashBuf],
+    );
+    const preCheck = preCheckResult.rows[0];
     if (preCheck) {
       depositPhaseTotal.inc({ phase: 'verify_success_cached' });
       res.json({
@@ -251,7 +242,7 @@ export class DepositController {
     // the floor (< 21 sats) is guarded by createInvoice's MIN_DEPOSIT_SATS
     // check, but we defend again here in case a legacy invoice somehow slipped
     // through.
-    const tier = this.tierService.lookupTierForAmount(quota);
+    const tier = await this.tierService.lookupTierForAmount(quota);
     if (!tier) {
       logger.error({ paymentHash: body.paymentHash.slice(0, 16), quota }, 'Deposit: no applicable tier — refusing to credit');
       res.status(502).json({
@@ -261,7 +252,30 @@ export class DepositController {
       return;
     }
     const credits = this.tierService.computeCredits(quota, tier);
-    const result = checkAndInsert(quota, tier.tier_id, tier.rate_sats_per_request, credits);
+
+    // Atomic check-and-insert in a transaction to prevent race conditions.
+    // Two concurrent requests with the same paymentHash: only the first credits,
+    // the second gets alreadyRedeemed instead of a duplicate success.
+    //
+    // Phase 9: engrave tier_id + rate_sats_per_request + balance_credits on the
+    // row at INSERT. Rate is frozen for the lifetime of this token — future
+    // schedule changes can't retroactively charge more.
+    const result = await withTransaction(this.pool, async (client) => {
+      const existingRes = await client.query<TokenBalanceRow>(
+        'SELECT remaining, balance_credits, rate_sats_per_request, tier_id FROM token_balance WHERE payment_hash = $1',
+        [paymentHashBuf],
+      );
+      const existing = existingRes.rows[0];
+      if (existing) return { alreadyRedeemed: true as const, existing };
+
+      const now = Math.floor(Date.now() / 1000);
+      await client.query(
+        `INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [paymentHashBuf, quota, now, quota, tier.tier_id, tier.rate_sats_per_request, credits],
+      );
+      return { alreadyRedeemed: false as const };
+    });
 
     if (result.alreadyRedeemed) {
       // Race loser: the paymentHash was credited by a concurrent request between

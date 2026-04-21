@@ -6,37 +6,38 @@
 //   - 2 indexes : idx_nostr_published_updated (DESC), idx_nostr_published_kind
 //   - Rollback réversible : down(v38) drop tout.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations, rollbackTo, getAppliedVersions } from '../database/migrations';
-
-function tableExists(db: Database.Database, name: string): boolean {
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
+import {  rollbackTo, getAppliedVersions } from '../database/migrations';
+function tableExists(db: Pool, name: string): boolean {
   const row = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name=?").get(name) as { found: number } | undefined;
   return !!row;
 }
 
-function indexExists(db: Database.Database, name: string): boolean {
+function indexExists(db: Pool, name: string): boolean {
   const row = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type='index' AND name=?").get(name) as { found: number } | undefined;
   return !!row;
 }
 
 describe('migration v38 — nostr_published_events (Phase 8)', () => {
-  let db: Database.Database;
+  let testDb: TestDb;
+  let db: Pool;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
-  afterEach(() => db.close());
+    db = testDb.pool;
+});
 
-  it('creates the nostr_published_events table and its indexes', () => {
+  afterEach(async () => { await teardownTestPool(testDb); });
+
+  it('creates the nostr_published_events table and its indexes', async () => {
     expect(tableExists(db, 'nostr_published_events')).toBe(true);
     expect(indexExists(db, 'idx_nostr_published_updated')).toBe(true);
     expect(indexExists(db, 'idx_nostr_published_kind')).toBe(true);
   });
 
-  it('has the expected columns with the correct types', () => {
+  it('has the expected columns with the correct types', async () => {
     const rows = db.prepare('PRAGMA table_info(nostr_published_events)').all() as {
       name: string; type: string; notnull: number; pk: number;
     }[];
@@ -53,7 +54,7 @@ describe('migration v38 — nostr_published_events (Phase 8)', () => {
     expect(byName.n_obs_effective).toEqual(expect.objectContaining({ type: 'REAL', notnull: 0 }));
   });
 
-  it('enforces the entity_type CHECK constraint', () => {
+  it('enforces the entity_type CHECK constraint', async () => {
     const insert = db.prepare(`
       INSERT INTO nostr_published_events
         (entity_type, entity_id, event_id, event_kind, published_at, payload_hash)
@@ -90,7 +91,7 @@ describe('migration v38 — nostr_published_events (Phase 8)', () => {
     expect(row.p_success).toBeCloseTo(0.30, 5);
   });
 
-  it('rollback to v37 drops the table and its indexes', () => {
+  it('rollback to v37 drops the table and its indexes', async () => {
     rollbackTo(db, 37);
     expect(tableExists(db, 'nostr_published_events')).toBe(false);
     expect(indexExists(db, 'idx_nostr_published_updated')).toBe(false);
@@ -103,7 +104,7 @@ describe('migration v38 — nostr_published_events (Phase 8)', () => {
     expect(versions.map((v) => v.version)).toContain(37);
   });
 
-  it('re-running migrations is idempotent (no duplicate error)', () => {
+  it('re-running migrations is idempotent (no duplicate error)', async () => {
     expect(() => runMigrations(db)).not.toThrow();
     const count = db.prepare('SELECT COUNT(*) AS c FROM schema_version WHERE version = 38').get() as { c: number };
     expect(count.c).toBe(1);

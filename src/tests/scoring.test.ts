@@ -1,8 +1,8 @@
 // Scoring engine and anti-gaming tests
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { v4 as uuid } from 'uuid';
-import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -10,6 +10,7 @@ import { SnapshotRepository } from '../repositories/snapshotRepository';
 import { ScoringService } from '../services/scoringService';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction, Attestation } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -71,19 +72,18 @@ function makeAttestation(attester: string, subject: string, txId: string, overri
   };
 }
 
-describe('ScoringService', () => {
-  let db: Database.Database;
+describe('ScoringService', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let txRepo: TransactionRepository;
   let attestationRepo: AttestationRepository;
   let snapshotRepo: SnapshotRepository;
   let scoring: ScoringService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     txRepo = new TransactionRepository(db);
     attestationRepo = new AttestationRepository(db);
@@ -91,72 +91,74 @@ describe('ScoringService', () => {
     scoring = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo);
   });
 
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await teardownTestPool(testDb);
   });
 
-  it('returns score 0 for a non-existent agent', () => {
-    const result = scoring.computeScore(sha256('nobody'));
+  it('returns score 0 for a non-existent agent', async () => {
+    const result = await scoring.computeScore(sha256('nobody'));
     expect(result.total).toBe(0);
     expect(result.confidence).toBe('very_low');
   });
 
-  it('computes a basic score for an agent with transactions', () => {
+  it('computes a basic score for an agent with transactions', async () => {
     const agent = makeAgent('basic-agent');
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
     // 50 transactions with 10 different counterparties
     for (let i = 0; i < 10; i++) {
       const peer = makeAgent(`peer-${i}`);
-      agentRepo.insert(peer);
+      await agentRepo.insert(peer);
       for (let j = 0; j < 5; j++) {
-        txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
+        await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
       }
     }
 
-    const result = scoring.computeScore(agent.public_key_hash);
+    const result = await scoring.computeScore(agent.public_key_hash);
     expect(result.total).toBeGreaterThan(0);
     expect(result.components.volume).toBeGreaterThan(0);
     expect(result.components.diversity).toBeGreaterThan(0);
     expect(result.components.seniority).toBeGreaterThan(0);
   });
 
-  it('updates agents.avg_score without writing a score_snapshots row (Phase 3 C8)', () => {
+  it('updates agents.avg_score without writing a score_snapshots row (Phase 3 C8)', async () => {
     // Snapshot persistence moved to BayesianVerdictService.snapshotAndPersist.
     // ScoringService only keeps the denormalized agents.avg_score in sync —
     // it no longer inserts into score_snapshots.
     const agent = makeAgent('snapshot-agent');
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = scoring.computeScore(agent.public_key_hash);
+    const result = await scoring.computeScore(agent.public_key_hash);
 
-    const updated = agentRepo.findByHash(agent.public_key_hash);
+    const updated = await agentRepo.findByHash(agent.public_key_hash);
     expect(updated!.avg_score).toBe(result.totalFine);
 
-    const snapshot = snapshotRepo.findLatestByAgent(agent.public_key_hash);
+    const snapshot = await snapshotRepo.findLatestByAgent(agent.public_key_hash);
     expect(snapshot).toBeUndefined();
   });
 
-  it('repeated computeScore calls leave score_snapshots empty', () => {
+  it('repeated computeScore calls leave score_snapshots empty', async () => {
     const agent = makeAgent('unchanged-agent');
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    scoring.computeScore(agent.public_key_hash);
-    scoring.computeScore(agent.public_key_hash);
-    scoring.computeScore(agent.public_key_hash);
+    await scoring.computeScore(agent.public_key_hash);
+    await scoring.computeScore(agent.public_key_hash);
+    await scoring.computeScore(agent.public_key_hash);
 
-    const count = db.prepare('SELECT COUNT(*) AS n FROM score_snapshots WHERE agent_hash = ?')
-      .get(agent.public_key_hash) as { n: number };
-    expect(count.n).toBe(0);
+    const countRes = await db.query<{ n: string }>(
+      'SELECT COUNT(*) AS n FROM score_snapshots WHERE agent_hash = $1',
+      [agent.public_key_hash],
+    );
+    expect(Number(countRes.rows[0].n)).toBe(0);
   });
 
-  describe('getScore', () => {
-    it('always returns a fresh computation (the snapshot cache was removed in Phase 3 C8)', () => {
+  describe('getScore', async () => {
+    it('always returns a fresh computation (the snapshot cache was removed in Phase 3 C8)', async () => {
       const agent = makeAgent('cached-agent');
-      agentRepo.insert(agent);
+      await agentRepo.insert(agent);
 
-      const first = scoring.computeScore(agent.public_key_hash);
-      const second = scoring.getScore(agent.public_key_hash);
+      const first = await scoring.computeScore(agent.public_key_hash);
+      const second = await scoring.getScore(agent.public_key_hash);
 
       // Both paths compute the same score but each has its own `computedAt`
       // timestamp — no cache reuse now that score_snapshots is bayesian-only.
@@ -165,8 +167,8 @@ describe('ScoringService', () => {
     });
   });
 
-  describe('reputation breakdown (audit trail)', () => {
-    it('emits per-sub-signal breakdown for lightning_graph agents', () => {
+  describe('reputation breakdown (audit trail)', async () => {
+    it('emits per-sub-signal breakdown for lightning_graph agents', async () => {
       const agent = makeAgent('rep-breakdown-ln', {
         source: 'lightning_graph',
         total_transactions: 50,
@@ -174,9 +176,9 @@ describe('ScoringService', () => {
         hubness_rank: 10,
         betweenness_rank: 15,
       });
-      agentRepo.insert(agent);
+      await agentRepo.insert(agent);
 
-      const result = scoring.computeScore(agent.public_key_hash);
+      const result = await scoring.computeScore(agent.public_key_hash);
       const breakdown = result.components.reputationBreakdown;
       expect(breakdown).toBeDefined();
       expect(breakdown!.mode).toBe('lightning_graph');
@@ -196,7 +198,7 @@ describe('ScoringService', () => {
       expect(contribSum).toBeCloseTo(result.components.reputation, 0);
     });
 
-    it('reports centrality source as `lnplus_ranks` when pagerank_score is missing', () => {
+    it('reports centrality source as `lnplus_ranks` when pagerank_score is missing', async () => {
       const agent = makeAgent('rep-breakdown-fallback', {
         source: 'lightning_graph',
         total_transactions: 10,
@@ -205,18 +207,18 @@ describe('ScoringService', () => {
         betweenness_rank: 8,
         pagerank_score: null,
       });
-      agentRepo.insert(agent);
-      const result = scoring.computeScore(agent.public_key_hash);
+      await agentRepo.insert(agent);
+      const result = await scoring.computeScore(agent.public_key_hash);
       expect(result.components.reputationBreakdown!.subsignals!.centrality.source).toBe('lnplus_ranks');
     });
 
-    it('emits attestations-mode breakdown for observer_protocol agents', () => {
+    it('emits attestations-mode breakdown for observer_protocol agents', async () => {
       const agent = makeAgent('rep-breakdown-obs', {
         source: 'observer_protocol',
         total_transactions: 5,
       });
-      agentRepo.insert(agent);
-      const result = scoring.computeScore(agent.public_key_hash);
+      await agentRepo.insert(agent);
+      const result = await scoring.computeScore(agent.public_key_hash);
       const breakdown = result.components.reputationBreakdown;
       expect(breakdown).toBeDefined();
       expect(breakdown!.mode).toBe('attestations');
@@ -224,173 +226,173 @@ describe('ScoringService', () => {
     });
   });
 
-  describe('anti-gaming: mutual attestations', () => {
-    it('penalizes agents with mutual attestations (A<->B)', () => {
+  describe('anti-gaming: mutual attestations', async () => {
+    it('penalizes agents with mutual attestations (A<->B)', async () => {
       const agentA = makeAgent('legit-agent', { avg_score: 70 });
       const agentB = makeAgent('shill-a', { avg_score: 70 });
       const agentC = makeAgent('shill-b', { avg_score: 70 });
-      agentRepo.insert(agentA);
-      agentRepo.insert(agentB);
-      agentRepo.insert(agentC);
+      await agentRepo.insert(agentA);
+      await agentRepo.insert(agentB);
+      await agentRepo.insert(agentC);
 
       // Agent A receives normal attestations from 10 peers
       for (let i = 0; i < 10; i++) {
         const peer = makeAgent(`honest-peer-${i}`, { avg_score: 60 });
-        agentRepo.insert(peer);
+        await agentRepo.insert(peer);
         const tx = makeTx(peer.public_key_hash, agentA.public_key_hash);
-        txRepo.insert(tx);
-        attestationRepo.insert(makeAttestation(peer.public_key_hash, agentA.public_key_hash, tx.tx_id, { score: 80 }));
+        await txRepo.insert(tx);
+        await attestationRepo.insert(makeAttestation(peer.public_key_hash, agentA.public_key_hash, tx.tx_id, { score: 80 }));
       }
 
       // Agent B receives mutual attestations (B<->C)
       const txBC = makeTx(agentB.public_key_hash, agentC.public_key_hash);
       const txCB = makeTx(agentC.public_key_hash, agentB.public_key_hash);
-      txRepo.insert(txBC);
-      txRepo.insert(txCB);
+      await txRepo.insert(txBC);
+      await txRepo.insert(txCB);
 
       // B attests C and C attests B (mutual loop)
-      attestationRepo.insert(makeAttestation(agentC.public_key_hash, agentB.public_key_hash, txCB.tx_id, { score: 95 }));
-      attestationRepo.insert(makeAttestation(agentB.public_key_hash, agentC.public_key_hash, txBC.tx_id, { score: 95 }));
+      await attestationRepo.insert(makeAttestation(agentC.public_key_hash, agentB.public_key_hash, txCB.tx_id, { score: 95 }));
+      await attestationRepo.insert(makeAttestation(agentB.public_key_hash, agentC.public_key_hash, txBC.tx_id, { score: 95 }));
 
       // Add some tx so B has comparable volume
       for (let i = 0; i < 10; i++) {
         const peer = makeAgent(`b-peer-${i}`);
-        agentRepo.insert(peer);
-        txRepo.insert(makeTx(agentB.public_key_hash, peer.public_key_hash));
+        await agentRepo.insert(peer);
+        await txRepo.insert(makeTx(agentB.public_key_hash, peer.public_key_hash));
       }
 
-      const scoreA = scoring.computeScore(agentA.public_key_hash);
-      const scoreB = scoring.computeScore(agentB.public_key_hash);
+      const scoreA = await scoring.computeScore(agentA.public_key_hash);
+      const scoreB = await scoring.computeScore(agentB.public_key_hash);
 
       // A (honest attestations) should have better reputation than B (mutual attestations)
       expect(scoreA.components.reputation).toBeGreaterThan(scoreB.components.reputation);
     });
   });
 
-  describe('anti-gaming: circular cluster', () => {
-    it('detects and penalizes A->B->C->A clusters', () => {
+  describe('anti-gaming: circular cluster', async () => {
+    it('detects and penalizes A->B->C->A clusters', async () => {
       const a = makeAgent('cluster-a', { avg_score: 50 });
       const b = makeAgent('cluster-b', { avg_score: 50 });
       const c = makeAgent('cluster-c', { avg_score: 50 });
-      agentRepo.insert(a);
-      agentRepo.insert(b);
-      agentRepo.insert(c);
+      await agentRepo.insert(a);
+      await agentRepo.insert(b);
+      await agentRepo.insert(c);
 
       // Circular transactions
       const txAB = makeTx(a.public_key_hash, b.public_key_hash);
       const txBC = makeTx(b.public_key_hash, c.public_key_hash);
       const txCA = makeTx(c.public_key_hash, a.public_key_hash);
-      txRepo.insert(txAB);
-      txRepo.insert(txBC);
-      txRepo.insert(txCA);
+      await txRepo.insert(txAB);
+      await txRepo.insert(txBC);
+      await txRepo.insert(txCA);
 
       // Circular attestations: A attests B, B attests C, C attests A
-      attestationRepo.insert(makeAttestation(a.public_key_hash, b.public_key_hash, txAB.tx_id, { score: 95 }));
-      attestationRepo.insert(makeAttestation(b.public_key_hash, c.public_key_hash, txBC.tx_id, { score: 95 }));
-      attestationRepo.insert(makeAttestation(c.public_key_hash, a.public_key_hash, txCA.tx_id, { score: 95 }));
+      await attestationRepo.insert(makeAttestation(a.public_key_hash, b.public_key_hash, txAB.tx_id, { score: 95 }));
+      await attestationRepo.insert(makeAttestation(b.public_key_hash, c.public_key_hash, txBC.tx_id, { score: 95 }));
+      await attestationRepo.insert(makeAttestation(c.public_key_hash, a.public_key_hash, txCA.tx_id, { score: 95 }));
 
-      const members = attestationRepo.findCircularCluster(a.public_key_hash);
+      const members = await attestationRepo.findCircularCluster(a.public_key_hash);
       expect(members.length).toBeGreaterThan(0);
     });
   });
 
-  describe('manual source penalty', () => {
-    it('applies a penalty to manual source agents with low volume', () => {
+  describe('manual source penalty', async () => {
+    it('applies a penalty to manual source agents with low volume', async () => {
       const manual = makeAgent('manual-agent', { source: 'manual' });
       const legit = makeAgent('legit-agent', { source: 'observer_protocol' });
-      agentRepo.insert(manual);
-      agentRepo.insert(legit);
+      await agentRepo.insert(manual);
+      await agentRepo.insert(legit);
 
       // Same volume for both
       for (let i = 0; i < 10; i++) {
         const peer = makeAgent(`shared-peer-${i}`);
-        agentRepo.insert(peer);
-        txRepo.insert(makeTx(manual.public_key_hash, peer.public_key_hash));
-        txRepo.insert(makeTx(legit.public_key_hash, peer.public_key_hash));
+        await agentRepo.insert(peer);
+        await txRepo.insert(makeTx(manual.public_key_hash, peer.public_key_hash));
+        await txRepo.insert(makeTx(legit.public_key_hash, peer.public_key_hash));
       }
 
-      const scoreManual = scoring.computeScore(manual.public_key_hash);
-      const scoreLegit = scoring.computeScore(legit.public_key_hash);
+      const scoreManual = await scoring.computeScore(manual.public_key_hash);
+      const scoreLegit = await scoring.computeScore(legit.public_key_hash);
 
       // The manual agent should have a lower score
       expect(scoreManual.total).toBeLessThan(scoreLegit.total);
     });
   });
 
-  describe('individual components', () => {
-    it('volume = 0 for an agent without transactions', () => {
+  describe('individual components', async () => {
+    it('volume = 0 for an agent without transactions', async () => {
       const agent = makeAgent('no-tx');
-      agentRepo.insert(agent);
-      const result = scoring.computeScore(agent.public_key_hash);
+      await agentRepo.insert(agent);
+      const result = await scoring.computeScore(agent.public_key_hash);
       expect(result.components.volume).toBe(0);
     });
 
-    it('regularity = 0 with fewer than 3 transactions', () => {
+    it('regularity = 0 with fewer than 3 transactions', async () => {
       const agent = makeAgent('few-tx');
       const peer = makeAgent('peer-few');
-      agentRepo.insert(agent);
-      agentRepo.insert(peer);
-      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
-      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
+      await agentRepo.insert(agent);
+      await agentRepo.insert(peer);
+      await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
+      await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
 
-      const result = scoring.computeScore(agent.public_key_hash);
+      const result = await scoring.computeScore(agent.public_key_hash);
       expect(result.components.regularity).toBe(0);
     });
 
-    it('regularity = 100 with near-simultaneous transactions (mean < 1s)', () => {
+    it('regularity = 100 with near-simultaneous transactions (mean < 1s)', async () => {
       const agent = makeAgent('simul-tx');
       const peer = makeAgent('peer-simul');
-      agentRepo.insert(agent);
-      agentRepo.insert(peer);
+      await agentRepo.insert(agent);
+      await agentRepo.insert(peer);
       // 3 transactions within the same second
-      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
-      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
-      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
+      await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
+      await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
+      await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, { timestamp: NOW }));
 
-      const result = scoring.computeScore(agent.public_key_hash);
+      const result = await scoring.computeScore(agent.public_key_hash);
       expect(result.components.regularity).toBe(100);
     });
 
-    it('diversity increases with number of counterparties', () => {
+    it('diversity increases with number of counterparties', async () => {
       const agent = makeAgent('diverse-agent');
-      agentRepo.insert(agent);
+      await agentRepo.insert(agent);
 
       for (let i = 0; i < 20; i++) {
         const peer = makeAgent(`diverse-peer-${i}`);
-        agentRepo.insert(peer);
-        txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
+        await agentRepo.insert(peer);
+        await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash));
       }
 
-      const result = scoring.computeScore(agent.public_key_hash);
+      const result = await scoring.computeScore(agent.public_key_hash);
       expect(result.components.diversity).toBeGreaterThan(50);
     });
 
-    it('seniority increases with time', () => {
+    it('seniority increases with time', async () => {
       const young = makeAgent('young', { first_seen: NOW - 7 * DAY });
       const old = makeAgent('old', { first_seen: NOW - 365 * DAY });
-      agentRepo.insert(young);
-      agentRepo.insert(old);
+      await agentRepo.insert(young);
+      await agentRepo.insert(old);
 
-      const scoreYoung = scoring.computeScore(young.public_key_hash);
-      const scoreOld = scoring.computeScore(old.public_key_hash);
+      const scoreYoung = await scoring.computeScore(young.public_key_hash);
+      const scoreOld = await scoring.computeScore(old.public_key_hash);
 
       expect(scoreOld.components.seniority).toBeGreaterThan(scoreYoung.components.seniority);
     });
 
-    it('confidence depends on data volume', () => {
+    it('confidence depends on data volume', async () => {
       const agent = makeAgent('confidence-test', {
         total_transactions: 200,
         total_attestations_received: 100,
       });
-      agentRepo.insert(agent);
+      await agentRepo.insert(agent);
 
-      const result = scoring.computeScore(agent.public_key_hash);
+      const result = await scoring.computeScore(agent.public_key_hash);
       expect(result.confidence).toBe('high');
     });
   });
 
-  describe('lightning_graph scoring', () => {
-    it('computes volume relative to network max channels', () => {
+  describe('lightning_graph scoring', async () => {
+    it('computes volume relative to network max channels', async () => {
       // Top node sets the reference for the network
       const topNode = makeAgent('ln-top', {
         source: 'lightning_graph',
@@ -402,11 +404,11 @@ describe('ScoringService', () => {
         total_transactions: 120, // channels
         capacity_sats: 500_000_000,
       });
-      agentRepo.insert(topNode);
-      agentRepo.insert(midNode);
+      await agentRepo.insert(topNode);
+      await agentRepo.insert(midNode);
 
-      const scoreTop = scoring.computeScore(topNode.public_key_hash);
-      const scoreMid = scoring.computeScore(midNode.public_key_hash);
+      const scoreTop = await scoring.computeScore(topNode.public_key_hash);
+      const scoreMid = await scoring.computeScore(midNode.public_key_hash);
 
       // Blend: channels (ref 500) × 0.5 + capacity BTC (ref 50) × 0.5
       // top: 2000ch=100, 100BTC=100 → 100
@@ -417,7 +419,7 @@ describe('ScoringService', () => {
       expect(scoreTop.components.volume).toBeGreaterThan(scoreMid.components.volume);
     });
 
-    it('computes regularity from recency of last_seen', () => {
+    it('computes regularity from recency of last_seen', async () => {
       const recent = makeAgent('ln-recent', {
         source: 'lightning_graph',
         last_seen: NOW - DAY,
@@ -426,11 +428,11 @@ describe('ScoringService', () => {
         source: 'lightning_graph',
         last_seen: NOW - 90 * DAY,
       });
-      agentRepo.insert(recent);
-      agentRepo.insert(stale);
+      await agentRepo.insert(recent);
+      await agentRepo.insert(stale);
 
-      const scoreRecent = scoring.computeScore(recent.public_key_hash);
-      const scoreStale = scoring.computeScore(stale.public_key_hash);
+      const scoreRecent = await scoring.computeScore(recent.public_key_hash);
+      const scoreStale = await scoring.computeScore(stale.public_key_hash);
 
       expect(scoreRecent.components.regularity).toBeGreaterThan(scoreStale.components.regularity);
       // 1 day old — no probe data so fallback to gossip decay (90-day), should be close to 100
@@ -439,7 +441,7 @@ describe('ScoringService', () => {
       expect(scoreStale.components.regularity).toBeLessThan(45);
     });
 
-    it('computes diversity from capacity in BTC', () => {
+    it('computes diversity from capacity in BTC', async () => {
       const highCap = makeAgent('ln-high-cap', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -450,11 +452,11 @@ describe('ScoringService', () => {
         total_transactions: 100,
         capacity_sats: 5_000_000, // 0.05 BTC
       });
-      agentRepo.insert(highCap);
-      agentRepo.insert(lowCap);
+      await agentRepo.insert(highCap);
+      await agentRepo.insert(lowCap);
 
-      const scoreHigh = scoring.computeScore(highCap.public_key_hash);
-      const scoreLow = scoring.computeScore(lowCap.public_key_hash);
+      const scoreHigh = await scoring.computeScore(highCap.public_key_hash);
+      const scoreLow = await scoring.computeScore(lowCap.public_key_hash);
 
       // 59 BTC → high diversity (~92), 0.05 BTC → low diversity (~6)
       expect(scoreHigh.components.diversity).toBeGreaterThan(80);
@@ -462,7 +464,7 @@ describe('ScoringService', () => {
       expect(scoreHigh.components.diversity).toBeGreaterThan(scoreLow.components.diversity);
     });
 
-    it('does not query tx table for lightning_graph volume', () => {
+    it('does not query tx table for lightning_graph volume', async () => {
       // A lightning_graph agent with 0 rows in transactions table
       // should still get volume > 0 from channels
       const node = makeAgent('ln-no-tx', {
@@ -470,14 +472,14 @@ describe('ScoringService', () => {
         total_transactions: 100,
         capacity_sats: 1_000_000_000,
       });
-      agentRepo.insert(node);
+      await agentRepo.insert(node);
 
-      const result = scoring.computeScore(node.public_key_hash);
+      const result = await scoring.computeScore(node.public_key_hash);
       expect(result.components.volume).toBeGreaterThan(0);
       expect(result.components.diversity).toBeGreaterThan(0);
     });
 
-    it('computes reputation from centrality and peer trust', () => {
+    it('computes reputation from centrality and peer trust', async () => {
       const centralNode = makeAgent('ln-rated', {
         source: 'lightning_graph',
         total_transactions: 500,
@@ -498,11 +500,11 @@ describe('ScoringService', () => {
         hubness_rank: 0,
         betweenness_rank: 0,
       });
-      agentRepo.insert(centralNode);
-      agentRepo.insert(noCentralityNode);
+      await agentRepo.insert(centralNode);
+      await agentRepo.insert(noCentralityNode);
 
-      const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
-      const scoreNoCentrality = scoring.computeScore(noCentralityNode.public_key_hash);
+      const scoreCentral = await scoring.computeScore(centralNode.public_key_hash);
+      const scoreNoCentrality = await scoring.computeScore(noCentralityNode.public_key_hash);
 
       // Reputation is now centrality (max 50) + peer trust (max 50)
       // Central node: hubness_rank=25 → 25*exp(-25/100)=19.5, betweenness=30 → 25*exp(-30/100)=18.5 → ~38 centrality
@@ -518,7 +520,7 @@ describe('ScoringService', () => {
       expect(scoreCentral.total).toBeGreaterThan(scoreNoCentrality.total);
     });
 
-    it('reputation formula: centrality + peer trust (no LN+ rank/ratings)', () => {
+    it('reputation formula: centrality + peer trust (no LN+ rank/ratings)', async () => {
       // Exact formula test: no centrality, 100 channels, 10 BTC capacity
       // Centrality: 0 (no hubness/betweenness)
       // Peer trust: btcPerChannel = 10/100 = 0.1, log10(0.1*100+1)/log10(201)*50 = log10(11)/log10(201)*50 ≈ 22.6 → 23
@@ -530,16 +532,16 @@ describe('ScoringService', () => {
         negative_ratings: 0,
         lnplus_rank: 5,
       });
-      agentRepo.insert(node);
+      await agentRepo.insert(node);
 
-      const result = scoring.computeScore(node.public_key_hash);
+      const result = await scoring.computeScore(node.public_key_hash);
       // No centrality → peerTrust*0.35 + routingQuality*0.25 + capTrend*0.20 + feeStability*0.20
       // peerTrust: 45, routingQuality: 50 (neutral), capTrend: 50 (neutral), feeStability: 50 (neutral)
       // 45*0.35 + 50*0.25 + 50*0.20 + 50*0.20 ≈ 48
       expect(result.components.reputation).toBe(48);
     });
 
-    it('centrality bonuses use continuous exponential curve', () => {
+    it('centrality bonuses use continuous exponential curve', async () => {
       const centralNode = makeAgent('ln-central', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -560,11 +562,11 @@ describe('ScoringService', () => {
         hubness_rank: 200,
         betweenness_rank: 300,
       });
-      agentRepo.insert(centralNode);
-      agentRepo.insert(peripheralNode);
+      await agentRepo.insert(centralNode);
+      await agentRepo.insert(peripheralNode);
 
-      const scoreCentral = scoring.computeScore(centralNode.public_key_hash);
-      const scorePeripheral = scoring.computeScore(peripheralNode.public_key_hash);
+      const scoreCentral = await scoring.computeScore(centralNode.public_key_hash);
+      const scorePeripheral = await scoring.computeScore(peripheralNode.public_key_hash);
 
       // Central: centrality=78, peerTrust=45, routingQuality=50, capTrend=50, feeStability=50
       // 78*0.20 + 45*0.30 + 50*0.20 + 50*0.15 + 50*0.15 ≈ 54
@@ -576,7 +578,7 @@ describe('ScoringService', () => {
       expect(scoreCentral.components.reputation).toBeGreaterThan(scorePeripheral.components.reputation);
     });
 
-    it('LN+ positive/negative ratio no longer affects total score (bonus deprecated 2026-04-16)', () => {
+    it('LN+ positive/negative ratio no longer affects total score (bonus deprecated 2026-04-16)', async () => {
       // Pre-deprecation this test expected the total score to move with the
       // LN+ positive/negative ratio. The audit retired the multiplier because
       // coverage was too thin (14%) and the signal too weak (r=0.25) to
@@ -599,11 +601,11 @@ describe('ScoringService', () => {
         negative_ratings: 10,
         lnplus_rank: 5,
       });
-      agentRepo.insert(goodNode);
-      agentRepo.insert(mixedNode);
+      await agentRepo.insert(goodNode);
+      await agentRepo.insert(mixedNode);
 
-      const scoreGood = scoring.computeScore(goodNode.public_key_hash);
-      const scoreMixed = scoring.computeScore(mixedNode.public_key_hash);
+      const scoreGood = await scoring.computeScore(goodNode.public_key_hash);
+      const scoreMixed = await scoring.computeScore(mixedNode.public_key_hash);
 
       // Reputation component is the same (same centrality + peer trust)
       expect(scoreGood.components.reputation).toBe(scoreMixed.components.reputation);
@@ -611,7 +613,7 @@ describe('ScoringService', () => {
       expect(scoreGood.total).toBe(scoreMixed.total);
     });
 
-    it('verified transaction bonus boosts observer_protocol agents above small LN nodes', () => {
+    it('verified transaction bonus boosts observer_protocol agents above small LN nodes', async () => {
       // Large LN node to set the network max
       const topNode = makeAgent('ln-top-ref', {
         source: 'lightning_graph',
@@ -635,21 +637,21 @@ describe('ScoringService', () => {
         first_seen: NOW - 90 * DAY,
         last_seen: NOW - DAY,
       });
-      agentRepo.insert(topNode);
-      agentRepo.insert(smallLn);
-      agentRepo.insert(obsAgent);
+      await agentRepo.insert(topNode);
+      await agentRepo.insert(smallLn);
+      await agentRepo.insert(obsAgent);
 
       // Create 30 verified transactions for obsAgent with diverse counterparties
       for (let i = 0; i < 10; i++) {
         const peer = makeAgent(`obs-peer-${i}`);
-        agentRepo.insert(peer);
+        await agentRepo.insert(peer);
         for (let j = 0; j < 3; j++) {
-          txRepo.insert(makeTx(obsAgent.public_key_hash, peer.public_key_hash));
+          await txRepo.insert(makeTx(obsAgent.public_key_hash, peer.public_key_hash));
         }
       }
 
-      const scoreSmallLn = scoring.computeScore(smallLn.public_key_hash);
-      const scoreObs = scoring.computeScore(obsAgent.public_key_hash);
+      const scoreSmallLn = await scoring.computeScore(smallLn.public_key_hash);
+      const scoreObs = await scoring.computeScore(obsAgent.public_key_hash);
 
       // Both should score meaningfully — observer has verified tx bonus (+15), LN node has renormalized weights
       // The key test: observer agent with verified tx should NOT be zero
@@ -658,8 +660,8 @@ describe('ScoringService', () => {
     });
   });
 
-  describe('reputation calibration', () => {
-    it('community ratings outweigh rank for Lightning nodes', () => {
+  describe('reputation calibration', async () => {
+    it('community ratings outweigh rank for Lightning nodes', async () => {
       // Rank 10 mediocre reputation vs rank 3 stellar reputation
       const highRank = makeAgent('ln-highrank', {
         source: 'lightning_graph',
@@ -677,11 +679,11 @@ describe('ScoringService', () => {
         negative_ratings: 0,
         lnplus_rank: 3,
       });
-      agentRepo.insert(highRank);
-      agentRepo.insert(lovedNode);
+      await agentRepo.insert(highRank);
+      await agentRepo.insert(lovedNode);
 
-      const scoreHighRank = scoring.computeScore(highRank.public_key_hash);
-      const scoreLovedNode = scoring.computeScore(lovedNode.public_key_hash);
+      const scoreHighRank = await scoring.computeScore(highRank.public_key_hash);
+      const scoreLovedNode = await scoring.computeScore(lovedNode.public_key_hash);
 
       // highRank: 10*5 + (2/(2+2+1))*50 = 50 + 20 = 70
       // loved: 3*5 + (50/(50+0+1))*50 = 15 + 49 = 64
@@ -690,7 +692,7 @@ describe('ScoringService', () => {
       expect(scoreHighRank.components.reputation - scoreLovedNode.components.reputation).toBeLessThan(15);
     });
 
-    it('centrality bonus decays smoothly — rank 1 > rank 51 > rank 200', () => {
+    it('centrality bonus decays smoothly — rank 1 > rank 51 > rank 200', async () => {
       const rank1 = makeAgent('ln-hub1', {
         source: 'lightning_graph',
         total_transactions: 100,
@@ -718,13 +720,13 @@ describe('ScoringService', () => {
         negative_ratings: 0,
         hubness_rank: 200,
       });
-      agentRepo.insert(rank1);
-      agentRepo.insert(rank51);
-      agentRepo.insert(rank200);
+      await agentRepo.insert(rank1);
+      await agentRepo.insert(rank51);
+      await agentRepo.insert(rank200);
 
-      const s1 = scoring.computeScore(rank1.public_key_hash);
-      const s51 = scoring.computeScore(rank51.public_key_hash);
-      const s200 = scoring.computeScore(rank200.public_key_hash);
+      const s1 = await scoring.computeScore(rank1.public_key_hash);
+      const s51 = await scoring.computeScore(rank51.public_key_hash);
+      const s200 = await scoring.computeScore(rank200.public_key_hash);
 
       // Continuous decay: rank 1 gets most bonus, rank 51 gets some, rank 200 gets ~0
       expect(s1.components.reputation).toBeGreaterThan(s51.components.reputation);
@@ -732,25 +734,25 @@ describe('ScoringService', () => {
     });
   });
 
-  describe('popularity bonus (removed — gameable)', () => {
-    it('query_count has no effect on score', () => {
+  describe('popularity bonus (removed — gameable)', async () => {
+    it('query_count has no effect on score', async () => {
       const queried = makeAgent('pop-queried', { query_count: 100 });
       const unqueried = makeAgent('pop-unqueried', { query_count: 0 });
-      agentRepo.insert(queried);
-      agentRepo.insert(unqueried);
+      await agentRepo.insert(queried);
+      await agentRepo.insert(unqueried);
 
-      const scoreQueried = scoring.computeScore(queried.public_key_hash);
-      const scoreUnqueried = scoring.computeScore(unqueried.public_key_hash);
+      const scoreQueried = await scoring.computeScore(queried.public_key_hash);
+      const scoreUnqueried = await scoring.computeScore(unqueried.public_key_hash);
 
       // Popularity bonus was removed — query_count should not affect score
       expect(scoreQueried.total).toBe(scoreUnqueried.total);
     });
 
-    it('no bonus when query_count is 0', () => {
+    it('no bonus when query_count is 0', async () => {
       const agent = makeAgent('pop-zero', { query_count: 0 });
-      agentRepo.insert(agent);
+      await agentRepo.insert(agent);
 
-      const result = scoring.computeScore(agent.public_key_hash);
+      const result = await scoring.computeScore(agent.public_key_hash);
       // Score should just be base components, no popularity added
       expect(result.total).toBeGreaterThanOrEqual(0);
     });

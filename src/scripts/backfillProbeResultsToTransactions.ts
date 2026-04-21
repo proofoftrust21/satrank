@@ -24,16 +24,22 @@
 // transactions ni aggregates ; retourne le shape standard.
 //
 // --chunk-size=N : default 1000. Le script insère en batches de N dans une
-// transaction SQLite pour la throughput. À 38k rows, ~20s en mode actif.
+// transaction Postgres pour la throughput. À 38k rows, ~20s en mode actif.
 //
 // --limit=N : stop après N probes traitées. Utile pour smoke-test sur un
 // petit échantillon avant full run.
 //
 // Checkpoint-able via fichier JSON (opt-in). Un run interrompu reprend depuis
 // probe_results.id > last_scanned_id sans rescanner.
-import Database from 'better-sqlite3';
+//
+// Phase 12B : porté de better-sqlite3 vers pg async. probe_results garde son
+// `id BIGINT IDENTITY` — on continue de paginer `WHERE id > $1 ORDER BY id`.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { Pool } from 'pg';
+import { getCrawlerPool, closePools } from '../database/connection';
+import { runMigrations } from '../database/migrations';
+import { withTransaction } from '../database/transaction';
 import { sha256 } from '../utils/crypto';
 import { windowBucket } from '../utils/dualWriteLogger';
 import {
@@ -62,7 +68,7 @@ export interface BackfillProbeCheckpoint {
 }
 
 export interface BackfillProbeOptions {
-  db: Database.Database;
+  pool: Pool;
   dryRun?: boolean;
   chunkSize?: number;
   limit?: number;
@@ -104,7 +110,15 @@ export function saveCheckpoint(p: string, cp: BackfillProbeCheckpoint): void {
   fs.writeFileSync(p, JSON.stringify(cp, null, 2));
 }
 
-export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResult {
+interface ProbeRow {
+  rid: number;
+  target_hash: string;
+  probed_at: number;
+  reachable: number;
+  probe_amount_sats: number | null;
+}
+
+export async function runBackfillChunk(opts: BackfillProbeOptions): Promise<BackfillProbeResult> {
   const chunkSize = opts.chunkSize ?? DEFAULT_CHUNK;
   const dryRun = opts.dryRun ?? false;
   const cp: BackfillProbeCheckpoint = opts.checkpoint
@@ -123,37 +137,19 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
   // Filtre base-amount + resume depuis le checkpoint. probe_amount_sats a été
   // ajouté en v20 avec un DEFAULT 1000, donc les rows antérieures sont aussi
   // considérées base-amount (cohérent avec leur usage original).
-  const rows = opts.db.prepare(`
-    SELECT id AS rid, target_hash, probed_at, reachable, probe_amount_sats
-    FROM probe_results
-    WHERE id > ?
-    ORDER BY id
-    LIMIT ?
-  `).all(cp.probe_results_last_id, chunkSize) as Array<{
-    rid: number;
-    target_hash: string;
-    probed_at: number;
-    reachable: number;
-    probe_amount_sats: number | null;
-  }>;
-
-  const txRepo = new TransactionRepository(opts.db);
-  const bayesian = new BayesianScoringService(
-    new EndpointStreamingPosteriorRepository(opts.db),
-    new ServiceStreamingPosteriorRepository(opts.db),
-    new OperatorStreamingPosteriorRepository(opts.db),
-    new NodeStreamingPosteriorRepository(opts.db),
-    new RouteStreamingPosteriorRepository(opts.db),
-    new EndpointDailyBucketsRepository(opts.db),
-    new ServiceDailyBucketsRepository(opts.db),
-    new OperatorDailyBucketsRepository(opts.db),
-    new NodeDailyBucketsRepository(opts.db),
-    new RouteDailyBucketsRepository(opts.db),
+  const { rows } = await opts.pool.query<ProbeRow>(
+    `SELECT id AS rid, target_hash, probed_at, reachable, probe_amount_sats
+       FROM probe_results
+      WHERE id > $1
+      ORDER BY id
+      LIMIT $2`,
+    [cp.probe_results_last_id, chunkSize],
   );
 
-  // FK guard : vérifier d'abord que chaque target existe dans agents. Orphan
-  // rows (target supprimé entre-temps) seraient rejetés par la contrainte FK.
-  const agentExists = opts.db.prepare('SELECT 1 FROM agents WHERE public_key_hash = ?');
+  // Les reads (findById, agents-exists) passent par le pool principal pour
+  // les quick checks (snapshot consistency est acceptable ici). L'écriture
+  // de chaque row est atomique via withTransaction.
+  const txRepo = new TransactionRepository(opts.pool);
 
   for (const row of rows) {
     result.scanned++;
@@ -165,7 +161,13 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
       continue;
     }
 
-    if (!agentExists.get(row.target_hash)) {
+    // FK guard : verifier que le target existe dans agents. Orphan rows
+    // (target supprime entre-temps) seraient rejetes par la contrainte FK.
+    const agentCheck = await opts.pool.query<{ exists: number }>(
+      'SELECT 1 AS exists FROM agents WHERE public_key_hash = $1 LIMIT 1',
+      [row.target_hash],
+    );
+    if (agentCheck.rows.length === 0) {
       result.skippedOrphanTarget++;
       continue;
     }
@@ -175,7 +177,8 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
 
     // Same-day collision (déjà backfillé ou probe LIVE depuis C1.1 a déjà
     // ingéré cette journée) → skip. C'est la garantie d'idempotence.
-    if (txRepo.findById(txId)) {
+    const existing = await txRepo.findById(txId);
+    if (existing) {
       result.skippedDuplicate++;
       continue;
     }
@@ -186,7 +189,21 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
     }
 
     try {
-      opts.db.transaction(() => {
+      await withTransaction(opts.pool, async (client) => {
+        const clientTxRepo = new TransactionRepository(client);
+        const bayesian = new BayesianScoringService(
+          new EndpointStreamingPosteriorRepository(client),
+          new ServiceStreamingPosteriorRepository(client),
+          new OperatorStreamingPosteriorRepository(client),
+          new NodeStreamingPosteriorRepository(client),
+          new RouteStreamingPosteriorRepository(client),
+          new EndpointDailyBucketsRepository(client),
+          new ServiceDailyBucketsRepository(client),
+          new OperatorDailyBucketsRepository(client),
+          new NodeDailyBucketsRepository(client),
+          new RouteDailyBucketsRepository(client),
+        );
+
         const tx = {
           tx_id: txId,
           sender_hash: row.target_hash,
@@ -206,10 +223,10 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
         };
         // Force mode='active' : le backfill DOIT remplir les 4 colonnes v31
         // sinon les rows insérées sont invisibles à buildVerdict.
-        txRepo.insertWithDualWrite(tx, enrichment, 'active', 'probeCrawler');
+        await clientTxRepo.insertWithDualWrite(tx, enrichment, 'active', 'probeCrawler');
         // Phase 3 : le verdict lit dans streaming_posteriors — le backfill
         // doit alimenter le streaming sinon un replay produit un verdict vide.
-        bayesian.ingestStreaming({
+        await bayesian.ingestStreaming({
           success: row.reachable === 1,
           timestamp: row.probed_at,
           source: 'probe',
@@ -217,7 +234,7 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
           operatorId: row.target_hash,
           nodePubkey: row.target_hash,
         });
-      })();
+      });
       result.inserted++;
     } catch (err) {
       result.errors++;
@@ -232,7 +249,7 @@ export function runBackfillChunk(opts: BackfillProbeOptions): BackfillProbeResul
 }
 
 /** Drive runBackfillChunk until no more rows or limit reached. */
-export function runBackfill(opts: BackfillProbeOptions): BackfillProbeResult {
+export async function runBackfill(opts: BackfillProbeOptions): Promise<BackfillProbeResult> {
   const starting = opts.checkpoint
     ? { ...opts.checkpoint }
     : opts.checkpointPath
@@ -252,7 +269,7 @@ export function runBackfill(opts: BackfillProbeOptions): BackfillProbeResult {
     if (aggregate.scanned >= limit) break;
     const remaining = limit - aggregate.scanned;
     const chunkSize = Math.min(opts.chunkSize ?? DEFAULT_CHUNK, remaining);
-    const chunk = runBackfillChunk({ ...opts, checkpoint: working, chunkSize });
+    const chunk = await runBackfillChunk({ ...opts, checkpoint: working, chunkSize });
     aggregate.scanned += chunk.scanned;
     aggregate.inserted += chunk.inserted;
     aggregate.skippedNonBase += chunk.skippedNonBase;
@@ -268,14 +285,12 @@ export function runBackfill(opts: BackfillProbeOptions): BackfillProbeResult {
 
 // ---- CLI entry point ----
 function parseArgs(argv: string[]): {
-  dbPath: string;
   dryRun: boolean;
   chunkSize: number;
   limit?: number;
   checkpointPath?: string;
 } {
   const out = {
-    dbPath: process.env.DB_PATH ?? './data/satrank.db',
     dryRun: false,
     chunkSize: DEFAULT_CHUNK as number,
     limit: undefined as number | undefined,
@@ -284,7 +299,6 @@ function parseArgs(argv: string[]): {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
-    else if (a === '--db' && argv[i + 1]) out.dbPath = argv[++i];
     else if (a === '--chunk-size' && argv[i + 1]) out.chunkSize = Number(argv[++i]);
     else if (a === '--limit' && argv[i + 1]) out.limit = Number(argv[++i]);
     else if (a === '--checkpoint' && argv[i + 1]) out.checkpointPath = argv[++i];
@@ -292,18 +306,14 @@ function parseArgs(argv: string[]): {
   return out;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  if (!fs.existsSync(args.dbPath)) {
-    process.stderr.write(`[backfill-probe] DB not found: ${args.dbPath}\n`);
-    process.exit(1);
-  }
-  const db = new Database(args.dbPath);
-  db.pragma('foreign_keys = ON');
+  const pool = getCrawlerPool();
+  await runMigrations(pool);
 
   const t0 = Date.now();
-  const result = runBackfill({
-    db,
+  const result = await runBackfill({
+    pool,
     dryRun: args.dryRun,
     chunkSize: args.chunkSize,
     limit: args.limit,
@@ -317,14 +327,20 @@ function main(): void {
     durationMs,
   }, null, 2) + '\n');
 
-  db.close();
+  await closePools();
   process.exit(result.errors > 0 ? 2 : 0);
 }
 
-const isDirect = (() => {
-  try {
-    const invoked = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
-    return invoked === fs.realpathSync(__filename);
-  } catch { return false; }
-})();
-if (isDirect) main();
+const isMain =
+  typeof require !== 'undefined' &&
+  typeof module !== 'undefined' &&
+  require.main === module;
+
+if (isMain) {
+  main().catch(async (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[backfill-probe] FATAL: ${msg}\n`);
+    await closePools();
+    process.exit(1);
+  });
+}

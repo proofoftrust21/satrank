@@ -1,8 +1,8 @@
 // Score evidence transparency tests — "Don't trust, verify."
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { v4 as uuid } from 'uuid';
-import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -11,6 +11,7 @@ import { AgentService } from '../services/agentService';
 import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -55,19 +56,18 @@ function makeTx(sender: string, receiver: string, overrides: Partial<Transaction
   };
 }
 
-describe('Score evidence', () => {
-  let db: Database.Database;
+describe('Score evidence', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let txRepo: TransactionRepository;
   let attestationRepo: AttestationRepository;
   let snapshotRepo: SnapshotRepository;
   let agentService: AgentService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     txRepo = new TransactionRepository(db);
     attestationRepo = new AttestationRepository(db);
@@ -76,25 +76,25 @@ describe('Score evidence', () => {
     agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db));
   });
 
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await teardownTestPool(testDb);
   });
 
-  it('returns transaction evidence with sample of 5 most recent', () => {
+  it('returns transaction evidence with sample of 5 most recent', async () => {
     const agent = makeAgent({ public_key_hash: sha256('evidence-tx'), total_transactions: 8 });
     const peer = makeAgent({ public_key_hash: sha256('peer') });
-    agentRepo.insert(agent);
-    agentRepo.insert(peer);
+    await agentRepo.insert(agent);
+    await agentRepo.insert(peer);
 
     // Insert 8 transactions with known timestamps
     for (let i = 0; i < 8; i++) {
-      txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, {
+      await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, {
         timestamp: NOW - i * DAY,
         protocol: i % 2 === 0 ? 'l402' : 'bolt11',
       }));
     }
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.transactions.count).toBe(8);
     expect(result.evidence.transactions.verifiedCount).toBe(8);
@@ -114,18 +114,18 @@ describe('Score evidence', () => {
     }
   });
 
-  it('returns empty transaction sample when no transactions exist', () => {
+  it('returns empty transaction sample when no transactions exist', async () => {
     const agent = makeAgent({ public_key_hash: sha256('no-tx-agent') });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.transactions.count).toBe(0);
     expect(result.evidence.transactions.verifiedCount).toBe(0);
     expect(result.evidence.transactions.sample).toHaveLength(0);
   });
 
-  it('returns lightning_graph evidence for Lightning nodes', () => {
+  it('returns lightning_graph evidence for Lightning nodes', async () => {
     const pubkey = '03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f';
     const agent = makeAgent({
       public_key_hash: sha256(pubkey),
@@ -134,9 +134,9 @@ describe('Score evidence', () => {
       total_transactions: 1988,
       capacity_sats: 37_065_909_294,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.lightningGraph).not.toBeNull();
     expect(result.evidence.lightningGraph!.publicKey).toBe(pubkey);
@@ -147,19 +147,19 @@ describe('Score evidence', () => {
     );
   });
 
-  it('returns null lightning_graph for observer_protocol agents', () => {
+  it('returns null lightning_graph for observer_protocol agents', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('obs-no-ln'),
       source: 'observer_protocol',
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.lightningGraph).toBeNull();
   });
 
-  it('returns LN+ reputation evidence when ratings exist', () => {
+  it('returns LN+ reputation evidence when ratings exist', async () => {
     const pubkey = 'pk-rated-node';
     const agent = makeAgent({
       public_key_hash: sha256(pubkey),
@@ -173,9 +173,9 @@ describe('Score evidence', () => {
       hubness_rank: 15,
       betweenness_rank: 22,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.reputation).not.toBeNull();
     expect(result.evidence.reputation!.positiveRatings).toBe(47);
@@ -188,7 +188,7 @@ describe('Score evidence', () => {
     );
   });
 
-  it('returns null reputation when no LN+ ratings', () => {
+  it('returns null reputation when no LN+ ratings', async () => {
     const pubkey = 'pk-unrated';
     const agent = makeAgent({
       public_key_hash: sha256(pubkey),
@@ -199,14 +199,14 @@ describe('Score evidence', () => {
       negative_ratings: 0,
       lnplus_rank: 0,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.reputation).toBeNull();
   });
 
-  it('returns reputation evidence when only centrality ranks exist', () => {
+  it('returns reputation evidence when only centrality ranks exist', async () => {
     const pubkey = 'pk-centrality-only';
     const agent = makeAgent({
       public_key_hash: sha256(pubkey),
@@ -219,58 +219,58 @@ describe('Score evidence', () => {
       hubness_rank: 25,
       betweenness_rank: 0,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.reputation).not.toBeNull();
     expect(result.evidence.reputation!.hubnessRank).toBe(25);
     expect(result.evidence.reputation!.betweennessRank).toBe(0);
   });
 
-  it('returns popularity evidence with bonus calculation', () => {
+  it('returns popularity evidence with bonus calculation', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('pop-evidence'),
       query_count: 100,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.popularity.queryCount).toBe(100);
     // log2(101) * 2 ≈ 13.3 → capped at 10
     expect(result.evidence.popularity.bonusApplied).toBe(10);
   });
 
-  it('returns 0 popularity bonus when query_count is 0', () => {
+  it('returns 0 popularity bonus when query_count is 0', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('no-pop'),
       query_count: 0,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.popularity.queryCount).toBe(0);
     expect(result.evidence.popularity.bonusApplied).toBe(0);
   });
 
-  it('includes verified=false for pending transactions in sample', () => {
+  it('includes verified=false for pending transactions in sample', async () => {
     const agent = makeAgent({ public_key_hash: sha256('mixed-status') });
     const peer = makeAgent({ public_key_hash: sha256('mixed-peer') });
-    agentRepo.insert(agent);
-    agentRepo.insert(peer);
+    await agentRepo.insert(agent);
+    await agentRepo.insert(peer);
 
-    txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, {
+    await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, {
       status: 'verified',
       timestamp: NOW,
     }));
-    txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, {
+    await txRepo.insert(makeTx(agent.public_key_hash, peer.public_key_hash, {
       status: 'pending',
       timestamp: NOW - DAY,
     }));
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     expect(result.evidence.transactions.sample).toHaveLength(2);
     const verified = result.evidence.transactions.sample.find(t => t.verified);
@@ -279,7 +279,7 @@ describe('Score evidence', () => {
     expect(pending).toBeDefined();
   });
 
-  it('provides complete evidence for a fully-enriched Lightning node', () => {
+  it('provides complete evidence for a fully-enriched Lightning node', async () => {
     const pubkey = 'pk-full-evidence';
     const agent = makeAgent({
       public_key_hash: sha256(pubkey),
@@ -295,9 +295,9 @@ describe('Score evidence', () => {
       betweenness_rank: 20,
       query_count: 50,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     // All sections populated
     expect(result.evidence.transactions).toBeDefined();

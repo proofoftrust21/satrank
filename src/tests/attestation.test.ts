@@ -1,14 +1,15 @@
 // Attestation service tests
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { v4 as uuid } from 'uuid';
-import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { AttestationService } from '../services/attestationService';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -36,32 +37,31 @@ function makeAgent(alias: string): Agent {
   };
 }
 
-describe('AttestationService', () => {
-  let db: Database.Database;
+describe('AttestationService', async () => {
+  let db: Pool;
   let service: AttestationService;
   let agentRepo: AgentRepository;
   let txRepo: TransactionRepository;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     txRepo = new TransactionRepository(db);
     const attestationRepo = new AttestationRepository(db);
     service = new AttestationService(attestationRepo, agentRepo, txRepo);
   });
 
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await teardownTestPool(testDb);
   });
 
-  it('creates a valid attestation', () => {
+  it('creates a valid attestation', async () => {
     const attester = makeAgent('attester');
     const subject = makeAgent('subject');
-    agentRepo.insert(attester);
-    agentRepo.insert(subject);
+    await agentRepo.insert(attester);
+    await agentRepo.insert(subject);
 
     const tx: Transaction = {
       tx_id: uuid(),
@@ -74,9 +74,9 @@ describe('AttestationService', () => {
       status: 'verified',
       protocol: 'l402',
     };
-    txRepo.insert(tx);
+    await txRepo.insert(tx);
 
-    const result = service.create({
+    const result = await service.create({
       txId: tx.tx_id,
       attesterHash: attester.public_key_hash,
       subjectHash: subject.public_key_hash,
@@ -88,9 +88,9 @@ describe('AttestationService', () => {
     expect(result.score).toBe(85);
   });
 
-  it('rejects self-attestation', () => {
+  it('rejects self-attestation', async () => {
     const agent = makeAgent('self-attester');
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
     const tx: Transaction = {
       tx_id: uuid(),
@@ -103,47 +103,47 @@ describe('AttestationService', () => {
       status: 'verified',
       protocol: 'keysend',
     };
-    txRepo.insert(tx);
+    await txRepo.insert(tx);
 
-    expect(() => service.create({
+    await expect(service.create({
       txId: tx.tx_id,
       attesterHash: agent.public_key_hash,
       subjectHash: agent.public_key_hash,
       score: 100,
-    })).toThrow('cannot attest itself');
+    })).rejects.toThrow('cannot attest itself');
   });
 
-  it('rejects if attester does not exist', () => {
+  it('rejects if attester does not exist', async () => {
     const subject = makeAgent('subject-only');
-    agentRepo.insert(subject);
+    await agentRepo.insert(subject);
 
-    expect(() => service.create({
+    await expect(service.create({
       txId: uuid(),
       attesterHash: sha256('ghost'),
       subjectHash: subject.public_key_hash,
       score: 50,
-    })).toThrow('not found');
+    })).rejects.toThrow('not found');
   });
 
-  it('rejects if transaction does not exist', () => {
+  it('rejects if transaction does not exist', async () => {
     const attester = makeAgent('att-no-tx');
     const subject = makeAgent('sub-no-tx');
-    agentRepo.insert(attester);
-    agentRepo.insert(subject);
+    await agentRepo.insert(attester);
+    await agentRepo.insert(subject);
 
-    expect(() => service.create({
+    await expect(service.create({
       txId: uuid(),
       attesterHash: attester.public_key_hash,
       subjectHash: subject.public_key_hash,
       score: 80,
-    })).toThrow('not found');
+    })).rejects.toThrow('not found');
   });
 
-  it('updates the denormalized counter of the subject', () => {
+  it('updates the denormalized counter of the subject', async () => {
     const attester = makeAgent('counter-attester');
     const subject = makeAgent('counter-subject');
-    agentRepo.insert(attester);
-    agentRepo.insert(subject);
+    await agentRepo.insert(attester);
+    await agentRepo.insert(subject);
 
     const tx: Transaction = {
       tx_id: uuid(),
@@ -156,16 +156,16 @@ describe('AttestationService', () => {
       status: 'verified',
       protocol: 'l402',
     };
-    txRepo.insert(tx);
+    await txRepo.insert(tx);
 
-    service.create({
+    await service.create({
       txId: tx.tx_id,
       attesterHash: attester.public_key_hash,
       subjectHash: subject.public_key_hash,
       score: 90,
     });
 
-    const updated = agentRepo.findByHash(subject.public_key_hash)!;
+    const updated = (await agentRepo.findByHash(subject.public_key_hash))!;
     expect(updated.total_attestations_received).toBe(1);
   });
 });

@@ -6,12 +6,13 @@
 //   - listByType filtre + order DESC par published_at + limit
 //   - countByKind agrège bien par event_kind
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import {
   NostrPublishedEventsRepository,
   type RecordPublishedInput,
 } from '../repositories/nostrPublishedEventsRepository';
+let testDb: TestDb;
 
 function baseInput(overrides: Partial<RecordPublishedInput> = {}): RecordPublishedInput {
   return {
@@ -29,27 +30,27 @@ function baseInput(overrides: Partial<RecordPublishedInput> = {}): RecordPublish
   };
 }
 
-describe('NostrPublishedEventsRepository', () => {
-  let db: Database.Database;
+describe('NostrPublishedEventsRepository', async () => {
+  let db: Pool;
   let repo: NostrPublishedEventsRepository;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     repo = new NostrPublishedEventsRepository(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
-  it('getLastPublished retourne null sur entité inconnue', () => {
-    expect(repo.getLastPublished('endpoint', 'nope')).toBeNull();
+  it('getLastPublished retourne null sur entité inconnue', async () => {
+    expect(await repo.getLastPublished('endpoint', 'nope')).toBeNull();
   });
 
-  it('recordPublished insère puis getLastPublished retourne le snapshot', () => {
+  it('recordPublished insère puis getLastPublished retourne le snapshot', async () => {
     const input = baseInput();
-    repo.recordPublished(input);
-    const row = repo.getLastPublished('endpoint', 'urlhash-aaa');
+    await repo.recordPublished(input);
+    const row = await repo.getLastPublished('endpoint', 'urlhash-aaa');
     expect(row).not.toBeNull();
     expect(row!.event_id).toBe(input.eventId);
     expect(row!.event_kind).toBe(30383);
@@ -59,10 +60,10 @@ describe('NostrPublishedEventsRepository', () => {
     expect(row!.n_obs_effective).toBe(42);
   });
 
-  it('recordPublished est un upsert sur (entity_type, entity_id)', () => {
-    repo.recordPublished(baseInput({ eventId: 'a'.repeat(64), publishedAt: 1000, pSuccess: 0.5 }));
-    repo.recordPublished(baseInput({ eventId: 'b'.repeat(64), publishedAt: 2000, pSuccess: 0.9, verdict: 'RISKY', advisoryLevel: 'orange' }));
-    const row = repo.getLastPublished('endpoint', 'urlhash-aaa');
+  it('recordPublished est un upsert sur (entity_type, entity_id)', async () => {
+    await repo.recordPublished(baseInput({ eventId: 'a'.repeat(64), publishedAt: 1000, pSuccess: 0.5 }));
+    await repo.recordPublished(baseInput({ eventId: 'b'.repeat(64), publishedAt: 2000, pSuccess: 0.9, verdict: 'RISKY', advisoryLevel: 'orange' }));
+    const row = await repo.getLastPublished('endpoint', 'urlhash-aaa');
     expect(row!.event_id).toBe('b'.repeat(64));
     expect(row!.published_at).toBe(2000);
     expect(row!.p_success).toBe(0.9);
@@ -70,59 +71,59 @@ describe('NostrPublishedEventsRepository', () => {
     expect(row!.advisory_level).toBe('orange');
   });
 
-  it('isole les entity_type : même entity_id mais type différent = rows différentes', () => {
-    repo.recordPublished(baseInput({ entityType: 'endpoint', entityId: 'shared-id', eventKind: 30383 }));
-    repo.recordPublished(baseInput({ entityType: 'node', entityId: 'shared-id', eventKind: 30382 }));
-    const endpoint = repo.getLastPublished('endpoint', 'shared-id');
-    const node = repo.getLastPublished('node', 'shared-id');
+  it('isole les entity_type : même entity_id mais type différent = rows différentes', async () => {
+    await repo.recordPublished(baseInput({ entityType: 'endpoint', entityId: 'shared-id', eventKind: 30383 }));
+    await repo.recordPublished(baseInput({ entityType: 'node', entityId: 'shared-id', eventKind: 30382 }));
+    const endpoint = await repo.getLastPublished('endpoint', 'shared-id');
+    const node = await repo.getLastPublished('node', 'shared-id');
     expect(endpoint!.event_kind).toBe(30383);
     expect(node!.event_kind).toBe(30382);
   });
 
-  it('delete vire la row et retourne true/false selon existence', () => {
-    repo.recordPublished(baseInput());
-    expect(repo.delete('endpoint', 'urlhash-aaa')).toBe(true);
-    expect(repo.getLastPublished('endpoint', 'urlhash-aaa')).toBeNull();
-    expect(repo.delete('endpoint', 'urlhash-aaa')).toBe(false);
+  it('delete vire la row et retourne true/false selon existence', async () => {
+    await repo.recordPublished(baseInput());
+    expect(await repo.delete('endpoint', 'urlhash-aaa')).toBe(true);
+    expect(await repo.getLastPublished('endpoint', 'urlhash-aaa')).toBeNull();
+    expect(await repo.delete('endpoint', 'urlhash-aaa')).toBe(false);
   });
 
-  it('listByType filtre par type, ordonne published_at DESC, respecte limit', () => {
-    repo.recordPublished(baseInput({ entityId: 'a', publishedAt: 1000 }));
-    repo.recordPublished(baseInput({ entityId: 'b', publishedAt: 3000 }));
-    repo.recordPublished(baseInput({ entityId: 'c', publishedAt: 2000 }));
-    repo.recordPublished(baseInput({ entityType: 'node', entityId: 'node-x', publishedAt: 4000, eventKind: 30382 }));
+  it('listByType filtre par type, ordonne published_at DESC, respecte limit', async () => {
+    await repo.recordPublished(baseInput({ entityId: 'a', publishedAt: 1000 }));
+    await repo.recordPublished(baseInput({ entityId: 'b', publishedAt: 3000 }));
+    await repo.recordPublished(baseInput({ entityId: 'c', publishedAt: 2000 }));
+    await repo.recordPublished(baseInput({ entityType: 'node', entityId: 'node-x', publishedAt: 4000, eventKind: 30382 }));
 
-    const endpoints = repo.listByType('endpoint');
+    const endpoints = await repo.listByType('endpoint');
     expect(endpoints.map((r) => r.entity_id)).toEqual(['b', 'c', 'a']);
 
-    const limited = repo.listByType('endpoint', 2);
+    const limited = await repo.listByType('endpoint', 2);
     expect(limited).toHaveLength(2);
     expect(limited[0].entity_id).toBe('b');
   });
 
-  it('countByKind aggregates par event_kind', () => {
-    repo.recordPublished(baseInput({ entityId: 'a', eventKind: 30383 }));
-    repo.recordPublished(baseInput({ entityId: 'b', eventKind: 30383 }));
-    repo.recordPublished(baseInput({ entityType: 'node', entityId: 'n1', eventKind: 30382 }));
-    const counts = repo.countByKind();
+  it('countByKind aggregates par event_kind', async () => {
+    await repo.recordPublished(baseInput({ entityId: 'a', eventKind: 30383 }));
+    await repo.recordPublished(baseInput({ entityId: 'b', eventKind: 30383 }));
+    await repo.recordPublished(baseInput({ entityType: 'node', entityId: 'n1', eventKind: 30382 }));
+    const counts = await repo.countByKind();
     expect(counts[30383]).toBe(2);
     expect(counts[30382]).toBe(1);
   });
 
-  it('findByEventId retourne la row ou null', () => {
+  it('findByEventId retourne la row ou null', async () => {
     const eid = '7'.repeat(64);
-    repo.recordPublished(baseInput({ entityId: 'a', eventId: eid }));
-    const row = repo.findByEventId(eid);
+    await repo.recordPublished(baseInput({ entityId: 'a', eventId: eid }));
+    const row = await repo.findByEventId(eid);
     expect(row).not.toBeNull();
     expect(row!.entity_id).toBe('a');
-    expect(repo.findByEventId('z'.repeat(64))).toBeNull();
+    expect(await repo.findByEventId('z'.repeat(64))).toBeNull();
   });
 
-  it('latestPublishedAtByType remonte le max(published_at) par type', () => {
-    repo.recordPublished(baseInput({ entityId: 'e1', publishedAt: 500 }));
-    repo.recordPublished(baseInput({ entityId: 'e2', publishedAt: 1500 }));
-    repo.recordPublished(baseInput({ entityType: 'node', entityId: 'n1', publishedAt: 1000, eventKind: 30382 }));
-    const latest = repo.latestPublishedAtByType();
+  it('latestPublishedAtByType remonte le max(published_at) par type', async () => {
+    await repo.recordPublished(baseInput({ entityId: 'e1', publishedAt: 500 }));
+    await repo.recordPublished(baseInput({ entityId: 'e2', publishedAt: 1500 }));
+    await repo.recordPublished(baseInput({ entityType: 'node', entityId: 'n1', publishedAt: 1000, eventKind: 30382 }));
+    const latest = await repo.latestPublishedAtByType();
     expect(latest.endpoint).toBe(1500);
     expect(latest.node).toBe(1000);
     expect(latest.service).toBeNull();

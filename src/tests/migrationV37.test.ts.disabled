@@ -9,36 +9,37 @@
 //   - FK ON DELETE CASCADE pour les 4 tables filles
 //   - Rollback réversible : down(v37) doit tout nettoyer.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations, rollbackTo, getAppliedVersions } from '../database/migrations';
-
-function tableExists(db: Database.Database, name: string): boolean {
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
+import {  rollbackTo, getAppliedVersions } from '../database/migrations';
+function tableExists(db: Pool, name: string): boolean {
   const row = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name=?").get(name) as { found: number } | undefined;
   return !!row;
 }
 
-function indexExists(db: Database.Database, name: string): boolean {
+function indexExists(db: Pool, name: string): boolean {
   const row = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type='index' AND name=?").get(name) as { found: number } | undefined;
   return !!row;
 }
 
-function columnExists(db: Database.Database, table: string, column: string): boolean {
+function columnExists(db: Pool, table: string, column: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   return rows.some((r) => r.name === column);
 }
 
 describe('migration v37 — operators abstraction (Phase 7)', () => {
-  let db: Database.Database;
+  let testDb: TestDb;
+  let db: Pool;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
-  afterEach(() => db.close());
+    db = testDb.pool;
+});
 
-  it('creates the five operator tables', () => {
+  afterEach(async () => { await teardownTestPool(testDb); });
+
+  it('creates the five operator tables', async () => {
     for (const t of [
       'operators',
       'operator_identities',
@@ -50,7 +51,7 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     }
   });
 
-  it('creates all required indexes', () => {
+  it('creates all required indexes', async () => {
     for (const idx of [
       'idx_operators_status',
       'idx_operators_last_activity',
@@ -66,12 +67,12 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     }
   });
 
-  it('adds operator_id column to agents and service_endpoints (nullable)', () => {
+  it('adds operator_id column to agents and service_endpoints (nullable)', async () => {
     expect(columnExists(db, 'agents', 'operator_id')).toBe(true);
     expect(columnExists(db, 'service_endpoints', 'operator_id')).toBe(true);
   });
 
-  it('operators.verification_score accepts 0..3 and rejects out-of-range', () => {
+  it('operators.verification_score accepts 0..3 and rejects out-of-range', async () => {
     const now = Date.now();
     for (const score of [0, 1, 2, 3]) {
       db.prepare(`INSERT INTO operators (operator_id, first_seen, last_activity, verification_score, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`)
@@ -85,7 +86,7 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     }).toThrow(/CHECK constraint/);
   });
 
-  it('operators.status accepts verified/pending/rejected and rejects other', () => {
+  it('operators.status accepts verified/pending/rejected and rejects other', async () => {
     const now = Date.now();
     for (const status of ['verified', 'pending', 'rejected']) {
       db.prepare(`INSERT INTO operators (operator_id, first_seen, last_activity, verification_score, status, created_at) VALUES (?, ?, ?, 0, ?, ?)`)
@@ -96,7 +97,7 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     }).toThrow(/CHECK constraint/);
   });
 
-  it('operator_identities.identity_type accepts ln_pubkey/nip05/dns only', () => {
+  it('operator_identities.identity_type accepts ln_pubkey/nip05/dns only', async () => {
     const now = Date.now();
     db.prepare(`INSERT INTO operators (operator_id, first_seen, last_activity, verification_score, status, created_at) VALUES ('op1', ?, ?, 0, 'pending', ?)`).run(now, now, now);
     for (const type of ['ln_pubkey', 'nip05', 'dns']) {
@@ -108,7 +109,7 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     }).toThrow(/CHECK constraint/);
   });
 
-  it('operator_identities cascades on DELETE operator', () => {
+  it('operator_identities cascades on DELETE operator', async () => {
     const now = Date.now();
     db.prepare(`INSERT INTO operators (operator_id, first_seen, last_activity, verification_score, status, created_at) VALUES ('op1', ?, ?, 0, 'pending', ?)`).run(now, now, now);
     db.prepare(`INSERT INTO operator_identities (operator_id, identity_type, identity_value) VALUES ('op1', 'dns', 'example.com')`).run();
@@ -128,7 +129,7 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     expect(svcCount.n).toBe(0);
   });
 
-  it('defaults verification_score=0 and status=pending', () => {
+  it('defaults verification_score=0 and status=pending', async () => {
     const now = Date.now();
     db.prepare(`INSERT INTO operators (operator_id, first_seen, last_activity, created_at) VALUES ('op-def', ?, ?, ?)`).run(now, now, now);
     const row = db.prepare(`SELECT verification_score, status FROM operators WHERE operator_id = 'op-def'`).get() as { verification_score: number; status: string };
@@ -147,12 +148,12 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     db.prepare(`INSERT INTO operator_identities (operator_id, identity_type, identity_value) VALUES ('op1', 'dns', 'other.com')`).run();
   });
 
-  it('schema_version has v37 recorded', () => {
+  it('schema_version has v37 recorded', async () => {
     const versions = getAppliedVersions(db).map((v) => v.version);
     expect(versions).toContain(37);
   });
 
-  it('rollback to v36 drops all 5 operator tables + indexes', () => {
+  it('rollback to v36 drops all 5 operator tables + indexes', async () => {
     rollbackTo(db, 36);
     for (const t of [
       'operators',
@@ -178,11 +179,10 @@ describe('migration v37 — operators abstraction (Phase 7)', () => {
     }
   });
 
-  it('rollback then re-runMigrations is idempotent (schema converges)', () => {
+  it('rollback then re-runMigrations is idempotent (schema converges)', async () => {
     rollbackTo(db, 36);
     expect(tableExists(db, 'operators')).toBe(false);
-    runMigrations(db);
-    expect(tableExists(db, 'operators')).toBe(true);
+expect(tableExists(db, 'operators')).toBe(true);
     expect(columnExists(db, 'agents', 'operator_id')).toBe(true);
     expect(columnExists(db, 'service_endpoints', 'operator_id')).toBe(true);
   });

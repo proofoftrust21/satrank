@@ -146,7 +146,7 @@ export class DecideService {
     const startMs = Date.now();
 
     // Mark as hot node for priority probing
-    this.agentRepo.touchLastQueried(targetHash);
+    await this.agentRepo.touchLastQueried(targetHash);
 
     // Get the full verdict (reuses pathfinding, personal trust, flags, risk profile).
     // Bayesian posterior drives the decision — no legacy composite score.
@@ -164,7 +164,7 @@ export class DecideService {
     let pAvailable = 0.5;
     let lastProbeAgeMs: number | null = null;
     if (this.probeRepo) {
-      const lastProbe = this.probeRepo.findLatest(targetHash);
+      const lastProbe = await this.probeRepo.findLatest(targetHash);
       const now = Math.floor(Date.now() / 1000);
       const probeAgeSec = lastProbe ? now - lastProbe.probed_at : Infinity;
 
@@ -174,13 +174,13 @@ export class DecideService {
       //     (e.g. first query on a cold node only has 1k data, agent wants 100k).
       // Both use the agent's pathfindingSourcePubkey so the re-probe tests the
       // actual route the payment would take (not SatRank's position).
-      const currentMax = this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC);
+      const currentMax = await this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC);
       const needsHigherTier = amountSats != null && currentMax !== null && amountSats > currentMax;
       const lastReprobe = recentReprobes.get(targetHash) ?? 0;
       const reprobeAllowed = (now - lastReprobe) >= REPROBE_RATE_LIMIT_SEC;
       if ((probeAgeSec > REPROBE_STALE_SEC || needsHigherTier) && reprobeAllowed && this.lndClient) {
         recentReprobes.set(targetHash, now);
-        const agent = this.agentRepo.findByHash(targetHash);
+        const agent = await this.agentRepo.findByHash(targetHash);
         if (agent?.public_key) {
           const tiers = [1_000, 10_000, 100_000, 1_000_000];
           const requestedAmount = amountSats ?? 1000;
@@ -195,7 +195,7 @@ export class DecideService {
               ]);
               const routes = response.routes ?? [];
               const reachable = routes.length > 0;
-              this.probeRepo.insert({
+              await this.probeRepo.insert({
                 target_hash: targetHash,
                 probed_at: now,
                 reachable: reachable ? 1 : 0,
@@ -216,12 +216,12 @@ export class DecideService {
       }
 
       // Read uptime from all probes (including the one we just inserted)
-      const uptime = this.probeRepo.computeUptime(targetHash, SEVEN_DAYS_SEC);
+      const uptime = await this.probeRepo.computeUptime(targetHash, SEVEN_DAYS_SEC);
       if (uptime !== null) {
         pAvailable = uptime;
       }
       // Re-read the latest probe (may be the fresh one we just inserted)
-      const freshProbe = this.probeRepo.findLatest(targetHash);
+      const freshProbe = await this.probeRepo.findLatest(targetHash);
       if (freshProbe) {
         lastProbeAgeMs = Math.round(Date.now() - freshProbe.probed_at * 1000);
       }
@@ -231,7 +231,7 @@ export class DecideService {
     // null when no multi-amount data is available (node not hot enough to
     // trigger higher-tier probes, or first cycle after deploy).
     const maxRoutableAmount = this.probeRepo
-      ? this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC)
+      ? await this.probeRepo.findMaxRoutableAmount(targetHash, SEVEN_DAYS_SEC)
       : null;
 
     // P_path — path quality from the caller's position in the graph
@@ -267,12 +267,12 @@ export class DecideService {
       && !serviceDown;
 
     const survival = this.survivalService
-      ? this.survivalService.compute(targetHash)
+      ? await this.survivalService.compute(targetHash)
       : { score: 100, prediction: 'stable' as const, signals: { scoreTrajectory: 'no data', probeStability: 'no data', gossipFreshness: 'no data' } };
 
     // Fee volatility: 0-100 internal score mapped to 0-1 index (1 = stable).
     // Returns null when no fee data is available for this target.
-    const feeStabilityRaw = this.scoringService.computeFeeStability(targetHash);
+    const feeStabilityRaw = await this.scoringService.computeFeeStability(targetHash);
     const targetFeeStability = feeStabilityRaw === 50 ? null : Math.round(feeStabilityRaw) / 100;
 
     // Tag pathfinding result with the source node used and the wallet provider
@@ -338,7 +338,7 @@ export class DecideService {
    *  returns { status: 'checking' } immediately and finishes in background. */
   private async checkServiceHealth(agentHash: string, url: string, decideStartMs: number): Promise<ServiceHealth> {
     // 1. Check cache
-    const cached = this.serviceEndpointRepo!.findByUrl(url);
+    const cached = await this.serviceEndpointRepo!.findByUrl(url);
     const now = Math.floor(Date.now() / 1000);
     const servicePriceSats = cached?.service_price_sats ?? null;
 
@@ -404,14 +404,14 @@ export class DecideService {
 
       // ad_hoc: URL→agent binding is asserted by the caller, not verified by crawler.
       // Does NOT upgrade an existing '402index' or 'self_registered' entry.
-      this.serviceEndpointRepo!.upsert(agentHash, url, httpCode, latencyMs, 'ad_hoc');
-      const updated = this.serviceEndpointRepo!.findByUrl(url);
+      await this.serviceEndpointRepo!.upsert(agentHash, url, httpCode, latencyMs, 'ad_hoc');
+      const updated = await this.serviceEndpointRepo!.findByUrl(url);
       const uptimeRatio = updated && updated.check_count >= 3
         ? Math.round((updated.success_count / updated.check_count) * 1000) / 1000
         : null;
 
 
-      const ep = this.serviceEndpointRepo!.findByUrl(url);
+      const ep = await this.serviceEndpointRepo!.findByUrl(url);
       const nowSec = Math.floor(Date.now() / 1000);
       const status = classifyHttp(httpCode);
       return {
@@ -425,7 +425,7 @@ export class DecideService {
       if (err instanceof SsrfBlockedError) {
         logger.debug({ url, reason: err.message }, 'decide: service health check blocked by SSRF guard');
       }
-      this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0, 'ad_hoc');
+      await this.serviceEndpointRepo!.upsert(agentHash, url, 0, 0, 'ad_hoc');
       const nowSec = Math.floor(Date.now() / 1000);
       return {
         url, status: 'down', httpCode: null, latencyMs: null, uptimeRatio: null,

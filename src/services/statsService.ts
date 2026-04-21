@@ -1,5 +1,5 @@
 // Global network statistics
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { TransactionRepository } from '../repositories/transactionRepository';
 import type { AttestationRepository } from '../repositories/attestationRepository';
@@ -83,7 +83,7 @@ export class StatsService {
     private txRepo: TransactionRepository,
     private attestationRepo: AttestationRepository,
     private snapshotRepo: SnapshotRepository,
-    private db: Database.Database,
+    private pool: Pool,
     private trendService: TrendService,
     private probeRepo?: ProbeRepository,
     private serviceEndpointRepo?: ServiceEndpointRepository,
@@ -118,19 +118,19 @@ export class StatsService {
       .finally(() => { this.lndProbeInFlight = false; });
   }
 
-  getHealth(): HealthResponse {
+  async getHealth(): Promise<HealthResponse> {
     // Cached for 3s — under load, /health is polled constantly by healthcheck
     // agents and monitoring. The heavy COUNT(*) on snapshots doesn't need to
     // run per request. Stale-while-revalidate: response is always instant.
-    return memoryCache.getOrCompute<HealthResponse>('health:snapshot', 3_000, () => {
+    return memoryCache.getOrComputeAsync<HealthResponse>('health:snapshot', 3_000, async () => {
       let dbStatus: 'ok' | 'error' = 'error';
       let schemaVersion = 0;
 
       try {
-        this.db.prepare('SELECT 1').get();
+        await this.pool.query('SELECT 1');
         dbStatus = 'ok';
-        const row = this.db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number | null } | undefined;
-        schemaVersion = row?.v ?? 0;
+        const { rows } = await this.pool.query<{ v: number | null }>('SELECT MAX(version) AS v FROM schema_version');
+        schemaVersion = rows[0]?.v ?? 0;
       } catch {
         dbStatus = 'error';
       }
@@ -164,7 +164,7 @@ export class StatsService {
       // H1: scoring staleness. score_snapshots stop advancing when the
       // crawler dies or LND graph crawl can't reach LND. Either way the API
       // is serving increasingly outdated scores; degraded health is the signal.
-      const lastUpdate = dbStatus === 'ok' ? this.snapshotRepo.getLastUpdateTime() : 0;
+      const lastUpdate = dbStatus === 'ok' ? await this.snapshotRepo.getLastUpdateTime() : 0;
       const nowSec = Math.floor(Date.now() / 1000);
       const scoringAgeSec = lastUpdate > 0 ? nowSec - lastUpdate : null;
       const scoringStale = scoringAgeSec !== null && scoringAgeSec > SCORING_STALE_THRESHOLD_SEC;
@@ -199,9 +199,9 @@ export class StatsService {
 
       return {
         status: finalStatus,
-        agentsIndexed: dbStatus === 'ok' ? this.agentRepo.count() : 0,
-        staleAgents: dbStatus === 'ok' ? this.agentRepo.countStale() : 0,
-        totalTransactions: dbStatus === 'ok' ? this.txRepo.totalCount() : 0,
+        agentsIndexed: dbStatus === 'ok' ? await this.agentRepo.count() : 0,
+        staleAgents: dbStatus === 'ok' ? await this.agentRepo.countStale() : 0,
+        totalTransactions: dbStatus === 'ok' ? await this.txRepo.totalCount() : 0,
         lastUpdate,
         scoringAgeSec,
         scoringStale,
@@ -217,32 +217,32 @@ export class StatsService {
     });
   }
 
-  getNetworkStats(): NetworkStats {
+  async getNetworkStats(): Promise<NetworkStats> {
     // Stale-while-revalidate — first caller on a cold key waits; afterwards
     // subscribers always get an instant response while refreshes happen in
     // the background on expiry.
-    return memoryCache.getOrCompute<NetworkStats>(NETWORK_STATS_CACHE_KEY, NETWORK_STATS_TTL_MS, () => {
-      const buckets = this.txRepo.countByBucket();
-      const nodesProbed = this.probeRepo?.countProbedAgents() ?? 0;
-      const verifiedReachable = this.probeRepo?.countReachable() ?? 0;
+    return memoryCache.getOrComputeAsync<NetworkStats>(NETWORK_STATS_CACHE_KEY, NETWORK_STATS_TTL_MS, async () => {
+      const buckets = await this.txRepo.countByBucket();
+      const nodesProbed = this.probeRepo ? await this.probeRepo.countProbedAgents() : 0;
+      const verifiedReachable = this.probeRepo ? await this.probeRepo.countReachable() : 0;
 
       return {
-        totalAgents: this.agentRepo.count(),
-        totalEndpoints: this.agentRepo.countBySource('lightning_graph'),
+        totalAgents: await this.agentRepo.count(),
+        totalEndpoints: await this.agentRepo.countBySource('lightning_graph'),
         nodesProbed,
         phantomRate: nodesProbed > 0 ? Math.round((1 - verifiedReachable / nodesProbed) * 100) : 0,
         verifiedReachable,
-        probes24h: this.probeRepo?.countProbesLast24h() ?? 0,
-        totalChannels: this.agentRepo.sumChannels(),
-        nodesWithRatings: this.agentRepo.countWithRatings(),
-        networkCapacityBtc: this.agentRepo.networkCapacityBtc(),
+        probes24h: this.probeRepo ? await this.probeRepo.countProbesLast24h() : 0,
+        totalChannels: await this.agentRepo.sumChannels(),
+        nodesWithRatings: await this.agentRepo.countWithRatings(),
+        networkCapacityBtc: await this.agentRepo.networkCapacityBtc(),
         totalVolumeBuckets: {
           micro: buckets['micro'] ?? 0,
           small: buckets['small'] ?? 0,
           medium: buckets['medium'] ?? 0,
           large: buckets['large'] ?? 0,
         },
-        serviceSources: this.serviceEndpointRepo?.countBySource() ?? { '402index': 0, 'self_registered': 0, 'ad_hoc': 0 },
+        serviceSources: this.serviceEndpointRepo ? await this.serviceEndpointRepo.countBySource() : { '402index': 0, 'self_registered': 0, 'ad_hoc': 0 },
       };
     });
   }

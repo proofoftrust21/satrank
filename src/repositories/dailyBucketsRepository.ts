@@ -1,4 +1,4 @@
-// Data access pour les 5 tables *_daily_buckets (Phase 3 refactor).
+// Data access pour les 5 tables *_daily_buckets (Phase 3 refactor; pg async port, Phase 12B).
 //
 // Les daily_buckets sont "display-only" : ils servent à exposer le recent_activity
 // côté API (n_obs par fenêtre 24h/7d/30d) sans passer par les streaming_posteriors
@@ -8,7 +8,9 @@
 //
 // Rétention : BUCKET_RETENTION_DAYS (=30) jours glissants, purgés par cron (C12).
 
-import type Database from 'better-sqlite3';
+import type { Pool, PoolClient } from 'pg';
+
+type Queryable = Pool | PoolClient;
 
 export type BucketSource = 'probe' | 'report' | 'paid' | 'observer';
 
@@ -49,87 +51,89 @@ abstract class BaseDailyBucketsRepository {
   protected abstract table: string;
   protected abstract idColumn: string;
 
-  constructor(protected db: Database.Database) {}
+  constructor(protected db: Queryable) {}
 
   /** Incrémente les compteurs d'une (id, source, day). Upsert atomique. */
-  bump(id: string, source: BucketSource, increment: BucketIncrement): void {
+  async bump(id: string, source: BucketSource, increment: BucketIncrement): Promise<void> {
     const { day, nObsDelta, nSuccessDelta, nFailureDelta } = increment;
-    this.db
-      .prepare(
-        `INSERT INTO ${this.table}
-           (${this.idColumn}, source, day, n_obs, n_success, n_failure)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(${this.idColumn}, source, day) DO UPDATE SET
-           n_obs = n_obs + excluded.n_obs,
-           n_success = n_success + excluded.n_success,
-           n_failure = n_failure + excluded.n_failure`,
-      )
-      .run(id, source, day, nObsDelta, nSuccessDelta, nFailureDelta);
+    await this.db.query(
+      `INSERT INTO ${this.table}
+         (${this.idColumn}, source, day, n_obs, n_success, n_failure)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (${this.idColumn}, source, day) DO UPDATE SET
+         n_obs = ${this.table}.n_obs + EXCLUDED.n_obs,
+         n_success = ${this.table}.n_success + EXCLUDED.n_success,
+         n_failure = ${this.table}.n_failure + EXCLUDED.n_failure`,
+      [id, source, day, nObsDelta, nSuccessDelta, nFailureDelta],
+    );
   }
 
   /** Lit toutes les rows d'un id (toutes sources, tous jours). */
-  findAllForId(id: string): BucketRow[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM ${this.table} WHERE ${this.idColumn} = ? ORDER BY day DESC`,
-      )
-      .all(id) as Record<string, unknown>[];
+  async findAllForId(id: string): Promise<BucketRow[]> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      `SELECT * FROM ${this.table} WHERE ${this.idColumn} = $1 ORDER BY day DESC`,
+      [id],
+    );
     return rows.map((r) => this.mapRow(r));
   }
 
   /** Compte cumulé n_obs sur les 24h, 7d, 30d derniers jours (inclusif).
    *  `atTs` est le timestamp de référence — la fenêtre est [atTs - Xd, atTs].
    *  Agrège toutes les sources (observer inclus). */
-  recentActivity(id: string, atTs: number): RecentActivity {
+  async recentActivity(id: string, atTs: number): Promise<RecentActivity> {
     const atDay = dayKeyUTC(atTs);
     const day1agoKey = dayKeyUTC(atTs - 86400);
     const day7agoKey = dayKeyUTC(atTs - 7 * 86400);
     const day30agoKey = dayKeyUTC(atTs - 30 * 86400);
 
-    const last24h = this.sumObsBetween(id, day1agoKey, atDay);
-    const last7d = this.sumObsBetween(id, day7agoKey, atDay);
-    const last30d = this.sumObsBetween(id, day30agoKey, atDay);
+    const last24h = await this.sumObsBetween(id, day1agoKey, atDay);
+    const last7d = await this.sumObsBetween(id, day7agoKey, atDay);
+    const last30d = await this.sumObsBetween(id, day30agoKey, atDay);
 
     return { last_24h: last24h, last_7d: last7d, last_30d: last30d };
   }
 
   /** Somme n_obs sur une plage [fromDay, toDay] inclusive, toutes sources. */
-  private sumObsBetween(id: string, fromDay: string, toDay: string): number {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(n_obs), 0) AS total
-           FROM ${this.table}
-          WHERE ${this.idColumn} = ?
-            AND day >= ?
-            AND day <= ?`,
-      )
-      .get(id, fromDay, toDay) as { total: number };
-    return row.total;
+  private async sumObsBetween(id: string, fromDay: string, toDay: string): Promise<number> {
+    const { rows } = await this.db.query<{ total: string }>(
+      `SELECT COALESCE(SUM(n_obs), 0)::text AS total
+         FROM ${this.table}
+        WHERE ${this.idColumn} = $1
+          AND day >= $2
+          AND day <= $3`,
+      [id, fromDay, toDay],
+    );
+    return Number(rows[0]?.total ?? 0);
   }
 
   /** Comptes success/failure cumulés sur [fromDay, toDay] — utilisé par
    *  riskProfile (Option B) pour calculer success_rate(récent) vs (antérieur). */
-  sumSuccessFailureBetween(id: string, fromDay: string, toDay: string): { nSuccess: number; nFailure: number; nObs: number } {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(n_success), 0) AS nSuccess,
-                COALESCE(SUM(n_failure), 0) AS nFailure,
-                COALESCE(SUM(n_obs), 0) AS nObs
-           FROM ${this.table}
-          WHERE ${this.idColumn} = ?
-            AND day >= ?
-            AND day <= ?`,
-      )
-      .get(id, fromDay, toDay) as { nSuccess: number; nFailure: number; nObs: number };
-    return row;
+  async sumSuccessFailureBetween(id: string, fromDay: string, toDay: string): Promise<{ nSuccess: number; nFailure: number; nObs: number }> {
+    const { rows } = await this.db.query<{ nsuccess: string; nfailure: string; nobs: string }>(
+      `SELECT COALESCE(SUM(n_success), 0)::text AS nSuccess,
+              COALESCE(SUM(n_failure), 0)::text AS nFailure,
+              COALESCE(SUM(n_obs), 0)::text AS nObs
+         FROM ${this.table}
+        WHERE ${this.idColumn} = $1
+          AND day >= $2
+          AND day <= $3`,
+      [id, fromDay, toDay],
+    );
+    const row = rows[0];
+    return {
+      nSuccess: Number(row?.nsuccess ?? 0),
+      nFailure: Number(row?.nfailure ?? 0),
+      nObs: Number(row?.nobs ?? 0),
+    };
   }
 
   /** Purge les rows plus vieilles que `retentionDays`. Clé par jour UTC. */
-  pruneOlderThan(beforeDay: string): number {
-    const res = this.db
-      .prepare(`DELETE FROM ${this.table} WHERE day < ?`)
-      .run(beforeDay);
-    return Number(res.changes ?? 0);
+  async pruneOlderThan(beforeDay: string): Promise<number> {
+    const result = await this.db.query(
+      `DELETE FROM ${this.table} WHERE day < $1`,
+      [beforeDay],
+    );
+    return result.rowCount ?? 0;
   }
 
   protected mapRow(row: Record<string, unknown>): BucketRow {
@@ -137,9 +141,9 @@ abstract class BaseDailyBucketsRepository {
       id: row[this.idColumn] as string,
       source: row.source as BucketSource,
       day: row.day as string,
-      nObs: row.n_obs as number,
-      nSuccess: row.n_success as number,
-      nFailure: row.n_failure as number,
+      nObs: Number(row.n_obs),
+      nSuccess: Number(row.n_success),
+      nFailure: Number(row.n_failure),
     };
   }
 }
@@ -170,88 +174,90 @@ export class OperatorDailyBucketsRepository extends BaseDailyBucketsRepository {
 
 // Route a besoin de caller_hash + target_hash à la création.
 export class RouteDailyBucketsRepository {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Queryable) {}
 
-  bump(
+  async bump(
     routeHash: string,
     callerHash: string,
     targetHash: string,
     source: BucketSource,
     increment: BucketIncrement,
-  ): void {
+  ): Promise<void> {
     const { day, nObsDelta, nSuccessDelta, nFailureDelta } = increment;
-    this.db
-      .prepare(
-        `INSERT INTO route_daily_buckets
-           (route_hash, source, day, caller_hash, target_hash, n_obs, n_success, n_failure)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(route_hash, source, day) DO UPDATE SET
-           n_obs = n_obs + excluded.n_obs,
-           n_success = n_success + excluded.n_success,
-           n_failure = n_failure + excluded.n_failure`,
-      )
-      .run(routeHash, source, day, callerHash, targetHash, nObsDelta, nSuccessDelta, nFailureDelta);
+    await this.db.query(
+      `INSERT INTO route_daily_buckets
+         (route_hash, source, day, caller_hash, target_hash, n_obs, n_success, n_failure)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (route_hash, source, day) DO UPDATE SET
+         n_obs = route_daily_buckets.n_obs + EXCLUDED.n_obs,
+         n_success = route_daily_buckets.n_success + EXCLUDED.n_success,
+         n_failure = route_daily_buckets.n_failure + EXCLUDED.n_failure`,
+      [routeHash, source, day, callerHash, targetHash, nObsDelta, nSuccessDelta, nFailureDelta],
+    );
   }
 
-  findAllForId(routeHash: string): (BucketRow & { callerHash: string; targetHash: string })[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM route_daily_buckets WHERE route_hash = ? ORDER BY day DESC`,
-      )
-      .all(routeHash) as Record<string, unknown>[];
+  async findAllForId(routeHash: string): Promise<(BucketRow & { callerHash: string; targetHash: string })[]> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      'SELECT * FROM route_daily_buckets WHERE route_hash = $1 ORDER BY day DESC',
+      [routeHash],
+    );
     return rows.map((r) => ({
       id: r.route_hash as string,
       source: r.source as BucketSource,
       day: r.day as string,
-      nObs: r.n_obs as number,
-      nSuccess: r.n_success as number,
-      nFailure: r.n_failure as number,
+      nObs: Number(r.n_obs),
+      nSuccess: Number(r.n_success),
+      nFailure: Number(r.n_failure),
       callerHash: r.caller_hash as string,
       targetHash: r.target_hash as string,
     }));
   }
 
-  recentActivity(routeHash: string, atTs: number): RecentActivity {
+  async recentActivity(routeHash: string, atTs: number): Promise<RecentActivity> {
     const atDay = dayKeyUTC(atTs);
     const day1agoKey = dayKeyUTC(atTs - 86400);
     const day7agoKey = dayKeyUTC(atTs - 7 * 86400);
     const day30agoKey = dayKeyUTC(atTs - 30 * 86400);
 
-    const sum = (from: string, to: string): number => {
-      const row = this.db
-        .prepare(
-          `SELECT COALESCE(SUM(n_obs), 0) AS total
-             FROM route_daily_buckets
-            WHERE route_hash = ? AND day >= ? AND day <= ?`,
-        )
-        .get(routeHash, from, to) as { total: number };
-      return row.total;
+    const sum = async (from: string, to: string): Promise<number> => {
+      const { rows } = await this.db.query<{ total: string }>(
+        `SELECT COALESCE(SUM(n_obs), 0)::text AS total
+           FROM route_daily_buckets
+          WHERE route_hash = $1 AND day >= $2 AND day <= $3`,
+        [routeHash, from, to],
+      );
+      return Number(rows[0]?.total ?? 0);
     };
 
     return {
-      last_24h: sum(day1agoKey, atDay),
-      last_7d: sum(day7agoKey, atDay),
-      last_30d: sum(day30agoKey, atDay),
+      last_24h: await sum(day1agoKey, atDay),
+      last_7d: await sum(day7agoKey, atDay),
+      last_30d: await sum(day30agoKey, atDay),
     };
   }
 
-  sumSuccessFailureBetween(routeHash: string, fromDay: string, toDay: string): { nSuccess: number; nFailure: number; nObs: number } {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(n_success), 0) AS nSuccess,
-                COALESCE(SUM(n_failure), 0) AS nFailure,
-                COALESCE(SUM(n_obs), 0) AS nObs
-           FROM route_daily_buckets
-          WHERE route_hash = ? AND day >= ? AND day <= ?`,
-      )
-      .get(routeHash, fromDay, toDay) as { nSuccess: number; nFailure: number; nObs: number };
-    return row;
+  async sumSuccessFailureBetween(routeHash: string, fromDay: string, toDay: string): Promise<{ nSuccess: number; nFailure: number; nObs: number }> {
+    const { rows } = await this.db.query<{ nsuccess: string; nfailure: string; nobs: string }>(
+      `SELECT COALESCE(SUM(n_success), 0)::text AS nSuccess,
+              COALESCE(SUM(n_failure), 0)::text AS nFailure,
+              COALESCE(SUM(n_obs), 0)::text AS nObs
+         FROM route_daily_buckets
+        WHERE route_hash = $1 AND day >= $2 AND day <= $3`,
+      [routeHash, fromDay, toDay],
+    );
+    const row = rows[0];
+    return {
+      nSuccess: Number(row?.nsuccess ?? 0),
+      nFailure: Number(row?.nfailure ?? 0),
+      nObs: Number(row?.nobs ?? 0),
+    };
   }
 
-  pruneOlderThan(beforeDay: string): number {
-    const res = this.db
-      .prepare(`DELETE FROM route_daily_buckets WHERE day < ?`)
-      .run(beforeDay);
-    return Number(res.changes ?? 0);
+  async pruneOlderThan(beforeDay: string): Promise<number> {
+    const result = await this.db.query(
+      'DELETE FROM route_daily_buckets WHERE day < $1',
+      [beforeDay],
+    );
+    return result.rowCount ?? 0;
   }
 }

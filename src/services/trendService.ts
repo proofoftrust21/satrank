@@ -24,12 +24,12 @@ export class TrendService {
     private snapshotRepo: SnapshotRepository,
   ) {}
 
-  computeDeltas(agentHash: string, currentPSuccess: number): ScoreDelta {
+  async computeDeltas(agentHash: string, currentPSuccess: number): Promise<ScoreDelta> {
     const now = Math.floor(Date.now() / 1000);
 
-    const snap24h = this.snapshotRepo.findSnapshotAt(agentHash, now - DAY);
-    const snap7d = this.snapshotRepo.findSnapshotAt(agentHash, now - 7 * DAY);
-    const snap30d = this.snapshotRepo.findSnapshotAt(agentHash, now - 30 * DAY);
+    const snap24h = await this.snapshotRepo.findSnapshotAt(agentHash, now - DAY);
+    const snap7d = await this.snapshotRepo.findSnapshotAt(agentHash, now - 7 * DAY);
+    const snap30d = await this.snapshotRepo.findSnapshotAt(agentHash, now - 30 * DAY);
 
     const delta24h = snap24h !== null ? round3(currentPSuccess - snap24h.p_success) : null;
     const delta7d = snap7d !== null ? round3(currentPSuccess - snap7d.p_success) : null;
@@ -46,13 +46,13 @@ export class TrendService {
 
   /** Batch version of computeDeltas — 3 SQL queries instead of 3N.
    *  Used by leaderboard and search to avoid N+1 query amplification. */
-  computeDeltasBatch(agents: Array<{ hash: string; pSuccess: number }>): Map<string, ScoreDelta> {
+  async computeDeltasBatch(agents: Array<{ hash: string; pSuccess: number }>): Promise<Map<string, ScoreDelta>> {
     const now = Math.floor(Date.now() / 1000);
     const hashes = agents.map(a => a.hash);
 
-    const snaps24h = this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - DAY);
-    const snaps7d = this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - 7 * DAY);
-    const snaps30d = this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - 30 * DAY);
+    const snaps24h = await this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - DAY);
+    const snaps7d = await this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - 7 * DAY);
+    const snaps30d = await this.snapshotRepo.findSnapshotsAtForAgents(hashes, now - 30 * DAY);
 
     const result = new Map<string, ScoreDelta>();
     for (const agent of agents) {
@@ -75,9 +75,9 @@ export class TrendService {
     return result;
   }
 
-  computeAlerts(agentHash: string, currentPSuccess: number, delta: ScoreDelta): AgentAlert[] {
+  async computeAlerts(agentHash: string, currentPSuccess: number, delta: ScoreDelta): Promise<AgentAlert[]> {
     const alerts: AgentAlert[] = [];
-    const agent = this.agentRepo.findByHash(agentHash);
+    const agent = await this.agentRepo.findByHash(agentHash);
     if (!agent) return alerts;
 
     const now = Math.floor(Date.now() / 1000);
@@ -126,19 +126,19 @@ export class TrendService {
     return alerts;
   }
 
-  getTopMovers(limit: number = 5): { up: TopMover[]; down: TopMover[] } {
+  async getTopMovers(limit: number = 5): Promise<{ up: TopMover[]; down: TopMover[] }> {
     const now = Math.floor(Date.now() / 1000);
     const sevenDaysAgo = now - 7 * DAY;
 
     // We still seed the candidate set from agents.avg_score — it's the cheapest
     // way to restrict to the top 200 without joining the entire snapshot table.
     // The delta itself comes from the bayesian p_success comparator below.
-    const agents = this.agentRepo.findTopByScore(200, 0);
+    const agents = await this.agentRepo.findTopByScore(200, 0);
     if (agents.length === 0) return { up: [], down: [] };
 
     const hashes = agents.map(a => a.public_key_hash);
-    const pastSnaps = this.snapshotRepo.findSnapshotsAtForAgents(hashes, sevenDaysAgo);
-    const currentSnaps = this.snapshotRepo.findLatestByAgents(hashes);
+    const pastSnaps = await this.snapshotRepo.findSnapshotsAtForAgents(hashes, sevenDaysAgo);
+    const currentSnaps = await this.snapshotRepo.findLatestByAgents(hashes);
 
     const movers: {
       hash: string;
@@ -186,15 +186,15 @@ export class TrendService {
     return { up, down };
   }
 
-  getNetworkTrends(): NetworkTrends {
+  async getNetworkTrends(): Promise<NetworkTrends> {
     const now = Math.floor(Date.now() / 1000);
-    const currentAvg = this.snapshotRepo.findAvgPSuccessAt(now);
-    const pastAvg = this.snapshotRepo.findAvgPSuccessAt(now - 7 * DAY);
+    const currentAvg = await this.snapshotRepo.findAvgPSuccessAt(now);
+    const pastAvg = await this.snapshotRepo.findAvgPSuccessAt(now - 7 * DAY);
     const avgPSuccessDelta7d = currentAvg !== null && pastAvg !== null
       ? round3(currentAvg - pastAvg)
       : 0;
 
-    const { up, down } = this.getTopMovers(5);
+    const { up, down } = await this.getTopMovers(5);
 
     return {
       avgPSuccessDelta7d,

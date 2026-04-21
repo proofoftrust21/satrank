@@ -2,21 +2,25 @@
 // Converts success/failure/timeout into weighted attestations
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { v4 as uuid } from 'uuid';
-import type Database from 'better-sqlite3';
-import type { AttestationRepository } from '../repositories/attestationRepository';
-import type { AgentRepository } from '../repositories/agentRepository';
-import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
+import type { Pool } from 'pg';
+import { AttestationRepository } from '../repositories/attestationRepository';
+import { AgentRepository } from '../repositories/agentRepository';
+import { TransactionRepository, type DualWriteMode } from '../repositories/transactionRepository';
 import type { ScoringService } from './scoringService';
 import type { BayesianScoringService } from './bayesianScoringService';
 import type { Attestation, ReportRequest, ReportResponse, ReportOutcome, AttestationCategory } from '../types';
 import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
 import { windowBucket } from '../utils/dualWriteLogger';
 import { NotFoundError, ValidationError, DuplicateReportError } from '../errors';
+import { withTransaction } from '../database/transaction';
 import { logger } from '../logger';
 import { reportSubmittedTotal } from '../middleware/metrics';
 import { sha256 } from '../utils/crypto';
 import type { PreimagePoolTier } from '../repositories/preimagePoolRepository';
 import { tierToReporterWeight } from '../repositories/preimagePoolRepository';
+
+/** Postgres unique_violation code (duplicate primary key / unique index). */
+const PG_UNIQUE_VIOLATION = '23505';
 
 // Dérive l'agent_hash d'un reporter anonyme à partir du payment_hash de la
 // preimage pool. Stable, déterministe, unique par preimage. Utilisé pour :
@@ -54,7 +58,7 @@ export class ReportService {
     private agentRepo: AgentRepository,
     private txRepo: TransactionRepository,
     private scoringService: ScoringService,
-    private db?: Database.Database,
+    private pool?: Pool,
     private dualWriteMode: DualWriteMode = 'off',
     private dualWriteLogger?: DualWriteLogger,
     /** Optionnel — quand fourni, chaque report insère une observation dans les
@@ -72,19 +76,20 @@ export class ReportService {
    *               value of that intent per §4 cases 1 & 2 of PHASE-1-DESIGN.
    *    'report' — no matching token_query_log row; the report is a standalone
    *               observation (user-driven POST without a prior query).
-   *  Returns 'report' if the DB handle is unavailable, the token's
+   *  Returns 'report' if the pool handle is unavailable, the token's
    *  paymentHash wasn't passed, or the query errors — classification is
    *  best-effort and must never break report submission. */
-  private classifySource(
+  private async classifySource(
     l402PaymentHash: Buffer | null | undefined,
     targetHash: string,
-  ): 'intent' | 'report' {
-    if (!this.db || !l402PaymentHash) return 'report';
+  ): Promise<'intent' | 'report'> {
+    if (!this.pool || !l402PaymentHash) return 'report';
     try {
-      const row = this.db.prepare(
-        'SELECT 1 FROM token_query_log WHERE payment_hash = ? AND target_hash = ? LIMIT 1',
-      ).get(l402PaymentHash, targetHash);
-      return row ? 'intent' : 'report';
+      const { rows } = await this.pool.query(
+        'SELECT 1 FROM token_query_log WHERE payment_hash = $1 AND target_hash = $2 LIMIT 1',
+        [l402PaymentHash, targetHash],
+      );
+      return rows[0] ? 'intent' : 'report';
     } catch (err) {
       logger.warn(
         { error: err instanceof Error ? err.message : String(err) },
@@ -94,15 +99,15 @@ export class ReportService {
     }
   }
 
-  submit(input: ReportRequest): ReportResponse {
+  async submit(input: ReportRequest): Promise<ReportResponse> {
     const now = Math.floor(Date.now() / 1000);
 
     // Validate reporter exists
-    const reporter = this.agentRepo.findByHash(input.reporter);
+    const reporter = await this.agentRepo.findByHash(input.reporter);
     if (!reporter) throw new NotFoundError('Agent (reporter)', input.reporter);
 
     // Validate target exists
-    const target = this.agentRepo.findByHash(input.target);
+    const target = await this.agentRepo.findByHash(input.target);
     if (!target) throw new NotFoundError('Agent (target)', input.target);
 
     // Self-report not allowed
@@ -123,7 +128,7 @@ export class ReportService {
     }
 
     // Reporter weight: based on reporter's own score
-    const reporterScore = this.scoringService.getScore(input.reporter);
+    const reporterScore = await this.scoringService.getScore(input.reporter);
     const baseWeight = Math.max(BASE_WEIGHT_FLOOR, Math.min(BASE_WEIGHT_MAX, reporterScore.total / REPORTER_SCORE_DIVISOR));
     const weight = verified ? baseWeight * PREIMAGE_WEIGHT_BONUS : baseWeight;
 
@@ -151,10 +156,17 @@ export class ReportService {
       weight,
     };
 
+    // classifySource is best-effort and safe to run outside the tx
+    const source = await this.classifySource(input.l402PaymentHash, input.target);
+
     // Atomic check-then-insert: rate limit, dedup, insert, stats update (S3)
-    const doInsert = () => {
+    const doInsert = async (
+      attRepo: AttestationRepository,
+      agRepo: AgentRepository,
+      txRepo: TransactionRepository,
+    ): Promise<void> => {
       // Rate limit: max reports per minute per reporter (only count report categories — C8)
-      const recentCount = this.attestationRepo.countRecentByAttester(
+      const recentCount = await attRepo.countRecentByAttester(
         input.reporter, now - REPORT_RATE_LIMIT_WINDOW_SEC, REPORT_CATEGORIES,
       );
       if (recentCount >= REPORT_RATE_LIMIT_MAX) {
@@ -162,7 +174,7 @@ export class ReportService {
       }
 
       // Dedup: 1 report per (reporter, target) per hour
-      const recent = this.attestationRepo.findRecentReport(
+      const recent = await attRepo.findRecentReport(
         input.reporter, input.target, now - REPORT_DEDUP_WINDOW_SEC,
       );
       if (recent) {
@@ -171,7 +183,7 @@ export class ReportService {
 
       // Ensure synthetic transaction exists (required by FK constraint)
       // S2: do NOT store raw preimage — evidence_hash holds the paymentHash
-      const existingTx = this.txRepo.findById(txId);
+      const existingTx = await txRepo.findById(txId);
       if (!existingTx) {
         // endpoint_hash = operator_id = target agent_hash. Sans target_url
         // disponible dans /api/report, on utilise le hash de l'agent comme clé
@@ -193,14 +205,13 @@ export class ReportService {
         // §4: if the submitter's L402 token has a matching token_query_log
         // row for this target, the report closes out a prior query intent.
         // Otherwise it's a standalone observation.
-        const source = this.classifySource(input.l402PaymentHash, input.target);
         const enrichment: DualWriteEnrichment = {
           endpoint_hash: input.target,
           operator_id: input.target,
           source,
           window_bucket: windowBucket(now),
         };
-        this.txRepo.insertWithDualWrite(
+        await txRepo.insertWithDualWrite(
           reportTx,
           enrichment,
           this.dualWriteMode,
@@ -215,7 +226,7 @@ export class ReportService {
         // Tier dérivé du verified flag : preimage-verified → 'nip98' (poids
         // plein 1.0) ; sans preimage → 'low' (0.3), baseline conservateur.
         if (this.bayesian && source === 'report') {
-          this.bayesian.ingestStreaming({
+          await this.bayesian.ingestStreaming({
             success: input.outcome === 'success',
             timestamp: now,
             source: 'report',
@@ -227,23 +238,36 @@ export class ReportService {
         }
       }
 
-      this.attestationRepo.insert(attestation);
+      try {
+        await attRepo.insert(attestation);
+      } catch (err: unknown) {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === PG_UNIQUE_VIOLATION) {
+          throw new DuplicateReportError('Attestation already submitted for this transaction by this attester');
+        }
+        throw err;
+      }
 
       // C3: SQL increment instead of read-modify-write
       if (!existingTx) {
-        this.agentRepo.incrementTotalTransactions(input.target);
+        await agRepo.incrementTotalTransactions(input.target);
       }
       // H1: only update attestation count — leave avg_score for periodic scoring job
-      this.agentRepo.updateAttestationCount(
+      await agRepo.updateAttestationCount(
         input.target,
-        this.attestationRepo.countBySubject(input.target),
+        await attRepo.countBySubject(input.target),
       );
     };
 
-    if (this.db) {
-      this.db.transaction(doInsert)();
+    if (this.pool) {
+      await withTransaction(this.pool, async (client) => {
+        const attRepoTx = new AttestationRepository(client);
+        const agRepoTx = new AgentRepository(client);
+        const txRepoTx = new TransactionRepository(client);
+        await doInsert(attRepoTx, agRepoTx, txRepoTx);
+      });
     } else {
-      doInsert();
+      await doInsert(this.attestationRepo, this.agentRepo, this.txRepo);
     }
 
     // Monitoring counter — always emitted, labelled by verified status and the
@@ -277,7 +301,7 @@ export class ReportService {
    *  source='report' + status='verified', puis attache l'attestation pondérée
    *  par tierToReporterWeight(tier). Renvoie le même shape que submit() plus
    *  reporter_identity, confidence_tier et reporter_weight_applied. */
-  submitAnonymous(input: {
+  async submitAnonymous(input: {
     reportId: string;
     target: string;
     paymentHash: string;
@@ -285,7 +309,7 @@ export class ReportService {
     outcome: ReportOutcome;
     amountBucket?: 'micro' | 'small' | 'medium' | 'large';
     memo?: string;
-  }): {
+  }): Promise<{
     reportId: string;
     verified: boolean;
     weight: number;
@@ -293,10 +317,10 @@ export class ReportService {
     reporter_identity: string;
     confidence_tier: PreimagePoolTier;
     reporter_weight_applied: number;
-  } {
+  }> {
     const now = Math.floor(Date.now() / 1000);
 
-    const target = this.agentRepo.findByHash(input.target);
+    const target = await this.agentRepo.findByHash(input.target);
     if (!target) throw new NotFoundError('Agent (target)', input.target);
 
     const reporterHash = anonymousReporterHash(input.paymentHash);
@@ -330,11 +354,15 @@ export class ReportService {
       weight,
     };
 
-    const doInsert = () => {
+    const doInsert = async (
+      attRepo: AttestationRepository,
+      agRepo: AgentRepository,
+      txRepo: TransactionRepository,
+    ): Promise<void> => {
       // Upsert synthetic agent pour satisfaire la FK attester_hash/sender_hash
-      const existingReporter = this.agentRepo.findByHash(reporterHash);
+      const existingReporter = await agRepo.findByHash(reporterHash);
       if (!existingReporter) {
-        this.agentRepo.insert({
+        await agRepo.insert({
           public_key_hash: reporterHash,
           public_key: null,
           alias: `anon:${input.paymentHash.slice(0, 8)}`,
@@ -359,7 +387,7 @@ export class ReportService {
 
       // Synthetic transaction — preimage=null (S2), status='verified' car la
       // preimage vient d'une pool entry prouvée, source='report' systématique.
-      const existingTx = this.txRepo.findById(txId);
+      const existingTx = await txRepo.findById(txId);
       if (!existingTx) {
         const reportTx = {
           tx_id: txId,
@@ -381,7 +409,7 @@ export class ReportService {
         // Phase 2 anonyme : always write the 4 v31 columns. Le chemin anonyme
         // est né en v32 et n'a pas à participer au rollout dual-write du chemin
         // legacy — on force mode='active' pour garantir source='report'.
-        this.txRepo.insertWithDualWrite(
+        await txRepo.insertWithDualWrite(
           reportTx,
           enrichment,
           'active',
@@ -394,7 +422,7 @@ export class ReportService {
         // preimage prouve le paiement mais pas l'authenticité du payeur,
         // donc jamais 'nip98'.
         if (this.bayesian) {
-          this.bayesian.ingestStreaming({
+          await this.bayesian.ingestStreaming({
             success: input.outcome === 'success',
             timestamp: now,
             source: 'report',
@@ -406,21 +434,34 @@ export class ReportService {
         }
       }
 
-      this.attestationRepo.insert(attestation);
+      try {
+        await attRepo.insert(attestation);
+      } catch (err: unknown) {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === PG_UNIQUE_VIOLATION) {
+          throw new DuplicateReportError('Attestation already submitted for this transaction by this attester');
+        }
+        throw err;
+      }
 
       if (!existingTx) {
-        this.agentRepo.incrementTotalTransactions(input.target);
+        await agRepo.incrementTotalTransactions(input.target);
       }
-      this.agentRepo.updateAttestationCount(
+      await agRepo.updateAttestationCount(
         input.target,
-        this.attestationRepo.countBySubject(input.target),
+        await attRepo.countBySubject(input.target),
       );
     };
 
-    if (this.db) {
-      this.db.transaction(doInsert)();
+    if (this.pool) {
+      await withTransaction(this.pool, async (client) => {
+        const attRepoTx = new AttestationRepository(client);
+        const agRepoTx = new AgentRepository(client);
+        const txRepoTx = new TransactionRepository(client);
+        await doInsert(attRepoTx, agRepoTx, txRepoTx);
+      });
     } else {
-      doInsert();
+      await doInsert(this.attestationRepo, this.agentRepo, this.txRepo);
     }
 
     reportSubmittedTotal.inc({

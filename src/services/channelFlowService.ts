@@ -6,10 +6,10 @@ import { DAY, SEVEN_DAYS_SEC } from '../utils/constants';
 export class ChannelFlowService {
   constructor(private channelSnapshotRepo: ChannelSnapshotRepository) {}
 
-  computeFlow(agentHash: string): ChannelFlow | null {
+  async computeFlow(agentHash: string): Promise<ChannelFlow | null> {
     const now = Math.floor(Date.now() / 1000);
-    const latest = this.channelSnapshotRepo.findLatest(agentHash);
-    const weekAgo = this.channelSnapshotRepo.findAt(agentHash, now - SEVEN_DAYS_SEC);
+    const latest = await this.channelSnapshotRepo.findLatest(agentHash);
+    const weekAgo = await this.channelSnapshotRepo.findAt(agentHash, now - SEVEN_DAYS_SEC);
 
     if (!latest || !weekAgo) return null;
 
@@ -20,13 +20,13 @@ export class ChannelFlowService {
     return { net7d, capacityDelta7d, trend };
   }
 
-  computeCapacityHealth(agentHash: string): CapacityHealth | null {
+  async computeCapacityHealth(agentHash: string): Promise<CapacityHealth | null> {
     const now = Math.floor(Date.now() / 1000);
-    const latest = this.channelSnapshotRepo.findLatest(agentHash);
+    const latest = await this.channelSnapshotRepo.findLatest(agentHash);
     if (!latest || latest.capacity_sats === 0) return null;
 
-    const dayAgo = this.channelSnapshotRepo.findAt(agentHash, now - DAY);
-    const weekAgo = this.channelSnapshotRepo.findAt(agentHash, now - SEVEN_DAYS_SEC);
+    const dayAgo = await this.channelSnapshotRepo.findAt(agentHash, now - DAY);
+    const weekAgo = await this.channelSnapshotRepo.findAt(agentHash, now - SEVEN_DAYS_SEC);
 
     const drainRate24h = dayAgo && dayAgo.capacity_sats > 0
       ? (latest.capacity_sats - dayAgo.capacity_sats) / dayAgo.capacity_sats
@@ -49,8 +49,8 @@ export class ChannelFlowService {
   }
 
   /** Returns drain flags if capacity dropped significantly */
-  computeDrainFlags(agentHash: string): VerdictFlag[] {
-    const health = this.computeCapacityHealth(agentHash);
+  async computeDrainFlags(agentHash: string): Promise<VerdictFlag[]> {
+    const health = await this.computeCapacityHealth(agentHash);
     if (!health || health.drainRate24h === null) return [];
     const flags: VerdictFlag[] = [];
     if (health.drainRate24h <= -0.5) flags.push('severe_capacity_drain');

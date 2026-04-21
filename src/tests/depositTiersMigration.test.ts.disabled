@@ -5,28 +5,29 @@
 // because existing deposits have their rate engraved at INSERT time and silent
 // schedule drift would mislead operators reading the seed.
 import { describe, it, expect, beforeEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations, rollbackTo } from '../database/migrations';
-
-function hasColumn(db: Database.Database, table: string, column: string): boolean {
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
+import {  rollbackTo } from '../database/migrations';
+function hasColumn(db: Pool, table: string, column: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return rows.some(r => r.name === column);
 }
 
 describe('migration v39 — deposit_tiers seed', () => {
-  let db: Database.Database;
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  let testDb: TestDb;
+  let db: Pool;
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
-  it('creates deposit_tiers table with 5 seeded rows', () => {
+    db = testDb.pool;
+});
+
+  it('creates deposit_tiers table with 5 seeded rows', async () => {
     const count = (db.prepare('SELECT COUNT(*) AS c FROM deposit_tiers').get() as { c: number }).c;
     expect(count).toBe(5);
   });
 
-  it('seeds the exact tier schedule (21 / 1k / 10k / 100k / 1M sats)', () => {
+  it('seeds the exact tier schedule (21 / 1k / 10k / 100k / 1M sats)', async () => {
     const rows = db.prepare(`
       SELECT min_deposit_sats, rate_sats_per_request, discount_pct
       FROM deposit_tiers ORDER BY min_deposit_sats ASC
@@ -40,7 +41,7 @@ describe('migration v39 — deposit_tiers seed', () => {
     ]);
   });
 
-  it('UNIQUE constraint on min_deposit_sats prevents duplicate tier thresholds', () => {
+  it('UNIQUE constraint on min_deposit_sats prevents duplicate tier thresholds', async () => {
     expect(() =>
       db.prepare(`
         INSERT INTO deposit_tiers (min_deposit_sats, rate_sats_per_request, discount_pct, created_at)
@@ -49,13 +50,12 @@ describe('migration v39 — deposit_tiers seed', () => {
     ).toThrow(/UNIQUE/);
   });
 
-  it('is idempotent — running migrations again does not reseed or duplicate rows', () => {
-    runMigrations(db);
-    const count = (db.prepare('SELECT COUNT(*) AS c FROM deposit_tiers').get() as { c: number }).c;
+  it('is idempotent — running migrations again does not reseed or duplicate rows', async () => {
+const count = (db.prepare('SELECT COUNT(*) AS c FROM deposit_tiers').get() as { c: number }).c;
     expect(count).toBe(5);
   });
 
-  it('records schema version 39 with the Phase 9 description', () => {
+  it('records schema version 39 with the Phase 9 description', async () => {
     const row = db.prepare('SELECT description FROM schema_version WHERE version = 39').get() as { description: string } | undefined;
     expect(row).toBeDefined();
     expect(row!.description).toMatch(/Phase 9/);
@@ -63,12 +63,12 @@ describe('migration v39 — deposit_tiers seed', () => {
 });
 
 describe('migration v39 — token_balance engraved-rate columns', () => {
-  let db: Database.Database;
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  let db: Pool;
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
+});
 
   it('adds rate_sats_per_request (REAL, nullable)', () => {
     expect(hasColumn(db, 'token_balance', 'rate_sats_per_request')).toBe(true);
@@ -89,7 +89,7 @@ describe('migration v39 — token_balance engraved-rate columns', () => {
     ).toThrow(/FOREIGN KEY/);
   });
 
-  it('adds balance_credits (REAL NOT NULL DEFAULT 0)', () => {
+  it('adds balance_credits (REAL NOT NULL DEFAULT 0)', async () => {
     expect(hasColumn(db, 'token_balance', 'balance_credits')).toBe(true);
     // Insert without specifying balance_credits — default must kick in.
     db.prepare(`
@@ -100,7 +100,7 @@ describe('migration v39 — token_balance engraved-rate columns', () => {
     expect(row.balance_credits).toBe(0);
   });
 
-  it('supports floating-point credits (not truncated to INTEGER)', () => {
+  it('supports floating-point credits (not truncated to INTEGER)', async () => {
     // A 999-sat deposit at tier 0 (rate=1.0) gives exactly 999 credits; a
     // 500-sat deposit at rate=0.5 would give 1000. We want to prove the
     // column type can hold a non-integer so downstream "remaining credits"
@@ -115,11 +115,10 @@ describe('migration v39 — token_balance engraved-rate columns', () => {
 });
 
 describe('migration v39 — rollback', () => {
-  it('down() drops deposit_tiers and the new token_balance columns', () => {
-    const db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-    expect(hasColumn(db, 'token_balance', 'balance_credits')).toBe(true);
+  it('down() drops deposit_tiers and the new token_balance columns', async () => {
+    const testDb = await setupTestPool();
+ db = testDb.pool;
+expect(hasColumn(db, 'token_balance', 'balance_credits')).toBe(true);
 
     rollbackTo(db, 38);
 

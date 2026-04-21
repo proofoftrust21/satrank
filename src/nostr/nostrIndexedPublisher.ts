@@ -171,7 +171,7 @@ export class NostrIndexedPublisher {
     );
 
     // ── 2. Load agents from DB ─────────────────────────────────────
-    const agents = this.agentRepo.findScoredAbove(this.minScore);
+    const agents = await this.agentRepo.findScoredAbove(this.minScore);
     const agentByPk = new Map<string, Agent>();
     for (const a of agents) {
       if (a.public_key) agentByPk.set(a.public_key, a);
@@ -197,7 +197,7 @@ export class NostrIndexedPublisher {
       if (agent.avg_score === 0) { dropped.zero_score++; continue; }
       if (agent.avg_score < this.minScore) { dropped.below_min++; continue; }
 
-      const snap = this.snapshotRepo.findLatestByAgent(agent.public_key_hash);
+      const snap = await this.snapshotRepo.findLatestByAgent(agent.public_key_hash);
       if (!snap) { dropped.no_snapshot++; continue; }
       if (looksCustodial(agent.alias)) { dropped.custodial_alias++; continue; }
 

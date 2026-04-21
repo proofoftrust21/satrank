@@ -1,0 +1,31 @@
+{
+  "run_id": "phase-12b-iso-20260421-1821",
+  "endpoints": {
+    "/api/agents/top?limit=50": {
+      "requests": 375,
+      "status_codes": {
+        "200": 358,
+        "429": 17
+      },
+      "p50_ms": 45.4,
+      "p90_ms": 52.7,
+      "p95_ms": 54.8,
+      "p99_ms": 72.1,
+      "max_ms": 859.7,
+      "avg_ms": 44.4
+    },
+    "/api/intent": {
+      "requests": 125,
+      "status_codes": {
+        "400": 50,
+        "429": 75
+      },
+      "p50_ms": 42.6,
+      "p90_ms": 51.9,
+      "p95_ms": 53.8,
+      "p99_ms": 55.5,
+      "max_ms": 56.6,
+      "avg_ms": 40.6
+    }
+  }
+}

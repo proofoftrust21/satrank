@@ -3,12 +3,13 @@
 // parse → pay → retry) plus the accounting guards (5 credits, admin macaroon,
 // PROBE_MAX_INVOICE_SATS cap).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
 import * as bolt11 from 'bolt11';
-import { runMigrations } from '../database/migrations';
 import { ProbeController } from '../controllers/probeController';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
+let testDb: TestDb;
 
 // --- Fixtures ---
 /** Private key used only to sign the fake BOLT11 invoices this test builds.
@@ -44,12 +45,13 @@ function l402AuthHeader(preimageHex: string): string {
   return `L402 ${mac}:${preimageHex}`;
 }
 
-function seedPhase9Token(db: InstanceType<typeof Database>, preimage: string, credits: number): Buffer {
+async function seedPhase9Token(db: Pool, preimage: string, credits: number): Promise<Buffer> {
   const ph = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
-  db.prepare(`
-    INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(ph, 1000, Math.floor(Date.now() / 1000), 1000, 2, 0.5, credits);
+  await db.query(
+    `INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [ph, 1000, Math.floor(Date.now() / 1000), 1000, 2, 0.5, credits],
+  );
   return ph;
 }
 
@@ -70,22 +72,22 @@ function makeMockLnd(opts: {
   } as unknown as LndGraphClient;
 }
 
-describe('ProbeController', () => {
-  let db: InstanceType<typeof Database>;
+describe('ProbeController', async () => {
+  let db: Pool;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
-  afterEach(() => {
-    db.close();
+    db = testDb.pool;
+});
+
+  afterEach(async () => {
+    await teardownTestPool(testDb);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  describe('probe() handler (controller-level)', () => {
+  describe('probe() handler (controller-level)', async () => {
     function callProbe(
       controller: ProbeController,
       body: unknown,
@@ -157,7 +159,7 @@ describe('ProbeController', () => {
 
     it('returns INSUFFICIENT_CREDITS when token has < 4 credits', async () => {
       const preimage = crypto.randomBytes(32).toString('hex');
-      seedPhase9Token(db, preimage, 3); // < 4 needed
+      await seedPhase9Token(db, preimage, 3); // < 4 needed
       const lnd = makeMockLnd();
       const controller = new ProbeController(db, lnd);
       const r = await callProbe(controller, { url: 'https://example.com' }, l402AuthHeader(preimage));
@@ -170,8 +172,10 @@ describe('ProbeController', () => {
       const preimage = crypto.randomBytes(32).toString('hex');
       const ph = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
       // Seed a legacy row (rate NULL) with plenty of remaining sats.
-      db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES (?, ?, ?, ?)')
-        .run(ph, 20, Math.floor(Date.now() / 1000), 21);
+      await db.query(
+        'INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES ($1, $2, $3, $4)',
+        [ph, 20, Math.floor(Date.now() / 1000), 21],
+      );
       const lnd = makeMockLnd();
       const controller = new ProbeController(db, lnd);
       const r = await callProbe(controller, { url: 'https://example.com/' }, l402AuthHeader(preimage));
@@ -181,7 +185,7 @@ describe('ProbeController', () => {
 
     it('debits exactly 4 credits when the probe proceeds', async () => {
       const preimage = crypto.randomBytes(32).toString('hex');
-      const ph = seedPhase9Token(db, preimage, 100);
+      const ph = await seedPhase9Token(db, preimage, 100);
       // Mock fetch so performProbe returns early with a NOT_L402 target.
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
         status: 200,
@@ -191,13 +195,15 @@ describe('ProbeController', () => {
       const controller = new ProbeController(db, lnd);
       const r = await callProbe(controller, { url: 'https://example.com/' }, l402AuthHeader(preimage));
       expect(r.status).toBe(200);
-      const row = db.prepare('SELECT balance_credits FROM token_balance WHERE payment_hash = ?')
-        .get(ph) as { balance_credits: number };
-      expect(row.balance_credits).toBe(96); // 100 - 4
+      const { rows } = await db.query<{ balance_credits: number }>(
+        'SELECT balance_credits FROM token_balance WHERE payment_hash = $1',
+        [ph],
+      );
+      expect(Number(rows[0].balance_credits)).toBe(96); // 100 - 4
     });
   });
 
-  describe('performProbe() pipeline', () => {
+  describe('performProbe() pipeline', async () => {
     it('returns UNREACHABLE when the first fetch throws', async () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ENOTFOUND')));
       const lnd = makeMockLnd();

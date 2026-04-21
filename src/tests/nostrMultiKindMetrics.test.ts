@@ -2,8 +2,8 @@
 // On utilise le stub publisher pour vérifier que les compteurs sont bien
 // incrémentés via le scheduler, sans toucher aux relais.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import {
   EndpointStreamingPosteriorRepository,
   NodeStreamingPosteriorRepository,
@@ -21,6 +21,7 @@ import {
   multiKindRepublishSkippedTotal,
   metricsRegistry,
 } from '../middleware/metrics';
+let testDb: TestDb;
 
 class StubPublisher {
   private counter = 0;
@@ -52,18 +53,18 @@ async function metricValue(name: string, labels: Record<string, string> = {}): P
   return hit?.value ?? 0;
 }
 
-describe('Phase 8 C9 — Prometheus metrics wiring', () => {
-  let db: Database.Database;
+describe('Phase 8 C9 — Prometheus metrics wiring', async () => {
+  let db: Pool;
   let endpointStreaming: EndpointStreamingPosteriorRepository;
   let nodeStreaming: NodeStreamingPosteriorRepository;
   let publishedEvents: NostrPublishedEventsRepository;
   let scheduler: NostrMultiKindScheduler;
   let publisher: StubPublisher;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     endpointStreaming = new EndpointStreamingPosteriorRepository(db);
     nodeStreaming = new NodeStreamingPosteriorRepository(db);
     publishedEvents = new NostrPublishedEventsRepository(db);
@@ -82,14 +83,14 @@ describe('Phase 8 C9 — Prometheus metrics wiring', () => {
     multiKindRepublishSkippedTotal.reset();
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
   it('increments republish_skipped_total{reason=no_change} quand rien n\'a changé', async () => {
     const urlHash = 'a'.repeat(64);
     const now = 1_700_000_000;
     for (let i = 0; i < 40; i++) {
-      endpointStreaming.ingest(urlHash, 'probe', { successDelta: 1, failureDelta: 0, nowSec: now });
-      endpointStreaming.ingest(urlHash, 'report', { successDelta: 1, failureDelta: 0, nowSec: now });
+      await endpointStreaming.ingest(urlHash, 'probe', { successDelta: 1, failureDelta: 0, nowSec: now });
+      await endpointStreaming.ingest(urlHash, 'report', { successDelta: 1, failureDelta: 0, nowSec: now });
     }
     await scheduler.runScan(now);
     await scheduler.runScan(now + 60);
@@ -102,14 +103,14 @@ describe('Phase 8 C9 — Prometheus metrics wiring', () => {
     const urlHash = 'b'.repeat(64);
     const now = 1_700_000_000;
     for (let i = 0; i < 40; i++) {
-      endpointStreaming.ingest(urlHash, 'probe', { successDelta: 1, failureDelta: 0, nowSec: now });
-      endpointStreaming.ingest(urlHash, 'report', { successDelta: 1, failureDelta: 0, nowSec: now });
+      await endpointStreaming.ingest(urlHash, 'probe', { successDelta: 1, failureDelta: 0, nowSec: now });
+      await endpointStreaming.ingest(urlHash, 'report', { successDelta: 1, failureDelta: 0, nowSec: now });
     }
     await scheduler.runScan(now);
 
     const later = now + 3600;
     for (let i = 0; i < 100; i++) {
-      endpointStreaming.ingest(urlHash, 'probe', { successDelta: 0, failureDelta: 1, nowSec: later });
+      await endpointStreaming.ingest(urlHash, 'probe', { successDelta: 0, failureDelta: 1, nowSec: later });
     }
     await scheduler.runScan(later);
 

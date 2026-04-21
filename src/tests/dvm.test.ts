@@ -1,7 +1,7 @@
 // DVM (NIP-90) tests — trust-check Data Vending Machine
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { AgentRepository } from '../repositories/agentRepository';
 import { ProbeRepository } from '../repositories/probeRepository';
 import { SatRankDvm } from '../nostr/dvm';
@@ -10,6 +10,7 @@ import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import type { BayesianVerdictService } from '../services/bayesianVerdictService';
 import type { Agent } from '../types';
 import type { LndGraphClient, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -48,24 +49,24 @@ function makeMockLnd(response: LndQueryRoutesResponse): LndGraphClient {
   };
 }
 
-describe('SatRankDvm', () => {
-  let db: Database.Database;
+describe('SatRankDvm', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let probeRepo: ProbeRepository;
   let bayesianVerdict: BayesianVerdictService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     probeRepo = new ProbeRepository(db);
     bayesianVerdict = createBayesianVerdictService(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
-  it('creates a DVM without errors', () => {
+  it('creates a DVM without errors', async () => {
     const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
       privateKeyHex: 'aa'.repeat(32),
       relays: [],
@@ -75,8 +76,8 @@ describe('SatRankDvm', () => {
 
   it('processRequest returns Bayesian block for indexed agent', async () => {
     const agent = makeAgent('known-node');
-    agentRepo.insert(agent);
-    probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 500, failure_reason: null });
+    await agentRepo.insert(agent);
+    await probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 500, failure_reason: null });
 
     const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
       privateKeyHex: 'aa'.repeat(32),

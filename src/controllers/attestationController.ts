@@ -20,7 +20,7 @@ function safeParseJsonTags(value: string): string[] {
 export class AttestationController {
   constructor(private attestationService: AttestationService) {}
 
-  getBySubject = (req: Request, res: Response, next: NextFunction): void => {
+  getBySubject = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const hashParsed = publicKeyHashSchema.safeParse(req.params.publicKeyHash);
       if (!hashParsed.success) throw new ValidationError(formatZodError(hashParsed.error, req.params.publicKeyHash, { fallbackField: 'publicKeyHash' }));
@@ -28,7 +28,7 @@ export class AttestationController {
       const paginationParsed = paginationSchema.safeParse(req.query);
       if (!paginationParsed.success) throw new ValidationError(formatZodError(paginationParsed.error, req.query));
       const { limit, offset } = paginationParsed.data;
-      const { attestations, total } = this.attestationService.getBySubject(
+      const { attestations, total } = await this.attestationService.getBySubject(
         hashParsed.data, limit, offset,
       );
 
@@ -50,12 +50,12 @@ export class AttestationController {
     }
   };
 
-  create = (req: Request, res: Response, next: NextFunction): void => {
+  create = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = createAttestationSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
-      const attestation = this.attestationService.create(parsed.data);
+      const attestation = await this.attestationService.create(parsed.data);
       res.status(201).json({
         data: {
           attestationId: attestation.attestation_id,

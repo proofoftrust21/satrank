@@ -1,9 +1,9 @@
 // Ping endpoint tests — real-time reachability check
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import request from 'supertest';
 import express, { Router } from 'express';
-import { runMigrations } from '../database/migrations';
 import { PingController } from '../controllers/pingController';
 import { createPingRoutes } from '../routes/ping';
 import { errorHandler } from '../middleware/errorHandler';
@@ -23,14 +23,16 @@ const VALID_PUBKEY = '02' + 'aa'.repeat(32);
 const VALID_FROM = '03' + 'bb'.repeat(32);
 
 let app: express.Express;
-let db: Database.Database;
+let testDb: TestDb;
+let db: Pool;
 
-describe('GET /api/ping/:pubkey', () => {
-  describe('with reachable route', () => {
-    beforeAll(() => {
-      db = new Database(':memory:');
-      runMigrations(db);
-      const mockLnd = makeMockLnd({
+describe('GET /api/ping/:pubkey', async () => {
+  describe('with reachable route', async () => {
+    beforeAll(async () => {
+      testDb = await setupTestPool();
+
+      db = testDb.pool;
+    const mockLnd = makeMockLnd({
         routes: [{
           total_time_lock: 100,
           total_fees: '5',
@@ -52,7 +54,7 @@ describe('GET /api/ping/:pubkey', () => {
       app.use(errorHandler);
     });
 
-    afterAll(() => db.close());
+    afterAll(async () => { await teardownTestPool(testDb); });
 
     it('returns reachable with hops and fees', async () => {
       const res = await request(app).get(`/api/ping/${VALID_PUBKEY}`);
@@ -74,8 +76,8 @@ describe('GET /api/ping/:pubkey', () => {
     });
   });
 
-  describe('with unreachable route', () => {
-    beforeAll(() => {
+  describe('with unreachable route', async () => {
+    beforeAll(async () => {
       const mockLnd = makeMockLnd({ routes: [] });
       app = express();
       app.use(express.json());
@@ -95,8 +97,8 @@ describe('GET /api/ping/:pubkey', () => {
     });
   });
 
-  describe('without LND', () => {
-    beforeAll(() => {
+  describe('without LND', async () => {
+    beforeAll(async () => {
       app = express();
       app.use(express.json());
       const api = Router();
@@ -113,8 +115,8 @@ describe('GET /api/ping/:pubkey', () => {
     });
   });
 
-  describe('validation', () => {
-    beforeAll(() => {
+  describe('validation', async () => {
+    beforeAll(async () => {
       app = express();
       app.use(express.json());
       const api = Router();

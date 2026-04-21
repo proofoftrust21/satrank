@@ -84,7 +84,7 @@ export class NostrDeletionService {
     nowSec: number,
     opts: DeletionReason = {},
   ): Promise<DeletionResult> {
-    const row = this.publishedEvents.getLastPublished(entityType, entityId);
+    const row = await this.publishedEvents.getLastPublished(entityType, entityId);
     if (!row) {
       return {
         deletionEventId: null,
@@ -102,7 +102,7 @@ export class NostrDeletionService {
     nowSec: number,
     opts: DeletionReason = {},
   ): Promise<DeletionResult> {
-    const row = this.publishedEvents.findByEventId(eventId);
+    const row = await this.publishedEvents.findByEventId(eventId);
     if (!row) {
       return {
         deletionEventId: null,
@@ -157,7 +157,7 @@ export class NostrDeletionService {
 
       // Après un publish réussi : purge la row cache pour que le prochain scan
       // réémette un endorsement frais si l'entité est toujours active.
-      this.publishedEvents.delete(row.entity_type, row.entity_id);
+      await this.publishedEvents.delete(row.entity_type, row.entity_id);
 
       logger.info(
         {

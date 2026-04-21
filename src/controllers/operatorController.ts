@@ -142,18 +142,18 @@ export class OperatorController {
       const now = Math.floor(Date.now() / 1000);
 
       // --- Create operator (pending) ---
-      this.operatorService.upsertOperator(operatorId, now);
+      await this.operatorService.upsertOperator(operatorId, now);
 
       // --- Claim + verify identities ---
       const verifications: VerificationReport[] = [];
       for (const identity of identities) {
         // Claim d'abord — l'identity apparaît même si la verify échoue.
-        this.operatorService.claimIdentity(operatorId, identity.type, identity.value);
+        await this.operatorService.claimIdentity(operatorId, identity.type, identity.value);
 
         const report = await this.verifyIdentity(operatorId, identity);
         verifications.push(report);
         if (report.valid) {
-          this.operatorService.markIdentityVerified(
+          await this.operatorService.markIdentityVerified(
             operatorId,
             identity.type,
             identity.value,
@@ -165,11 +165,11 @@ export class OperatorController {
 
       // --- Claim ownerships (pending — verify_at reste NULL) ---
       for (const ownership of ownerships) {
-        this.operatorService.claimOwnership(operatorId, ownership.type, ownership.id, now);
+        await this.operatorService.claimOwnership(operatorId, ownership.type, ownership.id, now);
       }
 
       // --- Final response ---
-      const catalog = this.operatorService.getOperatorCatalog(operatorId, now);
+      const catalog = await this.operatorService.getOperatorCatalog(operatorId, now);
       res.status(201).json({
         data: {
           operator_id: operatorId,
@@ -246,17 +246,17 @@ export class OperatorController {
    *    - bayesian.resources_counted = sous-ensemble qui contribue à l'agrégat
    *      (evidence > prior). Sert à auditer la masse d'évidence réelle.
    */
-  show = (req: Request, res: Response, next: NextFunction): void => {
+  show = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = operatorIdParamSchema.safeParse(req.params);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params));
       const { id: operatorId } = parsed.data;
 
       const now = Math.floor(Date.now() / 1000);
-      const catalog = this.operatorService.getOperatorCatalog(operatorId, now);
+      const catalog = await this.operatorService.getOperatorCatalog(operatorId, now);
       if (catalog === null) throw new NotFoundError('operator', operatorId);
 
-      const enrichedCatalog = this.enrichCatalog(catalog);
+      const enrichedCatalog = await this.enrichCatalog(catalog);
 
       res.json({
         data: {
@@ -297,7 +297,7 @@ export class OperatorController {
    *  PAS de bayesian aggregate par-operator (trop cher en list-mode). Pour
    *  le détail complet, aller sur GET /:id.
    */
-  list = (req: Request, res: Response, next: NextFunction): void => {
+  list = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!this.operatorRepo) {
         res.status(503).json({
@@ -309,9 +309,9 @@ export class OperatorController {
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.query));
       const { status, limit, offset } = parsed.data;
 
-      const rows = this.operatorRepo.findAll({ status, limit, offset });
-      const total = this.operatorRepo.countFiltered(status);
-      const counts = this.operatorRepo.countByStatus();
+      const rows = await this.operatorRepo.findAll({ status, limit, offset });
+      const total = await this.operatorRepo.countFiltered(status);
+      const counts = await this.operatorRepo.countByStatus();
 
       res.json({
         data: rows.map((r) => ({
@@ -341,9 +341,9 @@ export class OperatorController {
   /** Enrichit chaque ressource avec ses métadonnées (URL, alias, etc.). La
    *  liste complète des claims reste exposée — la jointure ajoute des champs,
    *  elle n'en filtre aucun (cf. Précision 2). */
-  private enrichCatalog(
-    catalog: ReturnType<OperatorService['getOperatorCatalog']> & object,
-  ): {
+  private async enrichCatalog(
+    catalog: NonNullable<Awaited<ReturnType<OperatorService['getOperatorCatalog']>>>,
+  ): Promise<{
     nodes: Array<{
       node_pubkey: string; claimed_at: number; verified_at: number | null;
       alias: string | null; avg_score: number | null;
@@ -353,9 +353,9 @@ export class OperatorController {
       url: string | null; name: string | null; category: string | null; price_sats: number | null;
     }>;
     services: Array<{ service_hash: string; claimed_at: number; verified_at: number | null }>;
-  } {
-    const nodes = catalog.ownedNodes.map((n) => {
-      const agent = this.agentRepo?.findByHash(n.node_pubkey);
+  }> {
+    const nodes = await Promise.all(catalog.ownedNodes.map(async (n) => {
+      const agent = this.agentRepo ? await this.agentRepo.findByHash(n.node_pubkey) : undefined;
       return {
         node_pubkey: n.node_pubkey,
         claimed_at: n.claimed_at,
@@ -363,9 +363,9 @@ export class OperatorController {
         alias: agent?.alias ?? null,
         avg_score: agent?.avg_score ?? null,
       };
-    });
-    const endpoints = catalog.ownedEndpoints.map((e) => {
-      const svc = this.serviceEndpointRepo?.findByUrlHash(e.url_hash);
+    }));
+    const endpoints = await Promise.all(catalog.ownedEndpoints.map(async (e) => {
+      const svc = this.serviceEndpointRepo ? await this.serviceEndpointRepo.findByUrlHash(e.url_hash) : undefined;
       return {
         url_hash: e.url_hash,
         claimed_at: e.claimed_at,
@@ -375,7 +375,7 @@ export class OperatorController {
         category: svc?.category ?? null,
         price_sats: svc?.service_price_sats ?? null,
       };
-    });
+    }));
     return {
       nodes,
       endpoints,

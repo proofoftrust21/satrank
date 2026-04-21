@@ -4,7 +4,7 @@
 // setImmediate between chunks to keep the crawler's event loop
 // responsive (heartbeat, probes, api IO). Invoked from
 // src/crawler/run.ts at startup and on a 6h interval.
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import { logger } from '../logger';
 import {
   RETENTION_POLICIES,
@@ -39,7 +39,7 @@ export interface RetentionOptions {
  * timestamp) cannot be affected.
  */
 export async function runRetentionCleanup(
-  db: Database.Database,
+  pool: Pool,
   opts: RetentionOptions = {},
 ): Promise<RetentionResult[]> {
   const now = opts.now ?? Math.floor(Date.now() / 1000);
@@ -53,19 +53,20 @@ export async function runRetentionCleanup(
     // Table and column names come from a hard-coded policy list — never
     // user input — so string interpolation into the SQL is safe. Only
     // the cutoff and chunk size are bound as parameters.
-    const stmt = db.prepare(
-      `DELETE FROM ${policy.table} WHERE rowid IN (
-         SELECT rowid FROM ${policy.table} WHERE ${policy.column} < ? LIMIT ?
-       )`,
-    );
+    // Postgres does not support LIMIT on DELETE directly; use a
+    // correlated subquery keyed on ctid to delete at most `chunkSize`
+    // rows per statement.
+    const sql = `DELETE FROM ${policy.table} WHERE ctid IN (
+       SELECT ctid FROM ${policy.table} WHERE ${policy.column} < $1 LIMIT $2
+     )`;
 
     const t0 = Date.now();
     let deleted = 0;
     // Loop until a chunk returns 0 changes — then we know the table
     // has no more rows older than the cutoff.
     while (true) {
-      const info = stmt.run(cutoff, chunkSize);
-      const chunkDeleted = info.changes ?? 0;
+      const info = await pool.query(sql, [cutoff, chunkSize]);
+      const chunkDeleted = info.rowCount ?? 0;
       if (chunkDeleted === 0) break;
       deleted += chunkDeleted;
       // Yield to the event loop so the liveness heartbeat, probe

@@ -1,88 +1,106 @@
-// Data access for the transactions table
-import type Database from 'better-sqlite3';
+// Data access for the transactions table (pg async port, Phase 12B).
+import type { Pool, PoolClient } from 'pg';
 import type { Transaction } from '../types';
 import type { DualWriteEnrichment, DualWriteLogger, DualWriteSourceModule } from '../utils/dualWriteLogger';
+
+type Queryable = Pool | PoolClient;
 
 export type DualWriteMode = 'off' | 'dry_run' | 'active';
 
 export class TransactionRepository {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Queryable) {}
 
-  findById(txId: string): Transaction | undefined {
-    return this.db.prepare(
-      'SELECT tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol FROM transactions WHERE tx_id = ?'
-    ).get(txId) as Transaction | undefined;
+  async findById(txId: string): Promise<Transaction | undefined> {
+    const { rows } = await this.db.query<Transaction>(
+      'SELECT tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, status, protocol FROM transactions WHERE tx_id = $1',
+      [txId],
+    );
+    return rows[0];
   }
 
-  findByAgentHash(agentHash: string): Transaction[] {
-    return this.db.prepare(
-      'SELECT * FROM transactions WHERE sender_hash = ? OR receiver_hash = ? ORDER BY timestamp DESC'
-    ).all(agentHash, agentHash) as Transaction[];
+  async findByAgentHash(agentHash: string): Promise<Transaction[]> {
+    const { rows } = await this.db.query<Transaction>(
+      'SELECT * FROM transactions WHERE sender_hash = $1 OR receiver_hash = $2 ORDER BY timestamp DESC',
+      [agentHash, agentHash],
+    );
+    return rows;
   }
 
-  findVerifiedByAgent(agentHash: string): Transaction[] {
-    return this.db.prepare(
+  async findVerifiedByAgent(agentHash: string): Promise<Transaction[]> {
+    const { rows } = await this.db.query<Transaction>(
       `SELECT * FROM transactions
-       WHERE (sender_hash = ? OR receiver_hash = ?) AND status = 'verified'
-       ORDER BY timestamp DESC`
-    ).all(agentHash, agentHash) as Transaction[];
+       WHERE (sender_hash = $1 OR receiver_hash = $2) AND status = 'verified'
+       ORDER BY timestamp DESC`,
+      [agentHash, agentHash],
+    );
+    return rows;
   }
 
-  countVerifiedByAgent(agentHash: string): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as count FROM transactions
-       WHERE (sender_hash = ? OR receiver_hash = ?) AND status = 'verified'`
-    ).get(agentHash, agentHash) as { count: number };
-    return row.count;
+  async countVerifiedByAgent(agentHash: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*)::text as count FROM transactions
+       WHERE (sender_hash = $1 OR receiver_hash = $2) AND status = 'verified'`,
+      [agentHash, agentHash],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  countUniqueCounterparties(agentHash: string): number {
-    const row = this.db.prepare(`
-      SELECT COUNT(DISTINCT counterparty) as count FROM (
-        SELECT receiver_hash as counterparty FROM transactions WHERE sender_hash = ? AND status = 'verified'
+  async countUniqueCounterparties(agentHash: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `
+      SELECT COUNT(DISTINCT counterparty)::text as count FROM (
+        SELECT receiver_hash as counterparty FROM transactions WHERE sender_hash = $1 AND status = 'verified'
         UNION
-        SELECT sender_hash as counterparty FROM transactions WHERE receiver_hash = ? AND status = 'verified'
-      )
-    `).get(agentHash, agentHash) as { count: number };
-    return row.count;
+        SELECT sender_hash as counterparty FROM transactions WHERE receiver_hash = $2 AND status = 'verified'
+      ) sub
+      `,
+      [agentHash, agentHash],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  getTimestampsByAgent(agentHash: string): number[] {
-    const rows = this.db.prepare(
+  async getTimestampsByAgent(agentHash: string): Promise<number[]> {
+    const { rows } = await this.db.query<{ timestamp: number }>(
       `SELECT timestamp FROM transactions
-       WHERE (sender_hash = ? OR receiver_hash = ?) AND status = 'verified'
-       ORDER BY timestamp ASC`
-    ).all(agentHash, agentHash) as { timestamp: number }[];
+       WHERE (sender_hash = $1 OR receiver_hash = $2) AND status = 'verified'
+       ORDER BY timestamp ASC`,
+      [agentHash, agentHash],
+    );
     return rows.map(r => r.timestamp);
   }
 
-  findRecentByAgent(agentHash: string, limit: number): Transaction[] {
-    return this.db.prepare(
-      'SELECT * FROM transactions WHERE sender_hash = ? OR receiver_hash = ? ORDER BY timestamp DESC LIMIT ?'
-    ).all(agentHash, agentHash, limit) as Transaction[];
+  async findRecentByAgent(agentHash: string, limit: number): Promise<Transaction[]> {
+    const { rows } = await this.db.query<Transaction>(
+      'SELECT * FROM transactions WHERE sender_hash = $1 OR receiver_hash = $2 ORDER BY timestamp DESC LIMIT $3',
+      [agentHash, agentHash, limit],
+    );
+    return rows;
   }
 
-  totalCount(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM transactions').get() as { count: number };
-    return row.count;
+  async totalCount(): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>('SELECT COUNT(*)::text as count FROM transactions');
+    return Number(rows[0]?.count ?? 0);
   }
 
-  countByBucket(): Record<string, number> {
-    const rows = this.db.prepare(
-      'SELECT amount_bucket, COUNT(*) as count FROM transactions GROUP BY amount_bucket'
-    ).all() as { amount_bucket: string; count: number }[];
+  async countByBucket(): Promise<Record<string, number>> {
+    const { rows } = await this.db.query<{ amount_bucket: string; count: string }>(
+      'SELECT amount_bucket, COUNT(*)::text as count FROM transactions GROUP BY amount_bucket',
+    );
     const result: Record<string, number> = {};
     for (const row of rows) {
-      result[row.amount_bucket] = row.count;
+      result[row.amount_bucket] = Number(row.count);
     }
     return result;
   }
 
-  insert(tx: Transaction): void {
-    this.db.prepare(`
+  async insert(tx: Transaction): Promise<void> {
+    await this.db.query(
+      `
       INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(tx.tx_id, tx.sender_hash, tx.receiver_hash, tx.amount_bucket, tx.timestamp, tx.payment_hash, tx.preimage, tx.status, tx.protocol);
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `,
+      [tx.tx_id, tx.sender_hash, tx.receiver_hash, tx.amount_bucket, tx.timestamp, tx.payment_hash, tx.preimage, tx.status, tx.protocol],
+    );
   }
 
   /** Dual-write-aware insert used during the Phase 1 rollout. Dispatches on
@@ -97,30 +115,33 @@ export class TransactionRepository {
    *   - Exactly one INSERT is issued per call (no duplicate rows under any mode).
    *   - Callers always pass `enrichment` — dispatch is purely flag-driven.
    *   - Logger failure is swallowed by DualWriteLogger; DB failure bubbles. */
-  insertWithDualWrite(
+  async insertWithDualWrite(
     tx: Transaction,
     enrichment: DualWriteEnrichment,
     mode: DualWriteMode,
     sourceModule: DualWriteSourceModule,
     shadowLogger?: DualWriteLogger,
     traceId?: string,
-  ): void {
+  ): Promise<void> {
     if (mode === 'active') {
-      this.db.prepare(`
+      await this.db.query(
+        `
         INSERT INTO transactions (
           tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
           payment_hash, preimage, status, protocol,
           endpoint_hash, operator_id, source, window_bucket
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        tx.tx_id, tx.sender_hash, tx.receiver_hash, tx.amount_bucket, tx.timestamp,
-        tx.payment_hash, tx.preimage, tx.status, tx.protocol,
-        enrichment.endpoint_hash, enrichment.operator_id, enrichment.source, enrichment.window_bucket,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        `,
+        [
+          tx.tx_id, tx.sender_hash, tx.receiver_hash, tx.amount_bucket, tx.timestamp,
+          tx.payment_hash, tx.preimage, tx.status, tx.protocol,
+          enrichment.endpoint_hash, enrichment.operator_id, enrichment.source, enrichment.window_bucket,
+        ],
       );
       return;
     }
 
-    this.insert(tx);
+    await this.insert(tx);
 
     if (mode === 'dry_run' && shadowLogger) {
       shadowLogger.emit({

@@ -13,11 +13,14 @@ export function normalizeIdentifier(input: string): { hash: string; pubkey: stri
 /** Resolve an identifier to a hash that exists in the DB.
  *  Tries SHA256(pubkey) first, then falls back to a direct public_key lookup.
  *  This handles the case where an agent passes a pubkey that maps to a different
- *  agent than SHA256(pubkey) — e.g. Strike has multiple LN nodes. */
-export function resolveIdentifier(
+ *  agent than SHA256(pubkey) — e.g. Strike has multiple LN nodes.
+ *
+ *  Phase 12B: `findByPubkey` is now async (pg). The helper awaits it internally
+ *  so callers only `await resolveIdentifier(...)` once. */
+export async function resolveIdentifier(
   input: string,
-  findByPubkey: (pubkey: string) => { public_key_hash: string } | undefined,
-): { hash: string; pubkey: string | null; resolvedViaFallback: boolean } {
+  findByPubkey: (pubkey: string) => Promise<{ public_key_hash: string } | undefined>,
+): Promise<{ hash: string; pubkey: string | null; resolvedViaFallback: boolean }> {
   const norm = normalizeIdentifier(input);
 
   // If input wasn't a pubkey, nothing to fall back to
@@ -27,7 +30,7 @@ export function resolveIdentifier(
   // only need the fallback when findByHash would fail. But we can't call
   // findByHash here without adding a dependency. Instead, always try the
   // pubkey lookup as a backup that the caller can use.
-  const byPubkey = findByPubkey(norm.pubkey);
+  const byPubkey = await findByPubkey(norm.pubkey);
   if (byPubkey && byPubkey.public_key_hash !== norm.hash) {
     // The pubkey is in the DB under a different hash — use that hash instead
     return { hash: byPubkey.public_key_hash, pubkey: norm.pubkey, resolvedViaFallback: true };

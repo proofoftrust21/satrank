@@ -1,9 +1,9 @@
 // API tests — report, profile + /decide and /best-route 410 Gone (Phase 10)
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import request from 'supertest';
 import express, { Router } from 'express';
-import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -66,18 +66,19 @@ function makeTx(id: string, sender: string, receiver: string): Transaction {
   };
 }
 
-let db: Database.Database;
+let testDb: TestDb;
+
+let db: Pool;
 let app: express.Express;
 let agentRepo: AgentRepository;
 let txRepo: TransactionRepository;
 let attestationRepo: AttestationRepository;
 
-function buildTestApp() {
-  db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
+async function buildTestApp() {
+  testDb = await setupTestPool();
 
-  agentRepo = new AgentRepository(db);
+  db = testDb.pool;
+agentRepo = new AgentRepository(db);
   txRepo = new TransactionRepository(db);
   attestationRepo = new AttestationRepository(db);
   const snapshotRepo = new SnapshotRepository(db);
@@ -117,21 +118,21 @@ function buildTestApp() {
   // Seed test agents
   const alice = makeAgent('alice');
   const bob = makeAgent('bob');
-  agentRepo.insert(alice);
-  agentRepo.insert(bob);
+  await agentRepo.insert(alice);
+  await agentRepo.insert(bob);
 
   // Seed some transactions so scoring has data
   for (let i = 0; i < 10; i++) {
-    txRepo.insert(makeTx(`tx-${i}`, alice.public_key_hash, bob.public_key_hash));
+    await txRepo.insert(makeTx(`tx-${i}`, alice.public_key_hash, bob.public_key_hash));
   }
 }
 
-beforeAll(() => { buildTestApp(); });
-afterAll(() => { db.close(); });
+beforeAll(async () => { await buildTestApp(); });
+afterAll(async () => { await teardownTestPool(testDb); });
 
 // --- POST /api/decide (Phase 10 — 410 Gone) ---
 
-describe('POST /api/decide — 410 Gone', () => {
+describe('POST /api/decide — 410 Gone', async () => {
   it('répond 410 avec code ENDPOINT_REMOVED et pointeur vers /api/intent', async () => {
     const res = await request(app)
       .post('/api/decide')
@@ -162,7 +163,7 @@ describe('POST /api/decide — 410 Gone', () => {
 
 // --- POST /api/best-route (Phase 10 — 410 Gone) ---
 
-describe('POST /api/best-route — 410 Gone', () => {
+describe('POST /api/best-route — 410 Gone', async () => {
   it('répond 410 avec code ENDPOINT_REMOVED et pointeur vers /api/intent', async () => {
     const res = await request(app)
       .post('/api/best-route')
@@ -193,7 +194,7 @@ describe('POST /api/best-route — 410 Gone', () => {
 
 // --- POST /api/report ---
 
-describe('POST /api/report', () => {
+describe('POST /api/report', async () => {
   it('submits a success report', async () => {
     const res = await request(app)
       .post('/api/report')
@@ -213,7 +214,7 @@ describe('POST /api/report', () => {
 
   it('submits a failure report', async () => {
     // Need a different target to avoid dedup
-    agentRepo.insert(makeAgent('charlie'));
+    await agentRepo.insert(makeAgent('charlie'));
     const res = await request(app)
       .post('/api/report')
       .send({
@@ -229,7 +230,7 @@ describe('POST /api/report', () => {
   });
 
   it('submits a timeout report', async () => {
-    agentRepo.insert(makeAgent('dave'));
+    await agentRepo.insert(makeAgent('dave'));
     const res = await request(app)
       .post('/api/report')
       .send({
@@ -247,7 +248,7 @@ describe('POST /api/report', () => {
     const preimage = 'a'.repeat(64);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
 
-    agentRepo.insert(makeAgent('eve'));
+    await agentRepo.insert(makeAgent('eve'));
     const res = await request(app)
       .post('/api/report')
       .send({
@@ -279,7 +280,7 @@ describe('POST /api/report', () => {
   });
 
   it('rejects duplicate report within 1 hour', async () => {
-    agentRepo.insert(makeAgent('frank'));
+    await agentRepo.insert(makeAgent('frank'));
 
     // First report
     const res1 = await request(app)
@@ -336,7 +337,7 @@ describe('POST /api/report', () => {
 
 // --- GET /api/profile/:id ---
 
-describe('GET /api/profile/:id', () => {
+describe('GET /api/profile/:id', async () => {
   it('returns profile for known agent', async () => {
     const res = await request(app)
       .get(`/api/profile/${sha256('bob')}`);
@@ -370,7 +371,7 @@ describe('GET /api/profile/:id', () => {
   it('accepts 66-char Lightning pubkey', async () => {
     const pubkey = '03' + sha256('profile-ln-agent');
     const hash = sha256(pubkey);
-    agentRepo.insert(makeAgent('profile-ln-agent', { public_key_hash: hash, public_key: pubkey }));
+    await agentRepo.insert(makeAgent('profile-ln-agent', { public_key_hash: hash, public_key: pubkey }));
 
     const res = await request(app)
       .get(`/api/profile/${pubkey}`);
@@ -381,7 +382,7 @@ describe('GET /api/profile/:id', () => {
 
   it('includes report counts after submitting reports', async () => {
     // Submit a report first
-    agentRepo.insert(makeAgent('grace'));
+    await agentRepo.insert(makeAgent('grace'));
     await request(app)
       .post('/api/report')
       .send({ target: sha256('grace'), reporter: sha256('bob'), outcome: 'success' })
@@ -402,7 +403,7 @@ describe('GET /api/profile/:id', () => {
 
 // --- DecideService unit tests ---
 
-describe('DecideService', () => {
+describe('DecideService', async () => {
   it('returns Bayesian block + successRate in [0,1]', async () => {
     const snapshotRepo = new SnapshotRepository(db);
     const probeRepo = new ProbeRepository(db);
@@ -427,47 +428,47 @@ describe('DecideService', () => {
 
 // --- ReportService unit tests ---
 
-describe('ReportService', () => {
-  it('weights reports by reporter score', () => {
+describe('ReportService', async () => {
+  it('weights reports by reporter score', async () => {
     const snapshotRepo = new SnapshotRepository(db);
     const probeRepo = new ProbeRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
     // Create a fresh target for this test
-    agentRepo.insert(makeAgent('weight-target'));
-    agentRepo.insert(makeAgent('weight-reporter', { avg_score: 80 }));
+    await agentRepo.insert(makeAgent('weight-target'));
+    await agentRepo.insert(makeAgent('weight-reporter', { avg_score: 80 }));
 
-    const result = reportService.submit({
+    const result = await reportService.submit({
       target: sha256('weight-target'),
       reporter: sha256('weight-reporter'),
       outcome: 'success',
     });
 
-    // Weight is computed from scoringService.getScore() (computed, not avg_score field)
+    // Weight is computed from await scoringService.getScore() (computed, not avg_score field)
     // Just verify it's within the valid range
     expect(result.weight).toBeGreaterThanOrEqual(0.3);
     expect(result.weight).toBeLessThanOrEqual(2.0); // max with preimage bonus
   });
 
-  it('maps outcomes to correct scores', () => {
+  it('maps outcomes to correct scores', async () => {
     const snapshotRepo = new SnapshotRepository(db);
     const probeRepo = new ProbeRepository(db);
     const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
     const reportService = new ReportService(attestationRepo, agentRepo, txRepo, scoringService, db);
 
-    agentRepo.insert(makeAgent('outcome-target'));
-    agentRepo.insert(makeAgent('outcome-reporter'));
+    await agentRepo.insert(makeAgent('outcome-target'));
+    await agentRepo.insert(makeAgent('outcome-reporter'));
 
     // Submit and check that the attestation was created with the right score
-    const result = reportService.submit({
+    const result = await reportService.submit({
       target: sha256('outcome-target'),
       reporter: sha256('outcome-reporter'),
       outcome: 'failure',
     });
 
     // Verify the attestation was stored with score=15 (failure)
-    const attestations = attestationRepo.findBySubject(sha256('outcome-target'), 10, 0);
+    const attestations = await attestationRepo.findBySubject(sha256('outcome-target'), 10, 0);
     const report = attestations.find(a => a.attestation_id === result.reportId);
     expect(report).toBeDefined();
     expect(report!.score).toBe(15);

@@ -2,12 +2,12 @@
 // Usage: npm run crawl          (single run — all sources once)
 //        npm run crawl -- --cron (per-source intervals, configurable)
 import { writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { config } from '../config';
 import { logger } from '../logger';
 import { crawlDuration } from '../middleware/metrics';
 import { startCrawlerMetricsServer } from './metricsServer';
-import { getDatabase, closeDatabase } from '../database/connection';
+import { getCrawlerPool, closePools } from '../database/connection';
 import { runMigrations } from '../database/migrations';
 import { acquireBulkRescoreLock } from '../utils/advisoryLock';
 import { AgentRepository } from '../repositories/agentRepository';
@@ -206,10 +206,10 @@ async function crawlProbe(crawler: ProbeCrawler, probeRepo: ProbeRepository): Pr
 const STALE_THRESHOLD_SEC = 90 * 86400; // 90 days
 const STALE_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 
-function runStaleSweep(agentRepo: AgentRepository): void {
+async function runStaleSweep(agentRepo: AgentRepository): Promise<void> {
   try {
-    const flagged = agentRepo.markStaleByAge(STALE_THRESHOLD_SEC);
-    const total = agentRepo.countStale();
+    const flagged = await agentRepo.markStaleByAge(STALE_THRESHOLD_SEC);
+    const total = await agentRepo.countStale();
     logger.info({ flagged, totalStale: total }, 'Stale sweep complete');
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -241,11 +241,11 @@ async function scoreBatch(
     const batch = agents.slice(i, i + SCORE_BATCH_SIZE);
     for (const agent of batch) {
       try {
-        scoringService.computeScore(agent.public_key_hash);
+        await scoringService.computeScore(agent.public_key_hash);
         // Phase 3 C8: snapshot persistence is now on the Bayesian side.
         // scoringService only maintains agents.avg_score; score_snapshots
         // receives the posterior (p_success, ci95, n_obs) from here.
-        bayesianVerdict.snapshotAndPersist(agent.public_key_hash);
+        await bayesianVerdict.snapshotAndPersist(agent.public_key_hash);
         scored++;
       } catch (err: unknown) {
         errors++;
@@ -263,9 +263,13 @@ async function scoreBatch(
   return scored;
 }
 
-// Lock path lives next to the DB on the shared docker volume so both
-// containers (and any manual script running inside either) see the same lock.
-const BULK_RESCORE_LOCK_PATH = join(dirname(config.DB_PATH), '.bulk-rescore.lock');
+// Lock path lives on the shared docker volume so both containers (and any
+// manual script running inside either) see the same lock.
+// Phase 12B : DB_PATH a disparu avec la migration Postgres — on reprend la
+// même convention que app.ts (cf. commentaire Phase 12B : « npub-age cache
+// est un fichier plain sous ./data »).
+const STATE_DIR = join(process.cwd(), 'data');
+const BULK_RESCORE_LOCK_PATH = join(STATE_DIR, '.bulk-rescore.lock');
 
 async function bulkScoreAll(
   agentRepo: AgentRepository,
@@ -285,16 +289,16 @@ async function bulkScoreAll(
 
   const startMs = Date.now();
   try {
-    const unscoredCount = agentRepo.countUnscoredWithData();
+    const unscoredCount = await agentRepo.countUnscoredWithData();
     logger.info({ unscoredCount }, 'Starting bulk scoring: unscored agents with data');
 
     if (unscoredCount > 0) {
-      const unscored = agentRepo.findUnscoredWithData();
+      const unscored = await agentRepo.findUnscoredWithData();
       const scored = await scoreBatch(unscored, scoringService, bayesianVerdict, 'unscored');
       logger.info({ scored, total: unscored.length, durationMs: Date.now() - startMs }, 'Bulk scoring complete (unscored agents)');
     }
 
-    const alreadyScored = agentRepo.findScoredAgents();
+    const alreadyScored = await agentRepo.findScoredAgents();
     if (alreadyScored.length > 0) {
       const rescoreStart = Date.now();
       const rescored = await scoreBatch(alreadyScored, scoringService, bayesianVerdict, 'rescore');
@@ -381,38 +385,38 @@ async function runFullCrawl(
 // --- Main ---
 
 async function main(): Promise<void> {
-  const db = getDatabase();
-  runMigrations(db);
+  const pool = getCrawlerPool();
+  await runMigrations(pool);
 
-  const agentRepo = new AgentRepository(db);
-  const txRepo = new TransactionRepository(db);
-  const attestationRepo = new AttestationRepository(db);
-  const snapshotRepo = new SnapshotRepository(db);
-  const probeRepo = new ProbeRepository(db);
-  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
-  const feeSnapshotRepo = new FeeSnapshotRepository(db);
+  const agentRepo = new AgentRepository(pool);
+  const txRepo = new TransactionRepository(pool);
+  const attestationRepo = new AttestationRepository(pool);
+  const snapshotRepo = new SnapshotRepository(pool);
+  const probeRepo = new ProbeRepository(pool);
+  const channelSnapshotRepo = new ChannelSnapshotRepository(pool);
+  const feeSnapshotRepo = new FeeSnapshotRepository(pool);
 
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, pool, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
 
   // Phase 3 C8: crawler-side BayesianVerdictService owns snapshot persistence.
   // Les streaming/buckets repos sont mutualisés avec l'app — même schéma, même
-  // DB, la cascade hiérarchique lit les mêmes tables côté read et write.
-  const endpointStreamingMain = new EndpointStreamingPosteriorRepository(db);
-  const endpointBucketsMain = new EndpointDailyBucketsRepository(db);
+  // pool, la cascade hiérarchique lit les mêmes tables côté read et write.
+  const endpointStreamingMain = new EndpointStreamingPosteriorRepository(pool);
+  const endpointBucketsMain = new EndpointDailyBucketsRepository(pool);
   const bayesianScoringServiceMain = new BayesianScoringService(
     endpointStreamingMain,
-    new ServiceStreamingPosteriorRepository(db),
-    new OperatorStreamingPosteriorRepository(db),
-    new NodeStreamingPosteriorRepository(db),
-    new RouteStreamingPosteriorRepository(db),
+    new ServiceStreamingPosteriorRepository(pool),
+    new OperatorStreamingPosteriorRepository(pool),
+    new NodeStreamingPosteriorRepository(pool),
+    new RouteStreamingPosteriorRepository(pool),
     endpointBucketsMain,
-    new ServiceDailyBucketsRepository(db),
-    new OperatorDailyBucketsRepository(db),
-    new NodeDailyBucketsRepository(db),
-    new RouteDailyBucketsRepository(db),
+    new ServiceDailyBucketsRepository(pool),
+    new OperatorDailyBucketsRepository(pool),
+    new NodeDailyBucketsRepository(pool),
+    new RouteDailyBucketsRepository(pool),
   );
   const bayesianVerdictServiceMain = new BayesianVerdictService(
-    db, bayesianScoringServiceMain, endpointStreamingMain, endpointBucketsMain, snapshotRepo,
+    bayesianScoringServiceMain, endpointStreamingMain, endpointBucketsMain, snapshotRepo,
   );
 
   const observerClient = new HttpObserverClient({
@@ -460,7 +464,7 @@ async function main(): Promise<void> {
         {
           txRepo,
           bayesian: bayesianScoringServiceMain,
-          db,
+          pool,
           dualWriteLogger,
         },
       )
@@ -519,22 +523,22 @@ async function main(): Promise<void> {
         const survivalService = new SurvivalService(agentRepo, probeRepo, snapshotRepo);
         // Bayesian verdict service — C10 branchement dans le pipeline Nostr :
         // les tags publiés sont 100 % bayésiens (plus de composite legacy).
-        const endpointStreamingNostr = new EndpointStreamingPosteriorRepository(db);
-        const endpointBucketsNostr = new EndpointDailyBucketsRepository(db);
+        const endpointStreamingNostr = new EndpointStreamingPosteriorRepository(pool);
+        const endpointBucketsNostr = new EndpointDailyBucketsRepository(pool);
         const bayesianScoringServiceNostr = new BayesianScoringService(
           endpointStreamingNostr,
-          new ServiceStreamingPosteriorRepository(db),
-          new OperatorStreamingPosteriorRepository(db),
-          new NodeStreamingPosteriorRepository(db),
-          new RouteStreamingPosteriorRepository(db),
+          new ServiceStreamingPosteriorRepository(pool),
+          new OperatorStreamingPosteriorRepository(pool),
+          new NodeStreamingPosteriorRepository(pool),
+          new RouteStreamingPosteriorRepository(pool),
           endpointBucketsNostr,
-          new ServiceDailyBucketsRepository(db),
-          new OperatorDailyBucketsRepository(db),
-          new NodeDailyBucketsRepository(db),
-          new RouteDailyBucketsRepository(db),
+          new ServiceDailyBucketsRepository(pool),
+          new OperatorDailyBucketsRepository(pool),
+          new NodeDailyBucketsRepository(pool),
+          new RouteDailyBucketsRepository(pool),
         );
         const bayesianVerdictServiceNostr = new BayesianVerdictService(
-          db, bayesianScoringServiceNostr, endpointStreamingNostr, endpointBucketsNostr,
+          bayesianScoringServiceNostr, endpointStreamingNostr, endpointBucketsNostr,
         );
         const nostrRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim());
         const nostrPublisher = new NostrPublisher(
@@ -551,8 +555,9 @@ async function main(): Promise<void> {
           },
         );
 
-        // Stream B — zap-receipt mining + nostr-indexed publishing
-        const mappingsPath = join(dirname(config.DB_PATH), 'nostr-mappings.json');
+        // Stream B — zap-receipt mining + nostr-indexed publishing.
+        // Phase 12B : fichier plain sous ./data (même convention que app.ts).
+        const mappingsPath = join(STATE_DIR, 'nostr-mappings.json');
         const { ZapMiner } = await import('../nostr/zapMiner');
         const zapMiner = new ZapMiner({
           relays: config.ZAP_MINING_RELAYS.split(',').map(r => r.trim()),
@@ -628,16 +633,16 @@ async function main(): Promise<void> {
       // lives inside the Nostr-publisher try-block scope.
       try {
         const { SatRankDvm } = await import('../nostr/dvm');
-        const endpointStreamingDvm = new EndpointStreamingPosteriorRepository(db);
-        const serviceStreamingDvm = new ServiceStreamingPosteriorRepository(db);
-        const operatorStreamingDvm = new OperatorStreamingPosteriorRepository(db);
-        const nodeStreamingDvm = new NodeStreamingPosteriorRepository(db);
-        const routeStreamingDvm = new RouteStreamingPosteriorRepository(db);
-        const endpointBucketsDvm = new EndpointDailyBucketsRepository(db);
-        const serviceBucketsDvm = new ServiceDailyBucketsRepository(db);
-        const operatorBucketsDvm = new OperatorDailyBucketsRepository(db);
-        const nodeBucketsDvm = new NodeDailyBucketsRepository(db);
-        const routeBucketsDvm = new RouteDailyBucketsRepository(db);
+        const endpointStreamingDvm = new EndpointStreamingPosteriorRepository(pool);
+        const serviceStreamingDvm = new ServiceStreamingPosteriorRepository(pool);
+        const operatorStreamingDvm = new OperatorStreamingPosteriorRepository(pool);
+        const nodeStreamingDvm = new NodeStreamingPosteriorRepository(pool);
+        const routeStreamingDvm = new RouteStreamingPosteriorRepository(pool);
+        const endpointBucketsDvm = new EndpointDailyBucketsRepository(pool);
+        const serviceBucketsDvm = new ServiceDailyBucketsRepository(pool);
+        const operatorBucketsDvm = new OperatorDailyBucketsRepository(pool);
+        const nodeBucketsDvm = new NodeDailyBucketsRepository(pool);
+        const routeBucketsDvm = new RouteDailyBucketsRepository(pool);
         const bayesianScoringServiceDvm = new BayesianScoringService(
           endpointStreamingDvm,
           serviceStreamingDvm,
@@ -651,7 +656,7 @@ async function main(): Promise<void> {
           routeBucketsDvm,
         );
         const bayesianVerdictServiceDvm = new BayesianVerdictService(
-          db, bayesianScoringServiceDvm, endpointStreamingDvm, endpointBucketsDvm,
+          bayesianScoringServiceDvm, endpointStreamingDvm, endpointBucketsDvm,
         );
         const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdictServiceDvm,
           lndClient.isConfigured() ? lndClient : undefined, {
@@ -694,15 +699,15 @@ async function main(): Promise<void> {
         });
         multiKindPublisherRef = multiKindPublisher;
 
-        const endpointStreamingMulti = new EndpointStreamingPosteriorRepository(db);
-        const nodeStreamingMulti = new NodeStreamingPosteriorRepository(db);
-        const serviceStreamingMulti = new ServiceStreamingPosteriorRepository(db);
-        const publishedEventsRepo = new NostrPublishedEventsRepository(db);
-        const serviceEndpointRepoMulti = new ServiceEndpointRepository(db);
+        const endpointStreamingMulti = new EndpointStreamingPosteriorRepository(pool);
+        const nodeStreamingMulti = new NodeStreamingPosteriorRepository(pool);
+        const serviceStreamingMulti = new ServiceStreamingPosteriorRepository(pool);
+        const publishedEventsRepo = new NostrPublishedEventsRepository(pool);
+        const serviceEndpointRepoMulti = new ServiceEndpointRepository(pool);
         const operatorService = new OperatorService(
-          new OperatorRepository(db),
-          new OperatorIdentityRepository(db),
-          new OperatorOwnershipRepository(db),
+          new OperatorRepository(pool),
+          new OperatorIdentityRepository(pool),
+          new OperatorOwnershipRepository(pool),
           endpointStreamingMulti,
           nodeStreamingMulti,
           serviceStreamingMulti,
@@ -715,7 +720,7 @@ async function main(): Promise<void> {
           publishedEventsRepo,
           serviceEndpointRepoMulti,
           operatorService,
-          db,
+          pool,
         );
 
         const runMultiKindScan = (): void => {
@@ -767,13 +772,13 @@ async function main(): Promise<void> {
     }
 
     // Run an initial stale sweep so the DB reflects fossils before the first crawl fires
-    runStaleSweep(agentRepo);
+    await runStaleSweep(agentRepo);
 
     // Retention cleanup — sweep old rows from time-series tables
     // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
     // before the first crawl so we start with a trimmed dataset.
     try {
-      await runRetentionCleanup(db);
+      await runRetentionCleanup(pool);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ error: msg }, 'Initial retention cleanup failed');
@@ -789,36 +794,50 @@ async function main(): Promise<void> {
 
     // Post-crawl sweep: any agent not touched during the graph crawl whose last_seen is > 90d
     // will now be flagged. Agents that were seen had their stale reset to 0 by the crawler updates.
-    runStaleSweep(agentRepo);
+    await runStaleSweep(agentRepo);
 
-    // Per-source timers
-    const timerObserver = setInterval(() => {
-      crawlObserver(observerCrawler)
-        .then(() => bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo))
-        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Observer crawl error'));
+    // Per-source timers. Chaque callback est async + try/catch pour respecter
+    // la discipline Phase 12B (aucun unhandled rejection depuis setInterval).
+    const timerObserver = setInterval(async () => {
+      try {
+        await crawlObserver(observerCrawler);
+        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Observer crawl error');
+      }
     }, intervals.observer);
 
-    const timerLnd = setInterval(() => {
-      crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance)
-        .then(() => bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo))
-        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LND graph crawl error'));
+    const timerLnd = setInterval(async () => {
+      try {
+        await crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance);
+        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LND graph crawl error');
+      }
     }, intervals.lndGraph);
 
-    const timerLnplus = setInterval(() => {
-      crawlLnplus(lnplusCrawlerInstance)
-        .then(() => bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo))
-        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error'));
+    const timerLnplus = setInterval(async () => {
+      try {
+        await crawlLnplus(lnplusCrawlerInstance);
+        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error');
+      }
     }, intervals.lnplus);
 
     let timerProbe: ReturnType<typeof setInterval> | null = null;
     if (probeCrawlerInstance) {
       let probeRunning = false;
-      timerProbe = setInterval(() => {
+      timerProbe = setInterval(async () => {
         if (probeRunning) return; // skip if previous cycle still running
         probeRunning = true;
-        crawlProbe(probeCrawlerInstance, probeRepo)
-          .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Probe crawl error'))
-          .finally(() => { probeRunning = false; });
+        try {
+          await crawlProbe(probeCrawlerInstance, probeRepo);
+        } catch (err: unknown) {
+          logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Probe crawl error');
+        } finally {
+          probeRunning = false;
+        }
       }, intervals.probe);
       logger.info({ intervalMs: intervals.probe }, 'Probe cron timer started');
     } else {
@@ -828,7 +847,7 @@ async function main(): Promise<void> {
     // Service health crawler — periodic HTTP checks on known endpoints (every 5 min)
     const { ServiceHealthCrawler } = await import('./serviceHealthCrawler');
     const { ServiceEndpointRepository } = await import('../repositories/serviceEndpointRepository');
-    const serviceEndpointRepo = new ServiceEndpointRepository(db);
+    const serviceEndpointRepo = new ServiceEndpointRepository(pool);
     const serviceHealthCrawler = new ServiceHealthCrawler(
       serviceEndpointRepo,
       txRepo,
@@ -836,9 +855,12 @@ async function main(): Promise<void> {
       dualWriteLogger,
       agentRepo,
     );
-    const timerServiceHealth = setInterval(() => {
-      serviceHealthCrawler.run()
-        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Service health crawl error'));
+    const timerServiceHealth = setInterval(async () => {
+      try {
+        await serviceHealthCrawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Service health crawl error');
+      }
     }, 300_000); // 5 minutes
     timerServiceHealth.unref?.();
     logger.info({ intervalMs: 300_000 }, 'Service health crawler timer started');
@@ -849,9 +871,12 @@ async function main(): Promise<void> {
       ? (invoice: string) => lndClient.decodePayReq!(invoice)
       : undefined;
     const registryCrawler = new RegistryCrawler(serviceEndpointRepo, decodeBolt11);
-    const timerRegistry = setInterval(() => {
-      registryCrawler.run()
-        .catch(err => logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Registry crawl error'));
+    const timerRegistry = setInterval(async () => {
+      try {
+        await registryCrawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Registry crawl error');
+      }
     }, config.CRAWL_INTERVAL_REGISTRY_MS);
     timerRegistry.unref?.();
     logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'Registry crawler timer started');
@@ -859,39 +884,31 @@ async function main(): Promise<void> {
 
 
     // Daily stale sweep — flags agents whose last_seen has fallen outside the 90-day window.
-    const timerStaleSweep = setInterval(() => runStaleSweep(agentRepo), STALE_SWEEP_INTERVAL_MS);
+    const timerStaleSweep = setInterval(async () => {
+      try {
+        await runStaleSweep(agentRepo);
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Scheduled stale sweep failed');
+      }
+    }, STALE_SWEEP_INTERVAL_MS);
     logger.info({ intervalMs: STALE_SWEEP_INTERVAL_MS, thresholdSec: STALE_THRESHOLD_SEC }, 'Stale sweep cron timer started');
 
     // Daily retention cleanup — sweeps old rows from time-series tables.
-    // Fire-and-forget inside setInterval; .catch() logs without crashing
+    // Fire-and-forget inside setInterval; try/catch logs without crashing
     // the cron loop if one sweep fails (next tick will retry).
-    const timerRetention = setInterval(() => {
-      runRetentionCleanup(db).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error({ error: msg }, 'Scheduled retention cleanup failed');
-      });
+    const timerRetention = setInterval(async () => {
+      try {
+        await runRetentionCleanup(pool);
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Scheduled retention cleanup failed');
+      }
     }, RETENTION_INTERVAL_MS);
     logger.info({ intervalMs: RETENTION_INTERVAL_MS }, 'Retention cleanup cron timer started');
 
-    // WAL checkpoint cron — `wal_autocheckpoint = 1000` triggers opportunistic
-    // checkpoints on writes, but under constant read pressure readers keep
-    // snapshots open and the checkpoint never advances far enough to truncate.
-    // We've seen the WAL grow past 1.6 GB in practice. A periodic
-    // wal_checkpoint(TRUNCATE) reclaims disk and caps replay time on recovery.
-    const WAL_CHECKPOINT_INTERVAL_MS = 60 * 60 * 1000; // 1h
-    const timerWalCheckpoint = setInterval(() => {
-      try {
-        const result = db.pragma('wal_checkpoint(TRUNCATE)');
-        logger.info({ result }, 'WAL checkpoint(TRUNCATE) complete');
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn({ error: msg }, 'WAL checkpoint failed');
-      }
-    }, WAL_CHECKPOINT_INTERVAL_MS);
-    timerWalCheckpoint.unref?.();
-    logger.info({ intervalMs: WAL_CHECKPOINT_INTERVAL_MS }, 'WAL checkpoint cron timer started');
+    // Phase 12B : le WAL checkpoint SQLite a disparu avec la migration vers
+    // Postgres (autovacuum / WAL archiving y sont gérés côté cluster).
 
-    function shutdown() {
+    const shutdown = async () => {
       logger.info('Stopping cron crawler');
       clearInterval(timerHeartbeat);
       clearInterval(timerObserver);
@@ -902,34 +919,35 @@ async function main(): Promise<void> {
       if (timerZapMining) clearInterval(timerZapMining);
       if (timerNostrMultiKind) clearInterval(timerNostrMultiKind);
       if (multiKindPublisherRef) {
-        multiKindPublisherRef.close().catch((err: unknown) => {
+        try {
+          await multiKindPublisherRef.close();
+        } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.warn({ error: msg }, 'multi-kind publisher close failed');
-        });
+        }
       }
       clearInterval(timerStaleSweep);
       clearInterval(timerRetention);
-      clearInterval(timerWalCheckpoint);
       metricsServer.close();
-      closeDatabase();
+      await closePools();
       process.exit(0);
-    }
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+    };
+    process.on('SIGINT', () => { void shutdown(); });
+    process.on('SIGTERM', () => { void shutdown(); });
   } else {
-    runStaleSweep(agentRepo);
+    await runStaleSweep(agentRepo);
     await runFullCrawl(
       observerCrawler, lndGraphCrawlerInstance, mempoolCrawlerInstance,
       lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService,
       bayesianVerdictServiceMain, snapshotRepo,
     );
-    runStaleSweep(agentRepo);
-    closeDatabase();
+    await runStaleSweep(agentRepo);
+    await closePools();
   }
 }
 
-main().catch(err => {
+main().catch(async (err) => {
   logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Fatal crawler error');
-  closeDatabase();
+  try { await closePools(); } catch { /* already closed */ }
   process.exit(1);
 });

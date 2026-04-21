@@ -1,10 +1,10 @@
 // Contract tests — verify HTTP responses match OpenAPI spec
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import request from 'supertest';
 import express from 'express';
 import { v4 as uuid } from 'uuid';
-import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -28,16 +28,15 @@ import { openapiSpec } from '../openapi';
 import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent, Transaction } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
 
 // Reusable app builder for contract tests
-function buildContractApp() {
-  const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
-
+async function buildContractApp() {
+  testDb = await setupTestPool();
+  const db = testDb.pool;
   const agentRepo = new AgentRepository(db);
   const txRepo = new TransactionRepository(db);
   const attestationRepo = new AttestationRepository(db);
@@ -83,13 +82,13 @@ function assertShape(obj: Record<string, unknown>, fields: Record<string, string
   }
 }
 
-describe('Contract tests — responses match OpenAPI spec', () => {
+describe('Contract tests — responses match OpenAPI spec', async () => {
   let app: express.Express;
-  let db: Database.Database;
+  let db: Pool;
   let agentHash: string;
 
-  beforeAll(() => {
-    const testApp = buildContractApp();
+  beforeAll(async () => {
+    const testApp = await buildContractApp();
     app = testApp.app;
     db = testApp.db;
 
@@ -135,8 +134,8 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       last_queried_at: null,
       query_count: 0,
     };
-    testApp.agentRepo.insert(agent);
-    testApp.agentRepo.insert(agent2);
+    await testApp.agentRepo.insert(agent);
+    await testApp.agentRepo.insert(agent2);
     agentHash = agent.public_key_hash;
 
     const tx: Transaction = {
@@ -150,10 +149,10 @@ describe('Contract tests — responses match OpenAPI spec', () => {
       status: 'verified',
       protocol: 'bolt11',
     };
-    testApp.txRepo.insert(tx);
+    await testApp.txRepo.insert(tx);
   });
 
-  afterAll(() => { db.close(); });
+  afterAll(async () => { await teardownTestPool(testDb); });
 
   // --- OpenAPI spec served correctly ---
 
@@ -357,7 +356,7 @@ describe('Contract tests — L402 security markers in OpenAPI spec', () => {
   ];
 
   for (const path of l402Paths) {
-    it(`${path} is marked as L402-gated in OpenAPI spec`, () => {
+    it(`${path} is marked as L402-gated in OpenAPI spec`, async () => {
       const pathSpec = (openapiSpec.paths as Record<string, Record<string, { security?: unknown[] }>>)[path];
       expect(pathSpec).toBeDefined();
       const op = pathSpec.get;
@@ -375,7 +374,7 @@ describe('Contract tests — L402 security markers in OpenAPI spec', () => {
   ];
 
   for (const path of freePaths) {
-    it(`${path} is NOT marked as L402-gated in OpenAPI spec`, () => {
+    it(`${path} is NOT marked as L402-gated in OpenAPI spec`, async () => {
       const pathSpec = (openapiSpec.paths as Record<string, Record<string, { security?: unknown[] }>>)[path];
       expect(pathSpec).toBeDefined();
       const op = pathSpec.get;
@@ -384,7 +383,7 @@ describe('Contract tests — L402 security markers in OpenAPI spec', () => {
   }
 
   // POST /verdicts uses L402
-  it('/verdicts POST is marked as L402-gated in OpenAPI spec', () => {
+  it('/verdicts POST is marked as L402-gated in OpenAPI spec', async () => {
     const pathSpec = (openapiSpec.paths as Record<string, Record<string, { security?: unknown[] }>>)['/verdicts'];
     expect(pathSpec).toBeDefined();
     const op = pathSpec.post;

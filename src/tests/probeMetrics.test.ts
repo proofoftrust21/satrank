@@ -1,15 +1,15 @@
 // Tests for Phase 9 C9 — /api/probe Prometheus metrics and structured logs.
 //
-// Focus: every exit path from ProbeController.probe() increments
+// Focus: every exit path from await ProbeController.probe() increments
 // satrank_probe_total with the correct outcome label, plus the histograms
 // (duration, invoice) and counters (sats paid, ingestion) agree on the facts.
 // The structured log line `probe_complete` carries the same outcome label so
 // alert queries (rate(…{outcome="payment_failed"})) line up with logs.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
 import * as bolt11 from 'bolt11';
-import { runMigrations } from '../database/migrations';
 import { ProbeController, type ProbeBayesianDeps } from '../controllers/probeController';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
 import { TransactionRepository } from '../repositories/transactionRepository';
@@ -17,6 +17,7 @@ import { ServiceEndpointRepository } from '../repositories/serviceEndpointReposi
 import { AgentRepository } from '../repositories/agentRepository';
 import { metricsRegistry } from '../middleware/metrics';
 import { createBayesianScoringService } from './helpers/bayesianTestFactory';
+let testDb: TestDb;
 
 // --- Fixtures ---
 const TEST_PRIVKEY = 'e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db734';
@@ -44,12 +45,13 @@ function l402AuthHeader(preimageHex: string): string {
   return `L402 ${mac}:${preimageHex}`;
 }
 
-function seedPhase9Token(db: InstanceType<typeof Database>, preimage: string, credits: number): Buffer {
+async function seedPhase9Token(db: Pool, preimage: string, credits: number): Promise<Buffer> {
   const ph = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
-  db.prepare(`
-    INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(ph, 1000, Math.floor(Date.now() / 1000), 1000, 2, 0.5, credits);
+  await db.query(
+    `INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota, tier_id, rate_sats_per_request, balance_credits)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [ph, 1000, Math.floor(Date.now() / 1000), 1000, 2, 0.5, credits],
+  );
   return ph;
 }
 
@@ -69,7 +71,7 @@ function makeMockLnd(opts: {
   } as unknown as LndGraphClient;
 }
 
-function bayesianDeps(db: InstanceType<typeof Database>): ProbeBayesianDeps {
+function bayesianDeps(db: Pool): ProbeBayesianDeps {
   return {
     txRepo: new TransactionRepository(db),
     bayesian: createBayesianScoringService(db),
@@ -124,17 +126,17 @@ async function scalarValue(name: string): Promise<number> {
   return rows[0]?.value ?? 0;
 }
 
-describe('ProbeController — Phase 9 C9 metrics', () => {
-  let db: InstanceType<typeof Database>;
+describe('ProbeController — Phase 9 C9 metrics', async () => {
+  let db: Pool;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
-  afterEach(() => {
-    db.close();
+    db = testDb.pool;
+});
+
+  afterEach(async () => {
+    await teardownTestPool(testDb);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -157,7 +159,7 @@ describe('ProbeController — Phase 9 C9 metrics', () => {
 
   it('emits outcome=insufficient_credits when the token is short', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
-    seedPhase9Token(db, preimage, 3);
+    await seedPhase9Token(db, preimage, 3);
     const before = await counterValue('satrank_probe_total', { outcome: 'insufficient_credits' });
     const controller = new ProbeController(db, makeMockLnd());
     await callProbe(controller, { url: 'https://example.com' }, l402AuthHeader(preimage));
@@ -167,7 +169,7 @@ describe('ProbeController — Phase 9 C9 metrics', () => {
 
   it('emits outcome=upstream_unreachable when fetch throws', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
-    seedPhase9Token(db, preimage, 100);
+    await seedPhase9Token(db, preimage, 100);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ETIMEDOUT')));
     const before = await counterValue('satrank_probe_total', { outcome: 'upstream_unreachable' });
     const controller = new ProbeController(db, makeMockLnd());
@@ -178,7 +180,7 @@ describe('ProbeController — Phase 9 C9 metrics', () => {
 
   it('emits outcome=upstream_not_l402 for a non-402 first response', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
-    seedPhase9Token(db, preimage, 100);
+    await seedPhase9Token(db, preimage, 100);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       status: 200,
       headers: { get: () => null },
@@ -192,7 +194,7 @@ describe('ProbeController — Phase 9 C9 metrics', () => {
 
   it('emits outcome=success_200 and updates sats_paid + invoice histogram on happy path', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
-    seedPhase9Token(db, preimage, 100);
+    await seedPhase9Token(db, preimage, 100);
     const invoiceSats = 25;
     const invoice = makeInvoice(invoiceSats);
 
@@ -232,7 +234,7 @@ describe('ProbeController — Phase 9 C9 metrics', () => {
 
   it('emits outcome=payment_failed when LND returns paymentError', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
-    seedPhase9Token(db, preimage, 100);
+    await seedPhase9Token(db, preimage, 100);
     const invoice = makeInvoice(10);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       status: 402,
@@ -255,7 +257,7 @@ describe('ProbeController — Phase 9 C9 metrics', () => {
 
   it('emits outcome=invoice_too_expensive when invoice > PROBE_MAX_INVOICE_SATS', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
-    seedPhase9Token(db, preimage, 100);
+    await seedPhase9Token(db, preimage, 100);
     // Default PROBE_MAX_INVOICE_SATS = 1000 → use 5000 to trip the guard.
     const invoice = makeInvoice(5000);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -277,7 +279,7 @@ describe('ProbeController — Phase 9 C9 metrics', () => {
 
   it('increments satrank_probe_ingestion_total with reason label', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
-    seedPhase9Token(db, preimage, 100);
+    await seedPhase9Token(db, preimage, 100);
     // Non-402 first fetch → ingestObservation reason = 'not-l402'
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       status: 200,

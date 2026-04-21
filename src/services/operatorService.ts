@@ -106,27 +106,27 @@ export class OperatorService {
   ) {}
 
   /** Crée un operator pending. Idempotent. */
-  upsertOperator(operatorId: string, now: number = Math.floor(Date.now() / 1000)): void {
-    this.operators.upsertPending(operatorId, now);
+  async upsertOperator(operatorId: string, now: number = Math.floor(Date.now() / 1000)): Promise<void> {
+    await this.operators.upsertPending(operatorId, now);
   }
 
-  claimIdentity(operatorId: string, type: IdentityType, value: string): void {
-    this.operators.touch(operatorId);
-    this.identities.claim(operatorId, type, value);
+  async claimIdentity(operatorId: string, type: IdentityType, value: string): Promise<void> {
+    await this.operators.touch(operatorId);
+    await this.identities.claim(operatorId, type, value);
     logger.info({ operatorId, type, value }, 'operator identity claimed');
   }
 
   /** Marque l'identité comme vérifiée + recompute le status global. */
-  markIdentityVerified(
+  async markIdentityVerified(
     operatorId: string,
     type: IdentityType,
     value: string,
     proof: string,
     now: number = Math.floor(Date.now() / 1000),
-  ): OperatorStatus {
-    this.identities.markVerified(operatorId, type, value, proof, now);
-    this.operators.touch(operatorId, now);
-    const status = this.recomputeStatus(operatorId);
+  ): Promise<OperatorStatus> {
+    await this.identities.markVerified(operatorId, type, value, proof, now);
+    await this.operators.touch(operatorId, now);
+    const status = await this.recomputeStatus(operatorId);
     logger.info(
       { operatorId, type, value, status, at: now },
       'operator identity verified',
@@ -137,10 +137,10 @@ export class OperatorService {
   /** Règle dure : count(verified identities) ≥ 2 → 'verified'. Score = count
    *  brut (0..3). Le status 'rejected' reste décisoire (uniquement via API
    *  admin — jamais auto-atteint ici). */
-  recomputeStatus(operatorId: string): OperatorStatus {
-    const rows = this.identities.findByOperator(operatorId);
+  async recomputeStatus(operatorId: string): Promise<OperatorStatus> {
+    const rows = await this.identities.findByOperator(operatorId);
     const verifiedCount = rows.filter((r) => r.verified_at !== null).length;
-    const current = this.operators.findById(operatorId);
+    const current = await this.operators.findById(operatorId);
     if (current === null) {
       throw new Error(`operator ${operatorId} not found`);
     }
@@ -150,20 +150,20 @@ export class OperatorService {
     if (current.status === 'rejected') return 'rejected';
     const nextStatus: OperatorStatus =
       verifiedCount >= MIN_VERIFIED_IDENTITIES_FOR_VERIFIED ? 'verified' : current.status;
-    this.operators.updateVerification(operatorId, verifiedCount, nextStatus);
+    await this.operators.updateVerification(operatorId, verifiedCount, nextStatus);
     return nextStatus;
   }
 
-  claimOwnership(
+  async claimOwnership(
     operatorId: string,
     resourceType: 'node' | 'endpoint' | 'service',
     resourceId: string,
     now: number = Math.floor(Date.now() / 1000),
-  ): void {
-    this.operators.touch(operatorId, now);
-    if (resourceType === 'node') this.ownerships.claimNode(operatorId, resourceId, now);
-    else if (resourceType === 'endpoint') this.ownerships.claimEndpoint(operatorId, resourceId, now);
-    else this.ownerships.claimService(operatorId, resourceId, now);
+  ): Promise<void> {
+    await this.operators.touch(operatorId, now);
+    if (resourceType === 'node') await this.ownerships.claimNode(operatorId, resourceId, now);
+    else if (resourceType === 'endpoint') await this.ownerships.claimEndpoint(operatorId, resourceId, now);
+    else await this.ownerships.claimService(operatorId, resourceId, now);
     operatorClaimsTotal.inc({ resource_type: resourceType });
     logger.info(
       { operatorId, resourceType, resourceId, at: now },
@@ -171,26 +171,26 @@ export class OperatorService {
     );
   }
 
-  verifyOwnership(
+  async verifyOwnership(
     operatorId: string,
     resourceType: 'node' | 'endpoint' | 'service',
     resourceId: string,
     now: number = Math.floor(Date.now() / 1000),
-  ): void {
-    if (resourceType === 'node') this.ownerships.verifyNode(operatorId, resourceId, now);
-    else if (resourceType === 'endpoint') this.ownerships.verifyEndpoint(operatorId, resourceId, now);
-    else this.ownerships.verifyService(operatorId, resourceId, now);
+  ): Promise<void> {
+    if (resourceType === 'node') await this.ownerships.verifyNode(operatorId, resourceId, now);
+    else if (resourceType === 'endpoint') await this.ownerships.verifyEndpoint(operatorId, resourceId, now);
+    else await this.ownerships.verifyService(operatorId, resourceId, now);
   }
 
   /** Agrège les posteriors Bayesian par somme des pseudo-évidences. Voir
    *  le gros bloc d'architecture en tête de fichier. */
-  aggregateBayesianForOperator(
+  async aggregateBayesianForOperator(
     operatorId: string,
     atTs: number = Math.floor(Date.now() / 1000),
-  ): OperatorBayesianAggregate {
-    const nodes = this.ownerships.listNodes(operatorId);
-    const endpoints = this.ownerships.listEndpoints(operatorId);
-    const services = this.ownerships.listServices(operatorId);
+  ): Promise<OperatorBayesianAggregate> {
+    const nodes = await this.ownerships.listNodes(operatorId);
+    const endpoints = await this.ownerships.listEndpoints(operatorId);
+    const services = await this.ownerships.listServices(operatorId);
 
     let excessAlpha = 0;
     let excessBeta = 0;
@@ -207,7 +207,7 @@ export class OperatorService {
     };
 
     for (const n of nodes) {
-      const ps = this.nodePosteriors.readAllSourcesDecayed(n.node_pubkey, atTs);
+      const ps = await this.nodePosteriors.readAllSourcesDecayed(n.node_pubkey, atTs);
       // On agrège sur les 3 sources (probe + report + paid) — cohérent avec
       // ce que fait le verdict par-ressource.
       const a = ps.probe.posteriorAlpha + ps.report.posteriorAlpha + ps.paid.posteriorAlpha
@@ -217,7 +217,7 @@ export class OperatorService {
       accumulate(a, b);
     }
     for (const e of endpoints) {
-      const ps = this.endpointPosteriors.readAllSourcesDecayed(e.url_hash, atTs);
+      const ps = await this.endpointPosteriors.readAllSourcesDecayed(e.url_hash, atTs);
       const a = ps.probe.posteriorAlpha + ps.report.posteriorAlpha + ps.paid.posteriorAlpha
         - 2 * DEFAULT_PRIOR_ALPHA;
       const b = ps.probe.posteriorBeta + ps.report.posteriorBeta + ps.paid.posteriorBeta
@@ -225,7 +225,7 @@ export class OperatorService {
       accumulate(a, b);
     }
     for (const s of services) {
-      const ps = this.servicePosteriors.readAllSourcesDecayed(s.service_hash, atTs);
+      const ps = await this.servicePosteriors.readAllSourcesDecayed(s.service_hash, atTs);
       const a = ps.probe.posteriorAlpha + ps.report.posteriorAlpha + ps.paid.posteriorAlpha
         - 2 * DEFAULT_PRIOR_ALPHA;
       const b = ps.probe.posteriorBeta + ps.report.posteriorBeta + ps.paid.posteriorBeta
@@ -250,19 +250,19 @@ export class OperatorService {
     };
   }
 
-  getOperatorCatalog(
+  async getOperatorCatalog(
     operatorId: string,
     atTs: number = Math.floor(Date.now() / 1000),
-  ): OperatorCatalog | null {
-    const op = this.operators.findById(operatorId);
+  ): Promise<OperatorCatalog | null> {
+    const op = await this.operators.findById(operatorId);
     if (op === null) return null;
     return {
       operator: op,
-      identities: this.identities.findByOperator(operatorId),
-      ownedNodes: this.ownerships.listNodes(operatorId),
-      ownedEndpoints: this.ownerships.listEndpoints(operatorId),
-      ownedServices: this.ownerships.listServices(operatorId),
-      aggregated: this.aggregateBayesianForOperator(operatorId, atTs),
+      identities: await this.identities.findByOperator(operatorId),
+      ownedNodes: await this.ownerships.listNodes(operatorId),
+      ownedEndpoints: await this.ownerships.listEndpoints(operatorId),
+      ownedServices: await this.ownerships.listServices(operatorId),
+      aggregated: await this.aggregateBayesianForOperator(operatorId, atTs),
     };
   }
 
@@ -270,19 +270,19 @@ export class OperatorService {
    *  claim par aucun operator. Utilisé par /api/agent/:hash/verdict pour :
    *    1. exposer operator_id (C11, uniquement si status='verified')
    *    2. emit advisory OPERATOR_UNVERIFIED (C12, si status ≠ 'verified'). */
-  resolveOperatorForNode(nodePubkey: string): OperatorResourceLookup | null {
-    const ownership = this.ownerships.findOperatorForNode(nodePubkey);
+  async resolveOperatorForNode(nodePubkey: string): Promise<OperatorResourceLookup | null> {
+    const ownership = await this.ownerships.findOperatorForNode(nodePubkey);
     if (!ownership) return null;
-    const op = this.operators.findById(ownership.operator_id);
+    const op = await this.operators.findById(ownership.operator_id);
     if (!op) return null;
     return { operatorId: op.operator_id, status: op.status };
   }
 
   /** Symmetric de resolveOperatorForNode, indexé par url_hash (endpoint). */
-  resolveOperatorForEndpoint(urlHash: string): OperatorResourceLookup | null {
-    const ownership = this.ownerships.findOperatorForEndpoint(urlHash);
+  async resolveOperatorForEndpoint(urlHash: string): Promise<OperatorResourceLookup | null> {
+    const ownership = await this.ownerships.findOperatorForEndpoint(urlHash);
     if (!ownership) return null;
-    const op = this.operators.findById(ownership.operator_id);
+    const op = await this.operators.findById(ownership.operator_id);
     if (!op) return null;
     return { operatorId: op.operator_id, status: op.status };
   }

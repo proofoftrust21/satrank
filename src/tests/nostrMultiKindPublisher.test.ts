@@ -31,7 +31,7 @@ interface MockRelay {
   close: () => void;
 }
 
-function createMockRelay(url: string, mode: 'ok' | 'timeout' | 'error' = 'ok'): MockRelay {
+async function createMockRelay(url: string, mode: 'ok' | 'timeout' | 'error' = 'ok'): MockRelay {
   const r: MockRelay = {
     url,
     closed: false,
@@ -69,7 +69,7 @@ function createMockBindings(relayModes: Record<string, 'ok' | 'timeout' | 'error
       connectAttempts.push(url);
       const mode = relayModes[url] ?? 'ok';
       if (mode === 'connect-fail') throw new Error('connection refused');
-      const relay = createMockRelay(url, mode);
+      const relay = await createMockRelay(url, mode);
       relays.set(url, relay);
       return relay;
     },

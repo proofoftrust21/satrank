@@ -7,8 +7,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { config } from './config';
 import { DEFAULT_NOSTR_RELAYS } from './nostr/relays';
-import { getDatabase } from './database/connection';
-import { runMigrations } from './database/migrations';
+import { getPool } from './database/connection';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestTimeout } from './middleware/timeout';
 import { errorHandler } from './middleware/errorHandler';
@@ -107,24 +106,24 @@ import { safeJsonForScript } from './utils/safeJsonForScript';
 export function createApp() {
   const app = express();
 
-  // Database
-  const db = getDatabase();
-  runMigrations(db);
+  // Phase 12B — pg Pool. Migrations are applied once at boot in src/index.ts
+  // before createApp(); creating the app is a pure synchronous wiring step.
+  const pool = getPool();
 
   // Dependency injection
-  const agentRepo = new AgentRepository(db);
-  const txRepo = new TransactionRepository(db);
-  const attestationRepo = new AttestationRepository(db);
-  const snapshotRepo = new SnapshotRepository(db);
-  const probeRepo = new ProbeRepository(db);
-  const channelSnapshotRepo = new ChannelSnapshotRepository(db);
-  const feeSnapshotRepo = new FeeSnapshotRepository(db);
+  const agentRepo = new AgentRepository(pool);
+  const txRepo = new TransactionRepository(pool);
+  const attestationRepo = new AttestationRepository(pool);
+  const snapshotRepo = new SnapshotRepository(pool);
+  const probeRepo = new ProbeRepository(pool);
+  const channelSnapshotRepo = new ChannelSnapshotRepository(pool);
+  const feeSnapshotRepo = new FeeSnapshotRepository(pool);
 
-  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
+  const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, pool, probeRepo, channelSnapshotRepo, feeSnapshotRepo);
   const trendService = new TrendService(agentRepo, snapshotRepo);
-  const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, db);
-  const serviceEndpointRepo = new ServiceEndpointRepository(db);
-  const preimagePoolRepo = new PreimagePoolRepository(db);
+  const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, pool);
+  const serviceEndpointRepo = new ServiceEndpointRepository(pool);
+  const preimagePoolRepo = new PreimagePoolRepository(pool);
   const riskService = new RiskService();
 
   // LND graph client — shared between auto-indexation, pathfinding, verdict,
@@ -140,7 +139,7 @@ export function createApp() {
   // pass only when the client is actually configured so a missing macaroon
   // leaves lndStatus = 'disabled' rather than 'unknown' forever.
   const statsService = new StatsService(
-    agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService,
+    agentRepo, txRepo, attestationRepo, snapshotRepo, pool, trendService,
     probeRepo, serviceEndpointRepo,
     lndClient.isConfigured() ? lndClient : undefined,
   );
@@ -148,22 +147,22 @@ export function createApp() {
   // Phase 3 : Bayesian scoring stack — built before VerdictService so it can
   // be injected. BayesianVerdictService is a read-side composer that owns the
   // canonical Bayesian shape consumed across all public endpoints.
-  const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(db);
-  const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(db);
-  const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(db);
-  const nodeStreamingRepo = new NodeStreamingPosteriorRepository(db);
-  const routeStreamingRepo = new RouteStreamingPosteriorRepository(db);
-  const endpointBucketsRepo = new EndpointDailyBucketsRepository(db);
-  const serviceBucketsRepo = new ServiceDailyBucketsRepository(db);
-  const operatorBucketsRepo = new OperatorDailyBucketsRepository(db);
-  const nodeBucketsRepo = new NodeDailyBucketsRepository(db);
-  const routeBucketsRepo = new RouteDailyBucketsRepository(db);
+  const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(pool);
+  const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(pool);
+  const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(pool);
+  const nodeStreamingRepo = new NodeStreamingPosteriorRepository(pool);
+  const routeStreamingRepo = new RouteStreamingPosteriorRepository(pool);
+  const endpointBucketsRepo = new EndpointDailyBucketsRepository(pool);
+  const serviceBucketsRepo = new ServiceDailyBucketsRepository(pool);
+  const operatorBucketsRepo = new OperatorDailyBucketsRepository(pool);
+  const nodeBucketsRepo = new NodeDailyBucketsRepository(pool);
+  const routeBucketsRepo = new RouteDailyBucketsRepository(pool);
   const bayesianScoringService = new BayesianScoringService(
     endpointStreamingRepo, serviceStreamingRepo, operatorStreamingRepo, nodeStreamingRepo, routeStreamingRepo,
     endpointBucketsRepo, serviceBucketsRepo, operatorBucketsRepo, nodeBucketsRepo, routeBucketsRepo,
   );
   const bayesianVerdictService = new BayesianVerdictService(
-    db, bayesianScoringService, endpointStreamingRepo, endpointBucketsRepo, snapshotRepo,
+    bayesianScoringService, endpointStreamingRepo, endpointBucketsRepo, snapshotRepo, serviceEndpointRepo,
   );
 
   const agentService = new AgentService(agentRepo, txRepo, attestationRepo, bayesianVerdictService, probeRepo);
@@ -171,9 +170,9 @@ export function createApp() {
   // Phase 7 — operator abstraction construit en amont pour permettre à
   // VerdictService d'exposer operator_id (C11) et l'advisory OPERATOR_UNVERIFIED
   // (C12). OperatorController est instancié plus bas (dépend de agentRepo).
-  const operatorRepo = new OperatorRepository(db);
-  const operatorIdentityRepo = new OperatorIdentityRepository(db);
-  const operatorOwnershipRepo = new OperatorOwnershipRepository(db);
+  const operatorRepo = new OperatorRepository(pool);
+  const operatorIdentityRepo = new OperatorIdentityRepository(pool);
+  const operatorOwnershipRepo = new OperatorOwnershipRepository(pool);
   const operatorService = new OperatorService(
     operatorRepo,
     operatorIdentityRepo,
@@ -204,7 +203,7 @@ export function createApp() {
     ? new DualWriteLogger(config.TRANSACTIONS_DRY_RUN_LOG_PATH)
     : undefined;
   const reportService = new ReportService(
-    attestationRepo, agentRepo, txRepo, scoringService, db,
+    attestationRepo, agentRepo, txRepo, scoringService, pool,
     config.TRANSACTIONS_DUAL_WRITE_MODE,
     dualWriteLogger,
     bayesianScoringService,
@@ -213,13 +212,15 @@ export function createApp() {
   // Tier 2 report bonus — gated by REPORT_BONUS_ENABLED env (off by default).
   // Constructing the service has no side effects when disabled; the guard
   // watcher is only started when the flag is true at boot.
-  const reportBonusRepo = new ReportBonusRepository(db);
-  const npubAgeCachePath = path.join(path.dirname(config.DB_PATH), 'nostr-pubkey-ages.json');
+  const reportBonusRepo = new ReportBonusRepository(pool);
+  // Phase 12B — DB_PATH was removed with SQLite; npub-age cache is a plain
+  // file under ./data, same directory convention as the old sqlite file.
+  const npubAgeCachePath = path.join(process.cwd(), 'data', 'nostr-pubkey-ages.json');
   const npubAgeCache = new NpubAgeCache(npubAgeCachePath);
   npubAgeCache.reload();
   // Hourly reload so Stream B file updates propagate without process restart (audit M5).
   npubAgeCache.startAutoReload();
-  const reportBonusService = new ReportBonusService(db, reportBonusRepo, scoringService, npubAgeCache, {
+  const reportBonusService = new ReportBonusService(pool, reportBonusRepo, scoringService, npubAgeCache, {
     enabledFromEnv: config.REPORT_BONUS_ENABLED,
     threshold: config.REPORT_BONUS_THRESHOLD,
     dailyCap: config.REPORT_BONUS_DAILY_CAP,
@@ -231,13 +232,13 @@ export function createApp() {
   });
   reportBonusService.startGuard();
 
-  const agentController = new AgentController(agentService, agentRepo, verdictService, autoIndexService, db);
+  const agentController = new AgentController(agentService, agentRepo, verdictService, autoIndexService, pool);
   const attestationController = new AttestationController(attestationService);
   const healthController = new HealthController(statsService);
-  const v2Controller = new V2Controller(reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, db, reportBonusService, preimagePoolRepo);
+  const v2Controller = new V2Controller(reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, pool, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
-  const depositController = new DepositController(db);
-  const probeController = new ProbeController(db, lndClient, {
+  const depositController = new DepositController(pool);
+  const probeController = new ProbeController(pool, lndClient, {
     txRepo,
     bayesian: bayesianScoringService,
     serviceEndpointRepo,
@@ -257,7 +258,7 @@ export function createApp() {
   const intentController = new IntentController(intentService);
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
-  const reportStatsController = new ReportStatsController(db, reportBonusRepo, () => reportBonusService.isEnabled());
+  const reportStatsController = new ReportStatsController(pool, reportBonusRepo, () => reportBonusService.isEnabled());
 
   // Self-registration — uses LND BOLT11 decoder if available
   const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq
@@ -279,7 +280,9 @@ export function createApp() {
   // request lands, so the cold-start SQL rebuild (~1-2s on /api/stats) never
   // hits a real user. Failures are logged but non-fatal: the endpoints will
   // rebuild on demand if the warm-up SQL fails for any reason.
-  warmUpCaches(statsService, agentController, trendService);
+  // Phase 12B — fire-and-forget since createApp() stays sync; a promise
+  // rejection here is already swallowed inside runWarmUp's per-call try/catch.
+  void warmUpCaches(statsService, agentController, trendService);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
   // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.
@@ -387,9 +390,12 @@ export function createApp() {
   app.use(express.static(publicDir));
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: publicDir }));
 
-  // Prometheus metrics endpoint — localhost OR X-API-Key auth.
-  // Localhost access (docker network, Prometheus sidecar, SSH tunnel): no auth.
-  // External access: requires same API_KEY as write endpoints to prevent metric leakage.
+  // Prometheus metrics endpoint — X-API-Key auth always required.
+  // Phase 12B B6.2 : the historical localhost bypass was removed — IP-based
+  // auth is weak when `trust proxy` is miscounted (CDN hop added, CNI/overlay
+  // quirks), and a constant-time API-key compare is cheap enough to apply on
+  // every scrape. L402_BYPASS keeps the endpoint open on the staging/bench
+  // plane (fail-safed against prod by the boot guard in config.ts).
   // Dedicated rate limiter — `/metrics` is mounted before the /api rate
   // limiter. Without a limiter here, the API_KEY comparison is brute-forceable
   // at wire speed (audit H6).
@@ -411,34 +417,41 @@ export function createApp() {
     // docker-bridge Prometheus can scrape without an API key. Fail-safed
     // against production by the startup guard in config.ts.
     if (config.L402_BYPASS) return next();
-    const ip = req.ip ?? req.socket.remoteAddress ?? '';
-    const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-    if (isLocalhost) return next();
-    // External: require API key — constant-time compare to avoid timing leak
-    // that would let an attacker brute-force the key one byte at a time.
+    // Require X-API-Key — constant-time compare to avoid timing leak that
+    // would let an attacker brute-force the key one byte at a time.
     const apiKey = req.headers['x-api-key'] as string | undefined;
     if (safeEqual(apiKey, config.API_KEY)) return next();
-    res.status(403).end('Forbidden — use localhost or X-API-Key');
+    res.status(403).end('Forbidden — X-API-Key required');
   }, async (_req, res) => {
     try {
-      const stats = statsService.getNetworkStats();
+      const stats = await statsService.getNetworkStats();
       agentsTotal.set(stats.totalAgents);
       channelsTotal.set(stats.totalChannels);
 
       // Phase 7 C13 — operatorsTotal gauge refresh : countByStatus() est
       // indexé, une requête agrège les 3 buckets.
-      const operatorCounts = operatorRepo.countByStatus();
+      const operatorCounts = await operatorRepo.countByStatus();
       operatorsTotal.set({ status: 'verified' }, operatorCounts.verified);
       operatorsTotal.set({ status: 'pending' }, operatorCounts.pending);
       operatorsTotal.set({ status: 'rejected' }, operatorCounts.rejected);
 
       // Refresh cache freshness gauges at scrape time
       const { getFreshnessReport } = await import('./cache/memoryCache');
-      const { cacheAgeSeconds, cacheRefreshFailures } = await import('./middleware/metrics');
+      const {
+        cacheAgeSeconds,
+        cacheRefreshFailures,
+        refreshEventLoopGauges,
+        refreshCacheRatio,
+      } = await import('./middleware/metrics');
       for (const r of getFreshnessReport()) {
         cacheAgeSeconds.set({ key: r.key }, r.ageSec);
         cacheRefreshFailures.set({ key: r.key }, r.consecutiveFailures);
       }
+
+      // Phase 12B B6.3 — snapshot event-loop percentiles + cache hit ratio
+      // aligned with the scrape so PromQL sees a coherent view.
+      refreshEventLoopGauges();
+      await refreshCacheRatio();
 
       res.setHeader('Content-Type', metricsRegistry.contentType);
       res.end(await metricsRegistry.metrics());
@@ -480,8 +493,8 @@ export function createApp() {
       next();
     });
   }
-  const balanceAuth = createBalanceAuth(db, { bypass: config.L402_BYPASS });
-  const reportAuth = createReportAuth(db);
+  const balanceAuth = createBalanceAuth(pool, { bypass: config.L402_BYPASS });
+  const reportAuth = createReportAuth(pool);
   api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // decide, report, deposit, profile
   // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the
   // balanceAuth middleware takes 1 credit upstream, probeController debits
@@ -566,11 +579,16 @@ export function createApp() {
   return app;
 }
 
-/** Synchronously populate the hot caches so the first visitor skips the cold-start cost.
- *  After this runs once, getOrCompute will serve everything instantly and refresh in
- *  the background. All calls are wrapped so a warm-up failure never blocks startup. */
-function warmUpCaches(statsService: StatsService, agentController: AgentController, trendService: TrendService): void {
-  runWarmUp(statsService, agentController, trendService, /* initial= */ true);
+/** Populate the hot caches so the first visitor skips the cold-start cost.
+ *  After this runs once, getOrCompute serves everything instantly and refreshes
+ *  in the background. All calls are wrapped so a warm-up failure never blocks
+ *  startup — Phase 12B: async now that stats/top queries go through pg. */
+async function warmUpCaches(
+  statsService: StatsService,
+  agentController: AgentController,
+  trendService: TrendService,
+): Promise<void> {
+  await runWarmUp(statsService, agentController, trendService, /* initial= */ true);
 
   // Sim #5 #11: SWR only refreshes on demand — if no traffic hits /api/stats for
   // longer than the TTL, the freshness gauge reports huge staleness (observed
@@ -578,22 +596,22 @@ function warmUpCaches(statsService: StatsService, agentController: AgentControll
   // inside the TTL window keeps the cache warm regardless of traffic.
   const REFRESH_INTERVAL_MS = 4 * 60_000; // just inside the 5-min TTL
   const timer = setInterval(
-    () => runWarmUp(statsService, agentController, trendService, false),
+    () => { void runWarmUp(statsService, agentController, trendService, false); },
     REFRESH_INTERVAL_MS,
   );
   // Don't block process exit for tests / graceful shutdown.
   timer.unref();
 }
 
-function runWarmUp(
+async function runWarmUp(
   statsService: StatsService,
   agentController: AgentController,
   trendService: TrendService,
   initial: boolean,
-): void {
+): Promise<void> {
   const start = Date.now();
   try {
-    statsService.getNetworkStats();
+    await statsService.getNetworkStats();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn({ error: msg }, 'Cache warm-up: getNetworkStats failed');
@@ -605,7 +623,7 @@ function runWarmUp(
   for (const limit of TOP_WARMUP_LIMITS) {
     for (const sortBy of TOP_SORT_AXES) {
       try {
-        const response = agentController.buildTopResponse(limit, 0, sortBy);
+        const response = await agentController.buildTopResponse(limit, 0, sortBy);
         cacheSetFresh(`agents:top:${limit}:0:${sortBy}`, response, CRITICAL_CACHE_TTL_MS);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

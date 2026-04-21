@@ -56,36 +56,36 @@ export class VerdictService {
     // exposed in the public response.
     precomputedScore?: ScoreResult,
   ): Promise<VerdictResponse> {
-    const agent = this.agentRepo.findByHash(publicKeyHash);
+    const agent = await this.agentRepo.findByHash(publicKeyHash);
     if (!agent) {
       verdictTotal.inc({ verdict: 'INSUFFICIENT', source });
       return buildMissingAgentResponse(callerPubkey);
     }
 
-    this.agentRepo.incrementQueryCount(publicKeyHash);
+    await this.agentRepo.incrementQueryCount(publicKeyHash);
 
-    const bayes = this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
+    const bayes = await this.bayesianVerdict.buildVerdict({ targetHash: publicKeyHash });
 
     // Delta is now computed on bayes.p_success — the 7d comparator is read
     // from score_snapshots.p_success and thresholds are calibrated against the
     // empirical posterior distribution (see scripts/analyzeDeltaDistribution.ts).
     // The composite score is still fetched for the internal `regularity` input
     // to the risk classifier; scoring.avg_score stays as an internal column.
-    const scoreResult = precomputedScore ?? this.scoringService.getScore(publicKeyHash);
-    const delta = this.trendService.computeDeltas(publicKeyHash, bayes.p_success);
+    const scoreResult = precomputedScore ?? (await this.scoringService.getScore(publicKeyHash));
+    const delta = await this.trendService.computeDeltas(publicKeyHash, bayes.p_success);
 
     const now = Math.floor(Date.now() / 1000);
     const ageDays = (now - agent.first_seen) / DAY;
 
     const flags: VerdictFlag[] = computeBaseFlags(agent, delta, now);
 
-    const fraudCount = this.attestationRepo.countByCategoryForSubject(publicKeyHash, ['fraud']);
-    const disputeCount = this.attestationRepo.countByCategoryForSubject(publicKeyHash, ['dispute']);
+    const fraudCount = await this.attestationRepo.countByCategoryForSubject(publicKeyHash, ['fraud']);
+    const disputeCount = await this.attestationRepo.countByCategoryForSubject(publicKeyHash, ['dispute']);
     if (fraudCount > 0) flags.push('fraud_reported');
     if (disputeCount > 0) flags.push('dispute_reported');
 
     if (this.probeRepo) {
-      const probe = this.probeRepo.findLatestAtTier(publicKeyHash, 1000);
+      const probe = await this.probeRepo.findLatestAtTier(publicKeyHash, 1000);
       if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
         // Keep the same guard as v30: gossip-fresh nodes with a strong posterior
         // are still alive on the network. The probe failure is positional.
@@ -100,8 +100,9 @@ export class VerdictService {
     let pathfinding: PathfindingResult | null = null;
     if (this.lndClient) {
       const targetLnPubkey = agent.public_key ?? null;
+      const callerAgent = callerPubkey ? await this.agentRepo.findByHash(callerPubkey) : null;
       const sourcePubkey = pathfindingSourcePubkey
-        ?? this.agentRepo.findByHash(callerPubkey ?? '')?.public_key
+        ?? callerAgent?.public_key
         ?? null;
 
       if (sourcePubkey && targetLnPubkey) {
@@ -129,7 +130,7 @@ export class VerdictService {
     }
 
     const personalTrust = callerPubkey
-      ? this.computePersonalTrust(callerPubkey, publicKeyHash)
+      ? await this.computePersonalTrust(callerPubkey, publicKeyHash)
       : null;
 
     const riskProfile = this.riskService.classifyAgent(
@@ -138,14 +139,16 @@ export class VerdictService {
 
     const reason = this.buildReason(agent, bayes, flags, ageDays);
 
-    const reachability = this.probeRepo?.computeUptime(publicKeyHash, REACHABILITY_WINDOW_SEC) ?? null;
+    const reachability = this.probeRepo
+      ? await this.probeRepo.computeUptime(publicKeyHash, REACHABILITY_WINDOW_SEC)
+      : null;
 
     // Phase 7 C11+C12 : lookup operator par node_pubkey (la raw LN pubkey de
     // l'agent, pas le hash). On expose operator_id uniquement si status='verified' ;
     // sinon on passe l'info à computeAdvisoryReport pour qu'il émette l'advisory.
     const operatorLookup: OperatorResourceLookup | null =
       this.operatorService && agent.public_key
-        ? this.operatorService.resolveOperatorForNode(agent.public_key)
+        ? await this.operatorService.resolveOperatorForNode(agent.public_key)
         : null;
     const operator_id = operatorLookup?.status === 'verified' ? operatorLookup.operatorId : null;
 
@@ -248,10 +251,10 @@ export class VerdictService {
     }
   }
 
-  private computePersonalTrust(callerPubkey: string, targetHash: string): PersonalTrust {
-    const callerAttested = this.attestationRepo.findPositivelyAttestedBy(callerPubkey, POSITIVE_ATTESTATION_MIN_SCORE);
+  private async computePersonalTrust(callerPubkey: string, targetHash: string): Promise<PersonalTrust> {
+    const callerAttested = await this.attestationRepo.findPositivelyAttestedBy(callerPubkey, POSITIVE_ATTESTATION_MIN_SCORE);
     if (callerAttested.includes(targetHash)) {
-      const callerAgent = this.agentRepo.findByHash(callerPubkey);
+      const callerAgent = await this.agentRepo.findByHash(callerPubkey);
       return {
         distance: 0,
         sharedConnections: 0,
@@ -259,7 +262,7 @@ export class VerdictService {
       };
     }
 
-    const targetAttesters = this.attestationRepo.findPositiveAttestersOf(targetHash, POSITIVE_ATTESTATION_MIN_SCORE);
+    const targetAttesters = await this.attestationRepo.findPositiveAttestersOf(targetHash, POSITIVE_ATTESTATION_MIN_SCORE);
     const targetAttesterHashes = new Set(targetAttesters.map(a => a.attester_hash));
 
     const sharedAtDistance1 = callerAttested.filter(h => targetAttesterHashes.has(h));
@@ -272,7 +275,7 @@ export class VerdictService {
           strongest = { hash, score: attesterEntry.score };
         }
       }
-      const strongestAgent = strongest ? this.agentRepo.findByHash(strongest.hash) : null;
+      const strongestAgent = strongest ? await this.agentRepo.findByHash(strongest.hash) : null;
 
       return {
         distance: 1,
@@ -283,8 +286,10 @@ export class VerdictService {
 
     const MAX_INTERMEDIARIES = 20;
     const distance2Connections: string[] = [];
+    // Sequential for-of: each iteration may short-circuit on first hit; running
+    // serially respects pool limits and lets the early-exit continue to work.
     for (const intermediary of callerAttested.slice(0, MAX_INTERMEDIARIES)) {
-      const intermediaryAttested = this.attestationRepo.findPositivelyAttestedBy(intermediary, POSITIVE_ATTESTATION_MIN_SCORE);
+      const intermediaryAttested = await this.attestationRepo.findPositivelyAttestedBy(intermediary, POSITIVE_ATTESTATION_MIN_SCORE);
       for (const hop2 of intermediaryAttested) {
         if (targetAttesterHashes.has(hop2) && !distance2Connections.includes(hop2)) {
           distance2Connections.push(hop2);
@@ -294,7 +299,7 @@ export class VerdictService {
     }
 
     if (distance2Connections.length > 0) {
-      const strongestAgent = this.agentRepo.findByHash(distance2Connections[0]);
+      const strongestAgent = await this.agentRepo.findByHash(distance2Connections[0]);
       return {
         distance: 2,
         sharedConnections: distance2Connections.length,

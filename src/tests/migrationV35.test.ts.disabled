@@ -9,31 +9,32 @@
 // que les callers qui les lisent continuent de fonctionner pendant la chaîne
 // de refactor. Le DROP final sera fait en fin de chaîne (v36).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations, rollbackTo, getAppliedVersions } from '../database/migrations';
-
-function tableExists(db: Database.Database, name: string): boolean {
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
+import {  rollbackTo, getAppliedVersions } from '../database/migrations';
+function tableExists(db: Pool, name: string): boolean {
   const row = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name=?").get(name) as { found: number } | undefined;
   return !!row;
 }
 
-function indexExists(db: Database.Database, name: string): boolean {
+function indexExists(db: Pool, name: string): boolean {
   const row = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type='index' AND name=?").get(name) as { found: number } | undefined;
   return !!row;
 }
 
 describe('migration v35 — streaming posteriors + daily buckets (additive)', () => {
-  let db: Database.Database;
+  let testDb: TestDb;
+  let db: Pool;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
-  });
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
-  afterEach(() => db.close());
+    db = testDb.pool;
+});
 
-  it('creates the five streaming_posteriors tables', () => {
+  afterEach(async () => { await teardownTestPool(testDb); });
+
+  it('creates the five streaming_posteriors tables', async () => {
     for (const t of [
       'endpoint_streaming_posteriors',
       'node_streaming_posteriors',
@@ -45,7 +46,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     }
   });
 
-  it('creates the five daily_buckets tables', () => {
+  it('creates the five daily_buckets tables', async () => {
     for (const t of [
       'endpoint_daily_buckets',
       'node_daily_buckets',
@@ -57,7 +58,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     }
   });
 
-  it('drops the five *_aggregates tables (v36 final sweep)', () => {
+  it('drops the five *_aggregates tables (v36 final sweep)', async () => {
     // v36 DROP aggregates — "no cohabitation" : le scoring est 100% streaming,
     // les aggregates n'ont plus aucun caller.
     for (const t of [
@@ -71,7 +72,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     }
   });
 
-  it('streaming_posteriors CHECK rejects observer source', () => {
+  it('streaming_posteriors CHECK rejects observer source', async () => {
     expect(() => {
       db.prepare(`
         INSERT INTO endpoint_streaming_posteriors
@@ -81,7 +82,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     }).toThrow(/CHECK constraint/);
   });
 
-  it('streaming_posteriors CHECK accepts probe / report / paid', () => {
+  it('streaming_posteriors CHECK accepts probe / report / paid', async () => {
     for (const src of ['probe', 'report', 'paid']) {
       db.prepare(`
         INSERT INTO endpoint_streaming_posteriors
@@ -93,7 +94,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     expect(rows).toHaveLength(3);
   });
 
-  it('daily_buckets CHECK accepts observer source', () => {
+  it('daily_buckets CHECK accepts observer source', async () => {
     db.prepare(`
       INSERT INTO endpoint_daily_buckets
       (url_hash, source, day, n_obs, n_success, n_failure)
@@ -103,12 +104,12 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     expect(row.n_obs).toBe(1);
   });
 
-  it('schema_version has v35 recorded', () => {
+  it('schema_version has v35 recorded', async () => {
     const versions = getAppliedVersions(db).map((v) => v.version);
     expect(versions).toContain(35);
   });
 
-  it('has the streaming_ts indexes on all 5 streaming tables', () => {
+  it('has the streaming_ts indexes on all 5 streaming tables', async () => {
     for (const idx of [
       'idx_endpoint_streaming_ts',
       'idx_node_streaming_ts',
@@ -120,7 +121,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     }
   });
 
-  it('has the buckets_day indexes on all 5 bucket tables', () => {
+  it('has the buckets_day indexes on all 5 bucket tables', async () => {
     for (const idx of [
       'idx_endpoint_buckets_day',
       'idx_node_buckets_day',
@@ -132,7 +133,7 @@ describe('migration v35 — streaming posteriors + daily buckets (additive)', ()
     }
   });
 
-  it('rollback to v34 drops streaming + buckets but keeps aggregates', () => {
+  it('rollback to v34 drops streaming + buckets but keeps aggregates', async () => {
     rollbackTo(db, 34);
     for (const t of [
       'endpoint_streaming_posteriors',

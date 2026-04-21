@@ -2,7 +2,7 @@
 // Aperture gateway verification for L402-gated endpoints
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import { config } from '../config';
 import { AppError } from '../errors';
 import { normalizeIdentifier } from '../utils/identifier';
@@ -62,62 +62,70 @@ export function apiKeyAuth(req: Request, _res: Response, next: NextFunction): vo
 
 // Report auth: accepts EITHER X-API-Key OR a valid L402 token with remaining > 0.
 // Reports are free (no quota consumed) but require a non-exhausted token.
-export function createReportAuth(db: Database.Database) {
-  const stmtCheck = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?');
-  const stmtTokenQueryLog = db.prepare('SELECT 1 FROM token_query_log WHERE payment_hash = ? AND target_hash = ?');
-
-  return function reportAuth(req: Request, _res: Response, next: NextFunction): void {
-    // Path A: API key (existing behavior)
-    const apiKey = req.headers['x-api-key'] as string | undefined;
-    if (apiKey && config.API_KEY && safeEqual(apiKey, config.API_KEY)) {
-      next();
-      return;
-    }
-
-    // Path B: L402 token — verify remaining > 0 (not exhausted) and target was queried
-    const authHeader = req.headers.authorization ?? '';
-    const match = authHeader.match(/^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i);
-    if (match) {
-      const preimage = match[1];
-      const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
-      const row = stmtCheck.get(paymentHash) as { remaining: number } | undefined;
-      if (row && row.remaining > 0) {
-        // Target MUST be present — don't rely on downstream Zod to catch this
-        const rawTarget = (req.body as Record<string, unknown>)?.target as string | undefined;
-        if (!rawTarget || typeof rawTarget !== 'string') {
-          next(new AuthenticationError('Report requires a target field'));
-          return;
-        }
-        // token_query_log stores the normalized hash (sha256 of a pubkey, or
-        // the 64-char hash as-is). Agents often submit the pubkey — we must
-        // apply the same normalization here or the lookup silently misses.
-        // See sim #5 finding #7.
-        const normalizedTargetHash = normalizeIdentifier(rawTarget).hash;
-        // Verify this token has looked up the target. Post Phase 10 the log
-        // is populated by /api/profile, /api/agent/:hash/verdict, and
-        // /api/verdicts — any paid target query works.
-        const queried = stmtTokenQueryLog.get(paymentHash, normalizedTargetHash);
-        if (!queried) {
-          next(new AuthenticationError(
-            'Report rejected: this L402 token has no record of querying the target. ' +
-            'Query the target first via /api/verdicts, /api/agent/:hash/verdict, ' +
-            'or /api/profile/:id (any works), then retry the report. ' +
-            'If you used a different token to query, switch back to that token, or submit with X-API-Key.',
-          ));
-          return;
-        }
+export function createReportAuth(pool: Pool) {
+  return async function reportAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
+    try {
+      // Path A: API key (existing behavior)
+      const apiKey = req.headers['x-api-key'] as string | undefined;
+      if (apiKey && config.API_KEY && safeEqual(apiKey, config.API_KEY)) {
         next();
         return;
       }
-    }
 
-    // Path C: dev mode passthrough
-    if (config.NODE_ENV !== 'production' && !config.API_KEY) {
-      next();
-      return;
-    }
+      // Path B: L402 token — verify remaining > 0 (not exhausted) and target was queried
+      const authHeader = req.headers.authorization ?? '';
+      const match = authHeader.match(/^(?:L402|LSAT)\s+\S+:([a-f0-9]{64})$/i);
+      if (match) {
+        const preimage = match[1];
+        const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
+        const checkRes = await pool.query<{ remaining: number }>(
+          'SELECT remaining FROM token_balance WHERE payment_hash = $1',
+          [paymentHash],
+        );
+        const row = checkRes.rows[0];
+        if (row && row.remaining > 0) {
+          // Target MUST be present — don't rely on downstream Zod to catch this
+          const rawTarget = (req.body as Record<string, unknown>)?.target as string | undefined;
+          if (!rawTarget || typeof rawTarget !== 'string') {
+            next(new AuthenticationError('Report requires a target field'));
+            return;
+          }
+          // token_query_log stores the normalized hash (sha256 of a pubkey, or
+          // the 64-char hash as-is). Agents often submit the pubkey — we must
+          // apply the same normalization here or the lookup silently misses.
+          // See sim #5 finding #7.
+          const normalizedTargetHash = normalizeIdentifier(rawTarget).hash;
+          // Verify this token has looked up the target. Post Phase 10 the log
+          // is populated by /api/profile, /api/agent/:hash/verdict, and
+          // /api/verdicts — any paid target query works.
+          const queriedRes = await pool.query(
+            'SELECT 1 FROM token_query_log WHERE payment_hash = $1 AND target_hash = $2',
+            [paymentHash, normalizedTargetHash],
+          );
+          if (queriedRes.rowCount === 0) {
+            next(new AuthenticationError(
+              'Report rejected: this L402 token has no record of querying the target. ' +
+              'Query the target first via /api/verdicts, /api/agent/:hash/verdict, ' +
+              'or /api/profile/:id (any works), then retry the report. ' +
+              'If you used a different token to query, switch back to that token, or submit with X-API-Key.',
+            ));
+            return;
+          }
+          next();
+          return;
+        }
+      }
 
-    next(new AuthenticationError('X-API-Key or valid L402 token required. Request a key at contact@satrank.dev or use your existing L402 token.'));
+      // Path C: dev mode passthrough
+      if (config.NODE_ENV !== 'production' && !config.API_KEY) {
+        next();
+        return;
+      }
+
+      next(new AuthenticationError('X-API-Key or valid L402 token required. Request a key at contact@satrank.dev or use your existing L402 token.'));
+    } catch (err) {
+      next(err);
+    }
   };
 }
 

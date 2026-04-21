@@ -33,7 +33,7 @@ export class LnplusCrawler {
     // Only query agents likely to have LN+ profiles:
     // - Already have lnplus_rank > 0 or positive_ratings > 0 (re-check)
     // - Top 1000 by capacity (new candidates)
-    const agents = this.agentRepo.findLnplusCandidates(1000);
+    const agents = await this.agentRepo.findLnplusCandidates(1000);
     logger.info({ candidates: agents.length }, 'LN+ crawl candidates selected');
 
     for (const agent of agents) {
@@ -47,7 +47,7 @@ export class LnplusCrawler {
           continue;
         }
 
-        this.agentRepo.updateLnplusRatings(
+        await this.agentRepo.updateLnplusRatings(
           agent.public_key_hash,
           info.positive_ratings ?? 0,
           info.negative_ratings ?? 0,

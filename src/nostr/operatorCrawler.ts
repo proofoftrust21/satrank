@@ -193,7 +193,7 @@ export async function ingestOperatorEvent(
   opts: IngestOptions = {},
 ): Promise<IngestResult> {
   const now = opts.now ?? Math.floor(Date.now() / 1000);
-  service.upsertOperator(parsed.operatorId, Math.min(now, parsed.createdAt));
+  await service.upsertOperator(parsed.operatorId, Math.min(now, parsed.createdAt));
 
   const result: IngestResult = {
     operatorId: parsed.operatorId,
@@ -204,7 +204,7 @@ export async function ingestOperatorEvent(
   };
 
   for (const identity of parsed.identities) {
-    service.claimIdentity(parsed.operatorId, identity.type, identity.value);
+    await service.claimIdentity(parsed.operatorId, identity.type, identity.value);
     result.identitiesClaimed += 1;
 
     const verified = await verifySingleIdentity(parsed.operatorId, identity, opts);
@@ -215,7 +215,7 @@ export async function ingestOperatorEvent(
       reason: verified.detail,
     });
     if (verified.valid) {
-      service.markIdentityVerified(
+      await service.markIdentityVerified(
         parsed.operatorId,
         identity.type,
         identity.value,
@@ -227,7 +227,7 @@ export async function ingestOperatorEvent(
   }
 
   for (const ownership of parsed.ownerships) {
-    service.claimOwnership(parsed.operatorId, ownership.type, ownership.id, now);
+    await service.claimOwnership(parsed.operatorId, ownership.type, ownership.id, now);
     result.ownershipsClaimed += 1;
   }
 

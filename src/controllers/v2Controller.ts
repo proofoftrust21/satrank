@@ -5,7 +5,7 @@
 // and mcp/server wire their own instances).
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 
 /** Convert the L402 Authorization preimage into its payment_hash Buffer.
  *  Returns null when the header is missing, malformed, or not an L402 token
@@ -55,7 +55,7 @@ export class V2Controller {
     private survivalService?: SurvivalService,
     private channelFlowService?: ChannelFlowService,
     private feeVolatilityService?: FeeVolatilityService,
-    private db?: Database.Database,
+    private pool?: Pool,
     // Tier 2 economic incentive. Optional so dev/test can skip it; when omitted
     // the controller never attempts to credit bonuses (identical to
     // REPORT_BONUS_ENABLED=false behavior).
@@ -89,7 +89,7 @@ export class V2Controller {
       // header.
       const l402PaymentHash = extractL402PaymentHashFromAuth(req.headers.authorization);
 
-      const result = this.reportService.submit({
+      const result = await this.reportService.submit({
         target: target.hash,
         reporter: reporter.hash,
         outcome: parsed.data.outcome,
@@ -163,7 +163,7 @@ export class V2Controller {
           if (parsedInvoice.paymentHash !== paymentHash) {
             throw new ValidationError('BOLT11_MISMATCH: bolt11Raw payment_hash does not match sha256(preimage)');
           }
-          this.preimagePoolRepo.insertIfAbsent({
+          await this.preimagePoolRepo.insertIfAbsent({
             paymentHash,
             bolt11Raw: parsed.data.bolt11Raw,
             firstSeen: Math.floor(Date.now() / 1000),
@@ -181,7 +181,7 @@ export class V2Controller {
 
       // Lookup — si pas de match, l'agent doit fournir un bolt11Raw pour
       // auto-peupler, ou payer un endpoint crawlé par 402index.
-      const entry = this.preimagePoolRepo.findByPaymentHash(paymentHash);
+      const entry = await this.preimagePoolRepo.findByPaymentHash(paymentHash);
       if (!entry) {
         throw new ValidationError(
           'PREIMAGE_UNKNOWN: payment_hash not found in pool. Submit bolt11Raw to self-declare, ' +
@@ -193,7 +193,7 @@ export class V2Controller {
 
       // Consumption one-shot atomique : seule la première requête concurrente
       // réussit ; les autres voient consumed_at ≠ NULL et récupèrent 409.
-      const consumed = this.preimagePoolRepo.consumeAtomic(
+      const consumed = await this.preimagePoolRepo.consumeAtomic(
         paymentHash, reportId, Math.floor(Date.now() / 1000),
       );
       if (!consumed) {
@@ -205,7 +205,7 @@ export class V2Controller {
 
       const target = normalizeIdentifier(parsed.data.target);
 
-      const result = this.reportService.submitAnonymous({
+      const result = await this.reportService.submitAnonymous({
         reportId,
         target: target.hash,
         paymentHash,
@@ -221,14 +221,14 @@ export class V2Controller {
     }
   };
 
-  profile = (req: Request, res: Response, next: NextFunction): void => {
+  profile = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const idParsed = agentIdentifierSchema.safeParse(req.params.id);
       if (!idParsed.success) throw new ValidationError(formatZodError(idParsed.error, req.params.id, { fallbackField: 'id' }));
 
-      const { hash } = resolveIdentifier(idParsed.data, p => this.agentRepo.findByPubkey(p));
+      const { hash } = await resolveIdentifier(idParsed.data, p => this.agentRepo.findByPubkey(p));
 
-      const agent = this.agentRepo.findByHash(hash);
+      const agent = await this.agentRepo.findByHash(hash);
       if (!agent) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Agent not found' } });
         return;
@@ -236,23 +236,23 @@ export class V2Controller {
 
       // Token→target binding for /api/report — a profile fetch counts as
       // "interest in this target" so the caller can later report outcomes.
-      logTokenQuery(this.db, req.headers.authorization, hash, req.requestId);
+      await logTokenQuery(this.pool, req.headers.authorization, hash, req.requestId);
 
       // Canonical public score is the Bayesian posterior. Composite `scoreResult`
       // still feeds the internal risk classifier (regularity input); the 7d
       // delta is now on p_success scale, calibrated against the empirical
       // posterior distribution (see scripts/analyzeDeltaDistribution.ts).
-      const bayesian = this.agentService.toBayesianBlock(hash);
-      const scoreResult = this.scoringService.getScore(hash);
-      const delta = this.trendService.computeDeltas(hash, bayesian.p_success);
-      const rank = this.agentRepo.getRank(hash);
-      const reports = this.attestationRepo.countReportsByOutcome(hash);
+      const bayesian = await this.agentService.toBayesianBlock(hash);
+      const scoreResult = await this.scoringService.getScore(hash);
+      const delta = await this.trendService.computeDeltas(hash, bayesian.p_success);
+      const rank = await this.agentRepo.getRank(hash);
+      const reports = await this.attestationRepo.countReportsByOutcome(hash);
       const successRate = reports.total > 0 ? reports.successes / reports.total : 0;
 
       // Probe uptime over 7 days
       let probeUptime: number | null = null;
       if (this.probeRepo) {
-        probeUptime = this.probeRepo.computeUptime(hash, SEVEN_DAYS_SEC);
+        probeUptime = await this.probeRepo.computeUptime(hash, SEVEN_DAYS_SEC);
       }
 
       const riskProfile = this.riskService.classifyAgent(
@@ -260,20 +260,20 @@ export class V2Controller {
       );
 
       // C6: pass agent object to avoid redundant DB lookup
-      const evidence = this.agentService.buildEvidence(agent);
+      const evidence = await this.agentService.buildEvidence(agent);
 
       // M2: shared base flags — same thresholds as verdictService
       const now = Math.floor(Date.now() / 1000);
       const flags = computeBaseFlags(agent, delta, now);
 
       // Add DB-dependent flags (fraud, dispute, unreachable)
-      const fraudCount = this.attestationRepo.countByCategoryForSubject(hash, ['fraud']);
-      const disputeCount = this.attestationRepo.countByCategoryForSubject(hash, ['dispute']);
+      const fraudCount = await this.attestationRepo.countByCategoryForSubject(hash, ['fraud']);
+      const disputeCount = await this.attestationRepo.countByCategoryForSubject(hash, ['dispute']);
       if (fraudCount > 0) flags.push('fraud_reported');
       if (disputeCount > 0) flags.push('dispute_reported');
       if (this.probeRepo) {
         // tier-1k probe only — higher tiers surface via maxRoutableAmount
-        const probe = this.probeRepo.findLatestAtTier(hash, 1000);
+        const probe = await this.probeRepo.findLatestAtTier(hash, 1000);
         if (probe && probe.reachable === 0 && (now - probe.probed_at) < PROBE_FRESHNESS_TTL) {
           // Same guard as verdictService: fresh gossip + SAFE verdict = positional failure, not dead node
           const gossipFresh = (now - agent.last_seen) < DAY;
@@ -285,23 +285,23 @@ export class V2Controller {
 
       // Drain flags from channel snapshots
       if (this.channelFlowService) {
-        flags.push(...this.channelFlowService.computeDrainFlags(hash));
+        flags.push(...(await this.channelFlowService.computeDrainFlags(hash)));
       }
 
       // Predictive signals
       const survival = this.survivalService
-        ? this.survivalService.compute(agent)
+        ? await this.survivalService.compute(agent)
         : { score: 100, prediction: 'stable' as const, signals: { scoreTrajectory: 'no data', probeStability: 'no data', gossipFreshness: 'no data' } };
-      const channelFlow = this.channelFlowService?.computeFlow(hash) ?? null;
-      const capacityHealth = this.channelFlowService?.computeCapacityHealth(hash) ?? null;
-      const feeVolatility = this.feeVolatilityService?.compute(hash) ?? null;
+      const channelFlow = this.channelFlowService ? await this.channelFlowService.computeFlow(hash) : null;
+      const capacityHealth = this.channelFlowService ? await this.channelFlowService.computeCapacityHealth(hash) : null;
+      const feeVolatility = this.feeVolatilityService ? await this.feeVolatilityService.compute(hash) : null;
 
       // Reporter stats: how ACTIVELY this agent has submitted reports (as
       // attester). Separate from `reports` above (which counts reports about
       // this agent as subject). The Trusted Reporter badge is a pure visibility
       // incentive — no scoring impact, no economic reward, zero gaming surface.
       const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * DAY;
-      const reporter = this.attestationRepo.reporterStats(hash, thirtyDaysAgo);
+      const reporter = await this.attestationRepo.reporterStats(hash, thirtyDaysAgo);
       const TRUSTED_REPORTER_THRESHOLD = 20;
       // Always return a badge string so agents don't have to null-check.
       // `novice` is the default for agents that have never submitted a report

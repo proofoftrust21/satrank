@@ -16,3 +16,4 @@ build-info.json
 CLAUDE.md
 scripts/nostr-mappings.json
 scripts/*.json
+infra/phase-12b/secrets/

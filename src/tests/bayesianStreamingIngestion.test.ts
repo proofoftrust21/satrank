@@ -12,8 +12,8 @@
 //     * fenêtre antérieure = 23 jours avant
 //     * classification low / medium / high / unknown selon delta
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
@@ -30,10 +30,11 @@ import {
 } from '../repositories/dailyBucketsRepository';
 import { BayesianScoringService } from '../services/bayesianScoringService';
 import { WEIGHT_PAID_PROBE, WEIGHT_SOVEREIGN_PROBE, WEIGHT_REPORT_NIP98, DEFAULT_PRIOR_ALPHA } from '../config/bayesianConfig';
+let testDb: TestDb;
 
 const NOW = Date.UTC(2026, 3, 18, 12, 0, 0) / 1000;
 
-function makeService(db: Database.Database): BayesianScoringService {
+function makeService(db: Pool): BayesianScoringService {
   return new BayesianScoringService(
     new EndpointStreamingPosteriorRepository(db),
     new ServiceStreamingPosteriorRepository(db),
@@ -48,21 +49,21 @@ function makeService(db: Database.Database): BayesianScoringService {
   );
 }
 
-describe('ingestStreaming — routage par source', () => {
-  let db: Database.Database;
+describe('ingestStreaming — routage par source', async () => {
+  let db: Pool;
   let svc: BayesianScoringService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     svc = makeService(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
-  it('source=probe écrit dans streaming ET buckets (poids=1.0)', () => {
-    const r = svc.ingestStreaming({
+  it('source=probe écrit dans streaming ET buckets (poids=1.0)', async () => {
+    const r = await svc.ingestStreaming({
       success: true,
       timestamp: NOW,
       source: 'probe',
@@ -71,47 +72,47 @@ describe('ingestStreaming — routage par source', () => {
     expect(r.endpointUpdates).toBe(1);
     expect(r.bucketsBumped).toBe(1);
 
-    const streamingRow = db
-      .prepare(`SELECT * FROM endpoint_streaming_posteriors WHERE url_hash='h1' AND source='probe'`)
-      .get() as { posterior_alpha: number; posterior_beta: number };
+    const streamingRow = (await db.query<{ posterior_alpha: number; posterior_beta: number }>(
+      `SELECT * FROM endpoint_streaming_posteriors WHERE url_hash='h1' AND source='probe'`,
+    )).rows[0];
     expect(streamingRow.posterior_alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + WEIGHT_SOVEREIGN_PROBE, 6);
 
-    const bucketRow = db
-      .prepare(`SELECT * FROM endpoint_daily_buckets WHERE url_hash='h1' AND source='probe'`)
-      .get() as { n_success: number; n_obs: number };
+    const bucketRow = (await db.query<{ n_success: number; n_obs: number }>(
+      `SELECT * FROM endpoint_daily_buckets WHERE url_hash='h1' AND source='probe'`,
+    )).rows[0];
     expect(bucketRow.n_success).toBe(1);
     expect(bucketRow.n_obs).toBe(1);
   });
 
-  it('source=paid applique le poids paid (2.0)', () => {
-    svc.ingestStreaming({
+  it('source=paid applique le poids paid (2.0)', async () => {
+    await svc.ingestStreaming({
       success: true,
       timestamp: NOW,
       source: 'paid',
       endpointHash: 'h2',
     });
-    const streamingRow = db
-      .prepare(`SELECT * FROM endpoint_streaming_posteriors WHERE url_hash='h2' AND source='paid'`)
-      .get() as { posterior_alpha: number };
+    const streamingRow = (await db.query<{ posterior_alpha: number }>(
+      `SELECT * FROM endpoint_streaming_posteriors WHERE url_hash='h2' AND source='paid'`,
+    )).rows[0];
     expect(streamingRow.posterior_alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + WEIGHT_PAID_PROBE, 6);
   });
 
-  it('source=report nip98 applique le poids tier (1.0)', () => {
-    svc.ingestStreaming({
+  it('source=report nip98 applique le poids tier (1.0)', async () => {
+    await svc.ingestStreaming({
       success: true,
       timestamp: NOW,
       source: 'report',
       tier: 'nip98',
       endpointHash: 'h3',
     });
-    const streamingRow = db
-      .prepare(`SELECT * FROM endpoint_streaming_posteriors WHERE url_hash='h3' AND source='report'`)
-      .get() as { posterior_alpha: number };
+    const streamingRow = (await db.query<{ posterior_alpha: number }>(
+      `SELECT * FROM endpoint_streaming_posteriors WHERE url_hash='h3' AND source='report'`,
+    )).rows[0];
     expect(streamingRow.posterior_alpha).toBeCloseTo(DEFAULT_PRIOR_ALPHA + WEIGHT_REPORT_NIP98, 6);
   });
 
-  it('source=observer bump bucket UNIQUEMENT (streaming vide)', () => {
-    const r = svc.ingestStreaming({
+  it('source=observer bump bucket UNIQUEMENT (streaming vide)', async () => {
+    const r = await svc.ingestStreaming({
       success: true,
       timestamp: NOW,
       source: 'observer',
@@ -120,19 +121,19 @@ describe('ingestStreaming — routage par source', () => {
     expect(r.endpointUpdates).toBe(0); // pas de streaming_posteriors
     expect(r.bucketsBumped).toBe(1);
 
-    const streaming = db
-      .prepare(`SELECT COUNT(*) AS c FROM endpoint_streaming_posteriors WHERE url_hash='h4'`)
-      .get() as { c: number };
+    const streaming = (await db.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM endpoint_streaming_posteriors WHERE url_hash='h4'`,
+    )).rows[0];
     expect(streaming.c).toBe(0);
 
-    const bucket = db
-      .prepare(`SELECT * FROM endpoint_daily_buckets WHERE url_hash='h4' AND source='observer'`)
-      .get() as { n_obs: number };
+    const bucket = (await db.query<{ n_obs: number }>(
+      `SELECT * FROM endpoint_daily_buckets WHERE url_hash='h4' AND source='observer'`,
+    )).rows[0];
     expect(bucket.n_obs).toBe(1);
   });
 
-  it('ingestion multi-niveaux (endpoint + service + operator + route) en un appel', () => {
-    const r = svc.ingestStreaming({
+  it('ingestion multi-niveaux (endpoint + service + operator + route) en un appel', async () => {
+    const r = await svc.ingestStreaming({
       success: true,
       timestamp: NOW,
       source: 'probe',
@@ -148,106 +149,106 @@ describe('ingestStreaming — routage par source', () => {
     expect(r.routeUpdates).toBe(1);
     expect(r.bucketsBumped).toBe(4); // endpoint + service + operator + route
 
-    const routeRow = db
-      .prepare(`SELECT * FROM route_streaming_posteriors WHERE caller_hash='caller-A' AND target_hash='target-B'`)
-      .get() as { route_hash: string; posterior_alpha: number };
+    const routeRow = (await db.query<{ route_hash: string; posterior_alpha: number }>(
+      `SELECT * FROM route_streaming_posteriors WHERE caller_hash='caller-A' AND target_hash='target-B'`,
+    )).rows[0];
     expect(routeRow.route_hash).toBe('caller-A:target-B');
   });
 
 });
 
-describe('computeRiskProfile — Option B (delta success_rate)', () => {
-  let db: Database.Database;
+describe('computeRiskProfile — Option B (delta success_rate)', async () => {
+  let db: Pool;
   let svc: BayesianScoringService;
   let repo: EndpointDailyBucketsRepository;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     svc = makeService(db);
     repo = new EndpointDailyBucketsRepository(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
-  it('unknown si n_obs total < seuil (signal trop faible)', () => {
-    repo.bump('id1', 'probe', { day: '2026-04-18', nObsDelta: 1, nSuccessDelta: 1, nFailureDelta: 0 });
-    const result = svc.computeRiskProfile(repo, 'id1', NOW);
+  it('unknown si n_obs total < seuil (signal trop faible)', async () => {
+    await repo.bump('id1', 'probe', { day: '2026-04-18', nObsDelta: 1, nSuccessDelta: 1, nFailureDelta: 0 });
+    const result = await svc.computeRiskProfile(repo, 'id1', NOW);
     expect(result.profile).toBe('unknown');
     expect(result.totalObs).toBe(1);
   });
 
-  it('unknown si fenêtre antérieure vide (pas de baseline)', () => {
+  it('unknown si fenêtre antérieure vide (pas de baseline)', async () => {
     // 10 obs récentes, 0 antérieure
     for (let i = 0; i < 10; i++) {
-      repo.bump('id2', 'probe', { day: '2026-04-18', nObsDelta: 1, nSuccessDelta: 1, nFailureDelta: 0 });
+      await repo.bump('id2', 'probe', { day: '2026-04-18', nObsDelta: 1, nSuccessDelta: 1, nFailureDelta: 0 });
     }
-    const result = svc.computeRiskProfile(repo, 'id2', NOW);
+    const result = await svc.computeRiskProfile(repo, 'id2', NOW);
     expect(result.profile).toBe('unknown');
     expect(result.recentSuccessRate).toBe(1.0);
     expect(result.priorSuccessRate).toBeNull();
   });
 
-  it('low profile : stable (delta ≈ 0)', () => {
+  it('low profile : stable (delta ≈ 0)', async () => {
     // 50 obs antérieures (90% success), 50 récentes (90% success) → delta=0
     for (let i = 0; i < 50; i++) {
-      repo.bump('id3', 'probe', {
+      await repo.bump('id3', 'probe', {
         day: '2026-03-30', // il y a ~19 jours : dans [atTs-29d, atTs-7d]
         nObsDelta: 1,
         nSuccessDelta: i < 45 ? 1 : 0,
         nFailureDelta: i < 45 ? 0 : 1,
       });
-      repo.bump('id3', 'probe', {
+      await repo.bump('id3', 'probe', {
         day: '2026-04-18',
         nObsDelta: 1,
         nSuccessDelta: i < 45 ? 1 : 0,
         nFailureDelta: i < 45 ? 0 : 1,
       });
     }
-    const result = svc.computeRiskProfile(repo, 'id3', NOW);
+    const result = await svc.computeRiskProfile(repo, 'id3', NOW);
     expect(result.profile).toBe('low');
     expect(result.delta).toBeCloseTo(0, 6);
   });
 
-  it('medium profile : légère dégradation (delta ∈ [-0.25, -0.10))', () => {
+  it('medium profile : légère dégradation (delta ∈ [-0.25, -0.10))', async () => {
     // prior : 50 obs, 95% success. recent : 50 obs, 80% success → delta = -0.15
     for (let i = 0; i < 50; i++) {
-      repo.bump('id4', 'probe', {
+      await repo.bump('id4', 'probe', {
         day: '2026-03-30',
         nObsDelta: 1,
         nSuccessDelta: i < 47 ? 1 : 0,
         nFailureDelta: i < 47 ? 0 : 1,
       });
-      repo.bump('id4', 'probe', {
+      await repo.bump('id4', 'probe', {
         day: '2026-04-18',
         nObsDelta: 1,
         nSuccessDelta: i < 40 ? 1 : 0,
         nFailureDelta: i < 40 ? 0 : 1,
       });
     }
-    const result = svc.computeRiskProfile(repo, 'id4', NOW);
+    const result = await svc.computeRiskProfile(repo, 'id4', NOW);
     expect(result.profile).toBe('medium');
     expect(result.delta).toBeCloseTo(0.80 - 0.94, 2);
   });
 
-  it('high profile : dégradation marquée (delta < -0.25)', () => {
+  it('high profile : dégradation marquée (delta < -0.25)', async () => {
     // prior : 50 obs, 100% success. recent : 50 obs, 50% success → delta = -0.50
     for (let i = 0; i < 50; i++) {
-      repo.bump('id5', 'probe', {
+      await repo.bump('id5', 'probe', {
         day: '2026-03-30',
         nObsDelta: 1,
         nSuccessDelta: 1,
         nFailureDelta: 0,
       });
-      repo.bump('id5', 'probe', {
+      await repo.bump('id5', 'probe', {
         day: '2026-04-18',
         nObsDelta: 1,
         nSuccessDelta: i < 25 ? 1 : 0,
         nFailureDelta: i < 25 ? 0 : 1,
       });
     }
-    const result = svc.computeRiskProfile(repo, 'id5', NOW);
+    const result = await svc.computeRiskProfile(repo, 'id5', NOW);
     expect(result.profile).toBe('high');
     expect(result.delta).toBeCloseTo(0.5 - 1.0, 2);
   });

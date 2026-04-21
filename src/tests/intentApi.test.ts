@@ -2,10 +2,10 @@
 // Monte le controller derrière un mini-express + supertest et vérifie la
 // validation zod, le 400 INVALID_CATEGORY, le format snake_case et le meta.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import request from 'supertest';
 import express from 'express';
-import { runMigrations } from '../database/migrations';
 import { AgentRepository } from '../repositories/agentRepository';
 import { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import { ProbeRepository } from '../repositories/probeRepository';
@@ -35,6 +35,7 @@ import {
 } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import type { Agent } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -63,7 +64,7 @@ function makeAgent(hash: string): Agent {
   };
 }
 
-function buildApp(db: Database.Database, withOperators = false): { app: express.Express; operatorService: OperatorService | null } {
+function buildApp(db: Pool, withOperators = false): { app: express.Express; operatorService: OperatorService | null } {
   const agentRepo = new AgentRepository(db);
   const serviceRepo = new ServiceEndpointRepository(db);
   const probeRepo = new ProbeRepository(db);
@@ -101,43 +102,43 @@ function buildApp(db: Database.Database, withOperators = false): { app: express.
   return { app, operatorService };
 }
 
-function seed(db: Database.Database, hash: string, url: string, opts: {
+async function seed(db: Pool, hash: string, url: string, opts: {
   name: string;
   category: string;
   priceSats: number;
   safe?: boolean;
-}): void {
+}): Promise<void> {
   const agentRepo = new AgentRepository(db);
   const serviceRepo = new ServiceEndpointRepository(db);
-  agentRepo.insert(makeAgent(hash));
-  serviceRepo.upsert(hash, url, 200, 120, '402index');
-  serviceRepo.updateMetadata(url, {
+  await agentRepo.insert(makeAgent(hash));
+  await serviceRepo.upsert(hash, url, 200, 120, '402index');
+  await serviceRepo.updateMetadata(url, {
     name: opts.name, description: null, category: opts.category, provider: null,
   });
-  serviceRepo.updatePrice(url, opts.priceSats);
-  if (opts.safe) seedSafeBayesianObservations(db, hash, { now: NOW });
+  await serviceRepo.updatePrice(url, opts.priceSats);
+  if (opts.safe) await seedSafeBayesianObservations(db, hash, { now: NOW });
 }
 
-describe('/api/intent integration', () => {
-  let db: Database.Database;
+describe('/api/intent integration', async () => {
+  let db: Pool;
   let app: express.Express;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     app = buildApp(db).app;
   });
 
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await teardownTestPool(testDb);
   });
 
-  describe('GET /api/intent/categories', () => {
+  describe('GET /api/intent/categories', async () => {
     it('retourne les catégories avec endpoint_count et active_count', async () => {
-      seed(db, sha256('w1'), 'https://weather.example/one', { name: 'w1', category: 'weather', priceSats: 5, safe: true });
-      seed(db, sha256('w2'), 'https://weather.example/two', { name: 'w2', category: 'weather', priceSats: 7 });
-      seed(db, sha256('d1'), 'https://data.example/one', { name: 'd1', category: 'data', priceSats: 3, safe: true });
+      await seed(db, sha256('w1'), 'https://weather.example/one', { name: 'w1', category: 'weather', priceSats: 5, safe: true });
+      await seed(db, sha256('w2'), 'https://weather.example/two', { name: 'w2', category: 'weather', priceSats: 7 });
+      await seed(db, sha256('d1'), 'https://data.example/one', { name: 'd1', category: 'data', priceSats: 3, safe: true });
 
       const res = await request(app).get('/api/intent/categories');
       expect(res.status).toBe(200);
@@ -158,9 +159,9 @@ describe('/api/intent integration', () => {
     });
   });
 
-  describe('POST /api/intent', () => {
+  describe('POST /api/intent', async () => {
     it('retourne les candidats snake_case avec bayesian + advisory + health', async () => {
-      seed(db, sha256('w1'), 'https://weather.example/one', { name: 'paris-forecast', category: 'weather', priceSats: 5, safe: true });
+      await seed(db, sha256('w1'), 'https://weather.example/one', { name: 'paris-forecast', category: 'weather', priceSats: 5, safe: true });
 
       const res = await request(app)
         .post('/api/intent')
@@ -199,7 +200,7 @@ describe('/api/intent integration', () => {
     });
 
     it('normalise la catégorie via alias (ex. lightning → bitcoin)', async () => {
-      seed(db, sha256('b1'), 'https://bitcoin.example/x', { name: 'b1', category: 'bitcoin', priceSats: 5, safe: true });
+      await seed(db, sha256('b1'), 'https://bitcoin.example/x', { name: 'b1', category: 'bitcoin', priceSats: 5, safe: true });
       const res = await request(app)
         .post('/api/intent')
         .send({ category: 'lightning' });
@@ -209,8 +210,8 @@ describe('/api/intent integration', () => {
     });
 
     it('filtre budget_sats', async () => {
-      seed(db, sha256('cheap'), 'https://x.example/cheap', { name: 'cheap', category: 'tools', priceSats: 3, safe: true });
-      seed(db, sha256('expensive'), 'https://x.example/expensive', { name: 'expensive', category: 'tools', priceSats: 50, safe: true });
+      await seed(db, sha256('cheap'), 'https://x.example/cheap', { name: 'cheap', category: 'tools', priceSats: 3, safe: true });
+      await seed(db, sha256('expensive'), 'https://x.example/expensive', { name: 'expensive', category: 'tools', priceSats: 50, safe: true });
 
       const res = await request(app)
         .post('/api/intent')
@@ -221,8 +222,8 @@ describe('/api/intent integration', () => {
     });
 
     it('filtre keywords AND', async () => {
-      seed(db, sha256('pf'), 'https://x.example/pf', { name: 'paris-forecast', category: 'weather', priceSats: 3, safe: true });
-      seed(db, sha256('lf'), 'https://x.example/lf', { name: 'london-forecast', category: 'weather', priceSats: 3, safe: true });
+      await seed(db, sha256('pf'), 'https://x.example/pf', { name: 'paris-forecast', category: 'weather', priceSats: 3, safe: true });
+      await seed(db, sha256('lf'), 'https://x.example/lf', { name: 'london-forecast', category: 'weather', priceSats: 3, safe: true });
 
       const res = await request(app)
         .post('/api/intent')
@@ -234,7 +235,7 @@ describe('/api/intent integration', () => {
 
     it('strictness=relaxed avec FALLBACK_RELAXED quand aucun SAFE', async () => {
       // Endpoint cold (pas de seedSafe) → verdict INSUFFICIENT → relaxed.
-      seed(db, sha256('cold-api'), 'https://cold.example/api', { name: 'cold', category: 'tools', priceSats: 5 });
+      await seed(db, sha256('cold-api'), 'https://cold.example/api', { name: 'cold', category: 'tools', priceSats: 5 });
 
       const res = await request(app)
         .post('/api/intent')
@@ -246,7 +247,7 @@ describe('/api/intent integration', () => {
     });
 
     it('strictness=degraded avec NO_CANDIDATES quand pool vide', async () => {
-      seed(db, sha256('other'), 'https://other.example/x', { name: 'other', category: 'weather', priceSats: 5, safe: true });
+      await seed(db, sha256('other'), 'https://other.example/x', { name: 'other', category: 'weather', priceSats: 5, safe: true });
 
       const res = await request(app)
         .post('/api/intent')
@@ -260,8 +261,8 @@ describe('/api/intent integration', () => {
 
     it('tri p_success DESC puis price_sats ASC', async () => {
       // Deux endpoints également SAFE (seedSafe) → tri tertiaire sur price.
-      seed(db, sha256('srt-a'), 'https://s.example/a', { name: 'srt-a', category: 'tools', priceSats: 20, safe: true });
-      seed(db, sha256('srt-b'), 'https://s.example/b', { name: 'srt-b', category: 'tools', priceSats: 3, safe: true });
+      await seed(db, sha256('srt-a'), 'https://s.example/a', { name: 'srt-a', category: 'tools', priceSats: 20, safe: true });
+      await seed(db, sha256('srt-b'), 'https://s.example/b', { name: 'srt-b', category: 'tools', priceSats: 3, safe: true });
 
       const res = await request(app)
         .post('/api/intent')
@@ -276,7 +277,7 @@ describe('/api/intent integration', () => {
 
     it('meta contient total_matched + returned + strictness + warnings', async () => {
       for (let i = 0; i < 3; i++) {
-        seed(db, sha256(`x-${i}`), `https://x.example/${i}`, { name: `x-${i}`, category: 'tools', priceSats: i + 1, safe: true });
+        await seed(db, sha256(`x-${i}`), `https://x.example/${i}`, { name: `x-${i}`, category: 'tools', priceSats: i + 1, safe: true });
       }
 
       const res = await request(app)
@@ -292,18 +293,18 @@ describe('/api/intent integration', () => {
 
   // Phase 7 — C11 expose operator_id per candidate (verified only), C12 émet
   // OPERATOR_UNVERIFIED pour chaque candidat rattaché à un operator non-verified.
-  describe('C11/C12 — operator_id + OPERATOR_UNVERIFIED per candidate', () => {
+  describe('C11/C12 — operator_id + OPERATOR_UNVERIFIED per candidate', async () => {
     let appWithOps: express.Express;
     let operatorService: OperatorService;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       const wired = buildApp(db, true);
       appWithOps = wired.app;
       operatorService = wired.operatorService!;
     });
 
     it('operator_id=null and no OPERATOR_UNVERIFIED when candidate endpoint has no operator', async () => {
-      seed(db, sha256('w-no-op'), 'https://w-no-op.example/api', { name: 'w-no-op', category: 'weather', priceSats: 5, safe: true });
+      await seed(db, sha256('w-no-op'), 'https://w-no-op.example/api', { name: 'w-no-op', category: 'weather', priceSats: 5, safe: true });
 
       const res = await request(appWithOps)
         .post('/api/intent')
@@ -317,10 +318,10 @@ describe('/api/intent integration', () => {
 
     it('operator_id=null + OPERATOR_UNVERIFIED (info) quand operator rattaché mais pending', async () => {
       const url = 'https://w-pending.example/api';
-      seed(db, sha256('w-pending'), url, { name: 'w-pending', category: 'weather', priceSats: 5, safe: true });
+      await seed(db, sha256('w-pending'), url, { name: 'w-pending', category: 'weather', priceSats: 5, safe: true });
       const opId = 'op-intent-pending';
-      operatorService.upsertOperator(opId);
-      operatorService.claimOwnership(opId, 'endpoint', endpointHash(url));
+      await operatorService.upsertOperator(opId);
+      await operatorService.claimOwnership(opId, 'endpoint', endpointHash(url));
 
       const res = await request(appWithOps)
         .post('/api/intent')
@@ -337,14 +338,14 @@ describe('/api/intent integration', () => {
 
     it('operator_id exposé + PAS d\'OPERATOR_UNVERIFIED quand operator verified', async () => {
       const url = 'https://w-verified.example/api';
-      seed(db, sha256('w-verified'), url, { name: 'w-verified', category: 'weather', priceSats: 5, safe: true });
+      await seed(db, sha256('w-verified'), url, { name: 'w-verified', category: 'weather', priceSats: 5, safe: true });
       const opId = 'op-intent-verified';
-      operatorService.upsertOperator(opId);
-      operatorService.claimOwnership(opId, 'endpoint', endpointHash(url));
-      operatorService.claimIdentity(opId, 'dns', 'w-verified.example');
-      operatorService.markIdentityVerified(opId, 'dns', 'w-verified.example', 'proof-dns');
-      operatorService.claimIdentity(opId, 'nip05', 'op@w-verified.example');
-      operatorService.markIdentityVerified(opId, 'nip05', 'op@w-verified.example', 'proof-nip05');
+      await operatorService.upsertOperator(opId);
+      await operatorService.claimOwnership(opId, 'endpoint', endpointHash(url));
+      await operatorService.claimIdentity(opId, 'dns', 'w-verified.example');
+      await operatorService.markIdentityVerified(opId, 'dns', 'w-verified.example', 'proof-dns');
+      await operatorService.claimIdentity(opId, 'nip05', 'op@w-verified.example');
+      await operatorService.markIdentityVerified(opId, 'nip05', 'op@w-verified.example', 'proof-nip05');
 
       const res = await request(appWithOps)
         .post('/api/intent')

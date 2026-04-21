@@ -1,4 +1,4 @@
-// Data access pour les 5 tables *_streaming_posteriors (Phase 3 refactor).
+// Data access pour les 5 tables *_streaming_posteriors (Phase 3 refactor; pg async port, Phase 12B).
 //
 // Modèle :
 //   Une unique row par (id, source) — plus de window column. Chaque row
@@ -23,13 +23,15 @@
 // explicitement rejeté (contrat Q3 — observer compte dans daily_buckets pour
 // l'activité mais n'alimente pas le verdict).
 
-import type Database from 'better-sqlite3';
+import type { Pool, PoolClient } from 'pg';
 import {
   DEFAULT_PRIOR_ALPHA,
   DEFAULT_PRIOR_BETA,
   TAU_SECONDS,
 } from '../config/bayesianConfig';
 import type { BayesianSource } from '../config/bayesianConfig';
+
+type Queryable = Pool | PoolClient;
 
 /** État décroché du disque, avant ou après application de la décroissance. */
 export interface StreamingPosterior {
@@ -86,45 +88,43 @@ abstract class BaseStreamingRepository {
   protected abstract table: string;
   protected abstract idColumn: string;
 
-  constructor(protected db: Database.Database) {}
+  constructor(protected db: Queryable) {}
 
   /** Ingère une observation pondérée. Applique la décroissance sur l'état
-   *  existant avant d'additionner les deltas. Upsert atomique via INSERT
-   *  OR IGNORE + UPDATE dans la même transaction caller. */
-  ingest(id: string, source: BayesianSource, deltas: StreamingIngestDeltas): void {
+   *  existant avant d'additionner les deltas. Upsert atomique — le caller
+   *  wrappe la séquence SELECT→INSERT/UPDATE dans withTransaction() quand
+   *  l'atomicité inter-calls est requise. */
+  async ingest(id: string, source: BayesianSource, deltas: StreamingIngestDeltas): Promise<void> {
     const { successDelta, failureDelta, nowSec } = deltas;
 
-    const existing = this.db
-      .prepare(
-        `SELECT posterior_alpha, posterior_beta, last_update_ts, total_ingestions
-           FROM ${this.table}
-          WHERE ${this.idColumn} = ? AND source = ?`,
-      )
-      .get(id, source) as
-      | {
-          posterior_alpha: number;
-          posterior_beta: number;
-          last_update_ts: number;
-          total_ingestions: number;
-        }
-      | undefined;
+    const { rows } = await this.db.query<{
+      posterior_alpha: number;
+      posterior_beta: number;
+      last_update_ts: number;
+      total_ingestions: number;
+    }>(
+      `SELECT posterior_alpha, posterior_beta, last_update_ts, total_ingestions
+         FROM ${this.table}
+        WHERE ${this.idColumn} = $1 AND source = $2`,
+      [id, source],
+    );
+    const existing = rows[0];
 
     if (!existing) {
       // Première observation : on crée la row au prior flat + deltas.
-      this.db
-        .prepare(
-          `INSERT INTO ${this.table}
-             (${this.idColumn}, source, posterior_alpha, posterior_beta, last_update_ts, total_ingestions)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+      await this.db.query(
+        `INSERT INTO ${this.table}
+           (${this.idColumn}, source, posterior_alpha, posterior_beta, last_update_ts, total_ingestions)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
           id,
           source,
           DEFAULT_PRIOR_ALPHA + successDelta,
           DEFAULT_PRIOR_BETA + failureDelta,
           nowSec,
           1,
-        );
+        ],
+      );
       return;
     }
 
@@ -157,41 +157,40 @@ abstract class BaseStreamingRepository {
       newBeta = existing.posterior_beta + failureDelta * ageFactor;
     }
 
-    this.db
-      .prepare(
-        `UPDATE ${this.table}
-            SET posterior_alpha = ?,
-                posterior_beta = ?,
-                last_update_ts = ?,
-                total_ingestions = total_ingestions + 1
-          WHERE ${this.idColumn} = ? AND source = ?`,
-      )
-      .run(newAlpha, newBeta, alignTs, id, source);
+    await this.db.query(
+      `UPDATE ${this.table}
+          SET posterior_alpha = $1,
+              posterior_beta = $2,
+              last_update_ts = $3,
+              total_ingestions = total_ingestions + 1
+        WHERE ${this.idColumn} = $4 AND source = $5`,
+      [newAlpha, newBeta, alignTs, id, source],
+    );
   }
 
   /** Lit la row stockée (sans décroissance). */
-  findStored(id: string, source: BayesianSource): StreamingPosterior | undefined {
-    const row = this.db
-      .prepare(
-        `SELECT * FROM ${this.table}
-          WHERE ${this.idColumn} = ? AND source = ?`,
-      )
-      .get(id, source) as Record<string, unknown> | undefined;
+  async findStored(id: string, source: BayesianSource): Promise<StreamingPosterior | undefined> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      `SELECT * FROM ${this.table}
+        WHERE ${this.idColumn} = $1 AND source = $2`,
+      [id, source],
+    );
+    const row = rows[0];
     if (!row) return undefined;
     return {
       id: row[this.idColumn] as string,
       source: row.source as BayesianSource,
-      posteriorAlpha: row.posterior_alpha as number,
-      posteriorBeta: row.posterior_beta as number,
-      lastUpdateTs: row.last_update_ts as number,
-      totalIngestions: row.total_ingestions as number,
+      posteriorAlpha: Number(row.posterior_alpha),
+      posteriorBeta: Number(row.posterior_beta),
+      lastUpdateTs: Number(row.last_update_ts),
+      totalIngestions: Number(row.total_ingestions),
     };
   }
 
   /** Lit l'état décayé à `atTs` pour une (id, source). Renvoie le prior flat
    *  si aucune observation n'a jamais été ingérée (nObsEffective = 0). */
-  readDecayed(id: string, source: BayesianSource, atTs: number): DecayedPosterior {
-    const stored = this.findStored(id, source);
+  async readDecayed(id: string, source: BayesianSource, atTs: number): Promise<DecayedPosterior> {
+    const stored = await this.findStored(id, source);
     if (!stored) {
       return {
         id,
@@ -223,22 +222,23 @@ abstract class BaseStreamingRepository {
   }
 
   /** Lit l'état décayé des 3 sources pour un même id. Utile pour le verdict. */
-  readAllSourcesDecayed(id: string, atTs: number): Record<BayesianSource, DecayedPosterior> {
+  async readAllSourcesDecayed(id: string, atTs: number): Promise<Record<BayesianSource, DecayedPosterior>> {
     return {
-      probe: this.readDecayed(id, 'probe', atTs),
-      report: this.readDecayed(id, 'report', atTs),
-      paid: this.readDecayed(id, 'paid', atTs),
+      probe: await this.readDecayed(id, 'probe', atTs),
+      report: await this.readDecayed(id, 'report', atTs),
+      paid: await this.readDecayed(id, 'paid', atTs),
     };
   }
 
   /** Purge les rows dont la dernière mise à jour est plus ancienne que
    *  `olderThanSec`. Suppression pure (pas de décroissance à zéro) car une
    *  row "dormante" a de toute façon un nObsEffective négligeable. */
-  pruneStale(olderThanSec: number): number {
-    const res = this.db
-      .prepare(`DELETE FROM ${this.table} WHERE last_update_ts < ?`)
-      .run(olderThanSec);
-    return Number(res.changes ?? 0);
+  async pruneStale(olderThanSec: number): Promise<number> {
+    const result = await this.db.query(
+      `DELETE FROM ${this.table} WHERE last_update_ts < $1`,
+      [olderThanSec],
+    );
+    return result.rowCount ?? 0;
   }
 }
 
@@ -268,41 +268,37 @@ export class OperatorStreamingPosteriorRepository extends BaseStreamingRepositor
 
 // Route a besoin de caller_hash + target_hash en plus.
 export class RouteStreamingPosteriorRepository {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Queryable) {}
 
-  ingest(
+  async ingest(
     routeHash: string,
     callerHash: string,
     targetHash: string,
     source: BayesianSource,
     deltas: StreamingIngestDeltas,
-  ): void {
+  ): Promise<void> {
     const { successDelta, failureDelta, nowSec } = deltas;
 
-    const existing = this.db
-      .prepare(
-        `SELECT posterior_alpha, posterior_beta, last_update_ts, total_ingestions
-           FROM route_streaming_posteriors
-          WHERE route_hash = ? AND source = ?`,
-      )
-      .get(routeHash, source) as
-      | {
-          posterior_alpha: number;
-          posterior_beta: number;
-          last_update_ts: number;
-          total_ingestions: number;
-        }
-      | undefined;
+    const { rows } = await this.db.query<{
+      posterior_alpha: number;
+      posterior_beta: number;
+      last_update_ts: number;
+      total_ingestions: number;
+    }>(
+      `SELECT posterior_alpha, posterior_beta, last_update_ts, total_ingestions
+         FROM route_streaming_posteriors
+        WHERE route_hash = $1 AND source = $2`,
+      [routeHash, source],
+    );
+    const existing = rows[0];
 
     if (!existing) {
-      this.db
-        .prepare(
-          `INSERT INTO route_streaming_posteriors
-             (route_hash, source, caller_hash, target_hash,
-              posterior_alpha, posterior_beta, last_update_ts, total_ingestions)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+      await this.db.query(
+        `INSERT INTO route_streaming_posteriors
+           (route_hash, source, caller_hash, target_hash,
+            posterior_alpha, posterior_beta, last_update_ts, total_ingestions)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
           routeHash,
           source,
           callerHash,
@@ -311,7 +307,8 @@ export class RouteStreamingPosteriorRepository {
           DEFAULT_PRIOR_BETA + failureDelta,
           nowSec,
           1,
-        );
+        ],
+      );
       return;
     }
 
@@ -336,40 +333,39 @@ export class RouteStreamingPosteriorRepository {
       newBeta = existing.posterior_beta + failureDelta * ageFactor;
     }
 
-    this.db
-      .prepare(
-        `UPDATE route_streaming_posteriors
-            SET posterior_alpha = ?,
-                posterior_beta = ?,
-                last_update_ts = ?,
-                total_ingestions = total_ingestions + 1
-          WHERE route_hash = ? AND source = ?`,
-      )
-      .run(newAlpha, newBeta, alignTs, routeHash, source);
+    await this.db.query(
+      `UPDATE route_streaming_posteriors
+          SET posterior_alpha = $1,
+              posterior_beta = $2,
+              last_update_ts = $3,
+              total_ingestions = total_ingestions + 1
+        WHERE route_hash = $4 AND source = $5`,
+      [newAlpha, newBeta, alignTs, routeHash, source],
+    );
   }
 
-  findStored(routeHash: string, source: BayesianSource): (StreamingPosterior & { callerHash: string; targetHash: string }) | undefined {
-    const row = this.db
-      .prepare(
-        `SELECT * FROM route_streaming_posteriors
-          WHERE route_hash = ? AND source = ?`,
-      )
-      .get(routeHash, source) as Record<string, unknown> | undefined;
+  async findStored(routeHash: string, source: BayesianSource): Promise<(StreamingPosterior & { callerHash: string; targetHash: string }) | undefined> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      `SELECT * FROM route_streaming_posteriors
+        WHERE route_hash = $1 AND source = $2`,
+      [routeHash, source],
+    );
+    const row = rows[0];
     if (!row) return undefined;
     return {
       id: row.route_hash as string,
       source: row.source as BayesianSource,
-      posteriorAlpha: row.posterior_alpha as number,
-      posteriorBeta: row.posterior_beta as number,
-      lastUpdateTs: row.last_update_ts as number,
-      totalIngestions: row.total_ingestions as number,
+      posteriorAlpha: Number(row.posterior_alpha),
+      posteriorBeta: Number(row.posterior_beta),
+      lastUpdateTs: Number(row.last_update_ts),
+      totalIngestions: Number(row.total_ingestions),
       callerHash: row.caller_hash as string,
       targetHash: row.target_hash as string,
     };
   }
 
-  readDecayed(routeHash: string, source: BayesianSource, atTs: number): DecayedPosterior {
-    const stored = this.findStored(routeHash, source);
+  async readDecayed(routeHash: string, source: BayesianSource, atTs: number): Promise<DecayedPosterior> {
+    const stored = await this.findStored(routeHash, source);
     if (!stored) {
       return {
         id: routeHash,
@@ -400,18 +396,19 @@ export class RouteStreamingPosteriorRepository {
     };
   }
 
-  readAllSourcesDecayed(routeHash: string, atTs: number): Record<BayesianSource, DecayedPosterior> {
+  async readAllSourcesDecayed(routeHash: string, atTs: number): Promise<Record<BayesianSource, DecayedPosterior>> {
     return {
-      probe: this.readDecayed(routeHash, 'probe', atTs),
-      report: this.readDecayed(routeHash, 'report', atTs),
-      paid: this.readDecayed(routeHash, 'paid', atTs),
+      probe: await this.readDecayed(routeHash, 'probe', atTs),
+      report: await this.readDecayed(routeHash, 'report', atTs),
+      paid: await this.readDecayed(routeHash, 'paid', atTs),
     };
   }
 
-  pruneStale(olderThanSec: number): number {
-    const res = this.db
-      .prepare(`DELETE FROM route_streaming_posteriors WHERE last_update_ts < ?`)
-      .run(olderThanSec);
-    return Number(res.changes ?? 0);
+  async pruneStale(olderThanSec: number): Promise<number> {
+    const result = await this.db.query(
+      'DELETE FROM route_streaming_posteriors WHERE last_update_ts < $1',
+      [olderThanSec],
+    );
+    return result.rowCount ?? 0;
   }
 }

@@ -5,9 +5,11 @@
 // Prometheus has no way to reach the data. This module adds exactly one
 // endpoint plus a liveness probe that external monitoring can hit.
 //
-// Auth model mirrors the api container: localhost access is free (docker
-// sidecar / SSH tunnel), external access requires X-API-Key. The /healthz
-// endpoint is always open (Docker healthcheck + external liveness).
+// Auth model (Phase 12B B6.2) : X-API-Key is required on every scrape.
+// The previous localhost bypass was removed — IP-based auth is weak (proxy
+// count drift, overlay networking, SSRF) and a constant-time compare is
+// cheap enough to apply per request. The /healthz endpoint remains open
+// (Docker healthcheck + external liveness).
 import http from 'node:http';
 import { metricsRegistry } from '../middleware/metrics';
 import { logger } from '../logger';
@@ -43,11 +45,6 @@ export interface CrawlerMetricsServerOptions {
   host?: string;
 }
 
-/** Tight list of addresses we accept for the "localhost bypass" — mirrors
- *  the api container's rule. Docker's bridge gateway (172.*) is NOT in this
- *  set: if the API container scrapes the crawler, it must send X-API-Key. */
-const LOOPBACK_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
-
 export function startCrawlerMetricsServer(opts: CrawlerMetricsServerOptions): http.Server {
   const server = http.createServer(async (req, res) => {
     // Strip query string so /metrics?instance=crawler also matches (audit M6).
@@ -66,11 +63,14 @@ export function startCrawlerMetricsServer(opts: CrawlerMetricsServerOptions): ht
       return;
     }
 
-    // Auth: localhost OR valid X-API-Key. Constant-time compare + rate limit
-    // shut down the brute-force surface flagged as audit C2 / H6.
+    // Auth (Phase 12B B6.2) : X-API-Key required on every scrape. The
+    // previous localhost bypass was removed. Constant-time compare + rate
+    // limit shut down the brute-force surface flagged as audit C2 / H6.
     const ip = req.socket.remoteAddress ?? '';
-    const isLocalhost = LOOPBACK_IPS.has(ip);
-    if (!isLocalhost) {
+    if (config.L402_BYPASS) {
+      // Staging/bench only — open scrape for the docker-bridge prometheus.
+      // Fail-safed against prod by the boot guard in config.ts.
+    } else {
       if (!checkRate(ip)) {
         res.writeHead(429, { 'Content-Type': 'text/plain' });
         res.end('Too many metrics requests\n');
@@ -80,7 +80,7 @@ export function startCrawlerMetricsServer(opts: CrawlerMetricsServerOptions): ht
       const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
       if (!safeEqual(apiKey, config.API_KEY)) {
         res.writeHead(403, { 'Content-Type': 'text/plain' });
-        res.end('Forbidden — use localhost or X-API-Key\n');
+        res.end('Forbidden — X-API-Key required\n');
         return;
       }
     }

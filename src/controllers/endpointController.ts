@@ -29,14 +29,14 @@ export class EndpointController {
     private operatorService: OperatorService,
   ) {}
 
-  show = (req: Request, res: Response, next: NextFunction): void => {
+  show = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = urlHashSchema.safeParse(req.params);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.params));
 
       const urlHash = parsed.data.url_hash;
 
-      const v = this.bayesianVerdict.buildVerdict({ targetHash: urlHash });
+      const v = await this.bayesianVerdict.buildVerdict({ targetHash: urlHash });
       const bayesian: BayesianScoreBlock = {
         p_success: v.p_success,
         ci95_low: v.ci95_low,
@@ -51,7 +51,7 @@ export class EndpointController {
         last_update: v.last_update,
       };
 
-      const svc = this.serviceEndpointRepo.findByUrlHash(urlHash);
+      const svc = await this.serviceEndpointRepo.findByUrlHash(urlHash);
       const metadata = svc ? {
         url: svc.url,
         name: svc.name,
@@ -73,8 +73,8 @@ export class EndpointController {
       } : null;
 
       const node = svc && svc.agent_hash
-        ? (() => {
-            const agent = this.agentRepo.findByHash(svc.agent_hash!);
+        ? await (async () => {
+            const agent = await this.agentRepo.findByHash(svc.agent_hash!);
             return agent ? { publicKeyHash: agent.public_key_hash, alias: agent.alias } : null;
           })()
         : null;
@@ -82,7 +82,7 @@ export class EndpointController {
       // Phase 7 — C11 : operator_id exposé seulement quand status='verified'
       // (zero auto-trust). C12 : overlay advisory qui émet OPERATOR_UNVERIFIED
       // quand un operator est rattaché mais pas encore (ou plus) 2/3.
-      const operatorLookup = this.operatorService.resolveOperatorForEndpoint(urlHash);
+      const operatorLookup = await this.operatorService.resolveOperatorForEndpoint(urlHash);
       const operator_id = operatorLookup?.status === 'verified' ? operatorLookup.operatorId : null;
 
       const advisory = computeAdvisoryReport({

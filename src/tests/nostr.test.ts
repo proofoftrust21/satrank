@@ -1,7 +1,7 @@
 // Nostr publisher tests — verify event format, Bayesian tag shape, and signing (C10).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -15,6 +15,7 @@ import type { BayesianSource } from '../config/bayesianConfig';
 import { NostrPublisher } from '../nostr/publisher';
 import { sha256 } from '../utils/crypto';
 import type { Agent } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -49,39 +50,47 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
 
 /** Insère une transaction vérifiée dans la table — on bypass la FK agents pour
  *  pouvoir tester le moteur bayésien sans maquetter tout l'objet Agent. */
-function insertTx(
-  db: Database.Database,
+async function insertTx(
+  db: Pool,
   opts: { endpoint_hash: string; status?: string; source?: string; ts?: number },
-): void {
+): Promise<void> {
   const id = 'tx-' + Math.random().toString(36).slice(2, 12);
   const status = opts.status ?? 'verified';
   const source = opts.source ?? 'probe';
   const ts = opts.ts ?? NOW;
-  db.prepare(`
-    INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
+  // Seed placeholder sender/receiver agents to satisfy FK (idempotent).
+  await db.query(
+    `INSERT INTO agents (public_key_hash, first_seen, last_seen, source)
+     VALUES ($1, $3, $3, 'manual'), ($2, $3, $3, 'manual')
+     ON CONFLICT (public_key_hash) DO NOTHING`,
+    ['a'.repeat(64), 'b'.repeat(64), ts],
+  );
+  await db.query(
+    `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp,
                               payment_hash, preimage, status, protocol,
                               endpoint_hash, operator_id, source, window_bucket)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    'a'.repeat(64),
-    'b'.repeat(64),
-    'medium',
-    ts,
-    'p'.repeat(64),
-    null,
-    status,
-    'l402',
-    opts.endpoint_hash,
-    null,
-    source,
-    '2026-04-18',
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+    [
+      id,
+      'a'.repeat(64),
+      'b'.repeat(64),
+      'medium',
+      ts,
+      'p'.repeat(64),
+      null,
+      status,
+      'l402',
+      opts.endpoint_hash,
+      null,
+      source,
+      '2026-04-18',
+    ],
   );
   // Le verdict Phase 3 lit directement dans streaming_posteriors ; on bump
   // aussi le streaming pour que ces tests restent cohérents avec la nouvelle
   // source de vérité (observer reste bucket-only, cf. CHECK constraint SQL).
   if (source !== 'intent') {
-    ingestBayesianObservation(db, {
+    await ingestBayesianObservation(db, {
       success: status === 'verified',
       timestamp: ts,
       source: source as BayesianSource | 'observer',
@@ -90,8 +99,8 @@ function insertTx(
   }
 }
 
-describe('NostrPublisher', () => {
-  let db: Database.Database;
+describe('NostrPublisher', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let snapshotRepo: SnapshotRepository;
   let probeRepo: ProbeRepository;
@@ -99,13 +108,13 @@ describe('NostrPublisher', () => {
   let survivalService: SurvivalService;
   let bayesianVerdictService: BayesianVerdictService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     // FK OFF : les tests insèrent des transactions directement sans créer
     // les agents correspondants en base (on teste uniquement le shape du publisher).
-    db.pragma('foreign_keys = OFF');
-    runMigrations(db);
-    agentRepo = new AgentRepository(db);
+agentRepo = new AgentRepository(db);
     const txRepo = new TransactionRepository(db);
     const attestationRepo = new AttestationRepository(db);
     snapshotRepo = new SnapshotRepository(db);
@@ -116,7 +125,7 @@ describe('NostrPublisher', () => {
     bayesianVerdictService = createBayesianVerdictService(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
   function makePublisher(minScore = 30): NostrPublisher {
     return new NostrPublisher(
@@ -130,23 +139,23 @@ describe('NostrPublisher', () => {
     );
   }
 
-  it('creates a publisher without errors', () => {
+  it('creates a publisher without errors', async () => {
     expect(makePublisher()).toBeDefined();
   });
 
-  it('findScoredAbove returns agents above threshold', () => {
-    agentRepo.insert(makeAgent('high', { avg_score: 80 }));
-    agentRepo.insert(makeAgent('mid', { avg_score: 40 }));
-    agentRepo.insert(makeAgent('low', { avg_score: 10 }));
+  it('findScoredAbove returns agents above threshold', async () => {
+    await agentRepo.insert(makeAgent('high', { avg_score: 80 }));
+    await agentRepo.insert(makeAgent('mid', { avg_score: 40 }));
+    await agentRepo.insert(makeAgent('low', { avg_score: 10 }));
 
-    const above30 = agentRepo.findScoredAbove(30);
+    const above30 = await agentRepo.findScoredAbove(30);
     expect(above30.length).toBe(2);
     expect(above30[0].avg_score).toBeGreaterThanOrEqual(30);
   });
 
   it('publishScores returns 0 published when no relays configured', async () => {
-    agentRepo.insert(makeAgent('test-node', { avg_score: 50 }));
-    scoringService.computeScore(sha256('test-node'));
+    await agentRepo.insert(makeAgent('test-node', { avg_score: 50 }));
+    await scoringService.computeScore(sha256('test-node'));
 
     const publisher = makePublisher();
     const result = await publisher.publishScores();
@@ -154,35 +163,35 @@ describe('NostrPublisher', () => {
     expect(result.errors).toBeGreaterThanOrEqual(0);
   });
 
-  it('filters agents below minScore', () => {
-    agentRepo.insert(makeAgent('above', { avg_score: 50 }));
-    agentRepo.insert(makeAgent('below', { avg_score: 20 }));
+  it('filters agents below minScore', async () => {
+    await agentRepo.insert(makeAgent('above', { avg_score: 50 }));
+    await agentRepo.insert(makeAgent('below', { avg_score: 20 }));
 
-    const above = agentRepo.findScoredAbove(30);
+    const above = await agentRepo.findScoredAbove(30);
     expect(above.length).toBe(1);
     expect(above[0].alias).toBe('above');
   });
 
   // --- C10 : shape bayésien des events publiés ---
 
-  it('buildScoreEvent retourne null quand aucune observation bayésienne (INSUFFICIENT)', () => {
+  it('buildScoreEvent retourne null quand aucune observation bayésienne (INSUFFICIENT)', async () => {
     const agent = makeAgent('no-data', { avg_score: 80 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
     const publisher = makePublisher();
-    const ev = publisher.buildScoreEvent(agent);
+    const ev = await publisher.buildScoreEvent(agent);
     // Pas de transactions pour cet agent → verdict INSUFFICIENT → pas d'event publié.
     expect(ev).toBeNull();
   });
 
-  it('buildScoreEvent expose le shape canonique Phase 3 avec données suffisantes', () => {
+  it('buildScoreEvent expose le shape canonique Phase 3 avec données suffisantes', async () => {
     const agent = makeAgent('good-node', { avg_score: 80 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
     // 25 probes verified sur l'endpoint de cet agent (public_key_hash)
     for (let i = 0; i < 25; i++) {
-      insertTx(db, { endpoint_hash: agent.public_key_hash, status: 'verified', source: 'probe' });
+      await insertTx(db, { endpoint_hash: agent.public_key_hash, status: 'verified', source: 'probe' });
     }
     const publisher = makePublisher();
-    const ev = publisher.buildScoreEvent(agent);
+    const ev = await publisher.buildScoreEvent(agent);
 
     expect(ev).not.toBeNull();
     expect(ev!.lnPubkey).toBe(agent.public_key);
@@ -199,14 +208,14 @@ describe('NostrPublisher', () => {
     expect(ev!.tauDays).toBe(7);
   });
 
-  it('buildTags émet exactement les 13 tags bayésiens et AUCUN tag legacy', () => {
+  it('buildTags émet exactement les 13 tags bayésiens et AUCUN tag legacy', async () => {
     const agent = makeAgent('tag-test', { avg_score: 75 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
     for (let i = 0; i < 25; i++) {
-      insertTx(db, { endpoint_hash: agent.public_key_hash, status: 'verified', source: 'probe' });
+      await insertTx(db, { endpoint_hash: agent.public_key_hash, status: 'verified', source: 'probe' });
     }
     const publisher = makePublisher();
-    const ev = publisher.buildScoreEvent(agent);
+    const ev = await publisher.buildScoreEvent(agent);
     expect(ev).not.toBeNull();
 
     const tags = publisher.buildTags(ev!);
@@ -229,14 +238,14 @@ describe('NostrPublisher', () => {
     expect(keys).not.toContain('diversity');
   });
 
-  it('buildTags sérialise p_success / ci95_* en fixed(4) et n_obs en entier', () => {
+  it('buildTags sérialise p_success / ci95_* en fixed(4) et n_obs en entier', async () => {
     const agent = makeAgent('precision-test', { avg_score: 75 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
     for (let i = 0; i < 25; i++) {
-      insertTx(db, { endpoint_hash: agent.public_key_hash, status: 'verified', source: 'probe' });
+      await insertTx(db, { endpoint_hash: agent.public_key_hash, status: 'verified', source: 'probe' });
     }
     const publisher = makePublisher();
-    const ev = publisher.buildScoreEvent(agent);
+    const ev = await publisher.buildScoreEvent(agent);
     const tagMap = Object.fromEntries(publisher.buildTags(ev!));
 
     // p_success / ci95_* doivent avoir exactement 4 décimales (stabilité du fingerprint).
@@ -254,10 +263,10 @@ describe('NostrPublisher', () => {
     // 1 agent avec observations suffisantes, 1 agent sans données
     const good = makeAgent('good', { avg_score: 80 });
     const empty = makeAgent('empty', { avg_score: 80 });
-    agentRepo.insert(good);
-    agentRepo.insert(empty);
+    await agentRepo.insert(good);
+    await agentRepo.insert(empty);
     for (let i = 0; i < 25; i++) {
-      insertTx(db, { endpoint_hash: good.public_key_hash, status: 'verified', source: 'probe' });
+      await insertTx(db, { endpoint_hash: good.public_key_hash, status: 'verified', source: 'probe' });
     }
 
     const publisher = makePublisher();

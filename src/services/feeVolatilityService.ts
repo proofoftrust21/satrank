@@ -10,12 +10,12 @@ export class FeeVolatilityService {
     private agentRepo: AgentRepository,
   ) {}
 
-  compute(agentHash: string): FeeVolatility | null {
-    const agent = this.agentRepo.findByHash(agentHash);
+  async compute(agentHash: string): Promise<FeeVolatility | null> {
+    const agent = await this.agentRepo.findByHash(agentHash);
     if (!agent?.public_key) return null;
 
     const cutoff = Math.floor(Date.now() / 1000) - SEVEN_DAYS_SEC;
-    const { changes, channels } = this.feeSnapshotRepo.countFeeChanges(agent.public_key, cutoff);
+    const { changes, channels } = await this.feeSnapshotRepo.countFeeChanges(agent.public_key, cutoff);
 
     if (channels === 0) return null;
 

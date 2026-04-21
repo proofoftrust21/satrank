@@ -1,7 +1,7 @@
 // Probe routing tests — reachability data integration
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -16,6 +16,7 @@ import { createBayesianVerdictService, seedSafeBayesianObservations } from './he
 import { sha256 } from '../utils/crypto';
 import type { Agent } from '../types';
 import type { LndGraphClient, LndQueryRoutesResponse } from '../crawler/lndGraphClient';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -45,26 +46,26 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
-describe('Probe repository', () => {
-  let db: Database.Database;
+describe('Probe repository', async () => {
+  let db: Pool;
   let probeRepo: ProbeRepository;
   let agentRepo: AgentRepository;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     probeRepo = new ProbeRepository(db);
     agentRepo = new AgentRepository(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
-  it('inserts and retrieves a probe result', () => {
+  it('inserts and retrieves a probe result', async () => {
     const agent = makeAgent({ public_key_hash: sha256('probe-test') });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW,
       reachable: 1,
@@ -74,7 +75,7 @@ describe('Probe repository', () => {
       failure_reason: null,
     });
 
-    const latest = probeRepo.findLatest(agent.public_key_hash);
+    const latest = await probeRepo.findLatest(agent.public_key_hash);
     expect(latest).toBeDefined();
     expect(latest!.reachable).toBe(1);
     expect(latest!.latency_ms).toBe(120);
@@ -83,11 +84,11 @@ describe('Probe repository', () => {
     expect(latest!.failure_reason).toBeNull();
   });
 
-  it('findLatest returns the most recent probe', () => {
+  it('findLatest returns the most recent probe', async () => {
     const agent = makeAgent({ public_key_hash: sha256('probe-latest') });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW - 3600,
       reachable: 0,
@@ -96,7 +97,7 @@ describe('Probe repository', () => {
       estimated_fee_msat: null,
       failure_reason: 'no_route',
     });
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW,
       reachable: 1,
@@ -106,17 +107,17 @@ describe('Probe repository', () => {
       failure_reason: null,
     });
 
-    const latest = probeRepo.findLatest(agent.public_key_hash);
+    const latest = await probeRepo.findLatest(agent.public_key_hash);
     expect(latest!.reachable).toBe(1);
     expect(latest!.probed_at).toBe(NOW);
   });
 
-  it('findByTarget returns paginated results', () => {
+  it('findByTarget returns paginated results', async () => {
     const agent = makeAgent({ public_key_hash: sha256('probe-paginate') });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
     for (let i = 0; i < 5; i++) {
-      probeRepo.insert({
+      await probeRepo.insert({
         target_hash: agent.public_key_hash,
         probed_at: NOW - i * 3600,
         reachable: 1,
@@ -127,45 +128,45 @@ describe('Probe repository', () => {
       });
     }
 
-    const page1 = probeRepo.findByTarget(agent.public_key_hash, 2, 0);
+    const page1 = await probeRepo.findByTarget(agent.public_key_hash, 2, 0);
     expect(page1).toHaveLength(2);
     expect(page1[0].probed_at).toBe(NOW); // most recent first
 
-    const page2 = probeRepo.findByTarget(agent.public_key_hash, 2, 2);
+    const page2 = await probeRepo.findByTarget(agent.public_key_hash, 2, 2);
     expect(page2).toHaveLength(2);
   });
 
-  it('countProbedAgents counts distinct targets', () => {
+  it('countProbedAgents counts distinct targets', async () => {
     const a1 = makeAgent({ public_key_hash: sha256('pa1') });
     const a2 = makeAgent({ public_key_hash: sha256('pa2') });
-    agentRepo.insert(a1);
-    agentRepo.insert(a2);
+    await agentRepo.insert(a1);
+    await agentRepo.insert(a2);
 
-    probeRepo.insert({ target_hash: a1.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
-    probeRepo.insert({ target_hash: a1.public_key_hash, probed_at: NOW - 100, reachable: 1, latency_ms: 110, hops: 2, estimated_fee_msat: 10, failure_reason: null });
-    probeRepo.insert({ target_hash: a2.public_key_hash, probed_at: NOW, reachable: 0, latency_ms: null, hops: null, estimated_fee_msat: null, failure_reason: 'no_route' });
+    await probeRepo.insert({ target_hash: a1.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
+    await probeRepo.insert({ target_hash: a1.public_key_hash, probed_at: NOW - 100, reachable: 1, latency_ms: 110, hops: 2, estimated_fee_msat: 10, failure_reason: null });
+    await probeRepo.insert({ target_hash: a2.public_key_hash, probed_at: NOW, reachable: 0, latency_ms: null, hops: null, estimated_fee_msat: null, failure_reason: 'no_route' });
 
-    expect(probeRepo.countProbedAgents()).toBe(2);
+    expect(await probeRepo.countProbedAgents()).toBe(2);
   });
 
   it('purgeOlderThan removes old probes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('purge-probe') });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW - 100000, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
-    probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
+    await probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW - 100000, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
+    await probeRepo.insert({ target_hash: agent.public_key_hash, probed_at: NOW, reachable: 1, latency_ms: 100, hops: 2, estimated_fee_msat: 10, failure_reason: null });
 
     const purged = await probeRepo.purgeOlderThan(50000);
     expect(purged).toBe(1);
 
-    const remaining = probeRepo.findByTarget(agent.public_key_hash, 10, 0);
+    const remaining = await probeRepo.findByTarget(agent.public_key_hash, 10, 0);
     expect(remaining).toHaveLength(1);
     expect(remaining[0].probed_at).toBe(NOW);
   });
 });
 
-describe('Probe scoring integration', () => {
-  let db: Database.Database;
+describe('Probe scoring integration', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let txRepo: TransactionRepository;
   let attestationRepo: AttestationRepository;
@@ -173,10 +174,10 @@ describe('Probe scoring integration', () => {
   let probeRepo: ProbeRepository;
   let scoringService: ScoringService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     txRepo = new TransactionRepository(db);
     attestationRepo = new AttestationRepository(db);
@@ -185,20 +186,20 @@ describe('Probe scoring integration', () => {
     scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
-  it('penalizes unreachable nodes', () => {
+  it('penalizes unreachable nodes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('unreachable-node'), capacity_sats: 5_000_000_000 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
     // Score without probe
-    const scoreNoprobe = scoringService.computeScore(agent.public_key_hash);
+    const scoreNoprobe = await scoringService.computeScore(agent.public_key_hash);
 
     // Reset snapshot cache
-    db.exec('DELETE FROM score_snapshots');
+    await db.query('DELETE FROM score_snapshots');
 
     // Add unreachable probe
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW,
       reachable: 0,
@@ -208,16 +209,16 @@ describe('Probe scoring integration', () => {
       failure_reason: 'no_route',
     });
 
-    const scoreWithProbe = scoringService.computeScore(agent.public_key_hash);
+    const scoreWithProbe = await scoringService.computeScore(agent.public_key_hash);
     expect(scoreWithProbe.total).toBeLessThan(scoreNoprobe.total);
   });
 
-  it('multi-axis regularity rewards stable latency and stable hops', () => {
+  it('multi-axis regularity rewards stable latency and stable hops', async () => {
     // Stable node: 5 probes, identical latency and hop count → full multi-axis score
     const stableAgent = makeAgent({ public_key_hash: sha256('stable-node'), capacity_sats: 5_000_000_000, last_seen: NOW - 100 * DAY });
-    agentRepo.insert(stableAgent);
+    await agentRepo.insert(stableAgent);
     for (let i = 0; i < 5; i++) {
-      probeRepo.insert({
+      await probeRepo.insert({
         target_hash: stableAgent.public_key_hash,
         probed_at: NOW - i * 3600,
         reachable: 1,
@@ -230,11 +231,11 @@ describe('Probe scoring integration', () => {
 
     // Jittery node: 5 probes, same uptime, but wildly varying latency and hop counts
     const jitteryAgent = makeAgent({ public_key_hash: sha256('jittery-node'), capacity_sats: 5_000_000_000, last_seen: NOW - 100 * DAY });
-    agentRepo.insert(jitteryAgent);
+    await agentRepo.insert(jitteryAgent);
     const jitterLatencies = [100, 800, 200, 1500, 300];
     const jitterHops = [2, 5, 3, 6, 4];
     for (let i = 0; i < 5; i++) {
-      probeRepo.insert({
+      await probeRepo.insert({
         target_hash: jitteryAgent.public_key_hash,
         probed_at: NOW - i * 3600,
         reachable: 1,
@@ -245,8 +246,8 @@ describe('Probe scoring integration', () => {
       });
     }
 
-    const stableScore = scoringService.computeScore(stableAgent.public_key_hash);
-    const jitteryScore = scoringService.computeScore(jitteryAgent.public_key_hash);
+    const stableScore = await scoringService.computeScore(stableAgent.public_key_hash);
+    const jitteryScore = await scoringService.computeScore(jitteryAgent.public_key_hash);
 
     // Multi-axis regularity: uptime*70 + latency_consistency*20 + hop_stability*10
     // Stable: 100%*70 + 1.0*20 + 1.0*10 = 100
@@ -256,15 +257,15 @@ describe('Probe scoring integration', () => {
     expect(stableScore.components.regularity).toBeGreaterThan(jitteryScore.components.regularity);
   });
 
-  it('100% uptime alone does not max out regularity — stability matters', () => {
+  it('100% uptime alone does not max out regularity — stability matters', async () => {
     // This is the anti-saturation guarantee: a node that is always reachable but whose
     // route keeps shifting should NOT score 100 on regularity.
     const agent = makeAgent({ public_key_hash: sha256('uptime-only'), capacity_sats: 5_000_000_000, last_seen: NOW - 100 * DAY });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
     // 6 probes, all reachable, but big hop stddev
     const hops = [2, 5, 2, 6, 2, 6];
     for (let i = 0; i < 6; i++) {
-      probeRepo.insert({
+      await probeRepo.insert({
         target_hash: agent.public_key_hash,
         probed_at: NOW - i * 3600,
         reachable: 1,
@@ -274,18 +275,18 @@ describe('Probe scoring integration', () => {
         failure_reason: null,
       });
     }
-    const { components } = scoringService.computeScore(agent.public_key_hash);
+    const { components } = await scoringService.computeScore(agent.public_key_hash);
     // uptime 100% → 70, but the other axes reduce the total meaningfully
     expect(components.regularity).toBeGreaterThan(70);
     expect(components.regularity).toBeLessThan(95);
   });
 
-  it('ignores stale probe data', () => {
+  it('ignores stale probe data', async () => {
     const agent = makeAgent({ public_key_hash: sha256('stale-probe'), capacity_sats: 5_000_000_000 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
     // Add old unreachable probe (> 24h)
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW - 100_000,
       reachable: 0,
@@ -296,19 +297,19 @@ describe('Probe scoring integration', () => {
     });
 
     // Score without fresh probe should not be penalized
-    const score1 = scoringService.computeScore(agent.public_key_hash);
+    const score1 = await scoringService.computeScore(agent.public_key_hash);
 
     // Score a fresh one with no probe repo for comparison
     const scoringNoProbe = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db);
-    db.exec('DELETE FROM score_snapshots');
-    const score2 = scoringNoProbe.computeScore(agent.public_key_hash);
+    await db.query('DELETE FROM score_snapshots');
+    const score2 = await scoringNoProbe.computeScore(agent.public_key_hash);
 
     expect(score1.total).toBe(score2.total);
   });
 });
 
-describe('Probe verdict integration', () => {
-  let db: Database.Database;
+describe('Probe verdict integration', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let txRepo: TransactionRepository;
   let attestationRepo: AttestationRepository;
@@ -316,10 +317,10 @@ describe('Probe verdict integration', () => {
   let probeRepo: ProbeRepository;
   let verdictService: VerdictService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     txRepo = new TransactionRepository(db);
     attestationRepo = new AttestationRepository(db);
@@ -331,13 +332,13 @@ describe('Probe verdict integration', () => {
     verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
   it('flags unreachable nodes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('unreachable-verdict'), total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW,
       reachable: 0,
@@ -361,10 +362,10 @@ describe('Probe verdict integration', () => {
       capacity_sats: 10_000_000_000,
       last_seen: NOW - 3600, // 1 hour ago — gossip is fresh
     });
-    agentRepo.insert(agent);
-    seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
+    await agentRepo.insert(agent);
+    await seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
 
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW,
       reachable: 0,
@@ -382,9 +383,9 @@ describe('Probe verdict integration', () => {
 
   it('does not flag reachable nodes', async () => {
     const agent = makeAgent({ public_key_hash: sha256('reachable-verdict'), total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW,
       reachable: 1,
@@ -398,11 +399,11 @@ describe('Probe verdict integration', () => {
     expect(verdict.flags).not.toContain('unreachable');
   });
 
-  it('returns probe evidence in agent score', () => {
+  it('returns probe evidence in agent score', async () => {
     const agent = makeAgent({ public_key_hash: sha256('probe-evidence'), public_key: '02abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab' });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: agent.public_key_hash,
       probed_at: NOW,
       reachable: 1,
@@ -414,7 +415,7 @@ describe('Probe verdict integration', () => {
 
     const agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db), probeRepo);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
     expect(result.evidence.probe).not.toBeNull();
     expect(result.evidence.probe!.reachable).toBe(true);
     expect(result.evidence.probe!.latencyMs).toBe(200);
@@ -423,13 +424,13 @@ describe('Probe verdict integration', () => {
     expect(result.evidence.probe!.probedAt).toBe(NOW);
   });
 
-  it('returns null probe evidence when not probed', () => {
+  it('returns null probe evidence when not probed', async () => {
     const agent = makeAgent({ public_key_hash: sha256('no-probe-evidence') });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
     const agentService = new AgentService(agentRepo, txRepo, attestationRepo, createBayesianVerdictService(db), probeRepo);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
     expect(result.evidence.probe).toBeNull();
   });
 });
@@ -447,20 +448,20 @@ function makeMockLndClient(response: LndQueryRoutesResponse): LndGraphClient {
 const CALLER_PUBKEY = '02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const TARGET_PUBKEY = '03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
-describe('Personalized pathfinding', () => {
-  let db: Database.Database;
+describe('Personalized pathfinding', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let probeRepo: ProbeRepository;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     probeRepo = new ProbeRepository(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(async () => { await teardownTestPool(testDb); });
 
   function buildVerdictService(lndClient?: LndGraphClient): VerdictService {
     const txRepo = new TransactionRepository(db);
@@ -475,8 +476,8 @@ describe('Personalized pathfinding', () => {
   it('returns pathfinding result when route exists', async () => {
     const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
     const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(caller);
-    agentRepo.insert(target);
+    await agentRepo.insert(caller);
+    await agentRepo.insert(target);
 
     const mockClient = makeMockLndClient({
       routes: [{
@@ -508,8 +509,8 @@ describe('Personalized pathfinding', () => {
   it('flags unreachable_from_caller when no route exists', async () => {
     const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
     const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(caller);
-    agentRepo.insert(target);
+    await agentRepo.insert(caller);
+    await agentRepo.insert(target);
 
     const mockClient = makeMockLndClient({ routes: [] });
     const verdictService = buildVerdictService(mockClient);
@@ -525,11 +526,11 @@ describe('Personalized pathfinding', () => {
   it('live pathfinding overrides stale unreachable probe', async () => {
     const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
     const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(caller);
-    agentRepo.insert(target);
+    await agentRepo.insert(caller);
+    await agentRepo.insert(target);
 
     // Stale probe says unreachable
-    probeRepo.insert({
+    await probeRepo.insert({
       target_hash: target.public_key_hash,
       probed_at: NOW - 3600, // 1 hour ago — within PROBE_FRESHNESS_TTL
       reachable: 0,
@@ -564,8 +565,8 @@ describe('Personalized pathfinding', () => {
   it('returns null pathfinding when caller has no Lightning pubkey', async () => {
     const caller = makeAgent({ public_key_hash: sha256('hash-only-caller'), public_key: null });
     const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(caller);
-    agentRepo.insert(target);
+    await agentRepo.insert(caller);
+    await agentRepo.insert(target);
 
     const mockClient = makeMockLndClient({ routes: [] });
     const verdictService = buildVerdictService(mockClient);
@@ -577,8 +578,8 @@ describe('Personalized pathfinding', () => {
   it('returns null pathfinding when no LND client configured', async () => {
     const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
     const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(caller);
-    agentRepo.insert(target);
+    await agentRepo.insert(caller);
+    await agentRepo.insert(target);
 
     const verdictService = buildVerdictService(); // no LND client
     const result = await verdictService.getVerdict(target.public_key_hash, caller.public_key_hash);
@@ -588,7 +589,7 @@ describe('Personalized pathfinding', () => {
 
   it('returns null pathfinding when caller_pubkey not provided', async () => {
     const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(target);
+    await agentRepo.insert(target);
 
     const mockClient = makeMockLndClient({ routes: [] });
     const verdictService = buildVerdictService(mockClient);
@@ -600,8 +601,8 @@ describe('Personalized pathfinding', () => {
   it('caches pathfinding results', async () => {
     const caller = makeAgent({ public_key_hash: sha256(CALLER_PUBKEY), public_key: CALLER_PUBKEY });
     const target = makeAgent({ public_key_hash: sha256(TARGET_PUBKEY), public_key: TARGET_PUBKEY, total_transactions: 500, capacity_sats: 10_000_000_000 });
-    agentRepo.insert(caller);
-    agentRepo.insert(target);
+    await agentRepo.insert(caller);
+    await agentRepo.insert(target);
 
     let callCount = 0;
     const mockClient: LndGraphClient = {

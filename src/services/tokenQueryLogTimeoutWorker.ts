@@ -20,7 +20,7 @@
 // worker is strictly the no-op counterpart that accounts for the 3rd
 // exhaustive case of §4. Tests assert `transactions` row count is unchanged
 // after a scan across a seeded token_query_log with expired rows.
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import { logger } from '../logger';
 
 export interface TokenQueryLogTimeoutScanResult {
@@ -39,21 +39,21 @@ export interface TokenQueryLogTimeoutScanResult {
 
 export class TokenQueryLogTimeoutWorker {
   constructor(
-    private db: Database.Database,
+    private pool: Pool,
     private timeoutHours: number = 24,
   ) {}
 
   /** Scan `token_query_log` and classify every row. INVARIANT: zero
    *  inserts, zero updates, zero deletes. A failed scan must not crash the
    *  process — we log and return a best-effort result. */
-  scan(nowSeconds: number = Math.floor(Date.now() / 1000)): TokenQueryLogTimeoutScanResult {
+  async scan(nowSeconds: number = Math.floor(Date.now() / 1000)): Promise<TokenQueryLogTimeoutScanResult> {
     const result: TokenQueryLogTimeoutScanResult = { expired: 0, resolved: 0, pending: 0 };
     const cutoff = nowSeconds - this.timeoutHours * 3600;
 
     try {
-      const rows = this.db.prepare(
+      const { rows } = await this.pool.query<{ payment_hash: Buffer; target_hash: string; decided_at: number }>(
         'SELECT payment_hash, target_hash, decided_at FROM token_query_log',
-      ).all() as Array<{ payment_hash: Buffer; target_hash: string; decided_at: number }>;
+      );
 
       // Bulk-fetch resolved (payment_hash, target_hash) pairs from
       // transactions so the O(n) scan doesn't issue n queries. A resolved
@@ -61,10 +61,9 @@ export class TokenQueryLogTimeoutWorker {
       // (receiver_hash = target_hash, payment_hash equal). Both ReportService
       // write paths (intent + report) store the full payment_hash hex on tx;
       // token_query_log keeps it as the raw sha256 Buffer. Compare on hex.
-      const resolvedStmt = this.db.prepare(
+      const { rows: resolvedRows } = await this.pool.query<{ payment_hash: string; receiver_hash: string }>(
         "SELECT payment_hash, receiver_hash FROM transactions WHERE source = 'intent'",
       );
-      const resolvedRows = resolvedStmt.all() as Array<{ payment_hash: string; receiver_hash: string }>;
       const resolvedSet = new Set(resolvedRows.map(r => `${r.payment_hash}:${r.receiver_hash}`));
 
       for (const row of rows) {

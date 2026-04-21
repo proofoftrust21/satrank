@@ -1,7 +1,7 @@
 // MCP server tool response shape tests
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../database/migrations';
+import type { Pool } from 'pg';
+import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { AttestationRepository } from '../repositories/attestationRepository';
@@ -12,6 +12,7 @@ import { TrendService } from '../services/trendService';
 import { sha256 } from '../utils/crypto';
 import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 import type { Agent } from '../types';
+let testDb: TestDb;
 
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
@@ -41,17 +42,16 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
-describe('MCP tool response shapes', () => {
-  let db: Database.Database;
+describe('MCP tool response shapes', async () => {
+  let db: Pool;
   let agentRepo: AgentRepository;
   let agentService: AgentService;
   let statsService: StatsService;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrations(db);
+  beforeEach(async () => {
+    testDb = await setupTestPool();
 
+    db = testDb.pool;
     agentRepo = new AgentRepository(db);
     const txRepo = new TransactionRepository(db);
     const attestationRepo = new AttestationRepository(db);
@@ -61,9 +61,9 @@ describe('MCP tool response shapes', () => {
     statsService = new StatsService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, trendService);
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(async () => { await teardownTestPool(testDb); });
 
-  it('get_agent_score returns evidence with all sections', () => {
+  it('get_agent_score returns evidence with all sections', async () => {
     const pubkey = 'pk-mcp-test';
     const agent = makeAgent({
       public_key_hash: sha256(pubkey),
@@ -79,9 +79,9 @@ describe('MCP tool response shapes', () => {
       betweenness_rank: 30,
       query_count: 42,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const result = agentService.getAgentScore(agent.public_key_hash);
+    const result = await agentService.getAgentScore(agent.public_key_hash);
 
     // Bayesian structure
     expect(typeof result.bayesian.p_success).toBe('number');
@@ -108,7 +108,7 @@ describe('MCP tool response shapes', () => {
     expect(result.evidence.popularity.bonusApplied).toBeGreaterThan(0);
   });
 
-  it('get_top_agents returns agents with Bayesian block', () => {
+  it('get_top_agents returns agents with Bayesian block', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('top-mcp'),
       alias: 'TopNode',
@@ -118,9 +118,9 @@ describe('MCP tool response shapes', () => {
       lnplus_rank: 5,
       query_count: 100,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const agents = agentService.getTopAgents(10, 0);
+    const agents = await agentService.getTopAgents(10, 0);
     expect(agents.length).toBeGreaterThan(0);
 
     const a = agents[0];
@@ -131,23 +131,23 @@ describe('MCP tool response shapes', () => {
     expect(['SAFE', 'RISKY', 'UNKNOWN', 'INSUFFICIENT']).toContain(a.bayesian.verdict);
   });
 
-  it('search_agents returns agents with LN+ fields', () => {
+  it('search_agents returns agents with LN+ fields', async () => {
     const agent = makeAgent({
       public_key_hash: sha256('search-mcp'),
       alias: 'SearchableNode',
       positive_ratings: 5,
       lnplus_rank: 3,
     });
-    agentRepo.insert(agent);
+    await agentRepo.insert(agent);
 
-    const agents = agentService.searchByAlias('Searchable', 10, 0);
+    const agents = await agentService.searchByAlias('Searchable', 10, 0);
     expect(agents.length).toBe(1);
     expect(agents[0].positive_ratings).toBe(5);
     expect(agents[0].lnplus_rank).toBe(3);
   });
 
-  it('get_network_stats returns expected shape', () => {
-    const stats = statsService.getNetworkStats();
+  it('get_network_stats returns expected shape', async () => {
+    const stats = await statsService.getNetworkStats();
     expect(stats).toHaveProperty('totalAgents');
     expect(stats).toHaveProperty('totalChannels');
     expect(stats).toHaveProperty('nodesWithRatings');

@@ -26,6 +26,9 @@
 //   - exit 0 en succès, 1 en erreur. Si une table échoue les autres continuent
 //     (goal is best-effort propreté, pas all-or-nothing).
 
+import type { Pool } from 'pg';
+import { getCrawlerPool, closePools } from '../database/connection';
+import { runMigrations } from '../database/migrations';
 import {
   EndpointDailyBucketsRepository,
   NodeDailyBucketsRepository,
@@ -42,7 +45,6 @@ import {
   RouteStreamingPosteriorRepository,
 } from '../repositories/streamingPosteriorRepository';
 import { BUCKET_RETENTION_DAYS } from '../config/bayesianConfig';
-import type Database from 'better-sqlite3';
 
 /** Seuil par défaut pour purger les rows streaming dormantes. Rationale :
  *  à τ=7d, exp(-90/7) ≈ 2.6e-6 — l'évidence excédentaire a totalement fondu.
@@ -51,7 +53,7 @@ import type Database from 'better-sqlite3';
 export const DEFAULT_STREAMING_STALE_DAYS = 90;
 
 export interface PruneOptions {
-  db: Database.Database;
+  pool: Pool;
   /** Override le seuil de rétention buckets (défaut BUCKET_RETENTION_DAYS). */
   bucketRetentionDays?: number;
   /** Override le seuil streaming dormant (défaut 90). */
@@ -82,7 +84,7 @@ export interface PruneResult {
   errors: number;
 }
 
-export function runPrune(opts: PruneOptions): PruneResult {
+export async function runPrune(opts: PruneOptions): Promise<PruneResult> {
   const now = opts.nowSec ?? Math.floor(Date.now() / 1000);
   const bucketDays = opts.bucketRetentionDays ?? BUCKET_RETENTION_DAYS;
   const streamingDays = opts.streamingStaleDays ?? DEFAULT_STREAMING_STALE_DAYS;
@@ -99,15 +101,15 @@ export function runPrune(opts: PruneOptions): PruneResult {
   };
 
   const bucketRepos = {
-    endpoint: new EndpointDailyBucketsRepository(opts.db),
-    service: new ServiceDailyBucketsRepository(opts.db),
-    operator: new OperatorDailyBucketsRepository(opts.db),
-    node: new NodeDailyBucketsRepository(opts.db),
-    route: new RouteDailyBucketsRepository(opts.db),
+    endpoint: new EndpointDailyBucketsRepository(opts.pool),
+    service: new ServiceDailyBucketsRepository(opts.pool),
+    operator: new OperatorDailyBucketsRepository(opts.pool),
+    node: new NodeDailyBucketsRepository(opts.pool),
+    route: new RouteDailyBucketsRepository(opts.pool),
   };
   for (const [name, repo] of Object.entries(bucketRepos)) {
     try {
-      const n = repo.pruneOlderThan(bucketCutoffDay);
+      const n = await repo.pruneOlderThan(bucketCutoffDay);
       result.buckets[name as keyof typeof bucketRepos] = n;
       result.buckets.total += n;
     } catch (err) {
@@ -118,15 +120,15 @@ export function runPrune(opts: PruneOptions): PruneResult {
   }
 
   const streamingRepos = {
-    endpoint: new EndpointStreamingPosteriorRepository(opts.db),
-    service: new ServiceStreamingPosteriorRepository(opts.db),
-    operator: new OperatorStreamingPosteriorRepository(opts.db),
-    node: new NodeStreamingPosteriorRepository(opts.db),
-    route: new RouteStreamingPosteriorRepository(opts.db),
+    endpoint: new EndpointStreamingPosteriorRepository(opts.pool),
+    service: new ServiceStreamingPosteriorRepository(opts.pool),
+    operator: new OperatorStreamingPosteriorRepository(opts.pool),
+    node: new NodeStreamingPosteriorRepository(opts.pool),
+    route: new RouteStreamingPosteriorRepository(opts.pool),
   };
   for (const [name, repo] of Object.entries(streamingRepos)) {
     try {
-      const n = repo.pruneStale(streamingCutoffTs);
+      const n = await repo.pruneStale(streamingCutoffTs);
       result.streaming[name as keyof typeof streamingRepos] = n;
       result.streaming.total += n;
     } catch (err) {
@@ -145,32 +147,32 @@ const isMain =
   typeof module !== 'undefined' &&
   require.main === module;
 
-if (isMain) {
+async function main(): Promise<void> {
   const bucketOverride = process.env.BUCKET_RETENTION_DAYS_OVERRIDE;
   const streamingOverride = process.env.STREAMING_STALE_DAYS_OVERRIDE;
   const bucketRetentionDays = bucketOverride ? Number(bucketOverride) : undefined;
   const streamingStaleDays = streamingOverride ? Number(streamingOverride) : undefined;
 
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getDatabase } = require('../database/connection') as typeof import('../database/connection');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { runMigrations } = require('../database/migrations') as typeof import('../database/migrations');
-    const db = getDatabase();
-    runMigrations(db);
+  const pool = getCrawlerPool();
+  await runMigrations(pool);
 
-    const result = runPrune({ db, bucketRetentionDays, streamingStaleDays });
-    const line = [
-      `cutoff_day=${result.bucketCutoffDay}`,
-      `buckets_total=${result.buckets.total}`,
-      `streaming_total=${result.streaming.total}`,
-      `errors=${result.errors}`,
-    ].join(' ');
-    process.stdout.write(`[prune-bayesian] ${line}\n`);
-    process.exit(result.errors === 0 ? 0 : 1);
-  } catch (err) {
+  const result = await runPrune({ pool, bucketRetentionDays, streamingStaleDays });
+  const line = [
+    `cutoff_day=${result.bucketCutoffDay}`,
+    `buckets_total=${result.buckets.total}`,
+    `streaming_total=${result.streaming.total}`,
+    `errors=${result.errors}`,
+  ].join(' ');
+  process.stdout.write(`[prune-bayesian] ${line}\n`);
+  await closePools();
+  process.exit(result.errors === 0 ? 0 : 1);
+}
+
+if (isMain) {
+  main().catch(async (err) => {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[prune-bayesian] FATAL: ${msg}\n`);
+    await closePools();
     process.exit(1);
-  }
+  });
 }
