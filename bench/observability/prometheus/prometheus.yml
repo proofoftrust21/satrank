@@ -1,10 +1,13 @@
 # Phase 12A Prometheus scrape config
-# Scrapes:
+# Scrapes (staging-local only):
 #   - itself (prometheus)
 #   - staging node-exporter (host) + cadvisor (containers)
 #   - staging SatRank API /metrics (direct, localhost auth bypass via host-gateway)
-#   - prod SatRank API /metrics via SSH tunnel on localhost:18080
-#     (see systemd/satrank-prod-tunnel.service — maintained on the staging VM)
+#
+# Prod is observed via nginx access logs pushed by ptail-prod into Loki —
+# not scraped as Prometheus targets. This avoids a persistent SSH tunnel
+# to prod and keeps Phase 12A strictly within its authorized read-only
+# prod surface (promtail + A6 smoke test).
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -38,18 +41,6 @@ scrape_configs:
         labels:
           env: staging
           component: api
-
-  - job_name: satrank-api-prod
-    scrape_interval: 30s
-    metrics_path: /metrics
-    static_configs:
-      - targets: ['host.docker.internal:18080']
-        labels:
-          env: prod
-          component: api
-    # Tunnel on staging VM: localhost:18080 → prod:127.0.0.1:8080
-    # Prod's /metrics bypasses auth for localhost, so no API key needed.
-    # Tunnel is systemd-managed (see systemd/satrank-prod-tunnel.service).
 
   - job_name: loki-self
     static_configs:
