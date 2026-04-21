@@ -10,7 +10,7 @@ services:
       - /var/log/nginx:/var/log/nginx:ro
       - /var/log:/var/log:ro
       - promtail-prod-positions:/var/lib/promtail
-    command: -config.file=/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     restart: unless-stopped
     # Push target = staging Loki. IP set via env at deploy time.
     environment:
