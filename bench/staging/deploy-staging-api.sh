@@ -18,7 +18,9 @@ ssh "root@${STAGING_IP}" "mkdir -p ${REMOTE_DIR}"
 rsync -av --delete \
   --exclude='.git' \
   --exclude='node_modules' \
+  --exclude='**/node_modules' \
   --exclude='dist' \
+  --exclude='**/dist' \
   --exclude='coverage' \
   --exclude='.DS_Store' \
   --exclude='data/*.db' \
@@ -29,6 +31,13 @@ rsync -av --delete \
   --exclude='.env.production' \
   --exclude='.env.local' \
   --exclude='bench/observability' \
+  --exclude='python-sdk' \
+  --exclude='.venv' \
+  --exclude='**/.venv' \
+  --exclude='sdk/*.tgz' \
+  --exclude='*.wheel' \
+  --exclude='*.whl' \
+  --exclude='docs/phase-*/*.db' \
   "${REPO}/" \
   "root@${STAGING_IP}:${REMOTE_DIR}/"
 

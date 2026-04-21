@@ -15,7 +15,10 @@
 services:
   api:
     build:
-      context: ../..
+      # The deploy script places this compose file into /opt/satrank-staging/
+      # alongside the Dockerfile + src/. Do NOT change to "../..": local runs
+      # of this compose outside of deploy-staging-api.sh are not supported.
+      context: .
       dockerfile: Dockerfile
       args:
         GIT_COMMIT: ${GIT_COMMIT:-phase-12a-bench}
