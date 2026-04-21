@@ -1,5 +1,6 @@
 // Prometheus metrics middleware and registry
 import client from 'prom-client';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import type { Request, Response, NextFunction } from 'express';
 
 // Custom registry (avoids polluting default)
@@ -439,6 +440,95 @@ export const probeInvoiceSats = new client.Histogram({
   buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000],
   registers: [metricsRegistry],
 });
+
+// --- Phase 12B B6.3 : event loop + pg pool + cache ratio ---
+
+/** Event loop lag p50 / p99 in seconds. Sampled every 10 ms via
+ *  `perf_hooks.monitorEventLoopDelay` (high-resolution histogram). Call
+ *  `refreshEventLoopGauges()` from the /metrics scrape handler to snapshot
+ *  the current histogram before it gets reset on the next call. A p99
+ *  > 0.1 s sustained signals a blocking CPU path; > 1 s means requests
+ *  queue at the HTTP layer. */
+export const eventLoopLagP50 = new client.Gauge({
+  name: 'satrank_event_loop_lag_p50_seconds',
+  help: 'Node event loop lag p50 in seconds (last scrape window)',
+  registers: [metricsRegistry],
+});
+export const eventLoopLagP99 = new client.Gauge({
+  name: 'satrank_event_loop_lag_p99_seconds',
+  help: 'Node event loop lag p99 in seconds (last scrape window)',
+  registers: [metricsRegistry],
+});
+export const eventLoopLagMax = new client.Gauge({
+  name: 'satrank_event_loop_lag_max_seconds',
+  help: 'Node event loop lag max in seconds (last scrape window)',
+  registers: [metricsRegistry],
+});
+
+const eventLoopHistogram = monitorEventLoopDelay({ resolution: 10 });
+eventLoopHistogram.enable();
+
+/** Called from the /metrics scrape to publish the latest event-loop-delay
+ *  percentiles and reset the rolling histogram for the next window. Kept
+ *  separate so the scrape handler stays synchronous. */
+export function refreshEventLoopGauges(): void {
+  // monitorEventLoopDelay returns nanoseconds; convert to seconds for
+  // Prometheus convention (buckets expressed as `_seconds`).
+  eventLoopLagP50.set(eventLoopHistogram.percentile(50) / 1e9);
+  eventLoopLagP99.set(eventLoopHistogram.percentile(99) / 1e9);
+  eventLoopLagMax.set(eventLoopHistogram.max / 1e9);
+  eventLoopHistogram.reset();
+}
+
+/** Cache hit ratio over the lifetime of the process (hit / (hit + miss)).
+ *  Useful as a top-line SLI — a drop below ~0.8 on the stats / agents:top
+ *  namespaces indicates thrash or TTL misconfiguration. Updated on every
+ *  /metrics scrape via `refreshCacheRatio()` from the accumulated
+ *  `cacheEvents` counters; derived (not raw) so PromQL dashboards can
+ *  plot it without composing a `rate(…)/rate(…)` expression. */
+export const cacheHitRatio = new client.Gauge({
+  name: 'satrank_cache_hit_ratio',
+  help: 'Process-lifetime cache hit ratio: hit / (hit + miss). -1 if no events yet.',
+  registers: [metricsRegistry],
+});
+
+/** Pool-level pg query duration — every query routed through `getPool()` /
+ *  `getCrawlerPool()` lands here, so the observability does not depend on
+ *  repositories opting in (the existing `satrank_db_query_duration_seconds`
+ *  is opt-in per repo method). Labels limited to `{pool}` to avoid
+ *  high-cardinality (pool-wide SQL text is not safe as a label). */
+export const pgPoolQueryDuration = new client.Histogram({
+  name: 'satrank_pg_pool_query_duration_seconds',
+  help: 'Wall-clock duration of every pg pool.query() call, by pool name',
+  labelNames: ['pool'] as const,
+  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  registers: [metricsRegistry],
+});
+
+/** Count of pg errors thrown by pool.query(), by pool. Counters make the
+ *  alert shape simple: `increase(satrank_pg_pool_query_errors_total[5m]) > 0`. */
+export const pgPoolQueryErrors = new client.Counter({
+  name: 'satrank_pg_pool_query_errors_total',
+  help: 'pg pool.query() calls that threw, by pool',
+  labelNames: ['pool'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Computes hit / (hit + miss) from the cacheEvents counter and publishes
+ *  to the ratio gauge. Called from the scrape handler so PromQL sees a
+ *  freshly recomputed value aligned with the rest of the snapshot. */
+export async function refreshCacheRatio(): Promise<void> {
+  const metric = await cacheEvents.get();
+  let hits = 0;
+  let misses = 0;
+  for (const v of metric.values) {
+    const ev = v.labels?.event;
+    if (ev === 'hit' || ev === 'stale_hit') hits += v.value;
+    else if (ev === 'miss') misses += v.value;
+  }
+  const total = hits + misses;
+  cacheHitRatio.set(total > 0 ? hits / total : -1);
+}
 
 // --- HTTP metrics middleware ---
 

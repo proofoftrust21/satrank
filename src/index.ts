@@ -4,6 +4,7 @@ import { logger } from './logger';
 import { createApp } from './app';
 import { getPool, closePools } from './database/connection';
 import { runMigrations } from './database/migrations';
+import { runWarmup } from './warmup';
 
 // Global safety net for unhandled promise rejections and uncaught
 // exceptions. Node 22+ crashes the process by default on unhandled
@@ -23,6 +24,10 @@ async function main(): Promise<void> {
   // One-shot bootstrap: apply consolidated schema if version < target. Idempotent.
   const pool = getPool();
   await runMigrations(pool);
+
+  // Phase 12B B6.1 — warm pg pool + JIT + planner cache on the cold /api/intent
+  // path so the first user doesn't pay the ~2.3 s cold penalty (see A7-NOTES).
+  await runWarmup(pool);
 
   const app = createApp();
 

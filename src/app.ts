@@ -390,9 +390,12 @@ export function createApp() {
   app.use(express.static(publicDir));
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: publicDir }));
 
-  // Prometheus metrics endpoint — localhost OR X-API-Key auth.
-  // Localhost access (docker network, Prometheus sidecar, SSH tunnel): no auth.
-  // External access: requires same API_KEY as write endpoints to prevent metric leakage.
+  // Prometheus metrics endpoint — X-API-Key auth always required.
+  // Phase 12B B6.2 : the historical localhost bypass was removed — IP-based
+  // auth is weak when `trust proxy` is miscounted (CDN hop added, CNI/overlay
+  // quirks), and a constant-time API-key compare is cheap enough to apply on
+  // every scrape. L402_BYPASS keeps the endpoint open on the staging/bench
+  // plane (fail-safed against prod by the boot guard in config.ts).
   // Dedicated rate limiter — `/metrics` is mounted before the /api rate
   // limiter. Without a limiter here, the API_KEY comparison is brute-forceable
   // at wire speed (audit H6).
@@ -414,14 +417,11 @@ export function createApp() {
     // docker-bridge Prometheus can scrape without an API key. Fail-safed
     // against production by the startup guard in config.ts.
     if (config.L402_BYPASS) return next();
-    const ip = req.ip ?? req.socket.remoteAddress ?? '';
-    const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-    if (isLocalhost) return next();
-    // External: require API key — constant-time compare to avoid timing leak
-    // that would let an attacker brute-force the key one byte at a time.
+    // Require X-API-Key — constant-time compare to avoid timing leak that
+    // would let an attacker brute-force the key one byte at a time.
     const apiKey = req.headers['x-api-key'] as string | undefined;
     if (safeEqual(apiKey, config.API_KEY)) return next();
-    res.status(403).end('Forbidden — use localhost or X-API-Key');
+    res.status(403).end('Forbidden — X-API-Key required');
   }, async (_req, res) => {
     try {
       const stats = await statsService.getNetworkStats();
@@ -437,11 +437,21 @@ export function createApp() {
 
       // Refresh cache freshness gauges at scrape time
       const { getFreshnessReport } = await import('./cache/memoryCache');
-      const { cacheAgeSeconds, cacheRefreshFailures } = await import('./middleware/metrics');
+      const {
+        cacheAgeSeconds,
+        cacheRefreshFailures,
+        refreshEventLoopGauges,
+        refreshCacheRatio,
+      } = await import('./middleware/metrics');
       for (const r of getFreshnessReport()) {
         cacheAgeSeconds.set({ key: r.key }, r.ageSec);
         cacheRefreshFailures.set({ key: r.key }, r.consecutiveFailures);
       }
+
+      // Phase 12B B6.3 — snapshot event-loop percentiles + cache hit ratio
+      // aligned with the scrape so PromQL sees a coherent view.
+      refreshEventLoopGauges();
+      await refreshCacheRatio();
 
       res.setHeader('Content-Type', metricsRegistry.contentType);
       res.end(await metricsRegistry.metrics());

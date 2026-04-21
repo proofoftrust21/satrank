@@ -4,6 +4,7 @@
 import { Pool, types, type PoolClient, type PoolConfig } from 'pg';
 import { config } from '../config';
 import { logger } from '../logger';
+import { pgPoolQueryDuration, pgPoolQueryErrors } from '../middleware/metrics';
 
 // BIGINT (OID 20) → parse as JS number. Safe for SatRank: max value capacity_sats
 // 21M BTC × 1e8 sats = 2.1e15, well under 2^53 (9.0e15). Counters are far smaller.
@@ -34,8 +35,47 @@ function buildPool(name: PoolName, max: number): Pool {
     logger.error({ err, pool: name }, 'pg pool idle-client error');
   });
 
+  instrumentPool(pool, name);
+
   logger.info({ pool: name, max }, 'pg pool created');
   return pool;
+}
+
+// Phase 12B B6.3 : wrap pool.query so every call lands in
+// pgPoolQueryDuration and pgPoolQueryErrors without requiring repositories
+// to opt in (the existing `satrank_db_query_duration_seconds` is opt-in per
+// repo method — this one closes the blind spot by covering raw pool.query
+// too). pg exposes multiple query overloads (string, QueryConfig, callbacks),
+// so the wrapper stays overload-agnostic by forwarding `arguments` through.
+function instrumentPool(pool: Pool, name: PoolName): void {
+  const original = pool.query.bind(pool) as (...args: unknown[]) => unknown;
+  const wrapped = function instrumentedQuery(...args: unknown[]): unknown {
+    const endTimer = pgPoolQueryDuration.startTimer({ pool: name });
+    let result: unknown;
+    try {
+      result = original(...args);
+    } catch (err: unknown) {
+      endTimer();
+      pgPoolQueryErrors.inc({ pool: name });
+      throw err;
+    }
+    if (result && typeof (result as { then?: unknown }).then === 'function') {
+      return (result as Promise<unknown>).then(
+        (r) => {
+          endTimer();
+          return r;
+        },
+        (err: unknown) => {
+          endTimer();
+          pgPoolQueryErrors.inc({ pool: name });
+          throw err;
+        },
+      );
+    }
+    endTimer();
+    return result;
+  };
+  (pool as unknown as { query: typeof pool.query }).query = wrapped as typeof pool.query;
 }
 
 /** Default pool for API/request handling (max=30). */

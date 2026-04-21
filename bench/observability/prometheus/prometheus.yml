@@ -1,8 +1,15 @@
-# Phase 12A Prometheus scrape config
+# Phase 12A / 12B Prometheus scrape config
 # Scrapes (staging-local only):
 #   - itself (prometheus)
 #   - staging node-exporter (host) + cadvisor (containers)
-#   - staging SatRank API /metrics (direct, localhost auth bypass via host-gateway)
+#   - staging SatRank API /metrics (direct, L402_BYPASS=true on staging opens
+#     /metrics without an API key — fail-safed against prod at boot).
+#
+# Phase 12B B6.2 — the /metrics localhost bypass was removed from both the
+# api and crawler endpoints. Staging relies on L402_BYPASS=true; any future
+# prod scrape must set `authorization:` with a Bearer token matching API_KEY
+# OR uncomment the `satrank-api-prod` block and provide the env-referenced
+# credential file (`prometheus_creds` mounted read-only).
 #
 # Prod is observed via nginx access logs pushed by ptail-prod into Loki —
 # not scraped as Prometheus targets. This avoids a persistent SSH tunnel
@@ -36,6 +43,10 @@ scrape_configs:
 
   - job_name: satrank-api-staging
     metrics_path: /metrics
+    # Staging runs with L402_BYPASS=true — /metrics is open and no API key
+    # header is needed. For prod scraping, duplicate this job with
+    # `http_headers: { X-API-Key: { values: [<key>] } }` or use
+    # `authorization: { type: Bearer, credentials_file: /etc/prometheus/api_key }`.
     static_configs:
       - targets: ['host.docker.internal:8080']
         labels:

@@ -48,25 +48,29 @@ list. Stack consumes existing instrumentation as-is.
 
 ## Latent security finding — /metrics localhost bypass
 
-**Not remediated in Phase 12A.** Flagged for future security audit.
+**Closed in Phase 12B B6.2.** Remediation landed with the quick wins pass.
 
-`src/app.ts:408-416` — the `/metrics` endpoint checks
+`src/app.ts:408-416` — the `/metrics` endpoint previously checked
 `req.ip === '127.0.0.1' || '::1' || '::ffff:127.0.0.1'` and
-**bypasses the `X-API-Key` check** when true. Same pattern exists in
-several places.
+**bypassed the `X-API-Key` check** when true. Same pattern in
+`src/crawler/metricsServer.ts`.
 
-Concerns:
+Concerns that motivated the fix:
 1. IP-based auth is weak: an attacker with SSRF, a proxy hop with
-   `trust proxy` miscount, or a CNI/overlay networking bug can forge
+   `trust proxy` miscount, or a CNI/overlay networking bug could forge
    the localhost appearance.
-2. `req.ip` depends on `app.set('trust proxy', 1)` which we trust.
-   Add one more proxy hop (CDN, WAF) without bumping the count →
-   every request appears to come from 127.0.0.1.
-3. Not a Phase 12A problem — flagging for the next security audit
-   cycle. Recommended fix: require `X-API-Key` even on localhost
-   (constant-time compare is cheap) and expose an explicitly different
-   path like `/metrics-internal` for operator consumption if the
-   localhost bypass has an operational reason that isn't documented.
+2. `req.ip` depends on `app.set('trust proxy', 1)`. Adding one more
+   proxy hop (CDN, WAF) without bumping the count would make every
+   request look like it came from 127.0.0.1.
+
+Fix applied in Phase 12B B6.2:
+- Both api and crawler `/metrics` handlers require a valid `X-API-Key`
+  on every scrape (constant-time `safeEqual` compare).
+- `L402_BYPASS=true` keeps scraping open on staging/bench (fail-safed
+  against prod by the boot guard in `src/config.ts`).
+- Prometheus scrape config (`bench/observability/prometheus/prometheus.yml`)
+  documents how to pass `authorization:` for prod scrapes.
+- Tracked as finding F-08 in `docs/SECURITY-AUDIT-REPORT-2026-04-20.md`.
 
 ## A1 topology decisions (final)
 
