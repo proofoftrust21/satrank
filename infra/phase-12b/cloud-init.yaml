@@ -1,0 +1,64 @@
+#cloud-config
+# Phase 12B B1 — satrank-postgres VM bootstrap
+# cpx42 Debian 12, nbg1 (same DC as SatRank prod 178.104.108.108)
+# Scope: OS essentials + Docker. Postgres container + tuning = B2.
+
+hostname: satrank-postgres
+manage_etc_hosts: true
+
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - ufw
+  - fail2ban
+  - python3-systemd
+  - htop
+  - jq
+  - rsync
+  - sqlite3
+
+# SSH hardening: disable password auth, root SSH only via key
+ssh_pwauth: false
+disable_root: false
+
+# UFW: allow only SSH + Postgres (PG bind only later in B2, kept closed now)
+runcmd:
+  # ---- SSH hardening
+  - sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  - systemctl restart sshd
+  # ---- UFW: deny-by-default, allow SSH only. Postgres port stays closed; opened in B2 bound to prod IP.
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp comment 'ssh'
+  - ufw --force enable
+  # ---- fail2ban with systemd backend (Debian 12 has no /var/log/auth.log)
+  - |
+    cat > /etc/fail2ban/jail.local <<'EOF'
+    [DEFAULT]
+    bantime = 1h
+    findtime = 10m
+    maxretry = 5
+
+    [sshd]
+    enabled = true
+    backend = systemd
+    EOF
+  - systemctl enable --now fail2ban
+  # ---- Docker (Debian 12 official repo)
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - chmod a+r /etc/apt/keyrings/docker.gpg
+  - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+  # ---- Marker
+  - touch /var/lib/satrank-postgres-b1-ready
+  - echo "$(date -u +%FT%TZ) B1 cloud-init done" >> /var/log/satrank-phase-12b.log
+
+final_message: "satrank-postgres ready after $UPTIME seconds."
