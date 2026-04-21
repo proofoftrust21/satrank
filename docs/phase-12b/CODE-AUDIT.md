@@ -243,3 +243,33 @@ Ordre B3 sur 3 jours :
 - 0-user = aucun risque business sur le cut-over.
 
 **Prêt pour B1 dès validation de ce rapport + réponses aux 5 questions ci-dessus.**
+
+---
+
+## 11. Validation Romain — 2026-04-21 (figé)
+
+Décisions frozen post-review, appliquer tel quel dans B1→B9 :
+
+### Réponses aux 5 questions
+
+1. **Test harness Postgres dockerisé** — OK
+2. **Pool sizes** — `API max: 30`, `crawler max: 20` (séparé, pas 20/20)
+3. **`pg_stat_statements`** — OK en B2
+4. **Fenêtre cut-over (B5)** — pas de fenêtre annoncée (0 user). Budget durée : **<30 min attendu, <1 h acceptable**. Au-delà : pause + debug, pas de marche forcée.
+5. **Critère rollback (B5)** — reformulé : **pas** de critère "régression %" (pas de bench post-migration). Rollback déclenché **uniquement** si :
+   - 5xx en boucle > 5 min post-cut-over, OU
+   - queries > 10 s qui bloquent le crawler
+
+### Décisions supplémentaires figées
+
+**A. JSON storage** — garde `TEXT` pour la migration. Zéro changement de type. JSONB = opportunité Phase 12C, ne pas mélanger ici.
+
+**B. Crawler race conditions** — pendant B3, identifier les sections du crawler qui font *check-then-insert* ou *read-modify-write*. Livrable : `docs/phase-12b/CRAWLER-RACE-CHECK.md`. Pour chacune, wrap dans `withTransaction()` avec `SELECT FOR UPDATE` si nécessaire. **Objectif : pas de race introduite par le passage async/multi-connexion.**
+
+**C. Tests verts — même ratio** — baseline avant migration (B0) et après (fin B3) : total / passing / skip / failing. Même ratio passing attendu. Livrable : `docs/phase-12b/TEST-BASELINE.md`.
+
+**D. Cardinal LND (rappel non-négociable)** — si saturation CPU/RAM prod VM > 70 % pendant dump/restore, **throttle**. Toute suspicion d'impact indirect sur LND → **STOP** et demande.
+
+### Scope autonome
+
+GO pour B1→B4 en autonome. **STOP avant B5** pour validation finale avec checklist pré-cut-over.
