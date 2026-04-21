@@ -21,7 +21,7 @@
 import crypto from 'crypto';
 import { z } from 'zod';
 import type { Request, Response, NextFunction } from 'express';
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
 import { config } from '../config';
 import { logger } from '../logger';
@@ -158,27 +158,14 @@ export interface IngestionOutcome {
 }
 
 export class ProbeController {
-  private readonly db: Database.Database;
+  private readonly pool: Pool;
   private readonly lndClient: LndGraphClient;
   private readonly bayesianDeps?: ProbeBayesianDeps;
 
-  /** Prepared statement for the extra 4-credit debit. rate_sats_per_request
-   *  IS NOT NULL guard ensures this only fires for Phase 9 tokens — a
-   *  legacy Aperture token should never reach /api/probe (which is a paid
-   *  endpoint). */
-  private readonly stmtDebit;
-
-  constructor(db: Database.Database, lndClient: LndGraphClient, bayesianDeps?: ProbeBayesianDeps) {
-    this.db = db;
+  constructor(pool: Pool, lndClient: LndGraphClient, bayesianDeps?: ProbeBayesianDeps) {
+    this.pool = pool;
     this.lndClient = lndClient;
     this.bayesianDeps = bayesianDeps;
-    this.stmtDebit = this.db.prepare(`
-      UPDATE token_balance
-      SET balance_credits = balance_credits - ?
-      WHERE payment_hash = ?
-        AND rate_sats_per_request IS NOT NULL
-        AND balance_credits >= ?
-    `);
   }
 
   probe = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -212,10 +199,20 @@ export class ProbeController {
       }
       const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimageMatch[1], 'hex')).digest();
 
-      // Deduct the remaining 4 credits atomically. If the token is legacy
-      // or short on balance, the UPDATE changes 0 rows → 402.
-      const debitResult = this.stmtDebit.run(PROBE_EXTRA_CREDITS, paymentHash, PROBE_EXTRA_CREDITS);
-      if (debitResult.changes === 0) {
+      // Deduct the remaining 4 credits atomically. rate_sats_per_request
+      // IS NOT NULL guard ensures this only fires for Phase 9 tokens — a
+      // legacy Aperture token should never reach /api/probe (which is a paid
+      // endpoint). If the token is legacy or short on balance, the UPDATE
+      // changes 0 rows → 402.
+      const debitResult = await this.pool.query(
+        `UPDATE token_balance
+         SET balance_credits = balance_credits - $1
+         WHERE payment_hash = $2
+           AND rate_sats_per_request IS NOT NULL
+           AND balance_credits >= $3`,
+        [PROBE_EXTRA_CREDITS, paymentHash, PROBE_EXTRA_CREDITS],
+      );
+      if ((debitResult.rowCount ?? 0) === 0) {
         probeTotal.inc({ outcome: 'insufficient_credits' });
         throw new InsufficientCreditsError();
       }
@@ -239,7 +236,7 @@ export class ProbeController {
       // known L402 service. Failures never bubble up to the caller: a probe
       // observation is additive telemetry, not part of the response contract.
       try {
-        const ingestion = this.ingestObservation(parsed.data.url, result);
+        const ingestion = await this.ingestObservation(parsed.data.url, result);
         probeIngestionTotal.inc({ reason: ingestion.reason });
       } catch (err) {
         probeIngestionTotal.inc({ reason: 'tx-write-failed' });
@@ -260,7 +257,7 @@ export class ProbeController {
    *  reference is dangling. Called from the handler on every probe (success
    *  OR failure on a known L402 endpoint) so the Bayesian layer sees both
    *  positive and negative signals. Exposed for tests. */
-  ingestObservation(url: string, result: ProbeResult): IngestionOutcome {
+  async ingestObservation(url: string, result: ProbeResult): Promise<IngestionOutcome> {
     if (!this.bayesianDeps) return { ingested: false, reason: 'no-deps' };
     if (result.target !== 'L402') return { ingested: false, reason: 'not-l402' };
     if (!result.payment) return { ingested: false, reason: 'no-payment' };
@@ -277,10 +274,10 @@ export class ProbeController {
     } catch {
       canonUrl = url;
     }
-    const endpoint = serviceEndpointRepo.findByUrl(canonUrl) ?? serviceEndpointRepo.findByUrl(url);
+    const endpoint = (await serviceEndpointRepo.findByUrl(canonUrl)) ?? (await serviceEndpointRepo.findByUrl(url));
     if (!endpoint) return { ingested: false, reason: 'endpoint-not-found' };
     if (!endpoint.agent_hash) return { ingested: false, reason: 'endpoint-no-operator' };
-    if (!agentRepo.findByHash(endpoint.agent_hash)) {
+    if (!(await agentRepo.findByHash(endpoint.agent_hash))) {
       return { ingested: false, reason: 'operator-agent-missing' };
     }
 
@@ -290,7 +287,7 @@ export class ProbeController {
     // Daily-granularity idempotence: overlapping probes in the same 6h
     // bucket for the same endpoint collapse onto a single row.
     const txId = sha256(`paid:${endpHash}:${bucket}`);
-    if (txRepo.findById(txId)) return { ingested: false, reason: 'duplicate' };
+    if (await txRepo.findById(txId)) return { ingested: false, reason: 'duplicate' };
 
     const success = result.secondFetch?.status === 200;
     const tx: Transaction = {
@@ -313,7 +310,7 @@ export class ProbeController {
     };
 
     try {
-      txRepo.insertWithDualWrite(tx, enrichment, dualWriteMode, 'probeController', dualWriteLogger);
+      await txRepo.insertWithDualWrite(tx, enrichment, dualWriteMode, 'probeController', dualWriteLogger);
     } catch (err) {
       logger.error({
         url, txId, err: err instanceof Error ? err.message : String(err),
@@ -321,7 +318,7 @@ export class ProbeController {
       return { ingested: false, reason: 'tx-write-failed', success, txId, endpointHash: endpHash, operatorId: endpoint.agent_hash };
     }
 
-    bayesian.ingestStreaming({
+    await bayesian.ingestStreaming({
       success,
       timestamp,
       source: 'paid',

@@ -30,18 +30,18 @@ export class ServiceController {
 
   /** Canonical Bayesian block for a service's agent; `null` when no agent is
    *  linked. Centralised so `search` and `best` share identical semantics. */
-  private bayesianFor(agentHash: string | null): BayesianScoreBlock | null {
+  private async bayesianFor(agentHash: string | null): Promise<BayesianScoreBlock | null> {
     if (!agentHash) return null;
     return this.agentService.toBayesianBlock(agentHash);
   }
 
-  search = (req: Request, res: Response, next: NextFunction): void => {
+  search = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = serviceSearchSchema.safeParse(req.query);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.query));
 
       const filters = parsed.data;
-      const { services, total } = this.serviceEndpointRepo.findServices({
+      const { services } = await this.serviceEndpointRepo.findServices({
         q: filters.q,
         category: filters.category,
         minUptime: filters.minUptime,
@@ -51,9 +51,9 @@ export class ServiceController {
       });
 
       // Enrich with SatRank node data
-      const enriched = services.map(svc => {
-        const agent = svc.agent_hash ? this.agentRepo.findByHash(svc.agent_hash) : null;
-        const bayesian = this.bayesianFor(svc.agent_hash ?? null);
+      const enriched = await Promise.all(services.map(async svc => {
+        const agent = svc.agent_hash ? await this.agentRepo.findByHash(svc.agent_hash) : null;
+        const bayesian = await this.bayesianFor(svc.agent_hash ?? null);
         const uptimeRatio = svc.check_count >= 3
           ? Math.round((svc.success_count / svc.check_count) * 1000) / 1000
           : null;
@@ -77,7 +77,7 @@ export class ServiceController {
             bayesian,
           } : null,
         };
-      });
+      }));
 
       // Post-filter by minPSuccess (requires agent join, can't do in SQL)
       const filtered = filters.minPSuccess !== undefined
@@ -98,9 +98,9 @@ export class ServiceController {
     }
   };
 
-  categories = (_req: Request, res: Response, next: NextFunction): void => {
+  categories = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const cats = this.serviceEndpointRepo.findCategories();
+      const cats = await this.serviceEndpointRepo.findCategories();
       res.json({ data: cats });
     } catch (err) {
       next(err);
@@ -121,7 +121,7 @@ export class ServiceController {
    *
    *  `meta.strictness` exposes which pool was used so agents can re-query with
    *  stricter params or inform their user. */
-  best = (req: Request, res: Response, next: NextFunction): void => {
+  best = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = serviceSearchSchema.safeParse(req.query);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.query));
@@ -133,7 +133,7 @@ export class ServiceController {
       // pass health checks consistently, which the attacker can't fake
       // without actually serving healthy responses. Post-fetch we still
       // rank client-side on score × uptime / sqrt(price).
-      const { services } = this.serviceEndpointRepo.findServices({
+      const { services } = await this.serviceEndpointRepo.findServices({
         q: parsed.data.q,
         category: parsed.data.category,
         sort: 'uptime',
@@ -143,24 +143,23 @@ export class ServiceController {
 
       // Enrich all candidates (no verdict gate yet — that's the pool-tier step).
       const minUptime = parsed.data.minUptime ?? 0;
-      const enriched = services
-        .map(svc => {
-          const agent = svc.agent_hash ? this.agentRepo.findByHash(svc.agent_hash) : null;
-          const bayesian = this.bayesianFor(svc.agent_hash ?? null);
-          const uptimeRatio = svc.check_count >= 3 ? svc.success_count / svc.check_count : 0;
-          const price = svc.service_price_sats ?? 0;
-          const httpHealth = svc.last_http_status !== null && svc.last_http_status > 0
-            ? classifyStatus(svc.last_http_status)
-            : 'unknown' as const;
-          return { svc, agent, bayesian, uptimeRatio, price, httpHealth, lastCheckedAt: svc.last_checked_at };
-        })
-        .filter(s =>
-          s.bayesian !== null &&
-          s.uptimeRatio > 0 &&
-          s.price > 0 &&
-          s.uptimeRatio >= minUptime &&
-          s.httpHealth !== 'down',
-        );
+      const enrichedPreFilter = await Promise.all(services.map(async svc => {
+        const agent = svc.agent_hash ? await this.agentRepo.findByHash(svc.agent_hash) : null;
+        const bayesian = await this.bayesianFor(svc.agent_hash ?? null);
+        const uptimeRatio = svc.check_count >= 3 ? svc.success_count / svc.check_count : 0;
+        const price = svc.service_price_sats ?? 0;
+        const httpHealth = svc.last_http_status !== null && svc.last_http_status > 0
+          ? classifyStatus(svc.last_http_status)
+          : 'unknown' as const;
+        return { svc, agent, bayesian, uptimeRatio, price, httpHealth, lastCheckedAt: svc.last_checked_at };
+      }));
+      const enriched = enrichedPreFilter.filter(s =>
+        s.bayesian !== null &&
+        s.uptimeRatio > 0 &&
+        s.price > 0 &&
+        s.uptimeRatio >= minUptime &&
+        s.httpHealth !== 'down',
+      );
 
       // Tier 1 — strict: SAFE verdict + healthy|unknown HTTP.
       const strictPool = enriched.filter(s =>

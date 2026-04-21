@@ -1,6 +1,6 @@
 // L402 token balance middleware — quota system (21 requests per token)
 // After apertureGateAuth verifies the L402 token is valid, this middleware
-// tracks usage via a per-payment_hash counter in SQLite.
+// tracks usage via a per-payment_hash counter in PostgreSQL.
 //
 // Security note: the token balance IS the rate limit for paid endpoints.
 // Each request costs 1 sat, making abuse economically self-limiting.
@@ -9,7 +9,7 @@
 // bypass IP limits but cannot bypass token balance (attacker must pay).
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import { AppError } from '../errors';
 import { logger } from '../logger';
 
@@ -92,7 +92,31 @@ export interface BalanceAuthOptions {
   bypass?: boolean;
 }
 
-export function createBalanceAuth(db: Database.Database, opts: BalanceAuthOptions = {}) {
+interface BalanceRow {
+  current: number;
+  max: number | null;
+  rate_sats_per_request: number | null;
+}
+
+// Unified SQL for the balance read — normalises current/max onto a single
+// axis regardless of the underlying column. For Phase 9, max-credits =
+// max_quota / rate; for legacy, max-credits = max_quota. rate_sats_per_request
+// is returned so the caller can distinguish the two for logging/diagnostics.
+const SQL_GET_BALANCE = `
+  SELECT
+    CASE WHEN rate_sats_per_request IS NOT NULL
+         THEN balance_credits
+         ELSE remaining
+    END AS current,
+    CASE WHEN rate_sats_per_request IS NOT NULL AND rate_sats_per_request > 0
+         THEN max_quota / rate_sats_per_request
+         ELSE max_quota
+    END AS max,
+    rate_sats_per_request
+  FROM token_balance WHERE payment_hash = $1
+`;
+
+export function createBalanceAuth(pool: Pool, opts: BalanceAuthOptions = {}) {
   if (opts.bypass) {
     logger.warn({ component: 'balanceAuth' }, 'L402_BYPASS enabled — paid-endpoint gate short-circuited (staging/bench only)');
     return function balanceAuthBypass(_req: Request, _res: Response, next: NextFunction): void {
@@ -106,40 +130,8 @@ export function createBalanceAuth(db: Database.Database, opts: BalanceAuthOption
   //  - Legacy tokens (Aperture auto-created + pre-Phase-9 deposits that
   //    haven't been backfilled yet): rate_sats_per_request IS NULL → the
   //    decrement axis is `remaining` (the original 1-sat-per-request flow).
-  // Each UPDATE is atomic; we try Phase 9 first and fall back to legacy so a
-  // single prepared stmt per path keeps the hot loop cheap.
-  const stmtDecrementCredits = db.prepare(
-    'UPDATE token_balance SET balance_credits = balance_credits - 1 WHERE payment_hash = ? AND rate_sats_per_request IS NOT NULL AND balance_credits >= 1',
-  );
-  const stmtDecrementLegacy = db.prepare(
-    'UPDATE token_balance SET remaining = remaining - 1 WHERE payment_hash = ? AND rate_sats_per_request IS NULL AND remaining > 0',
-  );
-  // Unified balance read — normalises current/max onto a single axis regardless
-  // of the underlying column. For Phase 9, max-credits = max_quota / rate;
-  // for legacy, max-credits = max_quota. rate_sats_per_request is returned so
-  // the caller can distinguish the two for logging/diagnostics.
-  const stmtGetBalance = db.prepare(`
-    SELECT
-      CASE WHEN rate_sats_per_request IS NOT NULL
-           THEN balance_credits
-           ELSE remaining
-      END AS current,
-      CASE WHEN rate_sats_per_request IS NOT NULL AND rate_sats_per_request > 0
-           THEN max_quota / rate_sats_per_request
-           ELSE max_quota
-      END AS max,
-      rate_sats_per_request
-    FROM token_balance WHERE payment_hash = ?
-  `);
-  const stmtInsert = db.prepare(
-    'INSERT OR IGNORE INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES (?, ?, ?, ?)',
-  );
-  const stmtRefundCredits = db.prepare(
-    'UPDATE token_balance SET balance_credits = balance_credits + 1 WHERE payment_hash = ? AND rate_sats_per_request IS NOT NULL',
-  );
-  const stmtRefundLegacy = db.prepare(
-    'UPDATE token_balance SET remaining = remaining + 1 WHERE payment_hash = ? AND rate_sats_per_request IS NULL',
-  );
+  // Each UPDATE is atomic at the DB level; we try Phase 9 first and fall back
+  // to legacy so the hot loop only makes a second call when the first misses.
 
   function scheduleRefund(res: Response, paymentHash: Buffer): void {
     let refunded = false;
@@ -153,76 +145,107 @@ export function createBalanceAuth(db: Database.Database, opts: BalanceAuthOption
         return;
       }
       refunded = true;
-      try {
-        // Phase 9 first — UPDATE changes 0 rows if the token is legacy, so we
-        // fall back to the legacy refund statement.
-        const phase9 = stmtRefundCredits.run(paymentHash);
-        if (phase9.changes === 0) stmtRefundLegacy.run(paymentHash);
-      } catch (err) {
-        logger.warn({ err, statusCode: res.statusCode }, 'balance refund failed');
-      }
+      // Fire-and-log: the refund is best-effort. The finish event handler is
+      // sync, so we dispatch an async IIFE and swallow failures with a log.
+      (async () => {
+        try {
+          // Phase 9 first — UPDATE changes 0 rows if the token is legacy, so we
+          // fall back to the legacy refund statement.
+          const phase9 = await pool.query(
+            'UPDATE token_balance SET balance_credits = balance_credits + 1 WHERE payment_hash = $1 AND rate_sats_per_request IS NOT NULL',
+            [paymentHash],
+          );
+          if ((phase9.rowCount ?? 0) === 0) {
+            await pool.query(
+              'UPDATE token_balance SET remaining = remaining + 1 WHERE payment_hash = $1 AND rate_sats_per_request IS NULL',
+              [paymentHash],
+            );
+          }
+        } catch (err) {
+          logger.warn({ err, statusCode: res.statusCode }, 'balance refund failed');
+        }
+      })();
     });
   }
 
-  return function balanceAuth(req: Request, res: Response, next: NextFunction): void {
-    // Skip balance check for operator token (X-Aperture-Token path)
-    // These requests bypass Aperture entirely — no L402 header present
-    const authHeader = req.headers.authorization ?? '';
-    if (!authHeader.startsWith('L402 ') && !authHeader.startsWith('LSAT ')) {
-      // No L402 header = operator path or dev mode — skip balance
-      next();
-      return;
-    }
+  return async function balanceAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      // Skip balance check for operator token (X-Aperture-Token path)
+      // These requests bypass Aperture entirely — no L402 header present
+      const authHeader = req.headers.authorization ?? '';
+      if (!authHeader.startsWith('L402 ') && !authHeader.startsWith('LSAT ')) {
+        // No L402 header = operator path or dev mode — skip balance
+        next();
+        return;
+      }
 
-    const preimage = extractPreimage(authHeader);
-    if (!preimage) {
-      next();
-      return;
-    }
+      const preimage = extractPreimage(authHeader);
+      if (!preimage) {
+        next();
+        return;
+      }
 
-    // payment_hash = SHA256(preimage) — standard Lightning identity
-    const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
-    const now = Math.floor(Date.now() / 1000);
+      // payment_hash = SHA256(preimage) — standard Lightning identity
+      const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
+      const now = Math.floor(Date.now() / 1000);
 
-    // Try Phase 9 credit path first — changes 0 rows for legacy tokens.
-    let changes = stmtDecrementCredits.run(paymentHash).changes;
-    if (changes === 0) changes = stmtDecrementLegacy.run(paymentHash).changes;
+      // Try Phase 9 credit path first — changes 0 rows for legacy tokens.
+      const phase9Debit = await pool.query(
+        'UPDATE token_balance SET balance_credits = balance_credits - 1 WHERE payment_hash = $1 AND rate_sats_per_request IS NOT NULL AND balance_credits >= 1',
+        [paymentHash],
+      );
+      let changes = phase9Debit.rowCount ?? 0;
+      if (changes === 0) {
+        const legacyDebit = await pool.query(
+          'UPDATE token_balance SET remaining = remaining - 1 WHERE payment_hash = $1 AND rate_sats_per_request IS NULL AND remaining > 0',
+          [paymentHash],
+        );
+        changes = legacyDebit.rowCount ?? 0;
+      }
 
-    if (changes > 0) {
-      // Decrement succeeded — read normalised balance for headers
-      const row = stmtGetBalance.get(paymentHash) as { current: number; max: number | null; rate_sats_per_request: number | null } | undefined;
-      res.setHeader('X-SatRank-Balance', String(Math.floor(row?.current ?? 0)));
-      if (row?.max) res.setHeader('X-SatRank-Balance-Max', String(Math.floor(row.max)));
+      if (changes > 0) {
+        // Decrement succeeded — read normalised balance for headers
+        const balanceRes = await pool.query<BalanceRow>(SQL_GET_BALANCE, [paymentHash]);
+        const row = balanceRes.rows[0];
+        res.setHeader('X-SatRank-Balance', String(Math.floor(row?.current ?? 0)));
+        if (row?.max) res.setHeader('X-SatRank-Balance-Max', String(Math.floor(row.max)));
+        scheduleRefund(res, paymentHash);
+        next();
+        return;
+      }
+
+      // Decrement failed — either token doesn't exist or balance = 0
+      const existingRes = await pool.query<BalanceRow>(SQL_GET_BALANCE, [paymentHash]);
+      const existing = existingRes.rows[0];
+
+      if (existing) {
+        // Token exists but balance = 0 — exhausted
+        const max = Math.floor(existing.max ?? TOKEN_QUOTA);
+        res.setHeader('X-SatRank-Balance', '0');
+        res.setHeader('X-SatRank-Balance-Max', String(max));
+        next(new BalanceExhaustedError(max, max));
+        return;
+      }
+
+      // Deposit tokens must be pre-registered via POST /api/deposit verification.
+      // Don't auto-create — prevents free-riding with fake deposit preimages.
+      if (/^L402\s+deposit:/i.test(authHeader)) {
+        res.setHeader('X-SatRank-Balance', '0');
+        next(new TokenUnknownError());
+        return;
+      }
+
+      // Aperture token — first use, create with remaining = quota - 1 (this request counts)
+      await pool.query(
+        'INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES ($1, $2, $3, $4) ON CONFLICT (payment_hash) DO NOTHING',
+        [paymentHash, TOKEN_QUOTA - 1, now, TOKEN_QUOTA],
+      );
+      res.setHeader('X-SatRank-Balance', String(TOKEN_QUOTA - 1));
+      res.setHeader('X-SatRank-Balance-Max', String(TOKEN_QUOTA));
       scheduleRefund(res, paymentHash);
       next();
-      return;
+    } catch (err) {
+      next(err);
     }
-
-    // Decrement failed — either token doesn't exist or balance = 0
-    const existing = stmtGetBalance.get(paymentHash) as { current: number; max: number | null; rate_sats_per_request: number | null } | undefined;
-
-    if (existing) {
-      // Token exists but balance = 0 — exhausted
-      const max = Math.floor(existing.max ?? TOKEN_QUOTA);
-      res.setHeader('X-SatRank-Balance', '0');
-      res.setHeader('X-SatRank-Balance-Max', String(max));
-      next(new BalanceExhaustedError(max, max));
-      return;
-    }
-
-    // Deposit tokens must be pre-registered via POST /api/deposit verification.
-    // Don't auto-create — prevents free-riding with fake deposit preimages.
-    if (/^L402\s+deposit:/i.test(authHeader)) {
-      res.setHeader('X-SatRank-Balance', '0');
-      next(new TokenUnknownError());
-      return;
-    }
-
-    // Aperture token — first use, create with remaining = quota - 1 (this request counts)
-    stmtInsert.run(paymentHash, TOKEN_QUOTA - 1, now, TOKEN_QUOTA);
-    res.setHeader('X-SatRank-Balance', String(TOKEN_QUOTA - 1));
-    res.setHeader('X-SatRank-Balance-Max', String(TOKEN_QUOTA));
-    scheduleRefund(res, paymentHash);
-    next();
   };
 }

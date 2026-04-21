@@ -6,9 +6,9 @@ import { VERSION } from '../version';
 export class HealthController {
   constructor(private statsService: StatsService) {}
 
-  getHealth = (_req: Request, res: Response, next: NextFunction): void => {
+  getHealth = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const health = this.statsService.getHealth();
+      const health = await this.statsService.getHealth();
       const status = health.status === 'ok' ? 200 : 503;
       res.status(status).json({ data: health });
     } catch (err) {
@@ -16,9 +16,9 @@ export class HealthController {
     }
   };
 
-  getStats = (_req: Request, res: Response, next: NextFunction): void => {
+  getStats = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      res.json({ data: this.statsService.getNetworkStats() });
+      res.json({ data: await this.statsService.getNetworkStats() });
     } catch (err) {
       next(err);
     }

@@ -39,7 +39,7 @@ const intentSchema = z.object({
 export class IntentController {
   constructor(private readonly intentService: IntentService) {}
 
-  resolve = (req: Request, res: Response, next: NextFunction): void => {
+  resolve = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = intentSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
@@ -49,7 +49,7 @@ export class IntentController {
       // Enum dynamique : la catégorie doit exister dans le pool trusted.
       // Le format regex est déjà validé par zod ; ici on refuse les valeurs
       // qui matchent le format mais n'ont aucun endpoint indexé.
-      const known = this.intentService.knownCategoryNames();
+      const known = await this.intentService.knownCategoryNames();
       if (!known.has(category)) {
         res.status(400).json({
           error: {
@@ -60,7 +60,7 @@ export class IntentController {
         return;
       }
 
-      const response = this.intentService.resolveIntent(
+      const response = await this.intentService.resolveIntent(
         { category, keywords, budget_sats, max_latency_ms, caller },
         limit,
       );
@@ -87,9 +87,9 @@ export class IntentController {
     }
   };
 
-  categories = (_req: Request, res: Response, next: NextFunction): void => {
+  categories = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const response = this.intentService.listCategories();
+      const response = await this.intentService.listCategories();
       res.json(response);
     } catch (err) {
       next(err);

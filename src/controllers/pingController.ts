@@ -29,7 +29,7 @@ export class PingController {
       // Only allow pinging indexed nodes — prevents arbitrary network recon via SatRank's LND
       const hash = sha256(pubkey);
       if (this.agentRepo) {
-        const agent = this.agentRepo.findByHash(hash);
+        const agent = await this.agentRepo.findByHash(hash);
         if (!agent) {
           res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Node not indexed. Only indexed Lightning nodes can be pinged.' } });
           return;
@@ -37,10 +37,10 @@ export class PingController {
       }
 
       // Mark as hot node for priority probing
-      this.agentRepo?.touchLastQueried(hash);
+      if (this.agentRepo) await this.agentRepo.touchLastQueried(hash);
 
       // Last probe age
-      const lastProbe = this.probeRepo?.findLatest(hash);
+      const lastProbe = this.probeRepo ? await this.probeRepo.findLatest(hash) : undefined;
       const lastProbeAgeMs = lastProbe ? (Date.now() - lastProbe.probed_at * 1000) : null;
 
       // Optional caller for personalized pathfinding

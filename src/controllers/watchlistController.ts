@@ -38,7 +38,7 @@ export class WatchlistController {
     private agentService: AgentService,
   ) {}
 
-  getChanges = (req: Request, res: Response, next: NextFunction): void => {
+  getChanges = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const parsed = watchlistSchema.safeParse(req.query);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.query));
@@ -78,14 +78,14 @@ export class WatchlistController {
       // set they suspected a user of watching. HMAC removes that.
       const cacheKey = `watchlist:${crypto.createHmac('sha256', WATCHLIST_HMAC_KEY).update(sortedHashes.join(',')).digest('hex')}:${sinceBucket}`;
 
-      const cached = cache.getOrCompute(cacheKey, WATCHLIST_CACHE_TTL_MS, () => {
+      const cached = await cache.getOrComputeAsync(cacheKey, WATCHLIST_CACHE_TTL_MS, async () => {
         // Change-detection is now on the posterior: findChangedSince surfaces
         // agents whose p_success moved by ≥ 0.005 since the watcher's last sync.
-        const snapshots = this.snapshotRepo.findChangedSince(hashes, since);
+        const snapshots = await this.snapshotRepo.findChangedSince(hashes, since);
         let up = 0, down = 0, fresh = 0;
-        const changes = snapshots.map(snap => {
-          const agent = this.agentRepo.findByHash(snap.agent_hash);
-          const bayesian = this.agentService.toBayesianBlock(snap.agent_hash);
+        const changes = await Promise.all(snapshots.map(async snap => {
+          const agent = await this.agentRepo.findByHash(snap.agent_hash);
+          const bayesian = await this.agentService.toBayesianBlock(snap.agent_hash);
           if (snap.previous_p_success === null) fresh++;
           else if (snap.p_success > snap.previous_p_success) up++;
           else if (snap.p_success < snap.previous_p_success) down++;
@@ -95,7 +95,7 @@ export class WatchlistController {
             bayesian,
             changedAt: snap.computed_at,
           };
-        });
+        }));
         if (up > 0) watchlistChanges.inc({ direction: 'up' }, up);
         if (down > 0) watchlistChanges.inc({ direction: 'down' }, down);
         if (fresh > 0) watchlistChanges.inc({ direction: 'fresh' }, fresh);
@@ -119,4 +119,3 @@ export class WatchlistController {
     }
   };
 }
-
