@@ -417,10 +417,8 @@ describe.skip('Integration — L402 perimeter (production mode)', async () => {
 
   beforeAll(async () => {
     // Build app with production-like auth behavior
-    const memDb = new Database(':memory:');
-    memDb.pragma('foreign_keys = ON');
-    runMigrations(memDb);
-    db = memDb;
+    testDb = await setupTestPool();
+    db = testDb.pool;
 
     const agentRepo = new AgentRepository(db);
     const txRepo = new TransactionRepository(db);
@@ -534,10 +532,8 @@ describe.skip('Integration — Security headers and Content-Type', async () => {
   let txId: string;
 
   beforeAll(async () => {
-    const memDb = new Database(':memory:');
-    memDb.pragma('foreign_keys = ON');
-    runMigrations(memDb);
-    db = memDb;
+    testDb = await setupTestPool();
+    db = testDb.pool;
 
     const agentRepo = new AgentRepository(db);
     const txRepo = new TransactionRepository(db);

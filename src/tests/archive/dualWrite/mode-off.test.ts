@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // mode-off: legacy INSERT only. Covers the production default — v31 columns
 // stay NULL, shadow logger is not consulted. This is what every prod instance
 // runs until Phase 1 flips to dry_run.

@@ -70,10 +70,10 @@ describe.skip('ServiceEndpointRepository', async () => {
   // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
   it.skip('findStale returns entries with enough checks and old last_checked_at', async () => {
     // Create an entry that was checked a long time ago
-    db.prepare(`
+    await db.query(`
       INSERT INTO service_endpoints (agent_hash, url, last_http_status, last_latency_ms, last_checked_at, check_count, success_count, created_at)
       VALUES ('staleHash', 'https://stale.example.com', 200, 10, 1000000, 5, 5, 1000000)
-    `).run();
+    `);
     const stale = await repo.findStale(3, 1800, 100);
     expect(stale.some(e => e.url === 'https://stale.example.com')).toBe(true);
   });

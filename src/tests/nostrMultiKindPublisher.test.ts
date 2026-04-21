@@ -31,7 +31,7 @@ interface MockRelay {
   close: () => void;
 }
 
-async function createMockRelay(url: string, mode: 'ok' | 'timeout' | 'error' = 'ok'): MockRelay {
+async function createMockRelay(url: string, mode: 'ok' | 'timeout' | 'error' = 'ok'): Promise<MockRelay> {
   const r: MockRelay = {
     url,
     closed: false,

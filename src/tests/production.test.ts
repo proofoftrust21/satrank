@@ -67,7 +67,7 @@ describe.skip('Production — Graceful shutdown', async () => {
 
   afterEach(async () => {
     serverToClose?.close();
-    dbToClose?.close();
+    await dbToClose?.end();
   });
 
   it('server.close() stops accepting new connections and resolves', async () => {

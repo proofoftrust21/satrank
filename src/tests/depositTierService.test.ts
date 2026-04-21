@@ -126,8 +126,9 @@ describe('DepositTierService.computeCredits', async () => {
   it('between-tier amount uses the ENGRAVED rate of the inferior tier', async () => {
     // 500 sats is above the 21 floor but below the 1000 threshold, so it
     // stays at rate=1.0. Credits = 500/1.0 = 500.
-    const t = await svc.lookupTierForAmount(500)!;
-    expect(t.rate_sats_per_request).toBe(1.0);
-    expect(svc.computeCredits(500, t)).toBe(500);
+    const t = await svc.lookupTierForAmount(500);
+    expect(t).not.toBeNull();
+    expect(t!.rate_sats_per_request).toBe(1.0);
+    expect(svc.computeCredits(500, t!)).toBe(500);
   });
 });

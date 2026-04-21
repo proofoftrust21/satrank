@@ -276,7 +276,11 @@ describe.skip('Voie 3 — /api/report anonyme via preimage_pool', async () => {
       .set('X-L402-Preimage', preimage)
       .send({ target: target.public_key_hash, outcome: 'success' });
 
-    const tx = db.prepare('SELECT source, status, preimage FROM transactions WHERE tx_id = ?').get(`preimage_pool:${paymentHash}`) as { source: string; status: string; preimage: string | null };
+    const txRes = await db.query<{ source: string; status: string; preimage: string | null }>(
+      'SELECT source, status, preimage FROM transactions WHERE tx_id = $1',
+      [`preimage_pool:${paymentHash}`],
+    );
+    const tx = txRes.rows[0];
     expect(tx.source).toBe('report');
     expect(tx.status).toBe('verified');
     expect(tx.preimage).toBeNull();

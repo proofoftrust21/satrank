@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // mode-active: single 13-col INSERT with the enriched columns populated.
 // Post-flip state — the canonical ledger is now authoritative for Phase 3
 // Bayesian aggregates. Shadow logger is explicitly silent in this mode.

@@ -111,7 +111,7 @@ describe('Report signal in reputation scoring', async () => {
     count: number,
     outcome: 'success' | 'failure' | 'timeout',
     opts: { verified?: boolean; weight?: number } = {},
-  ): void {
+  ): Promise<void> {
     for (let i = 0; i < count; i++) {
       const reporterAlias = `reporter-${outcome}-${i}-${uuid().slice(0, 8)}`;
       const reporter = makeAgent(reporterAlias);

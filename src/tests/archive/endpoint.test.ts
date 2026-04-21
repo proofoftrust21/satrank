@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // Integration tests for GET /api/endpoint/:url_hash — Bayesian detail view
 // for a single HTTP endpoint keyed by sha256(canonicalized URL).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
