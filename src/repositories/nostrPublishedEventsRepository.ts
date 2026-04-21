@@ -10,8 +10,11 @@
 //
 // Ce module ne décide PAS si on republie — il expose juste l'état précédent
 // et la méthode d'upsert. shouldRepublish() vit côté src/nostr/.
-import type Database from 'better-sqlite3';
+// (pg async port, Phase 12B)
+import type { Pool, PoolClient } from 'pg';
 import type { Verdict, AdvisoryLevel } from '../types/index';
+
+type Queryable = Pool | PoolClient;
 
 export type PublishedEntityType = 'node' | 'endpoint' | 'service';
 
@@ -42,106 +45,97 @@ export interface RecordPublishedInput {
 }
 
 export class NostrPublishedEventsRepository {
-  private stmtGet;
-  private stmtGetByEventId;
-  private stmtUpsert;
-  private stmtDelete;
-  private stmtListByType;
-  private stmtCountByKind;
-  private stmtLatestTimestamps;
-
-  constructor(private db: Database.Database) {
-    this.stmtGet = db.prepare(
-      `SELECT * FROM nostr_published_events
-        WHERE entity_type = ? AND entity_id = ?`,
-    );
-    this.stmtGetByEventId = db.prepare(
-      `SELECT * FROM nostr_published_events WHERE event_id = ? LIMIT 1`,
-    );
-    this.stmtLatestTimestamps = db.prepare(
-      `SELECT entity_type, MAX(published_at) as ts FROM nostr_published_events GROUP BY entity_type`,
-    );
-    // Upsert sur la clé composite — un seul event actif par entité.
-    this.stmtUpsert = db.prepare(`
-      INSERT INTO nostr_published_events
-        (entity_type, entity_id, event_id, event_kind, published_at, payload_hash,
-         verdict, advisory_level, p_success, n_obs_effective)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(entity_type, entity_id) DO UPDATE SET
-        event_id = excluded.event_id,
-        event_kind = excluded.event_kind,
-        published_at = excluded.published_at,
-        payload_hash = excluded.payload_hash,
-        verdict = excluded.verdict,
-        advisory_level = excluded.advisory_level,
-        p_success = excluded.p_success,
-        n_obs_effective = excluded.n_obs_effective
-    `);
-    this.stmtDelete = db.prepare(
-      `DELETE FROM nostr_published_events WHERE entity_type = ? AND entity_id = ?`,
-    );
-    this.stmtListByType = db.prepare(
-      `SELECT * FROM nostr_published_events WHERE entity_type = ?
-        ORDER BY published_at DESC LIMIT ?`,
-    );
-    this.stmtCountByKind = db.prepare(
-      `SELECT event_kind, COUNT(*) as c FROM nostr_published_events GROUP BY event_kind`,
-    );
-  }
+  constructor(private db: Queryable) {}
 
   /** Récupère le snapshot précédent pour une entité. null si jamais publié. */
-  getLastPublished(entityType: PublishedEntityType, entityId: string): PublishedEventRow | null {
-    const row = this.stmtGet.get(entityType, entityId) as PublishedEventRow | undefined;
-    return row ?? null;
+  async getLastPublished(entityType: PublishedEntityType, entityId: string): Promise<PublishedEventRow | null> {
+    const { rows } = await this.db.query<PublishedEventRow>(
+      `SELECT * FROM nostr_published_events
+        WHERE entity_type = $1 AND entity_id = $2`,
+      [entityType, entityId],
+    );
+    return rows[0] ?? null;
   }
 
   /** Lookup par event_id — utilisé par C8 (NIP-09) pour vérifier qu'une
    *  deletion request cible bien un event que nous avons publié avant de
    *  la signer. */
-  findByEventId(eventId: string): PublishedEventRow | null {
-    const row = this.stmtGetByEventId.get(eventId) as PublishedEventRow | undefined;
-    return row ?? null;
+  async findByEventId(eventId: string): Promise<PublishedEventRow | null> {
+    const { rows } = await this.db.query<PublishedEventRow>(
+      'SELECT * FROM nostr_published_events WHERE event_id = $1 LIMIT 1',
+      [eventId],
+    );
+    return rows[0] ?? null;
   }
 
   /** Upsert après un publish réussi. Remplace atomiquement la row précédente. */
-  recordPublished(input: RecordPublishedInput): void {
-    this.stmtUpsert.run(
-      input.entityType,
-      input.entityId,
-      input.eventId,
-      input.eventKind,
-      input.publishedAt,
-      input.payloadHash,
-      input.verdict,
-      input.advisoryLevel,
-      input.pSuccess,
-      input.nObsEffective,
+  async recordPublished(input: RecordPublishedInput): Promise<void> {
+    await this.db.query(
+      `
+      INSERT INTO nostr_published_events
+        (entity_type, entity_id, event_id, event_kind, published_at, payload_hash,
+         verdict, advisory_level, p_success, n_obs_effective)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+        event_id = EXCLUDED.event_id,
+        event_kind = EXCLUDED.event_kind,
+        published_at = EXCLUDED.published_at,
+        payload_hash = EXCLUDED.payload_hash,
+        verdict = EXCLUDED.verdict,
+        advisory_level = EXCLUDED.advisory_level,
+        p_success = EXCLUDED.p_success,
+        n_obs_effective = EXCLUDED.n_obs_effective
+      `,
+      [
+        input.entityType,
+        input.entityId,
+        input.eventId,
+        input.eventKind,
+        input.publishedAt,
+        input.payloadHash,
+        input.verdict,
+        input.advisoryLevel,
+        input.pSuccess,
+        input.nObsEffective,
+      ],
     );
   }
 
   /** Supprime une row — utilisé par C8 pour les deletion requests NIP-09. */
-  delete(entityType: PublishedEntityType, entityId: string): boolean {
-    const res = this.stmtDelete.run(entityType, entityId);
-    return Number(res.changes ?? 0) > 0;
+  async delete(entityType: PublishedEntityType, entityId: string): Promise<boolean> {
+    const result = await this.db.query(
+      'DELETE FROM nostr_published_events WHERE entity_type = $1 AND entity_id = $2',
+      [entityType, entityId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   /** Liste les N derniers events publiés pour un type — debug/metrics. */
-  listByType(entityType: PublishedEntityType, limit = 100): PublishedEventRow[] {
-    return this.stmtListByType.all(entityType, limit) as PublishedEventRow[];
+  async listByType(entityType: PublishedEntityType, limit = 100): Promise<PublishedEventRow[]> {
+    const { rows } = await this.db.query<PublishedEventRow>(
+      `SELECT * FROM nostr_published_events WHERE entity_type = $1
+        ORDER BY published_at DESC LIMIT $2`,
+      [entityType, limit],
+    );
+    return rows;
   }
 
   /** Comptage par kind — exposé par /metrics. */
-  countByKind(): Record<number, number> {
-    const rows = this.stmtCountByKind.all() as Array<{ event_kind: number; c: number }>;
+  async countByKind(): Promise<Record<number, number>> {
+    const { rows } = await this.db.query<{ event_kind: number; c: string }>(
+      'SELECT event_kind, COUNT(*)::text as c FROM nostr_published_events GROUP BY event_kind',
+    );
     const out: Record<number, number> = {};
-    for (const r of rows) out[r.event_kind] = r.c;
+    for (const r of rows) out[r.event_kind] = Number(r.c);
     return out;
   }
 
   /** Timestamp du dernier publish par entity_type — utile pour / metrics et
    *  pour l'introspection (combien de temps depuis le dernier événement ?). */
-  latestPublishedAtByType(): Record<PublishedEntityType, number | null> {
-    const rows = this.stmtLatestTimestamps.all() as Array<{ entity_type: PublishedEntityType; ts: number }>;
+  async latestPublishedAtByType(): Promise<Record<PublishedEntityType, number | null>> {
+    const { rows } = await this.db.query<{ entity_type: PublishedEntityType; ts: number }>(
+      'SELECT entity_type, MAX(published_at) as ts FROM nostr_published_events GROUP BY entity_type',
+    );
     const out: Record<PublishedEntityType, number | null> = {
       node: null,
       endpoint: null,

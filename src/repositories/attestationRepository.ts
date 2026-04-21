@@ -1,116 +1,139 @@
-// Data access for the attestations table
-import type Database from 'better-sqlite3';
+// Data access for the attestations table (pg async port, Phase 12B).
+import type { Pool, PoolClient } from 'pg';
 import type { Attestation } from '../types';
 
-export class AttestationRepository {
-  constructor(private db: Database.Database) {}
+type Queryable = Pool | PoolClient;
 
-  findBySubject(subjectHash: string, limit: number, offset: number): Attestation[] {
-    return this.db.prepare(
-      'SELECT * FROM attestations WHERE subject_hash = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
-    ).all(subjectHash, limit, offset) as Attestation[];
+export class AttestationRepository {
+  constructor(private db: Queryable) {}
+
+  async findBySubject(subjectHash: string, limit: number, offset: number): Promise<Attestation[]> {
+    const { rows } = await this.db.query<Attestation>(
+      'SELECT * FROM attestations WHERE subject_hash = $1 ORDER BY timestamp DESC LIMIT $2 OFFSET $3',
+      [subjectHash, limit, offset],
+    );
+    return rows;
   }
 
   // M3: hard cap to prevent unbounded memory usage for prolific attesters
-  findByAttester(attesterHash: string, limit: number = 1000): Attestation[] {
-    return this.db.prepare(
-      'SELECT * FROM attestations WHERE attester_hash = ? ORDER BY timestamp DESC LIMIT ?'
-    ).all(attesterHash, limit) as Attestation[];
+  async findByAttester(attesterHash: string, limit: number = 1000): Promise<Attestation[]> {
+    const { rows } = await this.db.query<Attestation>(
+      'SELECT * FROM attestations WHERE attester_hash = $1 ORDER BY timestamp DESC LIMIT $2',
+      [attesterHash, limit],
+    );
+    return rows;
   }
 
-  countBySubject(subjectHash: string): number {
-    const row = this.db.prepare(
-      'SELECT COUNT(*) as count FROM attestations WHERE subject_hash = ?'
-    ).get(subjectHash) as { count: number };
-    return row.count;
+  async countBySubject(subjectHash: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text as count FROM attestations WHERE subject_hash = $1',
+      [subjectHash],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
   /** Report submission stats for an agent (as the attester / reporter).
    *  Used by /api/profile to surface the `reporterStats` field and derive
    *  the Trusted Reporter badge without touching scoring math. */
-  reporterStats(attesterHash: string, sinceUnix: number): {
+  async reporterStats(attesterHash: string, sinceUnix: number): Promise<{
     submitted: number;
     verified: number;
     successes: number;
     failures: number;
     timeouts: number;
-  } {
-    const row = this.db.prepare(`
+  }> {
+    const { rows } = await this.db.query<{
+      submitted: string | null;
+      verified: string | null;
+      successes: string | null;
+      failures: string | null;
+      timeouts: string | null;
+    }>(
+      `
       SELECT
-        COUNT(*) AS submitted,
-        SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) AS verified,
-        SUM(CASE WHEN category = 'successful_transaction' THEN 1 ELSE 0 END) AS successes,
-        SUM(CASE WHEN category = 'failed_transaction' THEN 1 ELSE 0 END) AS failures,
-        SUM(CASE WHEN category = 'unresponsive' THEN 1 ELSE 0 END) AS timeouts
+        COUNT(*)::text AS submitted,
+        SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END)::text AS verified,
+        SUM(CASE WHEN category = 'successful_transaction' THEN 1 ELSE 0 END)::text AS successes,
+        SUM(CASE WHEN category = 'failed_transaction' THEN 1 ELSE 0 END)::text AS failures,
+        SUM(CASE WHEN category = 'unresponsive' THEN 1 ELSE 0 END)::text AS timeouts
       FROM attestations
-      WHERE attester_hash = ?
+      WHERE attester_hash = $1
         AND category IN ('successful_transaction','failed_transaction','unresponsive')
-        AND timestamp >= ?
-    `).get(attesterHash, sinceUnix) as {
-      submitted: number | null;
-      verified: number | null;
-      successes: number | null;
-      failures: number | null;
-      timeouts: number | null;
-    };
+        AND timestamp >= $2
+      `,
+      [attesterHash, sinceUnix],
+    );
+    const row = rows[0];
     return {
-      submitted: row.submitted ?? 0,
-      verified: row.verified ?? 0,
-      successes: row.successes ?? 0,
-      failures: row.failures ?? 0,
-      timeouts: row.timeouts ?? 0,
+      submitted: Number(row?.submitted ?? 0),
+      verified: Number(row?.verified ?? 0),
+      successes: Number(row?.successes ?? 0),
+      failures: Number(row?.failures ?? 0),
+      timeouts: Number(row?.timeouts ?? 0),
     };
   }
 
-  avgScoreBySubject(subjectHash: string): number {
-    const row = this.db.prepare(
-      'SELECT AVG(score) as avg FROM attestations WHERE subject_hash = ?'
-    ).get(subjectHash) as { avg: number | null };
-    return row.avg ?? 0;
+  async avgScoreBySubject(subjectHash: string): Promise<number> {
+    const { rows } = await this.db.query<{ avg: number | null }>(
+      'SELECT AVG(score) as avg FROM attestations WHERE subject_hash = $1',
+      [subjectHash],
+    );
+    return rows[0]?.avg ?? 0;
   }
 
-  totalCount(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM attestations').get() as { count: number };
-    return row.count;
+  async totalCount(): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text as count FROM attestations',
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
   // Detects direct mutual attestation loops (A attests B AND B attests A)
-  findMutualAttestations(agentHash: string): string[] {
-    const rows = this.db.prepare(`
+  async findMutualAttestations(agentHash: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ mutual_agent: string }>(
+      `
       SELECT DISTINCT a1.attester_hash as mutual_agent
       FROM attestations a1
       INNER JOIN attestations a2
         ON a1.attester_hash = a2.subject_hash
         AND a1.subject_hash = a2.attester_hash
-      WHERE a1.subject_hash = ?
-    `).all(agentHash) as { mutual_agent: string }[];
+      WHERE a1.subject_hash = $1
+      `,
+      [agentHash],
+    );
     return rows.map(r => r.mutual_agent);
   }
 
   // Detects circular clusters (A->B->C->A) up to depth 3
   // Returns agents that are part of a cycle passing through agentHash
-  findCircularCluster(agentHash: string): string[] {
-    const rows = this.db.prepare(`
+  async findCircularCluster(agentHash: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ cluster_member: string }>(
+      `
       SELECT DISTINCT a2.subject_hash as cluster_member
       FROM attestations a1
       INNER JOIN attestations a2 ON a1.attester_hash = a2.subject_hash
       INNER JOIN attestations a3 ON a2.attester_hash = a3.subject_hash
-      WHERE a1.subject_hash = ?
-        AND a3.attester_hash = ?
-        AND a1.attester_hash != ?
-        AND a2.attester_hash != ?
-    `).all(agentHash, agentHash, agentHash, agentHash) as { cluster_member: string }[];
+      WHERE a1.subject_hash = $1
+        AND a3.attester_hash = $2
+        AND a1.attester_hash != $3
+        AND a2.attester_hash != $4
+      `,
+      [agentHash, agentHash, agentHash, agentHash],
+    );
 
     // Also add direct intermediaries in the chain
-    const rows2 = this.db.prepare(`
+    const { rows: rows2 } = await this.db.query<{ cluster_member: string }>(
+      `
       SELECT DISTINCT a1.attester_hash as cluster_member
       FROM attestations a1
       INNER JOIN attestations a2 ON a1.attester_hash = a2.subject_hash
       INNER JOIN attestations a3 ON a2.attester_hash = a3.subject_hash
-      WHERE a1.subject_hash = ?
-        AND a3.attester_hash = ?
-        AND a1.attester_hash != ?
-    `).all(agentHash, agentHash, agentHash) as { cluster_member: string }[];
+      WHERE a1.subject_hash = $1
+        AND a3.attester_hash = $2
+        AND a1.attester_hash != $3
+      `,
+      [agentHash, agentHash, agentHash],
+    );
 
     const members = new Set([
       ...rows.map(r => r.cluster_member),
@@ -121,7 +144,7 @@ export class AttestationRepository {
 
   // Detects cycles up to `maxDepth` hops using BFS (A→B→C→D→A for depth=4)
   // Returns all agents that are part of a cycle passing through agentHash
-  findCycleMembers(agentHash: string, maxDepth: number = 4): string[] {
+  async findCycleMembers(agentHash: string, maxDepth: number = 4): Promise<string[]> {
     if (maxDepth < 2) return [];
 
     // BFS: walk "who attested agents in the current layer" layer by layer.
@@ -130,9 +153,10 @@ export class AttestationRepository {
     let currentLayer = new Set<string>();
 
     // Layer 0: direct attesters of agentHash (excluding self-attestation)
-    const directAttesters = this.db.prepare(
-      'SELECT DISTINCT attester_hash FROM attestations WHERE subject_hash = ? AND attester_hash != ?'
-    ).all(agentHash, agentHash) as { attester_hash: string }[];
+    const { rows: directAttesters } = await this.db.query<{ attester_hash: string }>(
+      'SELECT DISTINCT attester_hash FROM attestations WHERE subject_hash = $1 AND attester_hash != $2',
+      [agentHash, agentHash],
+    );
 
     for (const row of directAttesters) {
       currentLayer.add(row.attester_hash);
@@ -150,11 +174,11 @@ export class AttestationRepository {
       const batchSize = 100;
       for (let i = 0; i < hashes.length; i += batchSize) {
         const batch = hashes.slice(i, i + batchSize);
-        const placeholders = batch.map(() => '?').join(',');
         // Do NOT exclude agentHash — we need to detect when it closes the cycle
-        const rows = this.db.prepare(
-          `SELECT DISTINCT attester_hash, subject_hash FROM attestations WHERE subject_hash IN (${placeholders})`
-        ).all(...batch) as { attester_hash: string; subject_hash: string }[];
+        const { rows } = await this.db.query<{ attester_hash: string; subject_hash: string }>(
+          'SELECT DISTINCT attester_hash, subject_hash FROM attestations WHERE subject_hash = ANY($1::text[])',
+          [batch],
+        );
 
         for (const row of rows) {
           if (row.attester_hash === agentHash) {
@@ -177,128 +201,166 @@ export class AttestationRepository {
   }
 
   // Number of unique attesters for an agent (attestation source diversity)
-  countUniqueAttesters(subjectHash: string): number {
-    const row = this.db.prepare(
-      'SELECT COUNT(DISTINCT attester_hash) as count FROM attestations WHERE subject_hash = ?'
-    ).get(subjectHash) as { count: number };
-    return row.count;
+  async countUniqueAttesters(subjectHash: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(DISTINCT attester_hash)::text as count FROM attestations WHERE subject_hash = $1',
+      [subjectHash],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
   // --- Trust graph queries ---
 
   /** Agents positively attested (score >= threshold) by a given attester */
-  findPositivelyAttestedBy(attesterHash: string, minScore: number = 70): string[] {
-    const rows = this.db.prepare(
-      'SELECT DISTINCT subject_hash FROM attestations WHERE attester_hash = ? AND score >= ?'
-    ).all(attesterHash, minScore) as { subject_hash: string }[];
+  async findPositivelyAttestedBy(attesterHash: string, minScore: number = 70): Promise<string[]> {
+    const { rows } = await this.db.query<{ subject_hash: string }>(
+      'SELECT DISTINCT subject_hash FROM attestations WHERE attester_hash = $1 AND score >= $2',
+      [attesterHash, minScore],
+    );
     return rows.map(r => r.subject_hash);
   }
 
   /** Agents who positively attested (score >= threshold) a given subject */
-  findPositiveAttestersOf(subjectHash: string, minScore: number = 70): { attester_hash: string; score: number }[] {
-    return this.db.prepare(
-      'SELECT attester_hash, score FROM attestations WHERE subject_hash = ? AND score >= ?'
-    ).all(subjectHash, minScore) as { attester_hash: string; score: number }[];
+  async findPositiveAttestersOf(subjectHash: string, minScore: number = 70): Promise<{ attester_hash: string; score: number }[]> {
+    const { rows } = await this.db.query<{ attester_hash: string; score: number }>(
+      'SELECT attester_hash, score FROM attestations WHERE subject_hash = $1 AND score >= $2',
+      [subjectHash, minScore],
+    );
+    return rows;
   }
 
-  countByCategoryForSubject(subjectHash: string, categories: string[]): number {
+  async countByCategoryForSubject(subjectHash: string, categories: string[]): Promise<number> {
     if (categories.length === 0) return 0;
     if (categories.length > 20) throw new Error('categories array exceeds limit');
-    const placeholders = categories.map(() => '?').join(',');
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as count FROM attestations WHERE subject_hash = ? AND category IN (${placeholders})`
-    ).get(subjectHash, ...categories) as { count: number };
-    return row.count;
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text as count FROM attestations WHERE subject_hash = $1 AND category = ANY($2::text[])',
+      [subjectHash, categories],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 
-  insert(attestation: Attestation): void {
-    this.db.prepare(`
+  async insert(attestation: Attestation): Promise<void> {
+    await this.db.query(
+      `
       INSERT INTO attestations (attestation_id, tx_id, attester_hash, subject_hash, score, tags, evidence_hash, timestamp, category, verified, weight)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      attestation.attestation_id, attestation.tx_id, attestation.attester_hash,
-      attestation.subject_hash, attestation.score, attestation.tags,
-      attestation.evidence_hash, attestation.timestamp, attestation.category,
-      attestation.verified, attestation.weight,
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `,
+      [
+        attestation.attestation_id, attestation.tx_id, attestation.attester_hash,
+        attestation.subject_hash, attestation.score, attestation.tags,
+        attestation.evidence_hash, attestation.timestamp, attestation.category,
+        attestation.verified, attestation.weight,
+      ],
     );
   }
 
   // --- v2 report queries ---
 
   /** Find most recent report from attester to subject (for dedup) */
-  findRecentReport(attesterHash: string, subjectHash: string, afterTimestamp: number): Attestation | undefined {
-    return this.db.prepare(
-      'SELECT * FROM attestations WHERE attester_hash = ? AND subject_hash = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT 1'
-    ).get(attesterHash, subjectHash, afterTimestamp) as Attestation | undefined;
+  async findRecentReport(attesterHash: string, subjectHash: string, afterTimestamp: number): Promise<Attestation | undefined> {
+    const { rows } = await this.db.query<Attestation>(
+      'SELECT * FROM attestations WHERE attester_hash = $1 AND subject_hash = $2 AND timestamp >= $3 ORDER BY timestamp DESC LIMIT 1',
+      [attesterHash, subjectHash, afterTimestamp],
+    );
+    return rows[0];
   }
 
   /** Count reports by outcome category for a subject */
-  countReportsByOutcome(subjectHash: string): { successes: number; failures: number; timeouts: number; total: number } {
-    const rows = this.db.prepare(`
-      SELECT category, COUNT(*) as count FROM attestations
-      WHERE subject_hash = ?
+  async countReportsByOutcome(subjectHash: string): Promise<{ successes: number; failures: number; timeouts: number; total: number }> {
+    const { rows } = await this.db.query<{ category: string; count: string }>(
+      `
+      SELECT category, COUNT(*)::text as count FROM attestations
+      WHERE subject_hash = $1
       AND category IN ('successful_transaction', 'failed_transaction', 'unresponsive')
       GROUP BY category
-    `).all(subjectHash) as { category: string; count: number }[];
+      `,
+      [subjectHash],
+    );
 
     const counts = { successes: 0, failures: 0, timeouts: 0, total: 0 };
     for (const row of rows) {
-      if (row.category === 'successful_transaction') counts.successes = row.count;
-      else if (row.category === 'failed_transaction') counts.failures = row.count;
-      else if (row.category === 'unresponsive') counts.timeouts = row.count;
+      const n = Number(row.count);
+      if (row.category === 'successful_transaction') counts.successes = n;
+      else if (row.category === 'failed_transaction') counts.failures = n;
+      else if (row.category === 'unresponsive') counts.timeouts = n;
     }
     counts.total = counts.successes + counts.failures + counts.timeouts;
     return counts;
   }
 
   /** Weighted success rate: sum(weight * (score >= 50 ? 1 : 0)) / sum(weight) for report-category attestations */
-  weightedSuccessRate(subjectHash: string): { rate: number; dataPoints: number; uniqueReporters: number } {
-    const row = this.db.prepare(`
+  async weightedSuccessRate(subjectHash: string): Promise<{ rate: number; dataPoints: number; uniqueReporters: number }> {
+    const { rows } = await this.db.query<{
+      weighted_successes: number;
+      total_weight: number;
+      data_points: string;
+      unique_reporters: string;
+    }>(
+      `
       SELECT
         COALESCE(SUM(CASE WHEN score >= 50 THEN weight ELSE 0 END), 0) as weighted_successes,
         COALESCE(SUM(weight), 0) as total_weight,
-        COUNT(*) as data_points,
-        COUNT(DISTINCT attester_hash) as unique_reporters
+        COUNT(*)::text as data_points,
+        COUNT(DISTINCT attester_hash)::text as unique_reporters
       FROM attestations
-      WHERE subject_hash = ?
+      WHERE subject_hash = $1
       AND category IN ('successful_transaction', 'failed_transaction', 'unresponsive')
-    `).get(subjectHash) as { weighted_successes: number; total_weight: number; data_points: number; unique_reporters: number };
-
-    if (row.total_weight === 0) return { rate: 0, dataPoints: 0, uniqueReporters: 0 };
-    return { rate: row.weighted_successes / row.total_weight, dataPoints: row.data_points, uniqueReporters: row.unique_reporters };
+      `,
+      [subjectHash],
+    );
+    const row = rows[0];
+    const totalWeight = Number(row?.total_weight ?? 0);
+    if (totalWeight === 0) return { rate: 0, dataPoints: 0, uniqueReporters: 0 };
+    return {
+      rate: Number(row?.weighted_successes ?? 0) / totalWeight,
+      dataPoints: Number(row?.data_points ?? 0),
+      uniqueReporters: Number(row?.unique_reporters ?? 0),
+    };
   }
 
   /** Report signal stats for scoring: weighted success/failure counts with verified bonus.
    *  Each report contributes its `weight` (reporter credibility). Verified reports (preimage-proven)
    *  get 2x weight. Returns raw weighted counts for the scoring engine to blend. */
-  reportSignalStats(subjectHash: string): { weightedSuccesses: number; weightedFailures: number; total: number } {
-    const row = this.db.prepare(`
+  async reportSignalStats(subjectHash: string): Promise<{ weightedSuccesses: number; weightedFailures: number; total: number }> {
+    const { rows } = await this.db.query<{
+      weighted_successes: number;
+      weighted_failures: number;
+      total: string;
+    }>(
+      `
       SELECT
         COALESCE(SUM(CASE WHEN score >= 50 THEN weight * (1 + verified) ELSE 0 END), 0) as weighted_successes,
         COALESCE(SUM(CASE WHEN score < 50 THEN weight * (1 + verified) ELSE 0 END), 0) as weighted_failures,
-        COUNT(*) as total
+        COUNT(*)::text as total
       FROM attestations
-      WHERE subject_hash = ?
+      WHERE subject_hash = $1
       AND category IN ('successful_transaction', 'failed_transaction', 'unresponsive')
-    `).get(subjectHash) as { weighted_successes: number; weighted_failures: number; total: number };
-
-    return { weightedSuccesses: row.weighted_successes, weightedFailures: row.weighted_failures, total: row.total };
+      `,
+      [subjectHash],
+    );
+    const row = rows[0];
+    return {
+      weightedSuccesses: Number(row?.weighted_successes ?? 0),
+      weightedFailures: Number(row?.weighted_failures ?? 0),
+      total: Number(row?.total ?? 0),
+    };
   }
 
   /** Count reports from a specific attester in the last N seconds (rate limiting).
    *  When categories is provided, only counts attestations in those categories (C8). */
-  countRecentByAttester(attesterHash: string, afterTimestamp: number, categories?: string[]): number {
+  async countRecentByAttester(attesterHash: string, afterTimestamp: number, categories?: string[]): Promise<number> {
     if (categories && categories.length > 0) {
       if (categories.length > 20) throw new Error('categories array exceeds limit');
-      const placeholders = categories.map(() => '?').join(',');
-      const row = this.db.prepare(
-        `SELECT COUNT(*) as count FROM attestations WHERE attester_hash = ? AND timestamp >= ? AND category IN (${placeholders})`
-      ).get(attesterHash, afterTimestamp, ...categories) as { count: number };
-      return row.count;
+      const { rows } = await this.db.query<{ count: string }>(
+        'SELECT COUNT(*)::text as count FROM attestations WHERE attester_hash = $1 AND timestamp >= $2 AND category = ANY($3::text[])',
+        [attesterHash, afterTimestamp, categories],
+      );
+      return Number(rows[0]?.count ?? 0);
     }
-    const row = this.db.prepare(
-      'SELECT COUNT(*) as count FROM attestations WHERE attester_hash = ? AND timestamp >= ?'
-    ).get(attesterHash, afterTimestamp) as { count: number };
-    return row.count;
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text as count FROM attestations WHERE attester_hash = $1 AND timestamp >= $2',
+      [attesterHash, afterTimestamp],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 }

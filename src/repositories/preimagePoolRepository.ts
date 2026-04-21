@@ -3,7 +3,10 @@
 // atomiquement par reportService lors d'un report anonyme. consumed_at est
 // le verrou one-shot : UPDATE ... WHERE consumed_at IS NULL garantit qu'une
 // preimage ne peut être consommée qu'une seule fois.
-import type Database from 'better-sqlite3';
+// (pg async port, Phase 12B)
+import type { Pool, PoolClient } from 'pg';
+
+type Queryable = Pool | PoolClient;
 
 export type PreimagePoolTier = 'high' | 'medium' | 'low';
 export type PreimagePoolSource = 'crawler' | 'intent' | 'report';
@@ -27,51 +30,49 @@ export interface PreimagePoolInsert {
 }
 
 export class PreimagePoolRepository {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Queryable) {}
 
   /** Insère une entrée si payment_hash absent. Retourne true si une ligne a
-   *  été créée, false sinon. Idempotent par design (INSERT OR IGNORE). */
-  insertIfAbsent(entry: PreimagePoolInsert): boolean {
-    const result = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO preimage_pool
+   *  été créée, false sinon. Idempotent par design (ON CONFLICT DO NOTHING). */
+  async insertIfAbsent(entry: PreimagePoolInsert): Promise<boolean> {
+    const result = await this.db.query(
+      `INSERT INTO preimage_pool
          (payment_hash, bolt11_raw, first_seen, confidence_tier, source)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(entry.paymentHash, entry.bolt11Raw, entry.firstSeen, entry.confidenceTier, entry.source);
-    return result.changes === 1;
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (payment_hash) DO NOTHING`,
+      [entry.paymentHash, entry.bolt11Raw, entry.firstSeen, entry.confidenceTier, entry.source],
+    );
+    return (result.rowCount ?? 0) === 1;
   }
 
-  findByPaymentHash(paymentHash: string): PreimagePoolEntry | null {
-    const row = this.db
-      .prepare(
-        `SELECT payment_hash, bolt11_raw, first_seen, confidence_tier, source, consumed_at, consumer_report_id
-         FROM preimage_pool WHERE payment_hash = ?`,
-      )
-      .get(paymentHash) as PreimagePoolEntry | undefined;
-    return row ?? null;
+  async findByPaymentHash(paymentHash: string): Promise<PreimagePoolEntry | null> {
+    const { rows } = await this.db.query<PreimagePoolEntry>(
+      `SELECT payment_hash, bolt11_raw, first_seen, confidence_tier, source, consumed_at, consumer_report_id
+       FROM preimage_pool WHERE payment_hash = $1`,
+      [paymentHash],
+    );
+    return rows[0] ?? null;
   }
 
   /** Consomme atomiquement une entrée du pool. Retourne true si l'UPDATE
    *  a posé le verrou (1 row), false sinon (déjà consommée ou inexistante).
    *  Le caller utilise la valeur de retour pour décider entre 200/409. */
-  consumeAtomic(paymentHash: string, reportId: string, consumedAt: number): boolean {
-    const result = this.db
-      .prepare(
-        `UPDATE preimage_pool
-         SET consumed_at = ?, consumer_report_id = ?
-         WHERE payment_hash = ? AND consumed_at IS NULL`,
-      )
-      .run(consumedAt, reportId, paymentHash);
-    return result.changes === 1;
+  async consumeAtomic(paymentHash: string, reportId: string, consumedAt: number): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE preimage_pool
+       SET consumed_at = $1, consumer_report_id = $2
+       WHERE payment_hash = $3 AND consumed_at IS NULL`,
+      [consumedAt, reportId, paymentHash],
+    );
+    return (result.rowCount ?? 0) === 1;
   }
 
-  countByTier(): Record<PreimagePoolTier, number> {
-    const rows = this.db
-      .prepare('SELECT confidence_tier, COUNT(*) as count FROM preimage_pool GROUP BY confidence_tier')
-      .all() as { confidence_tier: PreimagePoolTier; count: number }[];
+  async countByTier(): Promise<Record<PreimagePoolTier, number>> {
+    const { rows } = await this.db.query<{ confidence_tier: PreimagePoolTier; count: string }>(
+      'SELECT confidence_tier, COUNT(*)::text AS count FROM preimage_pool GROUP BY confidence_tier',
+    );
     const out: Record<PreimagePoolTier, number> = { high: 0, medium: 0, low: 0 };
-    for (const r of rows) out[r.confidence_tier] = r.count;
+    for (const r of rows) out[r.confidence_tier] = Number(r.count);
     return out;
   }
 }
