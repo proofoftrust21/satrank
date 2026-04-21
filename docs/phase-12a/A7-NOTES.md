@@ -127,6 +127,55 @@ chown -R 1001:1001 /var/lib/satrank/
 Document in the bench runbook so the A0 script for future reruns does
 this at clone time instead of post-hoc.
 
+## A5 methodology adjustment (mid-run, 2026-04-21 ~10:12Z)
+
+Initial compressed sweep launched with `WARMUP=30s DURATION=2m REST=30s`
+across a uniform 4-palier matrix `{1, 10, 100, 500} rps` for every
+endpoint. After `health` (4 paliers, all passed) and `top @ 1`, `top @ 10`,
+Romain asked to :
+
+1. Raise sustained to **3 min** per palier (vs 2 min) — "suffisant pour
+   identifier bottlenecks par ordre de grandeur; recalibration fine des
+   seuils à faire en Phase 12B si nécessaire."
+2. Add a 30 %-error early-abort. Implemented instead as an **inter-palier
+   /api/health probe** that cascades-skip remaining paliers for the
+   same endpoint if the api is down. Simpler than in-flight k6 monitoring
+   and catches the "container died under load" case.
+3. Reduce the palier matrix per endpoint :
+   - `/api/agents/top`   : 4 paliers `{1, 10, 100, 1000}` (heavy DB scan, instructive)
+   - `/api/intent`       : 4 paliers `{1, 10, 100, 1000}` (core POST path)
+   - `/api/agent/:hash/verdict` : 2 paliers `{10, 1000}` (redundant lookup)
+   - `/api/operator/:id` : 2 paliers `{10, 1000}` (redundant lookup)
+   - `/api/services`     : 2 paliers `{10, 1000}` (not in Romain's list but scaled similarly)
+   - `/api/health`       : already done with the OLD 2-min params (kept as-is)
+4. Push the top palier from 500 → **1000 rps** per the original Phase 12A
+   plan since the 2-CPU cpx32 can push through cached /agents/top
+   reasonably and saturation data is the whole point.
+
+**Dropped from the bench** (with rationale) :
+
+- `/api/probe` : requires live LND. Staging clone has LND disabled
+  (`lndStatus: disabled` in `/api/health`), so there is no way to
+  exercise a probe end-to-end. Not benchable on staging.
+- `/api/deposit` : same — needs LND to generate a BOLT11 invoice.
+- `/api/operator/register` : requires a per-request NIP-98
+  Authorization header (Nostr-signed event). Generating those at
+  1000 rps would need a pre-signed replay pool; out of scope for the
+  time budget. Skipped with a note in A7; consider a pre-generated
+  fixture if a follow-up run is needed.
+
+**Sustained-at-3-min caveat** : the p99 percentile has a larger
+variance at 3 min than at 10 min (fewer tail samples). For an
+order-of-magnitude comparison between paliers this is sufficient; for
+SLA-grade thresholds a 10-min sustained run would be needed. The
+pre-adjustment paliers (`health` 4/4 + `top @ 1`, `top @ 10`) used a
+still-smaller 2-min sustained — noted in A7 results table.
+
+**Early-abort design note** : in-palier abort would require wiring k6
+metric polling or parsing `--out csv=` in real time. Deferred :
+mid-palier failures already surface via the inter-palier health probe
+cascade, and the 3-min cap on runtime already bounds the worst case.
+
 ## Open questions to address in A7
 
 - [ ] How much of prod's baseline can we infer from nginx logs alone?

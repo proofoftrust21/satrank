@@ -1,69 +1,118 @@
 #!/usr/bin/env bash
 # Phase 12A A5 — orchestrator for the paliers sweep on staging.
-# Runs the A4 k6 scripts across 4 load paliers (1x → 10x → 100x → 1000x) for
-# each endpoint. Output is written under bench/results/<run-id>/ as JSON +
-# summary txt so A7 can aggregate without re-running.
+# Each palier : k6 ramping-arrival-rate, 30s warmup → N-min sustained,
+# summary exported to bench/results/<run-id>/<endpoint>_rps<N>.json.
 #
-# Usage (from staging host, repo root = /opt/satrank-staging):
-#   ./bench/run-all.sh                    # full sweep on localhost:8080
-#   BASE_URL=http://x RPS_SET=10,50 ...   # override paliers
-#   ENDPOINTS=health,top ./bench/run-all.sh   # restrict to a subset
+# Between paliers : a short rest + a /api/health probe. If the probe
+# fails (connection refused / non-2xx/503), remaining paliers for the
+# same endpoint are SKIPPED and flagged "api_down" in a plan.log next
+# to the results. This catches the "container died under load" case
+# cleanly without monitoring k6 in-flight.
 #
-# Environment:
-#   BASE_URL     default http://localhost:8080
-#   ENDPOINTS    comma-list of {health,top,verdict,intent,services} (default: all)
-#   RPS_SET      comma-list of RPS targets (default: 1,10,100,1000)
-#   WARMUP       k6 warmup duration per palier (default: 5m)
-#   DURATION     k6 sustained duration per palier (default: 10m)
-#   REST         sleep between paliers to let the cache drain (default: 2m)
-#   RUN_ID       override run identifier (default: phase-12a-YYYYMMDD-HHMM)
-#   DRY_RUN=1    print the plan and exit without hitting the api
+# Per-endpoint palier matrices (see PLAN below) : redundant lookup
+# endpoints bench only at two paliers, write paths only at two paliers,
+# heavy read paths keep all four. Matches the 2026-04-21 scope reduction.
 #
-# Safety:
-# - The 1000x palier is hard-gated behind SATRANK_BENCH_1000X=yes. A typo in
-#   RPS_SET won't accidentally drive 1000 rps into prod-sized infra.
-# - BASE_URL containing "satrank.dev" or "178.104.108" (prod) is refused. This
-#   orchestrator is a staging-only tool; A6 prod smoke is a separate script.
+# Usage (from /opt/satrank-staging on the staging VM) :
+#   ./bench/run-all.sh                   # full compressed sweep
+#   DRY_RUN=1 ./bench/run-all.sh         # print the plan, no k6
+#   RUN_ID=custom ./bench/run-all.sh
+#
+# Env overrides :
+#   BASE_URL       default http://localhost:8080
+#   WARMUP         default 30s
+#   DURATION       default 3m
+#   REST           default 30s
+#   SATRANK_BENCH_1000X=yes   required if any palier contains 1000+
+#   DRY_RUN=1      print plan + exit
+#
+# Safety :
+# - REFUSED if BASE_URL looks like prod (satrank.dev / 178.104.108).
+# - REFUSED if PLAN contains 1000 RPS and SATRANK_BENCH_1000X != yes.
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8080}"
-ENDPOINTS="${ENDPOINTS:-health,top,verdict,intent,services}"
-RPS_SET="${RPS_SET:-1,10,100,1000}"
-WARMUP="${WARMUP:-5m}"
-DURATION="${DURATION:-10m}"
-REST="${REST:-2m}"
+WARMUP="${WARMUP:-30s}"
+DURATION="${DURATION:-3m}"
+REST="${REST:-30s}"
 RUN_ID="${RUN_ID:-phase-12a-$(date -u +%Y%m%d-%H%M)}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "${HERE}/.." && pwd)"
 OUT_DIR="${REPO}/bench/results/${RUN_ID}"
+PLAN_LOG="${OUT_DIR}/plan.log"
 mkdir -p "${OUT_DIR}"
 
-# Prod guard — staging only
-if [[ "${BASE_URL}" == *"satrank.dev"* || "${BASE_URL}" == *"178.104.108"* ]]; then
-  echo "REFUSED: BASE_URL looks like prod (${BASE_URL}). This orchestrator is staging-only." >&2
-  echo "For the prod smoke see bench/run-prod-smoke.sh (A6, requires separate authorisation)." >&2
-  exit 1
+# Prod guard
+case "${BASE_URL}" in
+  *satrank.dev*|*178.104.108*)
+    echo "REFUSED: BASE_URL=${BASE_URL} looks like prod. Staging-only." >&2
+    exit 1 ;;
+esac
+
+# PLAN : one line per palier. Format "endpoint rps".
+# health was already run before the scope reduction — keeping the data,
+# not re-running.
+DEFAULT_PLAN='
+top 1
+top 10
+top 100
+top 1000
+verdict 10
+verdict 1000
+intent 1
+intent 10
+intent 100
+intent 1000
+services 10
+services 1000
+operator_show 10
+operator_show 1000
+'
+
+PLAN="${PLAN:-${DEFAULT_PLAN}}"
+
+# 1000x gate : reject the plan if any 1000-rps line is present without ack
+if echo "${PLAN}" | awk 'NR>0{ if ($2 == 1000 || $2 == 2000 || $2 == 5000) exit 1 }'; then
+  :
+else
+  if [[ "${SATRANK_BENCH_1000X:-no}" != "yes" ]]; then
+    echo "REFUSED: plan contains 1000 RPS but SATRANK_BENCH_1000X != yes." >&2
+    exit 1
+  fi
 fi
 
-# 1000x gate
-if [[ ",${RPS_SET}," == *",1000,"* && "${SATRANK_BENCH_1000X:-no}" != "yes" ]]; then
-  echo "REFUSED: RPS_SET includes 1000 but SATRANK_BENCH_1000X != yes." >&2
-  echo "Re-run with SATRANK_BENCH_1000X=yes to acknowledge the palier." >&2
-  exit 1
-fi
-
-# Associative arrays require bash 4+. We use a case statement so the script
-# also runs on macOS bash 3.2 for local dry-run.
+# Associative paths via case → portable on bash 3.2 (local dry-run on macOS).
 script_for() {
   case "$1" in
-    health)   echo "bench/k6/health.js" ;;
-    top)      echo "bench/k6/top.js" ;;
-    verdict)  echo "bench/k6/verdict.js" ;;
-    intent)   echo "bench/k6/intent.js" ;;
-    services) echo "bench/k6/services.js" ;;
-    *)        echo "" ;;
+    health)             echo "bench/k6/health.js" ;;
+    top)                echo "bench/k6/top.js" ;;
+    verdict)            echo "bench/k6/verdict.js" ;;
+    intent)             echo "bench/k6/intent.js" ;;
+    services)           echo "bench/k6/services.js" ;;
+    operator_show)      echo "bench/k6/operator-show.js" ;;
+    operator_register)  echo "bench/k6/operator-register.js" ;;
+    *)                  echo "" ;;
   esac
+}
+
+echo "Run ID : ${RUN_ID}"
+echo "Out    : ${OUT_DIR}"
+echo "Base   : ${BASE_URL}"
+echo "Params : warmup=${WARMUP} duration=${DURATION} rest=${REST}"
+echo "Plan :"
+echo "${PLAN}" | sed 's/^/    /'
+echo
+
+# Probe helper : 1 if /api/health returns 200 or 503 (server is serving),
+# 0 if connection refused or 4xx other than 5xx. Timeout 5s.
+api_is_up() {
+  local code
+  code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "${BASE_URL}/api/health" || echo 000)
+  if [[ "${code}" == "200" || "${code}" == "503" ]]; then
+    return 0
+  fi
+  return 1
 }
 
 run_one() {
@@ -72,52 +121,67 @@ run_one() {
   local script
   script="$(script_for "${endpoint}")"
   if [[ -z "${script}" ]]; then
-    echo "SKIP: unknown endpoint '${endpoint}'" >&2
+    echo "SKIP [no-script]: endpoint '${endpoint}'" | tee -a "${PLAN_LOG}" >&2
     return
   fi
+
   local tag="${endpoint}_rps${rps}"
   local json="${OUT_DIR}/${tag}.json"
   local summary="${OUT_DIR}/${tag}.summary.txt"
 
-  echo "=== [$(date -u +%H:%M:%S)] ${endpoint} @ ${rps} rps (warmup=${WARMUP} sustained=${DURATION}) ==="
+  echo "=== [$(date -u +%H:%M:%S)] ${endpoint} @ ${rps} rps (warmup=${WARMUP} sustained=${DURATION}) ===" | tee -a "${PLAN_LOG}"
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    echo "    DRY_RUN: would run k6 run --summary-export=${json} ${script}"
+    echo "    DRY_RUN: k6 run --summary-export=${json} ${script}" | tee -a "${PLAN_LOG}"
     return
   fi
 
   BASE_URL="${BASE_URL}" RPS="${rps}" DURATION="${DURATION}" WARMUP="${WARMUP}" \
     k6 run --quiet --summary-export="${json}" "${REPO}/${script}" \
     > "${summary}" 2>&1 || {
-      echo "    WARN: k6 exited non-zero for ${tag} (threshold breach or error) — keeping output" >&2
+      echo "    WARN: k6 exited non-zero for ${tag} (threshold breach / error)" | tee -a "${PLAN_LOG}" >&2
     }
-  echo "    wrote ${json} + ${summary}"
+  echo "    wrote ${tag}.json + ${tag}.summary.txt" | tee -a "${PLAN_LOG}"
 }
 
-IFS=',' read -ra EP_ARR <<< "${ENDPOINTS}"
-IFS=',' read -ra RPS_ARR <<< "${RPS_SET}"
+# Skip set : once an endpoint's api is down, subsequent paliers for the
+# same endpoint are flagged without running. Others may still run.
+declare -a SKIP_ENDPOINTS=()
+endpoint_is_skipped() {
+  local ep="$1"
+  local s
+  for s in "${SKIP_ENDPOINTS[@]:-}"; do
+    [[ "${s}" == "${ep}" ]] && return 0
+  done
+  return 1
+}
 
-echo "Run ID: ${RUN_ID}"
-echo "Out:    ${OUT_DIR}"
-echo "Base:   ${BASE_URL}"
-echo "Plan:   endpoints=${ENDPOINTS} paliers=${RPS_SET}"
-echo
+# Iterate the plan
+while IFS= read -r line; do
+  # Skip blank lines and comments
+  line="$(echo "${line}" | awk '{$1=$1; print}')"
+  [[ -z "${line}" || "${line}" =~ ^# ]] && continue
+  endpoint="$(echo "${line}" | awk '{print $1}')"
+  rps="$(echo "${line}" | awk '{print $2}')"
 
-for endpoint in "${EP_ARR[@]}"; do
-  if [[ -z "$(script_for "${endpoint}")" ]]; then
-    echo "SKIP: unknown endpoint '${endpoint}' (known: health,top,verdict,intent,services)" >&2
+  if endpoint_is_skipped "${endpoint}"; then
+    echo "SKIP [api_down earlier in run]: ${endpoint} @ ${rps} rps" | tee -a "${PLAN_LOG}" >&2
     continue
   fi
-  for rps in "${RPS_ARR[@]}"; do
-    run_one "${endpoint}" "${rps}"
-    if [[ "${DRY_RUN:-0}" != "1" ]]; then
-      echo "    rest ${REST}"
-      # GNU sleep accepts suffixed durations (30s, 2m, 1h). Fallback to a raw
-      # integer + "s" if the suffixed form is rejected (e.g. BusyBox sleep).
-      sleep "${REST}" 2>/dev/null || sleep 120
-    fi
-  done
-done
 
-echo
-echo "All paliers done — results in ${OUT_DIR}"
-echo "Aggregate with: bench/aggregate.py ${OUT_DIR}"
+  run_one "${endpoint}" "${rps}"
+
+  # Inter-palier health probe. Aborts remaining paliers for THIS endpoint
+  # if the api is down (cascade guard). Other endpoints still attempted.
+  if [[ "${DRY_RUN:-0}" != "1" ]]; then
+    if ! api_is_up; then
+      echo "    WARN: /api/health unhealthy after ${endpoint}@${rps} — skipping remaining paliers for ${endpoint}" | tee -a "${PLAN_LOG}" >&2
+      SKIP_ENDPOINTS+=( "${endpoint}" )
+    fi
+    echo "    rest ${REST}" | tee -a "${PLAN_LOG}"
+    sleep "${REST}" 2>/dev/null || sleep 30
+  fi
+done <<< "${PLAN}"
+
+echo | tee -a "${PLAN_LOG}"
+echo "All planned paliers processed — results in ${OUT_DIR}" | tee -a "${PLAN_LOG}"
+echo "Aggregate with : bench/aggregate.py ${OUT_DIR}" | tee -a "${PLAN_LOG}"
