@@ -5,22 +5,49 @@ Issues opérationnelles non-bloquantes détectées lors de phases antérieures,
 
 ---
 
-## scoringStale pré-existant détecté avant B5
+## Finding A — `score_snapshots.n_obs` BIGINT rejette les valeurs décayées
 
 - **Date :** 2026-04-21
-- **Issue :** `scoringStale: true` observé sur `/api/health` prod avant le
-  cut-over B5. `scoringAgeSec ≈ 42378` (~12h). Flip `status: error` causé
-  uniquement par cette staleness — `dbStatus`, `lndStatus`, `cacheHealth`
-  et `schemaVersion` sont OK.
-- **Status :** accepté, non-bloquant. 0 user impacté au moment de la détection.
-- **Action Phase 12C :** à investiguer (cron calibration ? worker bloqué ?
-  condition de staleness trop agressive ?).
+- **Severity :** HIGH — bloquait 100 % des nouveaux snapshots post-cut-over
+- **Status :** **RESOLVED in Phase 12B hotfix** (commit `d9128e6`)
+- **Issue :** le port v41 a typé `score_snapshots.n_obs` en `BIGINT`, mais
+  la colonne reçoit `round3(nObsEffective) = (α + β) − (α₀ + β₀)` après
+  décroissance exponentielle τ=7j — une valeur réelle (ex. 0.987), pas
+  un compteur entier. Sous typage strict Postgres, chaque insertion
+  échouait avec `invalid input syntax for type bigint: "0.987"` et
+  `unscoredCount` restait bloqué.
+- **Cause racine :** héritage direct du schema SQLite (INTEGER permissif
+  acceptait les floats silencieusement) sans revue sémantique au moment
+  du port. Le pattern correct existait déjà dans la même DDL :
+  `nostr_published_events.n_obs_effective DOUBLE PRECISION`.
+- **Fix :**
+  1. `ALTER TABLE score_snapshots ALTER COLUMN n_obs TYPE DOUBLE PRECISION
+     USING n_obs::double precision` — exécuté sur prod en **128.7 ms**
+     (lock ACCESS EXCLUSIVE sous 1 s, conversion sans perte car les
+     12 291 lignes pré-existantes avaient toutes `n_obs = 0`).
+  2. `src/database/postgres-schema.sql:93` aligné pour les fresh installs
+     et le template DB des tests vitest.
+  3. `src/tests/snapshotNobsFloat.test.ts` — test de régression couvrant
+     0.987 + bornes (0, 42, 12.375, 1 000 000.125).
+- **Post-fix :** un cycle rescore a écrit 5 515 nouveaux snapshots (max
+  `n_obs = 0.982`), zéro erreur bigint sur les 5 min suivantes, 4 des 5
+  agents explicitement bloqués (`fa44376c`, `cb0c2aff`, `ec1c4124`,
+  `f35ed6ba`) re-scorés ; le 5ème (`6bea5652`) est en attente du cycle
+  suivant, pas d'erreur spécifique.
+- **Audit de scope effectué :** les 5 `*_streaming_posteriors` (α/β
+  DOUBLE PRECISION ✅, `total_ingestions` BIGINT ✅ — counter brut), les
+  5 `*_daily_buckets` (n_obs/success/failure BIGINT ✅ — counters
+  entiers par jour), `nostr_published_events.n_obs_effective DOUBLE
+  PRECISION` ✅. Aucune autre colonne mal typée sémantiquement.
 
 ---
 
-## `/api/intent/categories` renvoie une liste vide post-migration
+## Finding B — `/api/intent/categories` renvoie une liste vide post-migration
 
 - **Date :** 2026-04-21 (détecté pendant le smoke iso-network Phase 12B B7)
+- **Severity :** MEDIUM — n'affecte que `/api/intent` (0 user au moment
+  de la détection)
+- **Status :** **OPEN** — to be investigated in Phase 12C
 - **Issue :** `GET /api/intent/categories` retourne `{ "categories": [] }`
   sur prod après le cut-over B5. Conséquence : `POST /api/intent` rejette
   toute requête avec `INVALID_CATEGORY` (HTTP 400). Les fixtures historiques
@@ -31,11 +58,28 @@ Issues opérationnelles non-bloquantes détectées lors de phases antérieures,
   ne renvoie aucune ligne post-migration. Soit `category`/`agent_hash`/`source`
   n'ont pas été backfillés correctement, soit le crawler n'a pas encore
   repopulé la table, soit l'INSERT crawler vise une autre colonne post-port.
-- **Status :** non-bloquant tant que 0 user réel utilise `/api/intent`.
-  Latence serveur OK (~45 ms p50), seul le contenu est vide.
 - **Action Phase 12C :**
   1. Vérifier si `service_endpoints` a des lignes avec `category IS NOT NULL`
      et `agent_hash IS NOT NULL` en prod (`SELECT COUNT(*)` par filtre).
   2. Laisser tourner le crawler une fois et re-tester.
   3. Si toujours vide, auditer le port B3.b du crawler registry
      (`src/crawler/registryCrawler.ts`) + `ServiceEndpointRepository.upsert*`.
+
+---
+
+## Finding C — `scoringStale: true` pré-existant détecté avant B5
+
+- **Date :** 2026-04-21
+- **Severity :** LOW — `dbStatus`, `lndStatus`, `cacheHealth`,
+  `schemaVersion` tous OK ; seul le flag staleness est levé
+- **Status :** **OPEN** — to be investigated in Phase 12C
+- **Issue :** `scoringStale: true` observé sur `/api/health` prod avant
+  le cut-over B5. `scoringAgeSec ≈ 42 378` (~12 h). Flip `status: error`
+  causé uniquement par cette staleness.
+- **Status opérationnel :** accepté, non-bloquant. 0 user impacté au
+  moment de la détection. Le fix de Finding A devrait débloquer la
+  progression de `computed_at` sur `score_snapshots` et faire retomber
+  le flag naturellement au prochain cycle rescore — à vérifier.
+- **Action Phase 12C :** à investiguer si le flag persiste après un
+  cycle rescore complet post-hotfix (cron calibration ? worker bloqué ?
+  condition de staleness trop agressive ?).

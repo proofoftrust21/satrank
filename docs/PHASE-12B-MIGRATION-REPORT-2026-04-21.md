@@ -14,14 +14,20 @@ better-sqlite3 (single file on the api host, WAL mode) to PostgreSQL 16
 running on a dedicated Hetzner cpx42 VM in nbg1.
 
 - **Strategy:** big-bang (no dual-write, no ETL), chosen because prod
-  has 0 user baseline RPS and 8 182 agents indexed — a one-shot cut-over
-  is simpler to reason about than an active/active mirror.
+  has 0 user baseline RPS and 12 291 agents indexed at T-0 (of which
+  8 182 had active bayesian streaming posteriors at the moment of the
+  cut-over decision) — a one-shot cut-over is simpler to reason about
+  than an active/active mirror.
 - **Downtime:** ≈ 32 min measured container-to-container. No user-facing
   request was in flight during the window (0 RPS baseline).
 - **Data loss:** none expected from the schema side (v41 consolidated
   DDL applied idempotently). One **data population gap** detected
-  post-cut-over on `service_endpoints.category` — logged as Phase 12C
-  OPS issue, does not compromise core scoring or agent indexation.
+  post-cut-over on `service_endpoints.category` (Finding B) and one
+  **type-regression** on `score_snapshots.n_obs` BIGINT vs DOUBLE
+  PRECISION (Finding A, resolved in commit `d9128e6`) — both logged as
+  Phase 12C OPS issues, neither compromised agent indexation (Finding A
+  blocked new snapshots post cut-over until hotfix; pre-existing rows
+  intact).
 - **LND status:** intact throughout. No channel op, no macaroon churn,
   no LND container restart.
 - **Tests:** 110 failed → 0 failed across the B3 sweep. 1 041 tests
@@ -167,16 +173,26 @@ current load profile.
 
 ## 6. Findings for Phase 12C
 
-Open OPS issues (`docs/phase-12c/OPS-ISSUES.md`):
+Findings (`docs/phase-12c/OPS-ISSUES.md`):
 
-1. **`scoringStale: true` pre-existing before B5** — `/api/health` showed
-   scoring age ~12 h on prod during B5 prep. Not migration-related,
-   accepted as non-blocking (0 user impacted). Phase 12C: investigate
-   cron calibration / worker loop.
-2. **`/api/intent/categories` returns `[]` post-migration** (detected
-   during B7 smoke). `service_endpoints.category` filter yields no
-   rows. Three-step diagnostic laid out in OPS-ISSUES. Affects only
-   `/api/intent` at content level (latency OK).
+- **Finding A — `score_snapshots.n_obs` BIGINT rejects decayed floats**
+  — HIGH severity, **RESOLVED in Phase 12B hotfix** (commit `d9128e6`).
+  The SQLite INTEGER permissive typing was ported as BIGINT without
+  semantic review, while the column actually stores
+  `round3(nObsEffective)` (decayed real-valued weight). ALTER to DOUBLE
+  PRECISION completed on prod in 128.7 ms; 12 291 pre-existing rows
+  (all `n_obs = 0`) converted losslessly; 5 515 new snapshots written
+  post-fix in the first rescore cycle with zero bigint errors.
+- **Finding B — `/api/intent/categories` returns `[]` post-migration**
+  (detected during B7 smoke) — MEDIUM severity, **OPEN**.
+  `service_endpoints.category` filter yields no rows. Three-step
+  diagnostic laid out in OPS-ISSUES. Affects only `/api/intent` at
+  content level (latency OK).
+- **Finding C — `scoringStale: true` pre-existing before B5** — LOW
+  severity, **OPEN**. `/api/health` showed scoring age ~12 h on prod
+  during B5 prep. Not migration-related; 0 user impacted. May resolve
+  naturally once Finding A hotfix lets `computed_at` progress on
+  `score_snapshots` — to verify after one full post-hotfix cycle.
 
 Engineering debt:
 
