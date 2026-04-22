@@ -61,10 +61,16 @@ export interface BackfillOptions {
    *  context) so the 30 "skippedDecodeFailed" cases can be classified. Silent
    *  by default — the default log level hides skip debug lines. */
   verboseSkips?: boolean;
+  /** Backoffs (ms) between retry attempts on transient fetch failures. Default
+   *  [500, 2000]. Length also determines max retry count (2 here → 3 total
+   *  attempts per URL). Tests set this to [0, 0] to run synchronously. */
+  retryBackoffsMs?: number[];
 }
 
 const DEFAULT_RATE_LIMIT_MS = 500;
 const DEFAULT_FETCH_TIMEOUT_MS = 5000;
+const DEFAULT_RETRY_BACKOFFS_MS = [500, 2000];
+const RETRYABLE_ERROR_PATTERN = /ECONNRESET|ETIMEDOUT|timeout|aborted/i;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -82,10 +88,46 @@ export async function backfillServicePrices(
   const fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const limit = options.limit;
   const verboseSkips = options.verboseSkips ?? false;
+  const retryBackoffsMs = options.retryBackoffsMs ?? DEFAULT_RETRY_BACKOFFS_MS;
 
   function emitSkip(reason: string, details: Record<string, unknown>): void {
     if (!verboseSkips) return;
     logger.info({ skip: { reason, ...details } }, `backfillServicePrices: SKIP ${reason}`);
+  }
+
+  /** Fetch with inline retry on transient failures:
+   *    - thrown errors matching ECONNRESET/ETIMEDOUT/timeout/aborted → retry
+   *    - HTTP 5xx responses → retry
+   *    - SSRF blocks, 4xx, and unmatched errors → no retry (deterministic)
+   *  Retries use the backoffs from options (default [500ms, 2000ms] → 3 total attempts).
+   *  Each attempt gets a fresh AbortSignal.timeout to avoid sharing a timer across retries. */
+  async function fetchWithRetry(url: string): Promise<Response> {
+    const maxAttempts = retryBackoffsMs.length + 1;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const resp = await fetchSafeExternal(url, {
+          method: 'GET',
+          signal: AbortSignal.timeout(fetchTimeoutMs),
+          headers: { 'User-Agent': 'SatRank-BackfillServicePrices/1.0' },
+        });
+        if (resp.status >= 500 && resp.status < 600 && attempt < maxAttempts - 1) {
+          logger.debug({ url, status: resp.status, attempt: attempt + 1 }, 'backfillServicePrices: 5xx, retrying');
+          await sleep(retryBackoffsMs[attempt]);
+          continue;
+        }
+        return resp;
+      } catch (err: unknown) {
+        lastErr = err;
+        if (err instanceof SsrfBlockedError) throw err;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (!RETRYABLE_ERROR_PATTERN.test(errMsg)) throw err;
+        if (attempt >= maxAttempts - 1) throw err;
+        logger.debug({ url, error: errMsg, attempt: attempt + 1 }, 'backfillServicePrices: retryable error, retrying');
+        await sleep(retryBackoffsMs[attempt]);
+      }
+    }
+    throw lastErr;
   }
 
   const summary: BackfillSummary = {
@@ -130,11 +172,7 @@ export async function backfillServicePrices(
 
       let resp: Response;
       try {
-        resp = await fetchSafeExternal(url, {
-          method: 'GET',
-          signal: AbortSignal.timeout(fetchTimeoutMs),
-          headers: { 'User-Agent': 'SatRank-BackfillServicePrices/1.0' },
-        });
+        resp = await fetchWithRetry(url);
       } catch (err: unknown) {
         if (err instanceof SsrfBlockedError) {
           summary.skippedSsrf += 1;
@@ -146,6 +184,16 @@ export async function backfillServicePrices(
           logger.warn({ url, error: errMsg }, 'backfillServicePrices: network error');
           emitSkip('network_error', { url, errMsg });
         }
+        await sleep(rateLimitMs);
+        continue;
+      }
+
+      // 5xx persisted across all retries → infra/provider issue, not a "not L402" misconfig.
+      if (resp.status >= 500 && resp.status < 600) {
+        summary.skippedNetworkError += 1;
+        const errMsg = `HTTP ${resp.status} after retries`;
+        logger.warn({ url, status: resp.status }, 'backfillServicePrices: 5xx persisted after retries');
+        emitSkip('network_error', { url, httpStatus: resp.status, errMsg });
         await sleep(rateLimitMs);
         continue;
       }
