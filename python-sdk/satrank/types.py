@@ -85,7 +85,7 @@ class AdvisoryEntry(TypedDict, total=False):
 class AdvisoryBlock(TypedDict, total=False):
     advisory_level: Literal["green", "yellow", "orange", "red"]
     risk_score: float
-    recommendation: Literal["proceed", "proceed_with_caution", "avoid"]
+    recommendation: Literal["proceed", "proceed_with_caution", "consider_alternative", "avoid"]
     advisories: list[AdvisoryEntry]
 
 
