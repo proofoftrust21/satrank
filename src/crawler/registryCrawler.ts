@@ -12,6 +12,7 @@ import type { PreimagePoolRepository } from '../repositories/preimagePoolReposit
 import { sha256 } from '../utils/crypto';
 import { isSafeUrl, fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 import { HostRateLimiter } from '../utils/hostRateLimiter';
+import { ProviderHealthTracker } from '../utils/providerHealthTracker';
 import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
 import { validateCategoryOrNull } from '../utils/categoryValidation';
 
@@ -56,12 +57,16 @@ const FETCH_TIMEOUT_MS = 5000;
 
 export class RegistryCrawler {
   private readonly hostLimiter = new HostRateLimiter(PER_HOST_GAP_MS);
+  private readonly healthTracker: ProviderHealthTracker;
 
   constructor(
     private serviceEndpointRepo: ServiceEndpointRepository,
     private decodeBolt11?: (invoice: string) => Promise<{ destination: string; num_satoshis?: string } | null>,
     private preimagePoolRepo?: PreimagePoolRepository,
-  ) {}
+    healthTracker?: ProviderHealthTracker,
+  ) {
+    this.healthTracker = healthTracker ?? new ProviderHealthTracker();
+  }
 
   async run(): Promise<{ discovered: number; updated: number; errors: number }> {
     const result = { discovered: 0, updated: 0, errors: 0 };
@@ -199,7 +204,13 @@ export class RegistryCrawler {
         headers: { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
       });
 
-      if (resp.status !== 402) return null; // not an L402 endpoint
+      if (resp.status >= 500 && resp.status < 600) {
+        // 5xx on a URL 402index has indexed is a provider-side failure — track
+        // it so an outage like the 2026-04-22 plebtv one surfaces in the logs.
+        this.healthTracker.recordFailure(serviceUrl, 'http_5xx_after_retry');
+        return null;
+      }
+      if (resp.status !== 402) return null; // not an L402 endpoint (legit non-L402)
 
       const wwwAuth = resp.headers.get('www-authenticate') ?? '';
       // Extract invoice from: L402 macaroon="...", invoice="lnbc..."
@@ -229,11 +240,21 @@ export class RegistryCrawler {
 
       // Use the provided BOLT11 decoder (LND decodepayreq) if available
       if (this.decodeBolt11) {
-        const decoded = await this.decodeBolt11(invoice);
-        if (decoded?.destination) {
-          const agentHash = sha256(decoded.destination);
-          const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
-          return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null };
+        try {
+          const decoded = await this.decodeBolt11(invoice);
+          if (decoded?.destination) {
+            const agentHash = sha256(decoded.destination);
+            const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
+            this.healthTracker.recordSuccess(serviceUrl);
+            return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null };
+          }
+          this.healthTracker.recordFailure(serviceUrl, 'decode_failed');
+        } catch (decodeErr: unknown) {
+          const msg = decodeErr instanceof Error ? decodeErr.message : String(decodeErr);
+          const kind = /invalid index|checksum failed|failed converting data|invalid character not part of charset/i.test(msg)
+            ? 'invoice_malformed'
+            : 'decode_failed';
+          this.healthTracker.recordFailure(serviceUrl, kind);
         }
       }
 
@@ -241,6 +262,8 @@ export class RegistryCrawler {
     } catch (err: unknown) {
       if (err instanceof SsrfBlockedError) {
         logger.debug({ url: serviceUrl, reason: err.message }, 'Registry: discoverNodeFromUrl blocked by SSRF guard');
+      } else {
+        this.healthTracker.recordFailure(serviceUrl, 'network_error');
       }
       return null;
     }

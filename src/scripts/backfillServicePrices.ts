@@ -29,6 +29,7 @@ import { HttpLndGraphClient, type LndGraphClient } from '../crawler/lndGraphClie
 import { config } from '../config';
 import { fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 import { HostRateLimiter } from '../utils/hostRateLimiter';
+import { ProviderHealthTracker } from '../utils/providerHealthTracker';
 import { logger } from '../logger';
 
 export interface BackfillSummary {
@@ -70,6 +71,10 @@ export interface BackfillOptions {
    *  [500, 2000]. Length also determines max retry count (2 here → 3 total
    *  attempts per URL). Tests set this to [0, 0] to run synchronously. */
   retryBackoffsMs?: number[];
+  /** Optional override for the provider health tracker (tests inject a mock
+   *  logger). Default: a fresh run-scoped ProviderHealthTracker with the
+   *  default threshold of 10 consecutive failures per host. */
+  healthTracker?: ProviderHealthTracker;
 }
 
 const DEFAULT_RATE_LIMIT_MS = 500;
@@ -107,6 +112,7 @@ export async function backfillServicePrices(
   const limit = options.limit;
   const verboseSkips = options.verboseSkips ?? false;
   const retryBackoffsMs = options.retryBackoffsMs ?? DEFAULT_RETRY_BACKOFFS_MS;
+  const healthTracker = options.healthTracker ?? new ProviderHealthTracker();
 
   function emitSkip(reason: string, details: Record<string, unknown>): void {
     if (!verboseSkips) return;
@@ -212,6 +218,7 @@ export async function backfillServicePrices(
           const errMsg = err instanceof Error ? err.message : String(err);
           logger.warn({ url, error: errMsg }, 'backfillServicePrices: network error');
           emitSkip('network_error', { url, errMsg });
+          healthTracker.recordFailure(url, 'network_error');
         }
         continue;
       }
@@ -222,6 +229,7 @@ export async function backfillServicePrices(
         const errMsg = `HTTP ${resp.status} after retries`;
         logger.warn({ url, status: resp.status }, 'backfillServicePrices: 5xx persisted after retries');
         emitSkip('network_error', { url, httpStatus: resp.status, errMsg });
+        healthTracker.recordFailure(url, 'http_5xx_after_retry');
         continue;
       }
 
@@ -240,6 +248,7 @@ export async function backfillServicePrices(
             const errMsg = err instanceof Error ? err.message : String(err);
             logger.warn({ url, error: errMsg }, 'backfillServicePrices: network error after 429 retry');
             emitSkip('network_error', { url, errMsg });
+            healthTracker.recordFailure(url, 'network_error');
             continue;
           }
         }
@@ -284,6 +293,7 @@ export async function backfillServicePrices(
         if (/invalid index|checksum failed|failed converting data|invalid character not part of charset/i.test(errMsg)) {
           summary.skippedInvoiceMalformed += 1;
           reason = 'invoice_malformed';
+          healthTracker.recordFailure(url, 'invoice_malformed');
         } else if (lower.includes('circuit breaker open')) {
           summary.skippedBreakerOpen += 1;
           reason = 'breaker_open';
@@ -293,6 +303,7 @@ export async function backfillServicePrices(
         } else {
           summary.skippedDecodeFailed += 1;
           reason = 'decode_other';
+          healthTracker.recordFailure(url, 'decode_failed');
         }
         logger.warn({ url, error: errMsg, reason }, 'backfillServicePrices: decodepayreq failed');
         emitSkip(reason, { url, httpStatus: resp.status, wwwAuth, invoice, lndError: errMsg });
@@ -303,6 +314,7 @@ export async function backfillServicePrices(
         summary.skippedDecodeFailed += 1;
         logger.debug({ url }, 'backfillServicePrices: decoded payload missing num_satoshis');
         emitSkip('decode_missing_num_satoshis', { url, invoice, decoded });
+        healthTracker.recordFailure(url, 'decode_failed');
         continue;
       }
 
@@ -316,6 +328,7 @@ export async function backfillServicePrices(
 
       await repo.updatePrice(url, priceSats);
       summary.priced += 1;
+      healthTracker.recordSuccess(url);
       logger.info({ url, priceSats }, 'backfillServicePrices: price updated');
     }
 
