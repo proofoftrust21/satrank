@@ -25,7 +25,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     alias: 'test-agent',
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 50,
     total_attestations_received: 0,
     avg_score: 60,
@@ -108,18 +108,19 @@ describe.skip('Risk profile edge cases', async () => {
     await agentRepo.insert(agent);
 
     // Past p_success=0.20 vs current 0.5 prior → delta=+0.30 > DELTA_RAPID_RISE (0.26)
-    db.prepare(`
-      INSERT INTO score_snapshots (
+    await db.query(
+      `INSERT INTO score_snapshots (
         snapshot_id, agent_hash,
         p_success, ci95_low, ci95_high, n_obs,
         posterior_alpha, posterior_beta, window,
         computed_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '7d', ?, ?)
-    `).run(
-      uuid(), agent.public_key_hash,
-      0.20, 0.15, 0.25, 10,
-      1.5 + 10 * 0.20, 1.5 + 10 * 0.80,
-      NOW - 7 * DAY, NOW - 7 * DAY,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '7d', $9, $10)`,
+      [
+        uuid(), agent.public_key_hash,
+        0.20, 0.15, 0.25, 10,
+        1.5 + 10 * 0.20, 1.5 + 10 * 0.80,
+        NOW - 7 * DAY, NOW - 7 * DAY,
+      ],
     );
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
@@ -139,18 +140,19 @@ describe.skip('Risk profile edge cases', async () => {
     await agentRepo.insert(agent);
 
     // Past p_success=0.70 vs current 0.5 prior → delta=-0.20 < DELTA_DECLINING (-0.13)
-    db.prepare(`
-      INSERT INTO score_snapshots (
+    await db.query(
+      `INSERT INTO score_snapshots (
         snapshot_id, agent_hash,
         p_success, ci95_low, ci95_high, n_obs,
         posterior_alpha, posterior_beta, window,
         computed_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '7d', ?, ?)
-    `).run(
-      uuid(), agent.public_key_hash,
-      0.70, 0.65, 0.75, 10,
-      1.5 + 10 * 0.70, 1.5 + 10 * 0.30,
-      NOW - 7 * DAY, NOW - 7 * DAY,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '7d', $9, $10)`,
+      [
+        uuid(), agent.public_key_hash,
+        0.70, 0.65, 0.75, 10,
+        1.5 + 10 * 0.70, 1.5 + 10 * 0.30,
+        NOW - 7 * DAY, NOW - 7 * DAY,
+      ],
     );
 
     const result = await verdictService.getVerdict(agent.public_key_hash);

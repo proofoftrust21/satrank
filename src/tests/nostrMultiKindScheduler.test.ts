@@ -132,7 +132,7 @@ async function seedSafeEndpoint(
   repo: EndpointStreamingPosteriorRepository,
   urlHash: string,
   nowSec: number,
-): void {
+): Promise<void> {
   for (let i = 0; i < 25; i++) {
     await repo.ingest(urlHash, 'probe', { successDelta: 1, failureDelta: 0, nowSec });
   }
@@ -146,7 +146,7 @@ async function seedRiskyEndpoint(
   repo: EndpointStreamingPosteriorRepository,
   urlHash: string,
   nowSec: number,
-): void {
+): Promise<void> {
   for (let i = 0; i < 50; i++) {
     await repo.ingest(urlHash, 'probe', { successDelta: 0, failureDelta: 1, nowSec });
   }
@@ -358,11 +358,12 @@ describe.skip('NostrMultiKindScheduler', async () => {
     // Force le shouldRepublish à dire "oui" en réécrivant la row cache avec
     // un verdict différent du snapshot courant, mais garde le payload_hash
     // identique à celui que produirait le template actuel.
-    const cached = await publishedEvents.getLastPublished('endpoint', urlHash)!;
-    const db2 = db.prepare(
-      `UPDATE nostr_published_events SET verdict = 'UNKNOWN', p_success = 0 WHERE entity_type = 'endpoint' AND entity_id = ?`,
+    const cached = await publishedEvents.getLastPublished('endpoint', urlHash);
+    expect(cached).not.toBeNull();
+    await db.query(
+      `UPDATE nostr_published_events SET verdict = 'UNKNOWN', p_success = 0 WHERE entity_type = 'endpoint' AND entity_id = $1`,
+      [urlHash],
     );
-    db2.run(urlHash);
 
     publisher.calls.length = 0;
     const result = await scheduler.runScan(now);
@@ -372,7 +373,9 @@ describe.skip('NostrMultiKindScheduler', async () => {
     expect(endpointRes.published).toBe(0);
     expect(publisher.calls).toHaveLength(0);
     // cache inchangé (même payload_hash que précédemment)
-    expect(await publishedEvents.getLastPublished('endpoint', urlHash)!.payload_hash).toBe(cached.payload_hash);
+    const cachedAfter = await publishedEvents.getLastPublished('endpoint', urlHash);
+    expect(cachedAfter).not.toBeNull();
+    expect(cachedAfter!.payload_hash).toBe(cached!.payload_hash);
   });
 
   it('fenêtre scanWindowSec filtre les entités anciennes', async () => {

@@ -119,7 +119,7 @@ describe('Contract tests — responses match OpenAPI spec', async () => {
       alias: 'ContractNode2',
       first_seen: NOW - 30 * DAY,
       last_seen: NOW - 2 * DAY,
-      source: 'observer_protocol',
+      source: 'attestation',
       total_transactions: 20,
       total_attestations_received: 0,
       avg_score: 30,
@@ -180,7 +180,7 @@ describe('Contract tests — responses match OpenAPI spec', async () => {
       lastSeen: 'number',
       source: 'string',
     });
-    expect(['observer_protocol', '4tress', 'lightning_graph', 'manual']).toContain(data.agent.source);
+    expect(['attestation', '4tress', 'lightning_graph', 'manual']).toContain(data.agent.source);
 
     // bayesian section (canonical public shape, streaming — Phase 3 C9)
     assertShape(data.bayesian, {

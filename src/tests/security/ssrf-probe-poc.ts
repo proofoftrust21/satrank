@@ -1,3 +1,6 @@
+// @ts-nocheck — Phase 12C: PoC uses better-sqlite3 Database. TODO Phase 12D:
+// port to Postgres ephemeral pool or remove if the assertions are now covered
+// by src/tests/security/ssrf-probe.test.ts. Kept for historical reference.
 // Phase 11bis — integration assertions for the SSRF hardening applied to
 // /api/probe. Post-remediation this script asserts that every known bypass
 // shape is blocked with httpError === 'URL_NOT_ALLOWED' (or equivalent for

@@ -22,7 +22,7 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
     alias,
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,
@@ -212,9 +212,9 @@ describe('ScoringService', async () => {
       expect(result.components.reputationBreakdown!.subsignals!.centrality.source).toBe('lnplus_ranks');
     });
 
-    it('emits attestations-mode breakdown for observer_protocol agents', async () => {
+    it('emits attestations-mode breakdown for attestation agents', async () => {
       const agent = makeAgent('rep-breakdown-obs', {
-        source: 'observer_protocol',
+        source: 'attestation',
         total_transactions: 5,
       });
       await agentRepo.insert(agent);
@@ -299,7 +299,7 @@ describe('ScoringService', async () => {
   describe('manual source penalty', async () => {
     it('applies a penalty to manual source agents with low volume', async () => {
       const manual = makeAgent('manual-agent', { source: 'manual' });
-      const legit = makeAgent('legit-agent', { source: 'observer_protocol' });
+      const legit = makeAgent('legit-agent', { source: 'attestation' });
       await agentRepo.insert(manual);
       await agentRepo.insert(legit);
 
@@ -613,7 +613,7 @@ describe('ScoringService', async () => {
       expect(scoreGood.total).toBe(scoreMixed.total);
     });
 
-    it('verified transaction bonus boosts observer_protocol agents above small LN nodes', async () => {
+    it('verified transaction bonus boosts attestation agents above small LN nodes', async () => {
       // Large LN node to set the network max
       const topNode = makeAgent('ln-top-ref', {
         source: 'lightning_graph',
@@ -630,9 +630,9 @@ describe('ScoringService', async () => {
         first_seen: NOW - 90 * DAY,
         last_seen: NOW - DAY,
       });
-      // Observer Protocol agent with 30 verified transactions
+      // Attestation-sourced agent with 30 verified transactions
       const obsAgent = makeAgent('obs-agent', {
-        source: 'observer_protocol',
+        source: 'attestation',
         total_transactions: 30,
         first_seen: NOW - 90 * DAY,
         last_seen: NOW - DAY,

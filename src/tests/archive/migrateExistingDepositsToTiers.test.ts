@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // Phase 9 C4 — tests for the legacy-deposit backfill script.
 // Covers: dry-run non-mutation, tier inference from max_quota, proportional
 // credits calc, skips for below-floor / null max_quota, idempotence.

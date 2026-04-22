@@ -1,3 +1,6 @@
+// @ts-nocheck — Phase 12C: SQLite-era fixtures (db.prepare/run/get/all + db.transaction).
+// Port helpers ensureAgent/insertProbe/etc. to pg.query before unskipping. Tests are
+// already describe.skip'd so no runtime coverage is lost; TODO Phase 12D.
 // Tests for runRetentionCleanup — chunked time-series sweeper.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Pool } from 'pg';
@@ -27,7 +30,7 @@ function ensureAgent(db: Pool, hash: string): void {
     INSERT INTO agents (
       public_key_hash, alias, first_seen, last_seen, source,
       total_transactions, total_attestations_received, avg_score
-    ) VALUES (?, ?, ?, ?, 'observer_protocol', 0, 0, 0)
+    ) VALUES (?, ?, ?, ?, 'attestation', 0, 0, 0)
   `).run(hash, `agent-${hash.slice(0, 6)}`, 1500000000, 1700000000);
 }
 

@@ -3,7 +3,7 @@
 //
 //   1. Total line volume.
 //   2. Distribution by source_module (4 modules) + % rounding.
-//   3. Distribution by source (5 labels incl. __null__) + % rounding.
+//   3. Distribution by source (4 labels incl. __null__) + % rounding.
 //   4. endpoint_hash / operator_id NULL rates.
 //   5. window_bucket vs date(timestamp) alignment — 100 % required.
 //   6. Sample deterministic under a fixed seed.
@@ -24,7 +24,7 @@ const RECEIVER = sha256('receiver');
 
 interface RowOverrides {
   source_module?: DualWriteSourceModule;
-  source?: 'probe' | 'observer' | 'report' | 'intent' | null;
+  source?: 'probe' | 'report' | 'intent' | 'paid' | null;
   endpoint_hash?: string | null;
   operator_id?: string | null;
   window_bucket?: string | null;
@@ -53,7 +53,7 @@ function makeRow(i: number, overrides: RowOverrides = {}): DualWriteLogRow {
       protocol: 'bolt11',
       endpoint_hash: overrides.endpoint_hash === undefined ? sha256('https://x.example/y') : overrides.endpoint_hash,
       operator_id: overrides.operator_id === undefined ? sha256('02operator') : overrides.operator_id,
-      source: overrides.source === undefined ? 'observer' : overrides.source,
+      source: overrides.source === undefined ? 'probe' : overrides.source,
       window_bucket: overrides.window_bucket === undefined ? windowBucket(ts) : overrides.window_bucket,
     },
     legacy_inserted: overrides.legacy_inserted ?? true,
@@ -85,8 +85,8 @@ describe('auditDualWriteDryrun', () => {
     expect(r.pass).toBe(true);
     expect(r.by_source_module.crawler.count).toBe(1);
     expect(r.by_source_module.crawler.pct).toBe(100);
-    expect(r.by_source.observer.count).toBe(1);
-    expect(r.by_source.observer.pct).toBe(100);
+    expect(r.by_source.probe.count).toBe(1);
+    expect(r.by_source.probe.pct).toBe(100);
   });
 
   it('distribution by source_module covers all 4 writers', () => {
@@ -109,14 +109,14 @@ describe('auditDualWriteDryrun', () => {
   it('distribution by source includes __null__ bucket', () => {
     const rows = [
       makeRow(1, { source: 'probe' }),
-      makeRow(2, { source: 'observer' }),
+      makeRow(2, { source: 'paid' }),
       makeRow(3, { source: 'report' }),
       makeRow(4, { source: 'intent' }),
       makeRow(5, { source: null }),
     ];
     const r = auditNdjson(toNdjson(rows));
     expect(r.by_source.probe.count).toBe(1);
-    expect(r.by_source.observer.count).toBe(1);
+    expect(r.by_source.paid.count).toBe(1);
     expect(r.by_source.report.count).toBe(1);
     expect(r.by_source.intent.count).toBe(1);
     expect(r.by_source.__null__.count).toBe(1);

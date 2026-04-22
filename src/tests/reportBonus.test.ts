@@ -60,9 +60,11 @@ function fakeRequest(authHeader = ''): Request {
 }
 
 /** Insert a token_balance row so credits have somewhere to land. */
-function seedToken(db: Pool, paymentHash: Buffer, remaining = 10): void {
-  db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
-    .run(paymentHash, remaining, Math.floor(Date.now() / 1000));
+async function seedToken(db: Pool, paymentHash: Buffer, remaining = 10): Promise<void> {
+  await db.query(
+    'INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES ($1, $2, $3)',
+    [paymentHash, remaining, Math.floor(Date.now() / 1000)],
+  );
 }
 
 // TODO Phase 12B: describe uses helpers with SQLite .prepare/.run/.get/.all — port fixtures to pg before unskipping.
@@ -102,7 +104,7 @@ describe.skip('ReportBonusService', async () => {
     });
 
     paymentHash = crypto.randomBytes(32);
-    seedToken(db, paymentHash, 10);
+    await seedToken(db, paymentHash, 10);
   });
 
   afterEach(async () => {
@@ -125,7 +127,7 @@ describe.skip('ReportBonusService', async () => {
     });
     expect(off.isEnabled()).toBe(false);
     const ph = crypto.randomBytes(32);
-    seedToken(db, ph);
+    await seedToken(db, ph);
     const result = await off.maybeCredit({
       reporterHash: sha256('x'),
       req: fakeRequest(),
@@ -160,8 +162,11 @@ describe.skip('ReportBonusService', async () => {
     expect(r10.sats).toBe(1);
 
     // Balance was credited
-    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(paymentHash) as { remaining: number };
-    expect(row.remaining).toBe(11); // seeded 10 + 1 bonus
+    const rowRes = await db.query<{ remaining: number }>(
+      'SELECT remaining FROM token_balance WHERE payment_hash = $1',
+      [paymentHash],
+    );
+    expect(rowRes.rows[0].remaining).toBe(11); // seeded 10 + 1 bonus
   });
 
   // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
@@ -174,8 +179,11 @@ describe.skip('ReportBonusService', async () => {
     }
     // threshold=10, dailyCap=3 → first 30 generate 3 bonuses; the next 10 are capped.
     expect(credited).toBe(3);
-    const row = db.prepare('SELECT remaining FROM token_balance WHERE payment_hash = ?').get(paymentHash) as { remaining: number };
-    expect(row.remaining).toBe(13); // seeded 10 + 3 bonuses
+    const rowRes = await db.query<{ remaining: number }>(
+      'SELECT remaining FROM token_balance WHERE payment_hash = $1',
+      [paymentHash],
+    );
+    expect(rowRes.rows[0].remaining).toBe(13); // seeded 10 + 3 bonuses
   });
 
   it('rejects reporters below the score gate without NIP-98', async () => {

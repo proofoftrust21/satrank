@@ -40,7 +40,6 @@
 //     une autre route de metering), mais le code est en place pour quand la
 //     distinction sera matérialisée.
 //   - 'report' → streaming + buckets (weight selon tier défaut, voir --reporter-tier)
-//   - 'observer' → buckets only (CHECK constraint SQL sur streaming)
 //   - 'intent' → skip complet (contrat Phase 3 : intents = token_query_log, pas d'obs)
 //   - source IS NULL → skip (legacy pré-v31, sans enrichment)
 //
@@ -106,7 +105,6 @@ export interface RebuildResult {
     probe: number;
     report: number;
     paid: number;
-    observer: number;
     intent: number;
   };
   errors: number;
@@ -118,7 +116,7 @@ interface TxRow {
   status: 'verified' | 'failed';
   endpoint_hash: string | null;
   operator_id: string | null;
-  source: 'probe' | 'report' | 'paid' | 'observer' | 'intent' | null;
+  source: 'probe' | 'report' | 'paid' | 'intent' | null;
 }
 
 /** Point d'entrée programmatique — utilisé par les tests et la CLI. */
@@ -133,7 +131,7 @@ export async function runRebuild(options: RebuildOptions): Promise<RebuildResult
     ingested: 0,
     skippedNoSource: 0,
     skippedIntent: 0,
-    perSource: { probe: 0, report: 0, paid: 0, observer: 0, intent: 0 },
+    perSource: { probe: 0, report: 0, paid: 0, intent: 0 },
     errors: 0,
   };
 
@@ -261,7 +259,6 @@ async function main(): Promise<void> {
     `probe=${result.perSource.probe}`,
     `report=${result.perSource.report}`,
     `paid=${result.perSource.paid}`,
-    `observer=${result.perSource.observer}`,
     `intent_skipped=${result.skippedIntent}`,
     `no_source_skipped=${result.skippedNoSource}`,
   ].join(' ');

@@ -9,7 +9,7 @@
 //   - per-source breakdown → sources.{probe,report,paid}
 //   - convergence multi-sources → convergence.{converged, ..., threshold}
 //   - verdict déterministe → SAFE / RISKY / UNKNOWN / INSUFFICIENT
-//   - recent_activity → n_obs cumulé 24h/7d/30d (daily_buckets, observer inclus)
+//   - recent_activity → n_obs cumulé 24h/7d/30d (daily_buckets, toutes sources)
 //   - risk_profile → trend delta success_rate 7j récents vs 23j antérieurs
 //   - time_constant_days → τ=7 (constant, diagnostic pour clients)
 //   - last_update → timestamp unix max des 3 sources (ou 0 si vierge)
@@ -87,7 +87,7 @@ export interface BayesianVerdictResponse {
   };
   /** Source du prior (diagnostic : operator / service / category / flat). */
   prior_source: 'operator' | 'service' | 'category' | 'flat';
-  /** n_obs cumulé par fenêtre d'affichage — daily_buckets, observer inclus. */
+  /** n_obs cumulé par fenêtre d'affichage — daily_buckets, toutes sources. */
   recent_activity: RecentActivity;
   /** Trend delta success_rate (low/medium/high/unknown) — Option B. */
   risk_profile: RiskProfile;

@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS agents (
   alias                        TEXT,
   first_seen                   BIGINT NOT NULL,
   last_seen                    BIGINT NOT NULL,
-  source                       TEXT NOT NULL CHECK (source IN ('observer_protocol', '4tress', 'lightning_graph', 'manual')),
+  source                       TEXT NOT NULL CHECK (source IN ('attestation', '4tress', 'lightning_graph', 'manual')),
   total_transactions           BIGINT NOT NULL DEFAULT 0,
   total_attestations_received  BIGINT NOT NULL DEFAULT 0,
   avg_score                    DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   protocol       TEXT NOT NULL CHECK (protocol IN ('l402', 'keysend', 'bolt11')),
   endpoint_hash  TEXT,
   operator_id    TEXT,
-  source         TEXT CHECK (source IS NULL OR source IN ('probe', 'observer', 'report', 'intent', 'paid')),
+  source         TEXT CHECK (source IS NULL OR source IN ('probe', 'report', 'paid', 'intent')),
   window_bucket  TEXT
 );
 
@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS operator_owns_service (
 
 CREATE TABLE IF NOT EXISTS endpoint_daily_buckets (
   url_hash    TEXT NOT NULL,
-  source      TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid', 'observer')),
+  source      TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid')),
   day         TEXT NOT NULL,
   n_obs       BIGINT NOT NULL DEFAULT 0,
   n_success   BIGINT NOT NULL DEFAULT 0,
@@ -280,7 +280,7 @@ CREATE TABLE IF NOT EXISTS endpoint_streaming_posteriors (
 
 CREATE TABLE IF NOT EXISTS node_daily_buckets (
   pubkey      TEXT NOT NULL,
-  source      TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid', 'observer')),
+  source      TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid')),
   day         TEXT NOT NULL,
   n_obs       BIGINT NOT NULL DEFAULT 0,
   n_success   BIGINT NOT NULL DEFAULT 0,
@@ -300,7 +300,7 @@ CREATE TABLE IF NOT EXISTS node_streaming_posteriors (
 
 CREATE TABLE IF NOT EXISTS operator_daily_buckets (
   operator_id  TEXT NOT NULL,
-  source       TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid', 'observer')),
+  source       TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid')),
   day          TEXT NOT NULL,
   n_obs        BIGINT NOT NULL DEFAULT 0,
   n_success    BIGINT NOT NULL DEFAULT 0,
@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS operator_streaming_posteriors (
 
 CREATE TABLE IF NOT EXISTS route_daily_buckets (
   route_hash    TEXT NOT NULL,
-  source        TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid', 'observer')),
+  source        TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid')),
   caller_hash   TEXT NOT NULL,
   target_hash   TEXT NOT NULL,
   day           TEXT NOT NULL,
@@ -344,7 +344,7 @@ CREATE TABLE IF NOT EXISTS route_streaming_posteriors (
 
 CREATE TABLE IF NOT EXISTS service_daily_buckets (
   service_hash   TEXT NOT NULL,
-  source         TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid', 'observer')),
+  source         TEXT NOT NULL CHECK (source IN ('probe', 'report', 'paid')),
   day            TEXT NOT NULL,
   n_obs          BIGINT NOT NULL DEFAULT 0,
   n_success      BIGINT NOT NULL DEFAULT 0,

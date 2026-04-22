@@ -10,7 +10,7 @@
 // The LND client is stubbed so the test never hits the network.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Pool } from 'pg';
-import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
+import { setupTestPool, teardownTestPool, type TestDb } from './helpers/testDatabase';
 import { AgentRepository } from '../repositories/agentRepository';
 import { TransactionRepository } from '../repositories/transactionRepository';
 import { ProbeRepository } from '../repositories/probeRepository';
@@ -104,7 +104,7 @@ function buildCrawler(db: Pool, reachable: Map<string, boolean>, mode: 'off' | '
   const crawler = new ProbeCrawler(
     lnd, agentRepo, probeRepo,
     { maxPerSecond: 1000, amountSats: 1000, dualWriteMode: mode },
-    { txRepo, bayesian, db },
+    { txRepo, bayesian, pool: db },
   );
   return { crawler, agentRepo, txRepo, probeRepo };
 }
@@ -120,8 +120,7 @@ describe('ProbeCrawler bayesian bridge', async () => {
 
   afterEach(async () => { await teardownTestPool(testDb); });
 
-  // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
-  it.skip('writes tx row + streaming posteriors on a reachable probe (mode=active)', async () => {
+  it('writes tx row + streaming posteriors on a reachable probe (mode=active)', async () => {
     const reachableKey = 'aa'.repeat(33);
     const reachableHash = 'bb'.repeat(32);
 
@@ -131,9 +130,11 @@ describe('ProbeCrawler bayesian bridge', async () => {
     const { crawler } = buildCrawler(db, new Map([[reachableKey, true]]), 'active');
     await crawler.run();
 
-    const tx = db.prepare(
-      `SELECT * FROM transactions WHERE endpoint_hash = ? AND source = 'probe' AND timestamp >= ?`,
-    ).get(reachableHash, NOW - DAY) as any;
+    const txRes = await db.query(
+      `SELECT * FROM transactions WHERE endpoint_hash = $1 AND source = 'probe' AND timestamp >= $2`,
+      [reachableHash, NOW - DAY],
+    );
+    const tx = txRes.rows[0];
     expect(tx).toBeDefined();
     expect(tx.status).toBe('verified');
     expect(tx.operator_id).toBe(reachableHash);
@@ -141,27 +142,32 @@ describe('ProbeCrawler bayesian bridge', async () => {
 
     // Phase 3 streaming — probe alimente streaming_posteriors + daily_buckets
     // (operator + endpoint) en un unique chemin d'écriture.
-    const streamingOp = db.prepare(
-      `SELECT source, total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
-    ).get(reachableHash) as any;
+    const streamingOpRes = await db.query(
+      `SELECT source, total_ingestions FROM operator_streaming_posteriors WHERE operator_id = $1`,
+      [reachableHash],
+    );
+    const streamingOp = streamingOpRes.rows[0];
     expect(streamingOp.source).toBe('probe');
-    expect(streamingOp.total_ingestions).toBe(1);
+    expect(Number(streamingOp.total_ingestions)).toBe(1);
 
-    const streamingEp = db.prepare(
-      `SELECT source, total_ingestions FROM endpoint_streaming_posteriors WHERE url_hash = ?`,
-    ).get(reachableHash) as any;
+    const streamingEpRes = await db.query(
+      `SELECT source, total_ingestions FROM endpoint_streaming_posteriors WHERE url_hash = $1`,
+      [reachableHash],
+    );
+    const streamingEp = streamingEpRes.rows[0];
     expect(streamingEp.source).toBe('probe');
-    expect(streamingEp.total_ingestions).toBe(1);
+    expect(Number(streamingEp.total_ingestions)).toBe(1);
 
-    const bucketOp = db.prepare(
-      `SELECT n_obs, n_success FROM operator_daily_buckets WHERE operator_id = ? AND source = 'probe'`,
-    ).get(reachableHash) as any;
-    expect(bucketOp.n_obs).toBe(1);
-    expect(bucketOp.n_success).toBe(1);
+    const bucketOpRes = await db.query(
+      `SELECT n_obs, n_success FROM operator_daily_buckets WHERE operator_id = $1 AND source = 'probe'`,
+      [reachableHash],
+    );
+    const bucketOp = bucketOpRes.rows[0];
+    expect(Number(bucketOp.n_obs)).toBe(1);
+    expect(Number(bucketOp.n_success)).toBe(1);
   });
 
-  // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
-  it.skip('writes tx row with failed status + failure counted in streaming on an unreachable probe', async () => {
+  it('writes tx row with failed status + failure counted in streaming on an unreachable probe', async () => {
     const pubkey = 'cc'.repeat(33);
     const hash = 'dd'.repeat(32);
 
@@ -171,20 +177,24 @@ describe('ProbeCrawler bayesian bridge', async () => {
     const { crawler } = buildCrawler(db, new Map([[pubkey, false]]), 'active');
     await crawler.run();
 
-    const tx = db.prepare(
-      `SELECT status, source FROM transactions WHERE endpoint_hash = ?`,
-    ).get(hash) as any;
+    const txRes = await db.query(
+      `SELECT status, source FROM transactions WHERE endpoint_hash = $1`,
+      [hash],
+    );
+    const tx = txRes.rows[0];
     expect(tx.status).toBe('failed');
     expect(tx.source).toBe('probe');
 
-    const bucket = db.prepare(
-      `SELECT n_success, n_failure FROM operator_daily_buckets WHERE operator_id = ? AND source = 'probe'`,
-    ).get(hash) as any;
-    expect(bucket).toEqual(expect.objectContaining({ n_success: 0, n_failure: 1 }));
+    const bucketRes = await db.query(
+      `SELECT n_success, n_failure FROM operator_daily_buckets WHERE operator_id = $1 AND source = 'probe'`,
+      [hash],
+    );
+    const bucket = bucketRes.rows[0];
+    expect(Number(bucket.n_success)).toBe(0);
+    expect(Number(bucket.n_failure)).toBe(1);
   });
 
-  // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
-  it.skip('is idempotent: rerun produces no duplicate tx and no streaming double-count', async () => {
+  it('is idempotent: rerun produces no duplicate tx and no streaming double-count', async () => {
     const pubkey = 'ee'.repeat(33);
     const hash = 'ff'.repeat(32);
 
@@ -195,19 +205,20 @@ describe('ProbeCrawler bayesian bridge', async () => {
     await crawler.run();
     await crawler.run();
 
-    const txCount = db.prepare(
-      `SELECT COUNT(*) AS c FROM transactions WHERE endpoint_hash = ? AND source = 'probe'`,
-    ).get(hash) as any;
-    expect(txCount.c).toBe(1);
+    const txCountRes = await db.query(
+      `SELECT COUNT(*) AS c FROM transactions WHERE endpoint_hash = $1 AND source = 'probe'`,
+      [hash],
+    );
+    expect(Number(txCountRes.rows[0].c)).toBe(1);
 
-    const streaming = db.prepare(
-      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
-    ).get(hash) as any;
-    expect(streaming.total_ingestions).toBe(1);
+    const streamingRes = await db.query(
+      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = $1`,
+      [hash],
+    );
+    expect(Number(streamingRes.rows[0].total_ingestions)).toBe(1);
   });
 
-  // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
-  it.skip('mode=off skips v31 enrichment but still updates streaming', async () => {
+  it('mode=off skips v31 enrichment but still updates streaming', async () => {
     const pubkey = '11'.repeat(33);
     const hash = '22'.repeat(32);
 
@@ -217,9 +228,11 @@ describe('ProbeCrawler bayesian bridge', async () => {
     const { crawler } = buildCrawler(db, new Map([[pubkey, true]]), 'off');
     await crawler.run();
 
-    const tx = db.prepare(
-      `SELECT endpoint_hash, operator_id, source, window_bucket, status FROM transactions WHERE sender_hash = ?`,
-    ).get(hash) as any;
+    const txRes = await db.query(
+      `SELECT endpoint_hash, operator_id, source, window_bucket, status FROM transactions WHERE sender_hash = $1`,
+      [hash],
+    );
+    const tx = txRes.rows[0];
     expect(tx).toBeDefined();
     expect(tx.status).toBe('verified');
     expect(tx.endpoint_hash).toBeNull();
@@ -228,14 +241,14 @@ describe('ProbeCrawler bayesian bridge', async () => {
     expect(tx.window_bucket).toBeNull();
 
     // Scoring signal is decoupled from dualWriteMode — streaming still writes.
-    const streaming = db.prepare(
-      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = ?`,
-    ).get(hash) as any;
-    expect(streaming.total_ingestions).toBe(1);
+    const streamingRes = await db.query(
+      `SELECT total_ingestions FROM operator_streaming_posteriors WHERE operator_id = $1`,
+      [hash],
+    );
+    expect(Number(streamingRes.rows[0].total_ingestions)).toBe(1);
   });
 
-  // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
-  it.skip('ingests nothing when bayesianDeps missing — legacy probe_results only', async () => {
+  it('ingests nothing when bayesianDeps missing — legacy probe_results only', async () => {
     const pubkey = '33'.repeat(33);
     const hash = '44'.repeat(32);
 
@@ -250,13 +263,16 @@ describe('ProbeCrawler bayesian bridge', async () => {
     );
     await crawler.run();
 
-    const probeRow = db.prepare(`SELECT reachable FROM probe_results WHERE target_hash = ?`).get(hash) as any;
-    expect(probeRow.reachable).toBe(1);
+    const probeRowRes = await db.query(
+      `SELECT reachable FROM probe_results WHERE target_hash = $1`,
+      [hash],
+    );
+    expect(Number(probeRowRes.rows[0].reachable)).toBe(1);
 
-    const txCount = db.prepare(`SELECT COUNT(*) AS c FROM transactions`).get() as any;
-    expect(txCount.c).toBe(0);
+    const txCountRes = await db.query(`SELECT COUNT(*) AS c FROM transactions`);
+    expect(Number(txCountRes.rows[0].c)).toBe(0);
 
-    const streamingCount = db.prepare(`SELECT COUNT(*) AS c FROM operator_streaming_posteriors`).get() as any;
-    expect(streamingCount.c).toBe(0);
+    const streamingCountRes = await db.query(`SELECT COUNT(*) AS c FROM operator_streaming_posteriors`);
+    expect(Number(streamingCountRes.rows[0].c)).toBe(0);
   });
 });

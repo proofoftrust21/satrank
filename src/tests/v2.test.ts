@@ -34,7 +34,7 @@ function makeAgent(alias: string, overrides: Partial<Agent> = {}): Agent {
     alias,
     first_seen: NOW - 180 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 50,
     total_attestations_received: 10,
     avg_score: 65,

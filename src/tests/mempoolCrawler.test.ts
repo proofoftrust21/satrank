@@ -178,7 +178,7 @@ describe('MempoolCrawler', async () => {
 
   // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
   it.skip('consolidates cross-source agents by alias match', async () => {
-    // Pre-existing Observer Protocol agent — hash is sha256('ACINQ'), not sha256(pubkey)
+    // Pre-existing legacy agent — hash is sha256('ACINQ'), not sha256(pubkey)
     const observerHash = sha256('ACINQ');
     await agentRepo.insert({
       public_key_hash: observerHash,
@@ -186,7 +186,7 @@ describe('MempoolCrawler', async () => {
       alias: 'ACINQ',
       first_seen: 1500000000,
       last_seen: 1600000000,
-      source: 'observer_protocol',
+      source: 'attestation',
       total_transactions: 15,
       total_attestations_received: 3,
       avg_score: 60,
@@ -222,7 +222,7 @@ describe('MempoolCrawler', async () => {
     const agent = await agentRepo.findByHash(observerHash);
     expect(agent).toBeDefined();
     expect(agent!.alias).toBe('ACINQ');
-    expect(agent!.source).toBe('observer_protocol');
+    expect(agent!.source).toBe('attestation');
     expect(agent!.total_transactions).toBe(15);
     expect(agent!.capacity_sats).toBe(5_000_000_000);
 
@@ -240,7 +240,7 @@ describe('MempoolCrawler', async () => {
       alias: 'OtherNode',
       first_seen: 1500000000,
       last_seen: 1600000000,
-      source: 'observer_protocol',
+      source: 'attestation',
       total_transactions: 5,
       total_attestations_received: 0,
       avg_score: 0,
@@ -271,7 +271,7 @@ describe('MempoolCrawler', async () => {
 
   // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
   it.skip('only enriches non-lightning agents with capacity and lastSeen', async () => {
-    // Pre-existing Observer Protocol agent with same hash
+    // Pre-existing legacy agent with same hash
     const pubkey = 'pk-collision';
     const hash = sha256(pubkey);
     await agentRepo.insert({
@@ -280,7 +280,7 @@ describe('MempoolCrawler', async () => {
       alias: 'observer-agent',
       first_seen: 1500000000,
       last_seen: 1600000000,
-      source: 'observer_protocol',
+      source: 'attestation',
       total_transactions: 10,
       total_attestations_received: 5,
       avg_score: 75,
@@ -310,7 +310,7 @@ describe('MempoolCrawler', async () => {
     const agent = await agentRepo.findByHash(hash);
     // Alias, source, and total_transactions are preserved
     expect(agent!.alias).toBe('observer-agent');
-    expect(agent!.source).toBe('observer_protocol');
+    expect(agent!.source).toBe('attestation');
     expect(agent!.total_transactions).toBe(10);
     // Only capacity and lastSeen are enriched
     expect(agent!.capacity_sats).toBe(1_000_000_000);

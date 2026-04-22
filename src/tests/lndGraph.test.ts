@@ -72,7 +72,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     alias: 'test-agent',
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 50,
     total_attestations_received: 0,
     avg_score: 60,
@@ -414,10 +414,11 @@ describe.skip('Free attestations verification', async () => {
     // Create a transaction for the attestation to reference
     const { v4: uuid } = await import('uuid');
     const txId = uuid();
-    db.prepare(`
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'bolt11')
-    `).run(txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId));
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+       VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'bolt11')`,
+      [txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId)],
+    );
 
     const res = await request(app)
       .post('/api/attestation')

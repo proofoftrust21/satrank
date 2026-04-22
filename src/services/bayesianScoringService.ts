@@ -137,14 +137,12 @@ export interface AggregatePosterior {
 }
 
 /** Input d'ingestion pour le modèle streaming. Inclut la source et le tier
- *  (nécessaire pour calculer le poids de l'observation — voir weightForSource).
- *  Observer est autorisé ici : on n'écrit pas dans les streaming_posteriors
- *  (CHECK constraint) mais on bump les daily_buckets (activité visible). */
+ *  (nécessaire pour calculer le poids de l'observation — voir weightForSource). */
 export interface StreamingIngestionInput {
   success: boolean;
   timestamp: number;
-  /** 'probe' | 'report' | 'paid' | 'observer' — observer = bucket-only. */
-  source: BayesianSource | 'observer';
+  /** 'probe' | 'report' | 'paid' */
+  source: BayesianSource;
   /** Tier reporter — requis si source='report'. */
   tier?: ReportTier;
   endpointHash?: string | null;
@@ -162,7 +160,7 @@ export interface StreamingIngestionResult {
   operatorUpdates: number;
   nodeUpdates: number;
   routeUpdates: number;
-  /** Compte des buckets aussi bumpés — peut différer si observer (bucket-only). */
+  /** Compte des buckets aussi bumpés (display-only). */
   bucketsBumped: number;
 }
 
@@ -195,7 +193,7 @@ export class BayesianScoringService {
     private operatorStreamingRepo: OperatorStreamingPosteriorRepository,
     private nodeStreamingRepo: NodeStreamingPosteriorRepository,
     private routeStreamingRepo: RouteStreamingPosteriorRepository,
-    // Daily buckets (risk profile + activity). Observer autorisé ici.
+    // Daily buckets (risk profile + activity).
     private endpointBucketsRepo: EndpointDailyBucketsRepository,
     private serviceBucketsRepo: ServiceDailyBucketsRepository,
     private operatorBucketsRepo: OperatorDailyBucketsRepository,
@@ -358,11 +356,7 @@ export class BayesianScoringService {
 
   /** Ingestion streaming : applique la décroissance τ=7j, additionne les
    *  deltas pondérés, et bump les daily_buckets pour chaque niveau connu.
-   *
-   *  Comportement par source :
-   *    - 'probe' / 'paid' / 'report' → streaming_posteriors ET daily_buckets
-   *    - 'observer'                  → daily_buckets UNIQUEMENT (CHECK SQL
-   *                                     sur streaming_posteriors rejette observer) */
+   *  Sources actives : 'probe' / 'paid' / 'report' → streaming_posteriors ET daily_buckets. */
   async ingestStreaming(input: StreamingIngestionInput): Promise<StreamingIngestionResult> {
     const result: StreamingIngestionResult = {
       endpointUpdates: 0,
@@ -373,11 +367,7 @@ export class BayesianScoringService {
       bucketsBumped: 0,
     };
 
-    // Poids de l'observation. Observer n'alimente pas les streaming_posteriors,
-    // mais vaut 1 dans les buckets (présence visible).
-    const weight = input.source === 'observer'
-      ? 1
-      : this.weightForSource(input.source, input.tier);
+    const weight = this.weightForSource(input.source, input.tier);
     const successDelta = input.success ? weight : 0;
     const failureDelta = input.success ? 0 : weight;
     const day = dayKeyUTC(input.timestamp);
@@ -396,48 +386,38 @@ export class BayesianScoringService {
 
     // endpoint
     if (input.endpointHash) {
-      if (input.source !== 'observer') {
-        await this.endpointStreamingRepo.ingest(input.endpointHash, input.source, streamingDeltas);
-        result.endpointUpdates++;
-      }
-      await this.endpointBucketsRepo.bump(input.endpointHash, input.source as BucketSource, bucketDeltas);
+      await this.endpointStreamingRepo.ingest(input.endpointHash, input.source, streamingDeltas);
+      result.endpointUpdates++;
+      await this.endpointBucketsRepo.bump(input.endpointHash, input.source, bucketDeltas);
       result.bucketsBumped++;
     }
     // service
     if (input.serviceHash) {
-      if (input.source !== 'observer') {
-        await this.serviceStreamingRepo.ingest(input.serviceHash, input.source, streamingDeltas);
-        result.serviceUpdates++;
-      }
-      await this.serviceBucketsRepo.bump(input.serviceHash, input.source as BucketSource, bucketDeltas);
+      await this.serviceStreamingRepo.ingest(input.serviceHash, input.source, streamingDeltas);
+      result.serviceUpdates++;
+      await this.serviceBucketsRepo.bump(input.serviceHash, input.source, bucketDeltas);
       result.bucketsBumped++;
     }
     // operator
     if (input.operatorId) {
-      if (input.source !== 'observer') {
-        await this.operatorStreamingRepo.ingest(input.operatorId, input.source, streamingDeltas);
-        result.operatorUpdates++;
-      }
-      await this.operatorBucketsRepo.bump(input.operatorId, input.source as BucketSource, bucketDeltas);
+      await this.operatorStreamingRepo.ingest(input.operatorId, input.source, streamingDeltas);
+      result.operatorUpdates++;
+      await this.operatorBucketsRepo.bump(input.operatorId, input.source, bucketDeltas);
       result.bucketsBumped++;
     }
     // node
     if (input.nodePubkey) {
-      if (input.source !== 'observer') {
-        await this.nodeStreamingRepo.ingest(input.nodePubkey, input.source, streamingDeltas);
-        result.nodeUpdates++;
-      }
-      await this.nodeBucketsRepo.bump(input.nodePubkey, input.source as BucketSource, bucketDeltas);
+      await this.nodeStreamingRepo.ingest(input.nodePubkey, input.source, streamingDeltas);
+      result.nodeUpdates++;
+      await this.nodeBucketsRepo.bump(input.nodePubkey, input.source, bucketDeltas);
       result.bucketsBumped++;
     }
     // route (caller + target requis)
     if (input.callerHash && input.targetHash) {
       const routeKey = `${input.callerHash}:${input.targetHash}`;
-      if (input.source !== 'observer') {
-        await this.routeStreamingRepo.ingest(routeKey, input.callerHash, input.targetHash, input.source, streamingDeltas);
-        result.routeUpdates++;
-      }
-      await this.routeBucketsRepo.bump(routeKey, input.callerHash, input.targetHash, input.source as BucketSource, bucketDeltas);
+      await this.routeStreamingRepo.ingest(routeKey, input.callerHash, input.targetHash, input.source, streamingDeltas);
+      result.routeUpdates++;
+      await this.routeBucketsRepo.bump(routeKey, input.callerHash, input.targetHash, input.source, bucketDeltas);
       result.bucketsBumped++;
     }
 

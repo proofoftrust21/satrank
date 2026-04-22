@@ -407,7 +407,6 @@ Each data source runs on its own timer in `--cron` mode. At startup, a full craw
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CRAWL_INTERVAL_OBSERVER_MS` | `300000` (5 min) | Observer Protocol transactions |
 | `CRAWL_INTERVAL_LND_GRAPH_MS` | `3600000` (1 hour) | LND full graph (~14k active nodes on mainnet) |
 | `CRAWL_INTERVAL_LNPLUS_MS` | `86400000` (24 hours) | LN+ community ratings |
 | `CRAWL_INTERVAL_PROBE_MS` | `1800000` (30 min) | Route probe (reachability check) |
@@ -419,12 +418,10 @@ Override in `.env.production`:
 
 ```bash
 # Aggressive: refresh everything often (higher resource usage)
-CRAWL_INTERVAL_OBSERVER_MS=60000        # 1 minute
 CRAWL_INTERVAL_LND_GRAPH_MS=300000      # 5 minutes
 CRAWL_INTERVAL_LNPLUS_MS=3600000        # 1 hour
 
 # Relaxed: save resources
-CRAWL_INTERVAL_OBSERVER_MS=600000       # 10 minutes
 CRAWL_INTERVAL_LND_GRAPH_MS=21600000    # 6 hours
 CRAWL_INTERVAL_LNPLUS_MS=86400000       # 24 hours
 ```

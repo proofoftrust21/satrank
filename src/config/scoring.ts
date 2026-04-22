@@ -55,7 +55,7 @@ export const MANUAL_SOURCE_MIN_MULTIPLIER = 0.5;
 
 // --- Verified transaction bonus ---
 
-/** Max bonus points from verified Observer Protocol transactions */
+/** Max bonus points from verified (attested) transactions */
 export const VERIFIED_TX_BONUS_CAP = 15;
 
 /** Points per verified transaction (before cap) */

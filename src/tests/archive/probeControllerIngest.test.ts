@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // Tests for ProbeController Phase 9 C7 — Bayesian + transactions integration.
 // Focuses on the ingestObservation() helper (short-circuit matrix) and end-to-
 // end side effects visible in SQL after a successful paid probe flows through

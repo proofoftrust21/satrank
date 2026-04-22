@@ -59,10 +59,14 @@ describe('reportAuth — target normalization', async () => {
     const paymentHash = paymentHashFromPreimage(preimage);
 
     // Seed: token_balance + token_query_log entry keyed on the HASH (as /decide stores it)
-    db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
-      .run(paymentHash, 20, Math.floor(Date.now() / 1000));
-    db.prepare('INSERT INTO token_query_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)')
-      .run(paymentHash, targetHash, Math.floor(Date.now() / 1000));
+    await db.query(
+      'INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES ($1, $2, $3)',
+      [paymentHash, 20, Math.floor(Date.now() / 1000)],
+    );
+    await db.query(
+      'INSERT INTO token_query_log (payment_hash, target_hash, decided_at) VALUES ($1, $2, $3)',
+      [paymentHash, targetHash, Math.floor(Date.now() / 1000)],
+    );
 
     // Client submits with pubkey (66 chars, 03 prefix) — must be normalized to hash for lookup
     const result = await callMiddleware(makeL402Header(preimage), {
@@ -78,10 +82,14 @@ describe('reportAuth — target normalization', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
     const paymentHash = paymentHashFromPreimage(preimage);
 
-    db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
-      .run(paymentHash, 20, Math.floor(Date.now() / 1000));
-    db.prepare('INSERT INTO token_query_log (payment_hash, target_hash, decided_at) VALUES (?, ?, ?)')
-      .run(paymentHash, targetHash, Math.floor(Date.now() / 1000));
+    await db.query(
+      'INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES ($1, $2, $3)',
+      [paymentHash, 20, Math.floor(Date.now() / 1000)],
+    );
+    await db.query(
+      'INSERT INTO token_query_log (payment_hash, target_hash, decided_at) VALUES ($1, $2, $3)',
+      [paymentHash, targetHash, Math.floor(Date.now() / 1000)],
+    );
 
     const result = await callMiddleware(makeL402Header(preimage), {
       target: targetHash, // 64-char hash
@@ -97,8 +105,10 @@ describe('reportAuth — target normalization', async () => {
     const paymentHash = paymentHashFromPreimage(preimage);
 
     // Token exists but no token_query_log — never queried this target
-    db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
-      .run(paymentHash, 20, Math.floor(Date.now() / 1000));
+    await db.query(
+      'INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES ($1, $2, $3)',
+      [paymentHash, 20, Math.floor(Date.now() / 1000)],
+    );
 
     const result = await callMiddleware(makeL402Header(preimage), {
       target: pubkey,
@@ -114,8 +124,10 @@ describe('reportAuth — target normalization', async () => {
     const preimage = crypto.randomBytes(32).toString('hex');
     const paymentHash = paymentHashFromPreimage(preimage);
 
-    db.prepare('INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES (?, ?, ?)')
-      .run(paymentHash, 20, Math.floor(Date.now() / 1000));
+    await db.query(
+      'INSERT INTO token_balance (payment_hash, remaining, created_at) VALUES ($1, $2, $3)',
+      [paymentHash, 20, Math.floor(Date.now() / 1000)],
+    );
 
     const result = await callMiddleware(makeL402Header(preimage), {
       reporter: 'someone',

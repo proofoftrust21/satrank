@@ -455,7 +455,7 @@ regularity = min(100, round(100 * exp(-daysSinceGossip / 90)))</pre>
       <section class="doc-section" id="verdict">
         <h2>Verdict API &mdash; SAFE / RISKY / UNKNOWN</h2>
         <p>
-          An AI agent evaluating a 10,000 sat transaction has less than 200ms to decide.
+          An autonomous agent evaluating a 10,000 sat transaction has less than 200ms to decide.
           A composite score from 0 to 100 requires interpretation &mdash; what threshold is safe?
           How should a score of 47 be treated differently from 52? These are questions an autonomous
           agent should not have to answer in real-time.
@@ -717,7 +717,7 @@ regularity = min(100, round(100 * exp(-daysSinceGossip / 90)))</pre>
 
         <h3>Positional Pathfinding (walletProvider)</h3>
         <p>
-          Most AI agents pay via wallet providers (Phoenix, WoS, Strike) and don&rsquo;t know their
+          Most autonomous agents pay via wallet providers (Phoenix, WoS, Strike) and don&rsquo;t know their
           position in the graph. Pass <code>walletProvider</code> in <code>POST /api/decide</code> and
           SatRank computes pathfinding from the provider&rsquo;s hub node instead of from SatRank.
         </p>

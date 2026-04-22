@@ -41,7 +41,7 @@ class StubPublisher {
   }
 }
 
-async function seedCacheRow(repo: NostrPublishedEventsRepository): void {
+async function seedCacheRow(repo: NostrPublishedEventsRepository): Promise<void> {
   await repo.recordPublished({
     entityType: 'endpoint',
     entityId: 'urlhash-aaa',

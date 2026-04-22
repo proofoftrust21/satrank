@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // End-to-end verification that ReportService is idempotent under all three
 // shadow-mode settings. The invariant we protect: re-submitting an identical
 // report (same reporter/target/paymentHash) must NEVER produce a second
@@ -52,7 +53,7 @@ function makeAgent(alias: string, hash: string): Agent {
     alias,
     first_seen: FIXED_UNIX - 90 * 86400,
     last_seen: FIXED_UNIX - 86400,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 50, // non-zero so reporter weight is non-trivial

@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Pool } from 'pg';
 import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';

@@ -47,23 +47,76 @@ Issues opérationnelles non-bloquantes détectées lors de phases antérieures,
 - **Date :** 2026-04-21 (détecté pendant le smoke iso-network Phase 12B B7)
 - **Severity :** MEDIUM — n'affecte que `/api/intent` (0 user au moment
   de la détection)
-- **Status :** **OPEN** — to be investigated in Phase 12C
+- **Status :** **RESOLVED** — root cause identifiée + fix code en Phase 12C
 - **Issue :** `GET /api/intent/categories` retourne `{ "categories": [] }`
   sur prod après le cut-over B5. Conséquence : `POST /api/intent` rejette
   toute requête avec `INVALID_CATEGORY` (HTTP 400). Les fixtures historiques
   (`data`, `tools`, `bitcoin`) qui fonctionnaient en A6 retournent 400 en B7.
-- **Cause probable :** la requête
-  `SELECT DISTINCT category FROM service_endpoints WHERE category IS NOT NULL
-   AND agent_hash IS NOT NULL AND source IN ('402index', 'self_registered')`
-  ne renvoie aucune ligne post-migration. Soit `category`/`agent_hash`/`source`
-  n'ont pas été backfillés correctement, soit le crawler n'a pas encore
-  repopulé la table, soit l'INSERT crawler vise une autre colonne post-port.
-- **Action Phase 12C :**
-  1. Vérifier si `service_endpoints` a des lignes avec `category IS NOT NULL`
-     et `agent_hash IS NOT NULL` en prod (`SELECT COUNT(*)` par filtre).
-  2. Laisser tourner le crawler une fois et re-tester.
-  3. Si toujours vide, auditer le port B3.b du crawler registry
-     (`src/crawler/registryCrawler.ts`) + `ServiceEndpointRepository.upsert*`.
+- **Diagnostic (2026-04-22) :**
+  - `SELECT COUNT(*) FROM service_endpoints` → **0 lignes** en prod.
+  - Registry crawler actif (`"Registry crawler timer started" intervalMs=86400000`
+    au boot 2026-04-21 17:50:26Z) mais **jamais fired** — `Registry crawl
+    progress` introuvable dans les logs.
+  - 402index.io reachable (`curl https://402index.io/api/v1/services?protocol=L402
+    → HTTP/2 200`), donc ni upstream down ni blocage réseau.
+  - Le port B3.b n'est **pas** en cause : l'INSERT `upsert(agentHash, url, 0,
+    0, '402index')` est correct, conflict-aware sur `url`, et `findCategories`
+    lit `category IS NOT NULL AND agent_hash IS NOT NULL AND source IN
+    ('402index', 'self_registered')` comme attendu.
+- **Cause racine :** `src/crawler/run.ts` n'enclenche **pas** le registry
+  crawler dans `runFullCrawl()` — seuls LND/LN+/probe y sont tirés au boot.
+  Le registry est uniquement branché sur `setInterval(CRAWL_INTERVAL_REGISTRY_MS)`
+  = 24h. Un cut-over frais laisse donc `service_endpoints` vide pendant 24h
+  plein avant la première passe.
+- **Fix :** `src/crawler/run.ts` — initial fire fire-and-forget du
+  `registryCrawler.run()` juste avant le `setInterval`. Commentaire explicite
+  pointant vers ce Finding. Pas d'attente bloquante (la première passe prend
+  quelques minutes à 500ms/req) ; le cron timer continue de fonctionner
+  normalement derrière.
+- **Déploiement :** le fix s'applique au prochain restart du container
+  `satrank-crawler` (via `make deploy`). La première passe populera
+  `service_endpoints` depuis 402index.io (≈94 endpoints connus fin
+  Phase 12A), ce qui débloque `/api/intent/categories` automatiquement.
+- **Regression guard :** pas de test unitaire direct (run.ts est un script
+  d'orchestration, pas test-covered côté vitest) ; la vérification
+  opérationnelle est `COUNT(service_endpoints) > 0` dans les ~10 min
+  post-deploy. À intégrer dans `checkScoringHealth.sh` (C5).
+
+---
+
+## Finding D — Observer Protocol sunset
+
+- **Date :** 2026-04-22
+- **Severity :** MEDIUM (produit) / HIGH (observabilité)
+- **Status :** **RESOLVED** — sunset complet exécuté en Phase 12C
+- **Issue :** `api.observerprotocol.org/observer/transactions` retournait
+  401 en continu (~1 440 lignes ERROR/WARN par 24 h). Ingestion Observer
+  à zéro depuis le cut-over Phase 12B ; impossible de dater le moment
+  exact du passage anonymous → auth requis côté upstream. Root-cause
+  détaillée dans `OBSERVER-401-INVESTIGATION.md`.
+- **Décision produit :** option 2 (désactivation complète + retrait code).
+  Motivée par : (a) repositionnement Observer Protocol comme concurrent
+  narratif, (b) aucune clé API jamais négociée, (c) env var orpheline
+  (`OBSERVER_API_URL` vs `OBSERVER_BASE_URL` mismatch) pointant vers un
+  host NXDOMAIN — le coût opérationnel d'un sunset est zéro.
+- **Fix :**
+  1. Suppression complète du code crawler Observer (client + crawler +
+     branches dans services/repositories/tests/scripts).
+  2. Enum `AgentSource` : `observer_protocol` → `attestation`.
+  3. Enum `BucketSource` : retrait de `observer`.
+  4. Purge DB : aucune ligne `source IN ('observer', 'observer_protocol')`
+     à supprimer (ingestion à zéro).
+  5. Config : retrait `OBSERVER_BASE_URL`, `OBSERVER_TIMEOUT_MS`,
+     `CRAWL_INTERVAL_OBSERVER_MS` du schéma zod, `.env.example`, `DEPLOY.md`.
+     Retrait de l'orphelin `OBSERVER_API_URL` de `/root/satrank/.env.production`.
+  6. Narratif : repositionnement « AI agents » → « autonomous agents on
+     Bitcoin Lightning » sur 12 fichiers.
+- **Réactivation :** conditionnelle à un partenariat explicite écrit
+  entre SatRank et Observer Protocol. Par défaut : **pas de réactivation**.
+  Détails dans `OBSERVER-SUNSET.md`.
+- **Side-effect observabilité :** les logs crawler sont nettoyés (plus
+  d'ERROR/WARN 401 en boucle) ; toute alerte basée sur `level>=error`
+  redevient pertinente.
 
 ---
 

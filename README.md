@@ -80,7 +80,7 @@ An agent making 1,000 payments/day spends ~3,000 sats/day on oracle fees. One av
 
 ### Positional pathfinding
 
-Most AI agents don't run their own LND node. They pay via wallet providers (Phoenix, WoS, Strike, etc.) and don't know their position in the graph. Without positional context, SatRank computes P_path from its own node -- a poor proxy for the agent's actual route quality.
+Most autonomous agents don't run their own LND node. They pay via wallet providers (Phoenix, WoS, Strike, etc.) and don't know their position in the graph. Without positional context, SatRank computes P_path from its own node -- a poor proxy for the agent's actual route quality.
 
 Pass `walletProvider` in `/api/decide` and SatRank computes pathfinding from the provider's hub node instead:
 

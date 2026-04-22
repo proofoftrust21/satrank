@@ -7,8 +7,8 @@
 //   - readDecayed avec row : (α,β) décroissent vers (α₀,β₀) à t→∞
 //   - Δt=0 → pas de décroissance (identité)
 //   - Δt=τ → facteur exp(-1) ≈ 0.368 sur l'excès
-//   - CHECK constraint SQL sur source (observer rejeté) — garanti par v35,
-//     on vérifie juste que le repo ne tente pas d'écrire 'observer'
+//   - CHECK constraint SQL sur source — n'accepte que 'probe'/'report'/'paid',
+//     rejette tout autre littéral écrit en SQL brut
 //   - route repo : caller_hash/target_hash écrits à la création, inchangés ensuite
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Pool } from 'pg';
@@ -126,13 +126,13 @@ describe('EndpointStreamingPosteriorRepository', async () => {
     expect(sources.paid.nObsEffective).toBe(0);
   });
 
-  it('CHECK constraint rejette une source "observer"', async () => {
+  it('CHECK constraint rejette une source hors de (probe, report, paid)', async () => {
     // Le repo n'exposant pas d'écriture directe, on teste via le SQL brut :
     await expect(
       db.query(
         `INSERT INTO endpoint_streaming_posteriors
          (url_hash, source, posterior_alpha, posterior_beta, last_update_ts)
-         VALUES ($1, 'observer', 1.5, 1.5, $2)`,
+         VALUES ($1, 'invalid_source', 1.5, 1.5, $2)`,
         ['h4', NOW],
       ),
     ).rejects.toThrow(/check constraint|violates check/i);

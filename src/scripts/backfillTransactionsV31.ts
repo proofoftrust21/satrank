@@ -9,8 +9,7 @@
 // that correlate with those auxiliary tables, we derive the enrichment
 // values and fill in the 4 new columns.
 //
-// Sources scanned (order matters — service_probes is most URL-rich; observer
-// fallback runs last so probe/report wins when available):
+// Sources scanned (order matters — service_probes is most URL-rich):
 //   1. service_probes.payment_hash ↔ transactions.payment_hash
 //      → endpoint_hash = sha256(canonicalize(url))
 //        operator_id   = service_probes.agent_hash
@@ -21,24 +20,16 @@
 //        operator_id   = attestations.subject_hash
 //        source        = 'report'
 //        window_bucket = UTC date of transactions.timestamp
-//   3. observer fallback: transactions rows with source IS NULL after #1/#2
-//      → endpoint_hash = NULL (no URL derivable from a bare tx row)
-//        operator_id   = transactions.receiver_hash
-//        source        = 'observer'
-//        window_bucket = UTC date of transactions.timestamp
 //
 // Phase 12B — pagination cursors:
 //   - service_probes uses its BIGINT IDENTITY `id` column.
-//   - attestations and transactions lack a rowid column in Postgres; we
-//     paginate with the tuple (timestamp, primary_key) for a stable,
-//     monotone cursor. The checkpoint file stores both parts per source.
+//   - attestations lacks a rowid column in Postgres; we paginate with the
+//     tuple (timestamp, attestation_id) for a stable, monotone cursor. The
+//     checkpoint file stores both parts per source.
 //
 // Idempotence is enforced by source-specific guards on every UPDATE:
-//   - voies #1 & #2: `WHERE endpoint_hash IS NULL` — safe because only #1 sets
-//     endpoint_hash, so #2/#3 never touch a probe-enriched row.
-//   - voie #3: `WHERE source IS NULL` — required because #2 also leaves
-//     endpoint_hash NULL; guarding on endpoint_hash would cause #3 to
-//     re-overwrite report rows as observer on every run.
+//   - both voies use `WHERE endpoint_hash IS NULL` — safe because only #1
+//     sets endpoint_hash, so #2 never touches a probe-enriched row.
 import type { Pool } from 'pg';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -57,7 +48,6 @@ export interface TimestampedCursor {
 export interface BackfillCheckpoint {
   service_probes_last_id: number;
   attestations_last_cursor: TimestampedCursor;
-  transactions_last_cursor: TimestampedCursor;
 }
 
 export interface BackfillOptions {
@@ -73,7 +63,6 @@ export interface BackfillOptions {
 export interface BackfillResult {
   service_probes: { scanned: number; updated: number };
   attestations: { scanned: number; updated: number };
-  observer: { scanned: number; updated: number };
   checkpoint: BackfillCheckpoint;
 }
 
@@ -87,7 +76,6 @@ function emptyCheckpoint(): BackfillCheckpoint {
   return {
     service_probes_last_id: 0,
     attestations_last_cursor: emptyCursor(),
-    transactions_last_cursor: emptyCursor(),
   };
 }
 
@@ -101,10 +89,6 @@ export function loadCheckpoint(checkpointPath: string): BackfillCheckpoint {
       attestations_last_cursor: {
         timestamp: Number(parsed?.attestations_last_cursor?.timestamp) || 0,
         id: String(parsed?.attestations_last_cursor?.id ?? ''),
-      },
-      transactions_last_cursor: {
-        timestamp: Number(parsed?.transactions_last_cursor?.timestamp) || 0,
-        id: String(parsed?.transactions_last_cursor?.id ?? ''),
       },
     };
   } catch {
@@ -125,7 +109,6 @@ export async function runBackfillChunk(opts: BackfillOptions): Promise<BackfillR
     ? {
       service_probes_last_id: opts.checkpoint.service_probes_last_id,
       attestations_last_cursor: { ...opts.checkpoint.attestations_last_cursor },
-      transactions_last_cursor: { ...opts.checkpoint.transactions_last_cursor },
     }
     : checkpointPath
       ? loadCheckpoint(checkpointPath)
@@ -134,14 +117,8 @@ export async function runBackfillChunk(opts: BackfillOptions): Promise<BackfillR
   const result: BackfillResult = {
     service_probes: { scanned: 0, updated: 0 },
     attestations: { scanned: 0, updated: 0 },
-    observer: { scanned: 0, updated: 0 },
     checkpoint: cp,
   };
-
-  // Dry-run fidelity: voie #3 scans the SAME set of rows that voies #1 and #2
-  // would update, because in dry-run no UPDATE fires first. Without tracking,
-  // dry-run would over-count observer rows by the #1+#2 hit count.
-  const claimedInDryRun = new Set<string>();
 
   // ---- Phase 1: service_probes → transactions ----
   const probeRowsResult = await opts.pool.query<{
@@ -185,7 +162,6 @@ export async function runBackfillChunk(opts: BackfillOptions): Promise<BackfillR
         [row.payment_hash],
       );
       result.service_probes.updated += matches.length;
-      for (const m of matches) claimedInDryRun.add(m.tx_id);
     }
     cp.service_probes_last_id = Number(row.id);
   }
@@ -233,59 +209,9 @@ export async function runBackfillChunk(opts: BackfillOptions): Promise<BackfillR
         'SELECT COUNT(*)::text AS c FROM transactions WHERE tx_id = $1 AND endpoint_hash IS NULL',
         [row.tx_id],
       );
-      const c = Number(countRows[0]?.c ?? '0');
-      if (c > 0) claimedInDryRun.add(row.tx_id);
-      result.attestations.updated += c;
+      result.attestations.updated += Number(countRows[0]?.c ?? '0');
     }
     cp.attestations_last_cursor = { timestamp: row.timestamp, id: row.attestation_id };
-  }
-
-  // ---- Phase 3: observer fallback on orphan transactions ----
-  const orphansResult = await opts.pool.query<{
-    tx_id: string;
-    receiver_hash: string;
-    timestamp: number;
-  }>(
-    `SELECT tx_id, receiver_hash, timestamp
-       FROM transactions
-      WHERE source IS NULL
-        AND (timestamp > $1 OR (timestamp = $2 AND tx_id > $3))
-      ORDER BY timestamp ASC, tx_id ASC
-      LIMIT $4`,
-    [
-      cp.transactions_last_cursor.timestamp,
-      cp.transactions_last_cursor.timestamp,
-      cp.transactions_last_cursor.id,
-      chunk,
-    ],
-  );
-  const orphanRows = orphansResult.rows;
-
-  for (const row of orphanRows) {
-    if (dryRun && claimedInDryRun.has(row.tx_id)) {
-      cp.transactions_last_cursor = { timestamp: row.timestamp, id: row.tx_id };
-      continue;
-    }
-
-    result.observer.scanned++;
-    const bucket = windowBucket(row.timestamp);
-
-    if (!dryRun) {
-      const info = await opts.pool.query(
-        `UPDATE transactions
-            SET operator_id = $1, source = $2, window_bucket = $3
-          WHERE tx_id = $4 AND source IS NULL`,
-        [row.receiver_hash, 'observer', bucket, row.tx_id],
-      );
-      result.observer.updated += info.rowCount ?? 0;
-    } else {
-      const { rows: countRows } = await opts.pool.query<{ c: string }>(
-        'SELECT COUNT(*)::text AS c FROM transactions WHERE tx_id = $1 AND source IS NULL',
-        [row.tx_id],
-      );
-      result.observer.updated += Number(countRows[0]?.c ?? '0');
-    }
-    cp.transactions_last_cursor = { timestamp: row.timestamp, id: row.tx_id };
   }
 
   if (!dryRun && checkpointPath) {
@@ -301,7 +227,6 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
     ? {
       service_probes_last_id: opts.checkpoint.service_probes_last_id,
       attestations_last_cursor: { ...opts.checkpoint.attestations_last_cursor },
-      transactions_last_cursor: { ...opts.checkpoint.transactions_last_cursor },
     }
     : opts.checkpointPath
       ? loadCheckpoint(opts.checkpointPath)
@@ -309,13 +234,11 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
   const aggregate: BackfillResult = {
     service_probes: { scanned: 0, updated: 0 },
     attestations: { scanned: 0, updated: 0 },
-    observer: { scanned: 0, updated: 0 },
     checkpoint: starting,
   };
   let working: BackfillCheckpoint = {
     service_probes_last_id: starting.service_probes_last_id,
     attestations_last_cursor: { ...starting.attestations_last_cursor },
-    transactions_last_cursor: { ...starting.transactions_last_cursor },
   };
 
   const maxIterations = 1_000_000;
@@ -325,18 +248,14 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
     aggregate.service_probes.updated += chunk.service_probes.updated;
     aggregate.attestations.scanned += chunk.attestations.scanned;
     aggregate.attestations.updated += chunk.attestations.updated;
-    aggregate.observer.scanned += chunk.observer.scanned;
-    aggregate.observer.updated += chunk.observer.updated;
     working = {
       service_probes_last_id: chunk.checkpoint.service_probes_last_id,
       attestations_last_cursor: { ...chunk.checkpoint.attestations_last_cursor },
-      transactions_last_cursor: { ...chunk.checkpoint.transactions_last_cursor },
     };
     aggregate.checkpoint = working;
     if (
       chunk.service_probes.scanned === 0
       && chunk.attestations.scanned === 0
-      && chunk.observer.scanned === 0
     ) break;
   }
   return aggregate;
@@ -379,7 +298,6 @@ async function main(): Promise<void> {
       mode: args.dryRun ? 'dry-run' : 'live',
       service_probes: res.service_probes,
       attestations: res.attestations,
-      observer: res.observer,
       checkpoint: res.checkpoint,
     }, null, 2) + '\n');
   } finally {

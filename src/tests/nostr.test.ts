@@ -88,12 +88,12 @@ async function insertTx(
   );
   // Le verdict Phase 3 lit directement dans streaming_posteriors ; on bump
   // aussi le streaming pour que ces tests restent cohérents avec la nouvelle
-  // source de vérité (observer reste bucket-only, cf. CHECK constraint SQL).
+  // source de vérité.
   if (source !== 'intent') {
     await ingestBayesianObservation(db, {
       success: status === 'verified',
       timestamp: ts,
-      source: source as BayesianSource | 'observer',
+      source: source as BayesianSource,
       endpointHash: opts.endpoint_hash,
     });
   }

@@ -20,7 +20,7 @@ function makeAgent(alias: string): Agent {
     alias,
     first_seen: NOW - 90 * 86400,
     last_seen: NOW - 86400,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,

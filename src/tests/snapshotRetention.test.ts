@@ -17,7 +17,7 @@ async function ensureAgent(agentRepo: AgentRepository, hash: string): Promise<vo
       alias: `agent-${hash.slice(0, 8)}`,
       first_seen: 1500000000,
       last_seen: 1700000000,
-      source: 'observer_protocol',
+      source: 'attestation',
       total_transactions: 0,
       total_attestations_received: 0,
       avg_score: 0,

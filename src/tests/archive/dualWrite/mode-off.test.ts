@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // mode-off: legacy INSERT only. Covers the production default — v31 columns
 // stay NULL, shadow logger is not consulted. This is what every prod instance
 // runs until Phase 1 flips to dry_run.
@@ -24,7 +25,7 @@ function makeAgent(alias: string, hash: string): Agent {
     alias,
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,

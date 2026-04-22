@@ -1,5 +1,5 @@
 // MCP Server (Model Context Protocol) — agent-native access to SatRank
-// AI agents can query the scoring engine directly via stdio
+// Autonomous agents can query the scoring engine directly via stdio
 import { z } from 'zod';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';

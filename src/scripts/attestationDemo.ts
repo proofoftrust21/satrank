@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     alias: 'Bob',
     first_seen: NOW - 60 * DAY,
     last_seen: NOW - 2 * DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 30,
     total_attestations_received: 0,
     avg_score: 0,

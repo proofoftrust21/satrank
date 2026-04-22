@@ -8,7 +8,7 @@
 //   1. Total line volume.
 //   2. Distribution by `source_module` (crawler / reportService /
 //      decideService / serviceProbes) — counts + %.
-//   3. Distribution by `source` (probe / observer / report / intent / null) —
+//   3. Distribution by `source` (probe / report / intent / paid / null) —
 //      counts + %.
 //   4. Rate of `endpoint_hash IS NULL` and `operator_id IS NULL`.
 //   5. `window_bucket` vs `date(timestamp)` alignment — must be 100 %.
@@ -30,7 +30,7 @@ import type { DualWriteLogRow, DualWriteSourceModule } from '../utils/dualWriteL
 import { windowBucket } from '../utils/dualWriteLogger';
 
 const SOURCE_MODULES: DualWriteSourceModule[] = ['crawler', 'reportService', 'decideService', 'serviceProbes', 'probeCrawler', 'probeController'];
-const SOURCE_VALUES = ['probe', 'observer', 'report', 'intent', 'paid', '__null__'] as const;
+const SOURCE_VALUES = ['probe', 'report', 'intent', 'paid', '__null__'] as const;
 type SourceLabel = (typeof SOURCE_VALUES)[number];
 
 export interface AuditReport {
@@ -75,7 +75,6 @@ function zeroByModule(): Record<DualWriteSourceModule, { count: number; pct: num
 function zeroBySource(): Record<SourceLabel, { count: number; pct: number }> {
   return {
     probe: { count: 0, pct: 0 },
-    observer: { count: 0, pct: 0 },
     report: { count: 0, pct: 0 },
     intent: { count: 0, pct: 0 },
     paid: { count: 0, pct: 0 },

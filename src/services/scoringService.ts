@@ -162,7 +162,7 @@ export class ScoringService {
       totalFloat = totalFloat * penaltyMultiplier;
     }
 
-    // Verified transaction bonus — ×1.0 to ×1.10 based on Observer Protocol txns
+    // Verified transaction bonus — ×1.0 to ×1.10 based on attested txns
     const verifiedForBonus = isLightningGraph
       ? await this.txRepo.countVerifiedByAgent(agentHash)
       : verifiedTxCount;

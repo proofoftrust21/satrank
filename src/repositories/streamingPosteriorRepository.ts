@@ -19,9 +19,9 @@
 // n_obs_effective = (α + β) - (α₀ + β₀) représente "l'excès d'évidence"
 // par rapport au prior flat — c'est cette grandeur qui sert au verdict.
 //
-// Source CHECK constraint SQL : {'probe','report','paid'}. Observer est
-// explicitement rejeté (contrat Q3 — observer compte dans daily_buckets pour
-// l'activité mais n'alimente pas le verdict).
+// Source CHECK constraint SQL : {'probe','report','paid'}. Toute autre
+// valeur est rejetée au niveau DB (défense en profondeur contre un bug
+// d'ingestion qui tenterait d'écrire une source non reconnue).
 
 import type { Pool, PoolClient } from 'pg';
 import {

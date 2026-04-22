@@ -4,7 +4,7 @@ export const openapiSpec = {
   info: {
     title: 'SatRank API',
     version: '1.0.0',
-    description: 'Trust score for AI agents on Bitcoin Lightning. The PageRank of the agentic economy.',
+    description: 'Trust score for autonomous agents on Bitcoin Lightning. The PageRank of the agentic economy.',
     license: { name: 'AGPL-3.0' },
   },
   servers: [{ url: '/api' }],
@@ -823,7 +823,7 @@ export const openapiSpec = {
           recent_activity: {
             type: 'object',
             required: ['last_24h', 'last_7d', 'last_30d'],
-            description: 'n_obs cumulé sur 24h/7d/30d (daily_buckets, observer inclus) — display-only, indépendant du verdict.',
+            description: 'n_obs cumulé sur 24h/7d/30d (daily_buckets, toutes sources) — display-only, indépendant du verdict.',
             properties: {
               last_24h: { type: 'integer', minimum: 0 },
               last_7d:  { type: 'integer', minimum: 0 },
@@ -873,7 +873,7 @@ export const openapiSpec = {
               alias: { type: ['string', 'null'] },
               firstSeen: { type: 'integer' },
               lastSeen: { type: 'integer' },
-              source: { type: 'string', enum: ['observer_protocol', '4tress', 'lightning_graph', 'manual'] },
+              source: { type: 'string', enum: ['attestation', '4tress', 'lightning_graph', 'manual'] },
             },
           },
           bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },

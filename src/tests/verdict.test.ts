@@ -39,7 +39,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     alias: 'test-agent',
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 50,
     total_attestations_received: 0,
     avg_score: 60,
@@ -115,12 +115,13 @@ describe.skip('VerdictService', async () => {
     // Insert real transactions so scoring engine sees them
     for (let i = 0; i < 200; i++) {
       const txId = uuid();
-      db.prepare(`
-        INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-        VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-      `).run(txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId));
+      await db.query(
+        `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+         VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+        [txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId)],
+      );
     }
-    seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
+    await seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
 
     const result = await verdictService.getVerdict(agent.public_key_hash);
     expect(result.verdict).toBe('SAFE');
@@ -178,10 +179,11 @@ describe.skip('VerdictService', async () => {
     await agentRepo.insert(subject);
 
     const txId = uuid();
-    db.prepare(`
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-    `).run(txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId));
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+       VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+      [txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId)],
+    );
 
     // Insert fraud attestation
     await attestationRepo.insert({
@@ -219,10 +221,11 @@ describe.skip('VerdictService', async () => {
     await agentRepo.insert(subject);
 
     const txId = uuid();
-    db.prepare(`
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-    `).run(txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId));
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+       VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+      [txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId)],
+    );
 
     await attestationRepo.insert({
       attestation_id: uuid(),
@@ -280,10 +283,11 @@ describe.skip('VerdictService — personalTrust', async () => {
     await agentRepo.insert(target);
 
     const txId = uuid();
-    db.prepare(`
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-    `).run(txId, caller.public_key_hash, target.public_key_hash, NOW, sha256(txId));
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+       VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+      [txId, caller.public_key_hash, target.public_key_hash, NOW, sha256(txId)],
+    );
 
     await attestationRepo.insert({
       attestation_id: uuid(),
@@ -315,10 +319,11 @@ describe.skip('VerdictService — personalTrust', async () => {
 
     // Caller attested intermediary
     const txId1 = uuid();
-    db.prepare(`
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-    `).run(txId1, caller.public_key_hash, intermediary.public_key_hash, NOW, sha256(txId1));
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+       VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+      [txId1, caller.public_key_hash, intermediary.public_key_hash, NOW, sha256(txId1)],
+    );
 
     await attestationRepo.insert({
       attestation_id: uuid(),
@@ -336,10 +341,11 @@ describe.skip('VerdictService — personalTrust', async () => {
 
     // Intermediary attested target
     const txId2 = uuid();
-    db.prepare(`
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-    `).run(txId2, intermediary.public_key_hash, target.public_key_hash, NOW, sha256(txId2));
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+       VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+      [txId2, intermediary.public_key_hash, target.public_key_hash, NOW, sha256(txId2)],
+    );
 
     await attestationRepo.insert({
       attestation_id: uuid(),
@@ -512,12 +518,13 @@ describe.skip('Verdict endpoint integration', async () => {
     // Insert real transactions
     for (let i = 0; i < 200; i++) {
       const txId = uuid();
-      db.prepare(`
-        INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-        VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-      `).run(txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId));
+      await db.query(
+        `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+         VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+        [txId, counterparty.public_key_hash, agent.public_key_hash, NOW - i * 3600, sha256(txId)],
+      );
     }
-    seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
+    await seedSafeBayesianObservations(db, agent.public_key_hash, { now: NOW });
 
     const res = await request(app).get(`/api/agent/${agent.public_key_hash}/verdict`);
     expect(res.status).toBe(200);
@@ -540,10 +547,11 @@ describe.skip('Verdict endpoint integration', async () => {
     await agentRepo.insert(subject);
 
     const txId = uuid();
-    db.prepare(`
-      INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
-      VALUES (?, ?, ?, 'small', ?, ?, null, 'verified', 'l402')
-    `).run(txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId));
+    await db.query(
+      `INSERT INTO transactions (tx_id, sender_hash, receiver_hash, amount_bucket, timestamp, payment_hash, preimage, status, protocol)
+       VALUES ($1, $2, $3, 'small', $4, $5, null, 'verified', 'l402')`,
+      [txId, attester.public_key_hash, subject.public_key_hash, NOW, sha256(txId)],
+    );
 
     const res = await request(app)
       .post('/api/attestation')

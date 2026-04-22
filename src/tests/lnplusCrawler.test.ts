@@ -113,7 +113,7 @@ describe('LnplusCrawler', async () => {
       alias: 'observer-agent',
       first_seen: 1600000000,
       last_seen: 1700000000,
-      source: 'observer_protocol',
+      source: 'attestation',
       total_transactions: 10,
       total_attestations_received: 0,
       avg_score: 0,

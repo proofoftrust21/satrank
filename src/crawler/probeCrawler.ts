@@ -247,8 +247,8 @@ export class ProbeCrawler {
           window_bucket: bucket,
         };
         await txRepoInTx.insertWithDualWrite(tx, enrichment, mode, 'probeCrawler', dualWriteLogger);
-        // Phase 3 streaming — unique chemin d'écriture verdict. Observer exclu :
-        // probe écrit dans streaming_posteriors ET daily_buckets.
+        // Phase 3 streaming — unique chemin d'écriture verdict. Probe écrit
+        // dans streaming_posteriors ET daily_buckets.
         // Note: `bayesian` reste bound au pool par défaut (cf. reportService).
         await bayesian.ingestStreaming({
           success,

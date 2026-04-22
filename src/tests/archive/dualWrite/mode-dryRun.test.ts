@@ -1,3 +1,4 @@
+// @ts-nocheck — archived 2026-04-22 in Phase 12C (SQLite-era better-sqlite3 API, not ported to pg). See docs/phase-12c/TS-ERRORS-AUDIT.md.
 // mode-dry_run: legacy INSERT + NDJSON shadow log. Validates the
 // observation window before flipping to `active` — the enriched row is
 // serialized to disk but the DB stays identical to mode=off output.
@@ -25,7 +26,7 @@ function makeAgent(alias: string, hash: string): Agent {
     alias,
     first_seen: NOW - 90 * DAY,
     last_seen: NOW - DAY,
-    source: 'observer_protocol',
+    source: 'attestation',
     total_transactions: 0,
     total_attestations_received: 0,
     avg_score: 0,
