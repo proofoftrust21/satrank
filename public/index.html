@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SatRank — Sovereign trust oracle for Lightning</title>
+  <title>SatRank · Sovereign trust oracle for Lightning</title>
   <meta name="description" content="Intent-driven service discovery on Bitcoin Lightning. Ask for a category and a budget, get a ranked list of L402 endpoints with Bayesian trust posterior, then pay 1 sat per request.">
   <meta name="theme-color" content="#07090d">
-  <meta property="og:title" content="SatRank — Sovereign trust oracle for Lightning">
+  <meta property="og:title" content="SatRank · Sovereign trust oracle for Lightning">
   <meta property="og:description" content="Intent-driven service discovery on Bitcoin Lightning. Bayesian trust posterior, 1 sat per request, AGPL-3.0, Nostr-native.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://satrank.dev">
   <meta property="og:image" content="https://satrank.dev/logo.png">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="SatRank — sovereign trust oracle for Lightning">
+  <meta name="twitter:title" content="SatRank · sovereign trust oracle for Lightning">
   <meta name="twitter:description" content="Intent-driven service discovery on Bitcoin Lightning.">
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -50,7 +50,7 @@
     </h1>
 
     <p class="hero-sub">
-      Lightning is the emerging settlement rail for machine-to-machine payments, but most nodes don't route reliably and most L402 services don't have SLAs. SatRank measures every indexed endpoint from its own LND, publishes a Bayesian trust posterior per node, and returns a ranked shortlist when your agent posts an intent. No account, no API key — pay 1 sat per query, or take the free tier.
+      Lightning is the emerging settlement rail for machine-to-machine payments, but most nodes don't route reliably and most L402 services don't have SLAs. SatRank measures every indexed endpoint from its own LND, publishes a Bayesian trust posterior per node, and returns a ranked shortlist when your agent posts an intent. No account, no API key. Pay 1 sat per query, or take the free tier.
     </p>
 
     <div class="hero-cta">
@@ -63,10 +63,10 @@
     </div>
 
     <ul class="hero-ticker" aria-label="Live network stats">
-      <li><strong id="hero-endpoints">—</strong> L402 endpoints indexed</li>
-      <li><strong id="hero-nodes">—</strong> LN nodes probed</li>
-      <li><strong id="hero-probes">—</strong> probes / 24h</li>
-      <li><strong id="hero-reachable">—</strong> verified reachable</li>
+      <li><strong id="hero-endpoints">…</strong> L402 endpoints indexed</li>
+      <li><strong id="hero-nodes">…</strong> LN nodes probed</li>
+      <li><strong id="hero-probes">…</strong> probes / 24h</li>
+      <li><strong id="hero-reachable">…</strong> verified reachable</li>
     </ul>
   </div>
 </header>
@@ -159,7 +159,7 @@ print(result.paid_sats)     # what it cost</pre>
         </div>
       </div>
 
-      <p class="sdk-note">SDK published as <code>@satrank/sdk</code> on npm (TypeScript first-class, works with any LN wallet that can pay a BOLT11 invoice). Python SDK is a thin wrapper over the same REST API — see <a href="/api/docs">/api/docs</a> if you prefer raw HTTP.</p>
+      <p class="sdk-note">SDK published as <code>@satrank/sdk</code> on npm (TypeScript first-class, works with any LN wallet that can pay a BOLT11 invoice). Python SDK is a thin wrapper over the same REST API. See <a href="/api/docs">/api/docs</a> if you prefer raw HTTP.</p>
     </div>
   </section>
 
@@ -177,7 +177,7 @@ print(result.paid_sats)     # what it cost</pre>
           <span class="flow-step-num">1</span>
           <div>
             <h3>Discover candidates</h3>
-            <p><code>POST /api/intent</code> — free, rate-limited <strong>10 requests / 60 seconds per IP</strong>. Returns a ranked list of endpoints inside your budget, each with its full Bayesian trust posterior. No authentication. At the limit the server replies <code>HTTP 429</code> with a <code>Retry-After</code> header in seconds.</p>
+            <p><code>POST /api/intent</code>: free, rate-limited <strong>10 requests / 60 seconds per IP</strong>. Returns a ranked list of endpoints inside your budget, each with its full Bayesian trust posterior. No authentication. At the limit the server replies <code>HTTP 429</code> with a <code>Retry-After</code> header in seconds.</p>
           </div>
         </div>
 
@@ -240,7 +240,7 @@ print(result.paid_sats)     # what it cost</pre>
           <span class="flow-step-num">2</span>
           <div>
             <h3>Pay the chosen endpoint</h3>
-            <p>Your agent (or the SDK) calls the selected <code>endpoint_url</code> directly. The provider replies <code>HTTP 402 Payment Required</code> with a BOLT11 invoice in the <code>WWW-Authenticate</code> header. Pay the invoice with any LN wallet, then retry the request with <code>Authorization: L402 &lt;mac&gt;:&lt;preimage&gt;</code>. This is the standard <a href="https://github.com/lightninglabs/L402/" rel="noopener noreferrer">L402 protocol</a> — SatRank does not proxy the request or custody funds.</p>
+            <p>Your agent (or the SDK) calls the selected <code>endpoint_url</code> directly. The provider replies <code>HTTP 402 Payment Required</code> with a BOLT11 invoice in the <code>WWW-Authenticate</code> header. Pay the invoice with any LN wallet, then retry the request with <code>Authorization: L402 &lt;mac&gt;:&lt;preimage&gt;</code>. This is the standard <a href="https://github.com/lightninglabs/L402/" rel="noopener noreferrer">L402 protocol</a>. SatRank does not proxy the request or custody funds.</p>
           </div>
         </div>
 
@@ -272,14 +272,14 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
       <div class="section-head">
         <div class="section-kicker">Trust model</div>
         <h2 class="section-title">Two layers: a free Bayesian posterior, and a paid component breakdown.</h2>
-        <p class="section-desc">Every candidate in <code>/api/intent</code> ships with a free Bayesian posterior — enough for an agent to decide whether the endpoint is worth paying. If you need the full decomposition behind the posterior, query <code>GET /api/agent/:hash</code> — that's paid (1 sat) because it reveals proprietary scoring components.</p>
+        <p class="section-desc">Every candidate in <code>/api/intent</code> ships with a free Bayesian posterior: enough for an agent to decide whether the endpoint is worth paying. If you need the full decomposition behind the posterior, query <code>GET /api/agent/:hash</code>. That's paid (1 sat) because it reveals proprietary scoring components.</p>
       </div>
 
       <!-- 4.1 Free posterior -->
       <div class="subsection">
         <div class="subsection-head">
           <span class="subsection-num">4.1</span>
-          <h3>Free — Bayesian posterior</h3>
+          <h3>Free · Bayesian posterior</h3>
         </div>
         <p class="subsection-desc">Computed from our own LND probes, weighted by recency. <code>p_success</code> is the posterior mean; <code>ci95_low</code>/<code>ci95_high</code> bound the 95% credible interval; <code>n_obs</code> is the effective sample size; <code>verdict</code> summarises confidence (<code>CONVERGED</code> / <code>INSUFFICIENT</code>). Delivered in every <code>/api/intent</code> candidate and in <code>GET /api/agents/top</code>.</p>
 
@@ -312,7 +312,7 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
       <div class="subsection">
         <div class="subsection-head">
           <span class="subsection-num">4.2</span>
-          <h3>Paid — 5-component decomposition</h3>
+          <h3>Paid · 5-component decomposition</h3>
         </div>
         <p class="subsection-desc">The free posterior (above) tells your agent how likely the node is to route. The decomposition below tells it <em>why</em>. These are the five components of SatRank's deterministic scoring function, used to seed the Bayesian prior. Weights are frozen and public. The per-node numeric contribution is available via <code>GET /api/agent/:hash</code> (1 sat per call).</p>
 
@@ -357,11 +357,11 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
               <span class="factor-weight">15%</span>
               <span class="factor-name">Diversity</span>
             </div>
-            <p>Unique peers (log-scaled, ref 500) or unique counterparties — whichever the data supports.</p>
+            <p>Unique peers (log-scaled, ref 500) or unique counterparties, whichever the data supports.</p>
           </div>
         </div>
 
-        <p class="factors-footnote">Post-composite modifiers: verified-tx bonus ×1.0–1.10, probe-failure penalty ×0.65–0.90 (graded by cause: dead / zombie / liquidity). Full constants in <a href="https://github.com/proofoftrust21/satrank/blob/main/src/config/scoring.ts" rel="noopener noreferrer"><code>src/config/scoring.ts</code></a> — values are frozen; changes are announced before deployment.</p>
+        <p class="factors-footnote">Post-composite modifiers: verified-tx bonus ×1.0 to 1.10, probe-failure penalty ×0.65 to 0.90 (graded by cause: dead / zombie / liquidity). Full constants in <a href="https://github.com/proofoftrust21/satrank/blob/main/src/config/scoring.ts" rel="noopener noreferrer"><code>src/config/scoring.ts</code></a>. Values are frozen; changes are announced before deployment.</p>
       </div>
     </div>
   </section>
@@ -378,12 +378,12 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <div class="why-card">
           <div class="why-num">01</div>
           <h3>AGPL-3.0, end to end.</h3>
-          <p>The scoring engine, the crawler, the API — all open source under AGPL. If we ever changed the ranking to favour a partner, you would see it in the diff. You can also run your own SatRank and compare results node by node.</p>
+          <p>The scoring engine, the crawler, the API: all open source under AGPL. If we ever changed the ranking to favour a partner, you would see it in the diff. You can also run your own SatRank and compare results node by node.</p>
         </div>
         <div class="why-card">
           <div class="why-num">02</div>
           <h3>Deterministic scoring.</h3>
-          <p>No ML, no opaque weights, no vibes. Five components, frozen public weights, inputs measured from our own LND node. Given the same probe data, two runs produce the same ranking — byte-for-byte.</p>
+          <p>No ML, no opaque weights, no vibes. Five components, frozen public weights, inputs measured from our own LND node. Given the same probe data, two runs produce the same ranking, byte-for-byte.</p>
         </div>
         <div class="why-card">
           <div class="why-num">03</div>
@@ -400,7 +400,7 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
       <div class="section-head">
         <div class="section-kicker">Pricing</div>
         <h2 class="section-title">1 sat per paid endpoint. Nothing else.</h2>
-        <p class="section-desc">Two ways to pay a SatRank paid endpoint: handle the L402 challenge on each call, or pre-fund a deposit once and reuse the resulting macaroon. Same unit price either way — no volume discount, no subscription, no API key.</p>
+        <p class="section-desc">Two ways to pay a SatRank paid endpoint: handle the L402 challenge on each call, or pre-fund a deposit once and reuse the resulting macaroon. Same unit price either way. No volume discount, no subscription, no API key.</p>
       </div>
 
       <div class="pricing-grid">
@@ -424,7 +424,7 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         </div>
       </div>
 
-      <p class="api-footnote">Paid tokens carry as <code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;</code> — or <code>Authorization: L402 deposit:&lt;preimage&gt;</code> for deposit credits. No account. No email. No key rotation.</p>
+      <p class="api-footnote">Paid tokens carry as <code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;</code>, or <code>Authorization: L402 deposit:&lt;preimage&gt;</code> for deposit credits. No account. No email. No key rotation.</p>
     </div>
   </section>
 
@@ -447,7 +447,7 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <li>
           <span class="method method-get">GET</span>
           <span class="ep-path">/api/agents/top</span>
-          <span class="ep-desc">Leaderboard — rank, alias, public key hash, Bayesian posterior</span>
+          <span class="ep-desc">Leaderboard: rank, alias, public key hash, Bayesian posterior</span>
           <span class="ep-cost ep-free">free</span>
         </li>
         <li>
@@ -459,31 +459,31 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <li>
           <span class="method method-get">GET</span>
           <span class="ep-path">/api/stats</span>
-          <span class="ep-desc">Network-wide counters — nodes, channels, probes, services</span>
+          <span class="ep-desc">Network-wide counters: nodes, channels, probes, services</span>
           <span class="ep-cost ep-free">free</span>
         </li>
         <li>
           <span class="method method-get">GET</span>
           <span class="ep-path">/api/agent/:hash</span>
-          <span class="ep-desc">Full profile — score, 5-component decomposition, reports, survival</span>
+          <span class="ep-desc">Full profile: score, 5-component decomposition, reports, survival</span>
           <span class="ep-cost">1 req</span>
         </li>
         <li>
           <span class="method method-post">POST</span>
           <span class="ep-path">/api/report</span>
-          <span class="ep-desc">Submit a paid-call outcome — preimage-verified reports earn 2× weight</span>
+          <span class="ep-desc">Submit a paid-call outcome. Preimage-verified reports earn 2× weight</span>
           <span class="ep-cost ep-free">free</span>
         </li>
         <li>
           <span class="method method-post">POST</span>
           <span class="ep-path">/api/deposit</span>
-          <span class="ep-desc">Bulk L402 balance — 21 to 10,000 requests, one invoice, 1:1</span>
+          <span class="ep-desc">Bulk L402 balance: 21 to 10,000 requests, one invoice, 1:1</span>
           <span class="ep-cost ep-free">free</span>
         </li>
         <li>
           <span class="method method-get">GET</span>
           <span class="ep-path">/api/health</span>
-          <span class="ep-desc">Liveness — database, LND, bitcoind, Nostr relay status</span>
+          <span class="ep-desc">Liveness: database, LND, bitcoind, Nostr relay status</span>
           <span class="ep-cost ep-free">free</span>
         </li>
       </ul>
@@ -499,28 +499,28 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
     <div class="container">
       <div class="nostr-card">
         <div class="section-kicker">Nostr-native distribution</div>
-        <h2 class="section-title">Every score, every service, every report — on public relays.</h2>
-        <p class="section-desc">SatRank publishes its trust graph to <code>relay.damus.io</code>, <code>nos.lol</code>, and <code>relay.primal.net</code> every 6 hours. Any Nostr client can subscribe, verify the signatures, and stream updates in real time — no SDK, no API key, no trust in SatRank's uptime.</p>
+        <h2 class="section-title">Every score, every service, every report, on public relays.</h2>
+        <p class="section-desc">SatRank publishes its trust graph to <code>relay.damus.io</code>, <code>nos.lol</code>, and <code>relay.primal.net</code> every 6 hours. Any Nostr client can subscribe, verify the signatures, and stream updates in real time. No SDK, no API key, no trust in SatRank's uptime.</p>
         <div class="nostr-grid">
           <div>
             <div class="nostr-label">Kind 30382</div>
-            <div class="nostr-desc">Trust assertions — posterior, verdict, components per node</div>
+            <div class="nostr-desc">Trust assertions: posterior, verdict, components per node</div>
           </div>
           <div>
             <div class="nostr-label">Kind 30383</div>
-            <div class="nostr-desc">Service endpoints — URL, price, category, operator pubkey</div>
+            <div class="nostr-desc">Service endpoints: URL, price, category, operator pubkey</div>
           </div>
           <div>
             <div class="nostr-label">Kind 30384</div>
-            <div class="nostr-desc">Operator profiles — NIP-05, verified identity, badge</div>
+            <div class="nostr-desc">Operator profiles: NIP-05, verified identity, badge</div>
           </div>
           <div>
             <div class="nostr-label">Kind 30385</div>
-            <div class="nostr-desc">Reports — outcome, preimage-verified flag, reporter tier</div>
+            <div class="nostr-desc">Reports: outcome, preimage-verified flag, reporter tier</div>
           </div>
           <div>
             <div class="nostr-label">Kind 5900 → 6900</div>
-            <div class="nostr-desc">NIP-90 DVM — on-demand score as a Nostr job</div>
+            <div class="nostr-desc">NIP-90 DVM: on-demand score as a Nostr job</div>
           </div>
           <div>
             <div class="nostr-label">satrank@satrank.dev</div>
@@ -552,12 +552,12 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <div class="why-card">
           <div class="why-num">02</div>
           <h3>Every payment is a trust decision.</h3>
-          <p>Most LN nodes advertised in the gossip graph never route a payment. SatRank probes each one from its own LND. Before an agent spends a sat, it needs to know: will this endpoint actually respond? Is the price fair? Has it failed its last 50 callers? A model can't guess — it needs a measured, cryptographically-signed answer.</p>
+          <p>Most LN nodes advertised in the gossip graph never route a payment. SatRank probes each one from its own LND. Before an agent spends a sat, it needs to know: will this endpoint actually respond? Is the price fair? Has it failed its last 50 callers? A model can't guess. It needs a measured, cryptographically-signed answer.</p>
         </div>
         <div class="why-card">
           <div class="why-num">03</div>
           <h3>The oracle has to be sovereign.</h3>
-          <p>An AI-native trust oracle can't live behind a trusted API gateway — it is the gateway. SatRank runs its own bitcoind, its own LND, its own Nostr identity, and publishes to public relays. If SatRank goes down tomorrow, the last 30 days of scores are still verifiable on Nostr.</p>
+          <p>An AI-native trust oracle can't live behind a trusted API gateway. It is the gateway. SatRank runs its own bitcoind, its own LND, its own Nostr identity, and publishes to public relays. If SatRank goes down tomorrow, the last 30 days of scores are still verifiable on Nostr.</p>
         </div>
       </div>
     </div>
