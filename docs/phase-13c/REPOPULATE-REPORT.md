@@ -1,13 +1,17 @@
-# Phase 13C — Repopulate service_endpoints + operators : BLOQUÉ
+# Phase 13C — Repopulate service_endpoints + operators : EN COURS post-recovery
 
 **Date :** 2026-04-22
 **Branche :** `phase-13c-repopulate`
 **Auteur :** autonomous agent
-**Statut :** **BLOQUÉ — décision produit requise**
+**Statut :** **EN COURS — SSRF fix déployé, outage recovered, crawler live, Phases C→F restantes**
 
 ---
 
 ## Résumé exécutif
+
+**Update 2026-04-22 15:35 UTC** — après commit du fix SSRF (`036bd33`) puis déploiement incident-prone (voir §Outage analysis and recovery), prod est revenue nominale : `/api/health=ok`, `scoringStale=false`, crawler `healthy`. Phases 13C C/D/E/F restent à exécuter (registry crawl inline, seed operators, SDK validation, gh pr ready). Les cardinal rules restent respectées à la lettre (aucun `lncli`, aucun `bitcoin-cli`, aucun octet de macaroon modifié — voir tableau à la fin du document).
+
+Contenu original (diagnostic ayant mené à la PR #18, antérieur au déploiement) :
 
 Les deux mécanismes de repeuplage sont bloqués, chacun pour une raison distincte. **Aucun repeuplage n'a été écrit en prod** (cardinal rules respectées : LND/macaroons/Nostr/schema intacts).
 
@@ -19,6 +23,61 @@ Les deux mécanismes de repeuplage sont bloqués, chacun pour une raison distinc
 | `token_balance`      | 0 rows         | (auto, via paiements L402)  | Neutre — repeuple via nouveaux paiements                              |
 
 **Verdict :** Phase 13C comme scopée (« ré-exécuter les scripts qui existent ») ne peut pas aboutir dans l'état actuel. Deux décisions produit à prendre (voir §Phase 14 recos).
+
+---
+
+## Outage analysis and recovery (2026-04-22)
+
+### Timeline horodatée (UTC)
+
+| Heure         | Évènement                                                                           |
+|---------------|-------------------------------------------------------------------------------------|
+| ~13:30        | Fix SSRF commité en local (`036bd33` — safeLookup undici v6+ signature)             |
+| 14:57:32      | Backup `.env.production` pris avant tout write : `.env.production.bak-phase-13c-outage-20260422-145732` |
+| **14:58:09**  | **Outage start** (`DOWNTIME_START_EPOCH=1776869889`) — `docker compose up --force-recreate` exécuté depuis `/opt/satrank` (répertoire fossile antérieur à la cut-over Phase 12B), api unhealthy |
+| ~15:00        | Investigation read-only : `docker inspect` révèle `com.docker.compose.project.working_dir=/root/satrank` sur les containers sains précédents vs `/opt/satrank` sur les nouveaux |
+| ~15:05        | Diff `/opt/.env.production` vs `/root/.env.production` : 6 vars manquantes côté `/root/` (`LND_ADMIN_MACAROON_PATH`, `OBSERVER_API_URL`, 4 vars `PROBE_*`) — Phase 12B cut-over a raté le port |
+| ~15:10        | Container jetable (`docker run --rm --no-deps`) valide que l'image + env mergé + réseau sont sains → confirme que seul l'env `/root/` incomplet causait le crash |
+| ~15:15        | Merge des 6 vars dans `/root/.env.production` (`OBSERVER_API_URL` commentée — Protocol Observer sunset Phase 12C). Fichier passe 779B → 1148B |
+| ~15:17        | `docker compose down` sur `/opt/satrank`, `docker compose up -d` sur `/root/satrank` : api démarre mais crawler échoue sur bind mount `not a directory` |
+| ~15:22        | Enquête sur `/var/lib/docker/volumes/satrank_satrank-data/_data/` : `readonly.macaroon` existe comme **répertoire vide** (drwxr-xr-x, 4096B, mtime 2026-04-04) persistant d'une ancienne run où la source du bind était absente |
+| ~15:25        | `cp /opt/satrank/probe-pay.macaroon /root/satrank/` + SHA256 **identique** (`2f8ae299...d683`, 91B, chmod 600) |
+| ~15:26        | `cp /mnt/HC_Volume_105326177/lnd/data/chain/bitcoin/mainnet/readonly.macaroon /root/satrank/` + SHA256 **identique** (`38e4025c...61e8`, 217B, chmod 600) |
+| ~15:27        | `rmdir /var/lib/docker/volumes/satrank_satrank-data/_data/readonly.macaroon` (0 fichier confirmé avant) |
+| **15:27:52**  | **Crawler redémarré** (`--force-recreate --no-deps`) → `Up 18 seconds (healthy)`. Premier log : `pg pool created` |
+| ~15:32        | `/api/health` : `status=ok, scoringStale=false, scoringAgeSec=365` → recovery confirmée |
+| 15:40–15:52   | 5 checks × 3 min : `status=ok` stable, `scoringStale=false` stable, `lndStatus=ok` stable |
+
+**Durée totale outage jusqu'à api healthy :** ~30 min (14:58 → ~15:28). Scoring recovery : 365s après crawler up.
+
+### Root cause
+
+Deux défauts combinés en cascade :
+
+1. **Divergence `/opt/` vs `/root/` non détectée.** La migration Phase 12B (2026-04-21) a créé le nouveau compose project en `/root/satrank/` mais a laissé l'ancien en `/opt/satrank/` *intact sur disque*. Les deux compose files étaient quasi identiques (même image, même réseau), mais `/opt/.env.production` contenait 6 vars que `/root/.env.production` n'avait pas — donc quand le déploiement Phase B de SSRF a été exécuté depuis `/opt/`, il a embarqué des vars corrects, mais ensuite quand la tentative de bascule vers `/root/` a eu lieu, 6 vars critiques ont disparu. Deux compose projects actifs en même temps pendant 30 min.
+2. **Volume nommé `satrank-data` gardait un répertoire fantôme.** `readonly.macaroon` y existait comme dossier vide depuis une run antérieure où le bind source (`/root/satrank/readonly.macaroon`) était absent — Docker crée alors le mount point comme directory. Ce dossier a persisté dans le volume et bloqué tout bind mount *file* ultérieur.
+
+### Recovery actions — cardinal rules compliance
+
+| Action                                              | Impact LND/macaroons       | Conformité        |
+|-----------------------------------------------------|----------------------------|-------------------|
+| `rmdir .../satrank-data/_data/readonly.macaroon`    | Dossier vide (0 octet)     | ✅ aucun octet perdu |
+| `cp /opt/.../probe-pay.macaroon /root/satrank/`     | SHA256 `2f8ae299...d683` identique byte-à-byte | ✅ macaroon existant, zero modification |
+| `cp LND.../readonly.macaroon /root/satrank/`        | SHA256 `38e4025c...61e8` identique byte-à-byte | ✅ macaroon existant, zero modification |
+| Fichiers volume intacts : `readonly-local.macaroon` (217B), `invoice.macaroon` (91B) | Non touchés | ✅ présents après `rmdir` |
+| LND container                                       | Non touché                 | ✅ zéro `lncli`, zéro `bitcoin-cli`, zéro `systemctl` sur `bitcoind`/`lnd` |
+| Nostr key                                           | Non touchée                | ✅ (clé montée via env, pas de re-génération) |
+| Schema PG                                           | `schemaVersion=41` avant ET après | ✅ aucun DDL |
+| Données PG                                          | Aucun `DELETE`, aucun `UPDATE` | ✅ 32757 transactions conservées |
+
+### Finding Phase 14 (propreté infra)
+
+Deux parasites à nettoyer quand l'infra sera stable et la PR #18 mergée :
+
+- **`/opt/satrank/` à supprimer entièrement** — fossile pré-Phase-12B, aucune référence vivante. Contient encore : `docker-compose.yml` identique, `.env.production` avec OBSERVER_API_URL (Phase 12C sunset), macaroons identiques à `/root/`. Retirer après backup défensif et confirmation que plus aucun hook/cron y pointe.
+- **`satrank.db` (7.8 GB) dans `satrank_satrank-data/_data/`** — fossile SQLite post-Phase-12B cut-over (Postgres est la source de vérité depuis 2026-04-21). Occupe 100% de l'espace utile du volume. À retirer après snapshot hors-volume et délai de rétention décidé par le produit.
+
+Les deux sont **non bloquants** pour 13C ; ils devraient être traités en Phase 14 avec une PR dédiée et leur propre procédure.
 
 ---
 
