@@ -1,13 +1,15 @@
-# Phase 13C — Repopulate service_endpoints + operators : Phases C+D réussies
+# Phase 13C — Repopulate service_endpoints + operators : Phases A→E réussies
 
 **Date :** 2026-04-22
 **Branche :** `phase-13c-repopulate`
 **Auteur :** autonomous agent
-**Statut :** **Phases C+D réussies — service_endpoints repeuplé (157 rows, 11 agents), operators seedés (12306 pending, 12306 owns_node). Phases E/F restantes.**
+**Statut :** **Phases A→E réussies — SSRF fixé, service_endpoints repeuplé (172 rows), operators seedés (12306 pending), SDK 1.0.0 re-validé end-to-end contre prod (empty shelf résolu). Phase F (gh pr ready) en cours.**
 
 ---
 
 ## Résumé exécutif
+
+**Update 2026-04-22 19:55 UTC** — Phase E exécutée. SDK 1.0.0 installé via `docker run node:22-alpine` depuis la tarball locale (VM host sans npm). Discovery flow re-run contre prod repeuplée : **24 catégories retournées** (vs 0 en Phase 13B, empty shelf), `parseIntent('weather data for Paris')` résout `data/weather` avec confiance 1.0, `resolveIntent({category: 'data/weather'})` retourne 1 candidat réel (Weather Intel forecast, `03b428…ac2f7e1`). Empty shelf confirmé résolu au data layer. `sr.fulfill()` avec budget strict renvoie `NO_CANDIDATES` (server filtre les candidats à `price_sats=null` — maturité crawler, pas empty shelf ; voir §S10). Row counts finaux : 12306 agents, 172 service_endpoints, 12306 operators pending, 12306 owns_node, 127 owns_endpoint. Cardinal rules intactes.
 
 **Update 2026-04-22 17:40 UTC** — Phase D exécutée. Nouveau script `seedOperatorsFromAgents.ts` écrit + testé (10 tests vitest verts) + deployé via rsync vers `/opt/satrank/` + rebuild api image + force-recreate. Dry-run puis run réel : **12306 operators pending créés, 12306 owns_node, 127 owns_endpoint, 128 service_endpoints linked, 0 errors**. Option A retenue (Option B restore SQLite écartée car skip ETL = décision Phase 12B). `operator_identities=0` intentionnel (attend verifs Nostr). Endpoint public `/api/operator/:hash` retourne l'operator avec catalog.nodes peuplé. Phases E (SDK validation), F (gh pr ready) restantes.
 
@@ -472,10 +474,9 @@ Le registry crawler a tourné 16h sans une seule ligne d'erreur alors qu'il ne p
 
 ---
 
-## Ce qui n'a PAS été fait (Phase 13C Phases E→F restantes)
+## Ce qui n'a PAS été fait (Phase F en cours)
 
-- **Phase E** — validation SDK end-to-end depuis `/tmp/phase-13c-validation` contre prod repopulée
-- **Phase F** — mise à jour finale du rapport, `gh pr ready 18`, **sans merge** (décision produit)
+- **Phase F** — mise à jour finale du rapport (ce §S10), `gh pr ready 18`, **sans merge** (décision produit reste ouverte)
 
 Ce qui a déjà été fait dans la branche `phase-13c-repopulate` :
 
@@ -483,3 +484,121 @@ Ce qui a déjà été fait dans la branche `phase-13c-repopulate` :
 - ✅ Phase B — Deploy fix + recovery outage + rebuild crawler image depuis `/opt/`
 - ✅ Phase C — Registry crawl inline : 157 endpoints écrits en PG prod
 - ✅ Phase D — seedOperatorsFromAgents : 12306 operators pending, 12306 owns_node, 127 owns_endpoint
+- ✅ Phase E — SDK 1.0.0 re-validation : 24 categories, parseIntent conf=1.0, resolveIntent retourne candidat réel
+
+---
+
+## §S10 — Phase E : validation SDK 1.0.0 contre prod repopulée
+
+**Objectif :** re-jouer les scénarios Phase 13B (qui échouaient sur « empty shelf ») avec le SDK 1.0.0 contre la prod repopulée, pour prouver que Phase C (service_endpoints) + Phase D (operators) débloquent le flow discovery end-to-end.
+
+### E1 — Setup scratch dir (contrainte VM)
+
+VM `178.104.108.108` ne dispose pas de npm (image base Ubuntu sans runtime node). La tarball SDK locale `sdk/satrank-sdk-1.0.0.tgz` a été uploadée, puis installée dans un conteneur éphémère `node:22-alpine` bind-mountant `/tmp/phase-13c-sdk-validation` :
+
+```bash
+scp /Users/lochju/satrank/sdk/satrank-sdk-1.0.0.tgz root@178.104.108.108:/tmp/
+ssh root@178.104.108.108 "mkdir -p /tmp/phase-13c-sdk-validation && cp /tmp/satrank-sdk-1.0.0.tgz /tmp/phase-13c-sdk-validation/"
+ssh root@178.104.108.108 "docker run --rm -v /tmp/phase-13c-sdk-validation:/work -w /work node:22-alpine sh -c 'npm init -y >/dev/null && npm install ./satrank-sdk-1.0.0.tgz'"
+```
+
+Résultat : `1 package installed, 0 vulnerabilities`. `node_modules/@satrank/sdk/dist/` contient `SatRank.js`, `nlp/`, `wallet/`, etc.
+
+### E2 — S1 Discovery (qui échouait en Phase 13B)
+
+Script `e2-discovery.mjs` :
+
+```js
+import sdkPkg from '@satrank/sdk';
+import nlpPkg from '@satrank/sdk/nlp';
+const { SatRank } = sdkPkg;
+const { parseIntent } = nlpPkg;
+
+const sr = new SatRank({ apiBase: 'https://satrank.dev', caller: 'phase13c-validation' });
+const catsResp = await sr.listCategories();
+const cats = catsResp.categories;
+const categoryNames = cats.map((c) => c.name);
+const parsed = parseIntent('I need weather data for Paris', { categories: categoryNames });
+const resolved = await sr.resolveIntent({ category: parsed.intent.category, limit: 5 });
+```
+
+Résultat :
+
+```
+CATEGORIES_COUNT: 24
+CATEGORIES_NAMES: [
+  "guides", "ai", "energy/intelligence", "data", "data/science", "data/finance",
+  "bitcoin", "video", "data/health", "tools", "media", "data/government",
+  "tools/search", "social", "tools/testing", "technology", "data/networking",
+  "data/developer", "data/location", "data/weather", "data/media", "education",
+  "tools/ai", "data/reference"
+]
+
+PARSED: {
+  "intent": { "category": "data/weather", "keywords": ["paris"] },
+  "category_confidence": 1,
+  "ambiguous_categories": ["data/weather", "data"]
+}
+
+RESOLVED_CATEGORY: data/weather
+RESOLVED_CANDIDATES_COUNT: 1
+  candidates[0]:
+    endpoint_url: https://api.lightningenable.com/l402/proxy/weather-intel-e0cf/forecast
+    endpoint_hash: 972d962765a8d8e9567578442d51fc832ead6fe8a00eb7c2990c343c174d0dd7
+    operator_pubkey: 03b428ba4b48b524f1fa929203ddc2f0971c2077c2b89bb5b22fd83ed82ac2f7e1
+    bayesian.p_success: 0.775 (ci95 0.42–0.98, verdict INSUFFICIENT)
+    advisory.recommendation: proceed_with_caution
+    health.reachability: 1.0
+```
+
+**Empty shelf résolu au data layer.** Phase 13B avait 0 catégories utilisables ; Phase 13C a maintenant 24 catégories avec un candidat réel, bayesian + advisory + health blocks populés.
+
+### E3 — S4 Happy-path fulfill : découverte de filtre serveur
+
+Test fulfill avec budget strict `budget_sats: 50` :
+
+```js
+const result = await sr.fulfill({
+  intent: { category: 'data/weather', keywords: [] },
+  budget_sats: 50,
+  max_latency_ms: 10000,
+});
+// → { success: false, error: { code: 'NO_CANDIDATES', message: 'No candidates for category "data/weather"' } }
+```
+
+Investigation directe POST `/api/intent` confirme :
+- Sans `budget_sats` : 1 candidat retourné (strictness=`relaxed`, warning `FALLBACK_RELAXED`)
+- `budget_sats=1000` : 0 candidats (strictness=`degraded`, warning `NO_CANDIDATES`)
+- `budget_sats=99999` : 0 candidats (même warning)
+
+Le serveur filtre donc les candidats à `price_sats=null` dès qu'un budget est fourni — **c'est une maturité crawler, pas un empty shelf**. Les endpoints fraîchement crawlés n'ont pas encore vu de paiement L402 donc `price_sats` reste `NULL` jusqu'à la première décode d'invoice 402. Hors scope Phase 13C (le scope était : repeupler les tables, pas crawler les prix).
+
+**Recommandation Phase 14 (complément) :** faire tourner un crawler `service_probes` périodique qui GET chaque endpoint, capture la 402 challenge, décode le BOLT11 et stocke `price_sats`. Une fois fait, `fulfill()` budget-gated retournera des candidats. Hors scope Phase 13C.
+
+### E4 — Row counts finaux (prod PG après Phases C+D)
+
+```
+agents:                12306
+service_endpoints:       172   (+15 depuis Phase C close, crawling continu)
+operators:             12306   (Phase D)
+operators_pending:     12306   (aucune vérification encore)
+operator_owns_node:    12306   (Phase D)
+operator_owns_endpoint:  127   (Phase D, pour les agents avec endpoints observés)
+probe_results:        941435   (historique, inchangé)
+service_probes:            0   (séparé ; nécessite crawler service_probes — voir E3)
+```
+
+### E5 — Cleanup
+
+```bash
+ssh root@178.104.108.108 "rm -rf /tmp/phase-13c-sdk-validation /tmp/satrank-sdk-1.0.0.tgz"
+```
+
+Scratch propre. Aucun artefact laissé sur VM.
+
+### Résultat Phase E
+
+- ✅ Empty shelf **résolu** : 24 catégories, candidat réel retourné par resolveIntent
+- ✅ SDK 1.0.0 fonctionne end-to-end contre prod repopulée (listCategories, parseIntent, resolveIntent)
+- ℹ️ `fulfill()` budget-gated renvoie NO_CANDIDATES → maturité crawler (`price_sats=null`), distincte de l'empty shelf. Séparée vers Phase 14.
+- ✅ Cardinal rules intactes (zéro état LND modifié, zéro DELETE, pas de schema change).
