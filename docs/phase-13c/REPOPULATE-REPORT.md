@@ -1,13 +1,15 @@
-# Phase 13C — Repopulate service_endpoints + operators : EN COURS post-recovery
+# Phase 13C — Repopulate service_endpoints + operators : Phase C réussie
 
 **Date :** 2026-04-22
 **Branche :** `phase-13c-repopulate`
 **Auteur :** autonomous agent
-**Statut :** **EN COURS — SSRF fix déployé, outage recovered, crawler live, Phases C→F restantes**
+**Statut :** **Phase C réussie — service_endpoints repeuplé (157 rows, 11 agents). Phases D/E/F restantes.**
 
 ---
 
 ## Résumé exécutif
+
+**Update 2026-04-22 17:20 UTC** — Phase C exécutée. Crawler rebuild depuis `/opt/satrank/` (source canonique), recreate depuis `/root/satrank/` (env canonique). Registry crawl inline complet : **157 discovered, 1 updated, 0 errors** en 781s sur 1111 services scannés. Table `service_endpoints` peuplée (157 rows, 11 distinct agents, source=402index). `/api/intent/categories` retourne 12+ catégories avec endpoint_counts non-nuls. Cardinal rules intactes (aucun octet LND modifié). Phases D (seed operators), E (SDK validation), F (gh pr ready) restantes.
 
 **Update 2026-04-22 15:35 UTC** — après commit du fix SSRF (`036bd33`) puis déploiement incident-prone (voir §Outage analysis and recovery), prod est revenue nominale : `/api/health=ok`, `scoringStale=false`, crawler `healthy`. Phases 13C C/D/E/F restent à exécuter (registry crawl inline, seed operators, SDK validation, gh pr ready). Les cardinal rules restent respectées à la lettre (aucun `lncli`, aucun `bitcoin-cli`, aucun octet de macaroon modifié — voir tableau à la fin du document).
 
@@ -70,14 +72,20 @@ Deux défauts combinés en cascade :
 | Schema PG                                           | `schemaVersion=41` avant ET après | ✅ aucun DDL |
 | Données PG                                          | Aucun `DELETE`, aucun `UPDATE` | ✅ 32757 transactions conservées |
 
-### Finding Phase 14 (propreté infra)
+### Finding Phase 14 (consolidation infra) — CORRECTION 2026-04-22 16:50 UTC
 
-Deux parasites à nettoyer quand l'infra sera stable et la PR #18 mergée :
+**Correction importante** : après enquête read-only plus poussée avant la Phase B rebuild (cf. §S8), la relation entre `/opt/satrank/` et `/root/satrank/` a été inversée par rapport à la première lecture :
 
-- **`/opt/satrank/` à supprimer entièrement** — fossile pré-Phase-12B, aucune référence vivante. Contient encore : `docker-compose.yml` identique, `.env.production` avec OBSERVER_API_URL (Phase 12C sunset), macaroons identiques à `/root/`. Retirer après backup défensif et confirmation que plus aucun hook/cron y pointe.
-- **`satrank.db` (7.8 GB) dans `satrank_satrank-data/_data/`** — fossile SQLite post-Phase-12B cut-over (Postgres est la source de vérité depuis 2026-04-21). Occupe 100% de l'espace utile du volume. À retirer après snapshot hors-volume et délai de rétention décidé par le produit.
+- **`/opt/satrank/` EST la source canonique**. `src/utils/ssrf.ts` y contient le fix SSRF (10 405 B, mtime 2026-04-22 13:51), et l'image `satrank-api` en cours d'exécution a été buildée depuis là (mtime 13:57). Le répertoire contient la totalité du projet (`src/`, `Dockerfile`, `docker-compose.yml`, `package.json`).
+- **`/root/satrank/` EST le résidu**. `src/utils/ssrf.ts` y contient la version pré-fix (8 490 B, mtime 2026-04-20 19:39). Lors du Phase 12B cut-over, un `rsync` a partiellement synchronisé `/opt/` → `/root/` mais sans le fix SSRF qui a été committé ultérieurement. Seul `.env.production` est à jour côté `/root/` (post-recovery 2026-04-22 14:57, 1148 B, avec les 6 vars mergées).
 
-Les deux sont **non bloquants** pour 13C ; ils devraient être traités en Phase 14 avec une PR dédiée et leur propre procédure.
+Trois parasites à consolider quand l'infra sera stable et la PR #18 mergée :
+
+1. **Consolidation workspace unique (P0)** — choisir `/opt/satrank/` ou `/root/satrank/` comme unique racine. Recommandation : **promouvoir `/opt/` comme workspace officiel** (il a déjà la source à jour + image buildée), puis copier `/root/.env.production` → `/opt/.env.production` et supprimer `/root/satrank/` entièrement. Les deux compose projects actifs en même temps pendant 30 min le 2026-04-22 ont causé l'outage de §Timeline — **ne doit jamais se reproduire**.
+2. **Documenter le workflow déploiement** — aujourd'hui `make deploy` sync depuis local vers `/root/satrank/` (via rsync) mais les rebuilds se font implicitement depuis l'un ou l'autre selon la context. Les Dockerfile `COPY` utilisent des paths relatifs au build context, donc l'image finale dépend de quel `cd <dir>` a précédé `docker compose build`. À formaliser dans `docs/DEPLOY.md`.
+3. **`satrank.db` (7.8 GB) dans `satrank_satrank-data/_data/`** — fossile SQLite post-Phase-12B cut-over (Postgres est la source de vérité depuis 2026-04-21). Occupe 100% de l'espace utile du volume. À retirer après snapshot hors-volume et délai de rétention décidé par le produit.
+
+Les trois sont **non bloquants** pour 13C ; ils devraient être traités en Phase 14 avec une PR dédiée et leur propre procédure.
 
 ---
 
@@ -223,9 +231,9 @@ Réimplémenter `discoverNodeFromUrl` inline avec `fetch()` natif + `isSafeUrl()
 
 ---
 
-## S6 — Validation fonctionnelle (post-scan)
+## S6 — Validation fonctionnelle (post-scan pré-Phase-B)
 
-État inchangé (aucune écriture en prod) :
+État inchangé (aucune écriture en prod à ce stade) :
 
 ```
 /api/intent/categories → {"categories":[]}
@@ -242,6 +250,69 @@ Flow SDK depuis `/tmp/sdk-test-13c` non tenté — inutile tant que service_endp
 - Host crontab : aucun cron registry (seulement LND backup + scoring-validation)
 - Container `satrank-crawler` : registry crawler wiré dans `src/crawler/run.ts` lignes 823-849 — initial fire au boot + `setInterval` 24h (`CRAWL_INTERVAL_REGISTRY_MS`)
 - Conclusion : le scheduling existe **mais ne produit aucune donnée** tant que le bug SSRF n'est pas corrigé
+
+---
+
+## S8 — Phase B rebuild + Phase C success (2026-04-22 16:07–17:20 UTC)
+
+### Root cause de l'échec inline pré-Phase-B
+
+Après le recovery (§Outage analysis), l'image `satrank-api:latest` contenait le fix SSRF (buildée depuis `/opt/` à 13:57), mais **l'image `satrank-crawler:latest` était toujours la version 23h pré-fix** (ID `10a17180f3f0`). Le premier test inline (`bj3ixax7h`, ~16:07) a tourné sur cette image obsolète → 1108 services scannés mais 0 discovered, car `fetchSafeExternal` plantait silencieusement sur chaque URL.
+
+Dualité de cause :
+- **Code crawler stale** (image jamais reconstruite post-fix)
+- **Environnement `/root/` stale** (cf. Finding Phase 14 ci-dessus) — rebuilder depuis `/root/` aurait repris l'ancien `ssrf.ts` via `COPY src/`
+
+### Plan Phase B
+
+- **B1** — `cd /opt/satrank && docker compose build --no-cache crawler` : nouvelle image `71a0a22ea567` (source ssrf.ts = fix)
+- **B2** — `cd /root/satrank && docker compose up -d --force-recreate --no-deps crawler` : container recréé depuis env canonique (`.env.production` post-recovery 1148 B)
+- **B3** — validation SSRF inline dans nouveau container → `SSRF_OK_ARRAY [{"address":"151.101.2.15","family":4}]` (wantsAll branch correct)
+- **B4** — validation env → `DATABASE_URL`, `LND_ADMIN_MACAROON_PATH`, 4 vars `PROBE_*` tous présents
+
+### Phase C — registry crawl
+
+Exécution inline via script intermédiaire copié via bind mount `/var/log/satrank/` :
+
+```js
+// /var/log/satrank/phase-b5-crawl.js
+const { HttpLndGraphClient } = require("/app/dist/crawler/lndGraphClient.js");
+const { RegistryCrawler } = require("/app/dist/crawler/registryCrawler.js");
+const lnd = new HttpLndGraphClient({ restUrl, macaroonPath, timeoutMs, adminMacaroonPath });
+const decodeBolt11 = lnd.isConfigured() ? (inv) => lnd.decodePayReq(inv) : undefined;
+const crawler = new RegistryCrawler(repo, decodeBolt11);
+const r = await crawler.run();  // méthode correcte : run(), pas crawl()
+```
+
+Output final :
+
+```
+lnd_configured= true decoder_ready= true
+starting at 2026-04-22T17:07:52.826Z
+offset=100 discovered=13
+offset=500 discovered=125
+offset=1000 discovered=135
+offset=1100 discovered=157 updated=1
+DURATION_MS: 781211
+RESULT: {"discovered":157,"updated":1,"errors":0}
+```
+
+### Phase B6 — validation Postgres (VM 178.104.142.150)
+
+```sql
+SELECT COUNT(*) AS total, COUNT(DISTINCT agent_hash) AS distinct_agents FROM service_endpoints;
+-- total=157 | distinct_agents=11
+SELECT source, COUNT(*) FROM service_endpoints GROUP BY source;
+-- 402index | 157
+```
+
+`/api/intent/categories` : 12+ catégories avec `endpoint_count` non-nuls (guides=5, ai=5, energy/intelligence=48, data=41, video=30, data/science=4, bitcoin=4, data/health=3, ...). `active_count=0` partout — normal, reflète l'absence de probes récentes.
+
+### Leçons
+
+- Méthode RegistryCrawler = `.run()`, pas `.crawl()` (important pour docs/scripts futurs)
+- Module path = `/app/dist/crawler/lndGraphClient.js`, pas `/app/dist/lnd/client.js` — le faux path de §S5 ci-dessus n'avait fonctionné dans le 1er run (`bj3ixax7h`) que par pure coïncidence ; en reréalisant Phase C j'ai dû corriger
+- 11 agents distincts sur 157 endpoints = la plupart des services L402 référencent 1 poignée de nœuds (typique gateway/aggregator)
 
 ---
 
@@ -298,12 +369,14 @@ Le registry crawler a tourné 16h sans une seule ligne d'erreur alors qu'il ne p
 
 ---
 
-## Ce qui n'a PAS été fait (explicitement)
+## Ce qui n'a PAS été fait (Phase 13C Phases D→F restantes)
 
-- Aucune écriture en prod (PG ou FS)
-- Aucun redémarrage de container
-- Aucun redéploiement
-- Aucun fix SSRF (hors scope, nécessite décision + revue sécurité)
-- Aucun nouveau script committé dans `src/` (brief interdit)
+- **Phase D** — script `seedOperatorsFromAgents.ts` (1 operator par agent, ~12 291 pending, `verification_score=0`)
+- **Phase E** — validation SDK end-to-end depuis `/tmp/phase-13c-validation` contre prod repopulée
+- **Phase F** — mise à jour finale du rapport, `gh pr ready 18`, **sans merge** (décision produit)
 
-Draft PR ouverte pour trace et décision user.
+Ce qui a déjà été fait dans la branche `phase-13c-repopulate` :
+
+- ✅ Phase A — Fix SSRF `safeLookup` undici v6+ (commit `036bd33`)
+- ✅ Phase B — Deploy fix + recovery outage + rebuild crawler image depuis `/opt/`
+- ✅ Phase C — Registry crawl inline : 157 endpoints écrits en PG prod
