@@ -47,7 +47,20 @@ jobs:
   docker:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: satrank
+          POSTGRES_PASSWORD: satrank
+          POSTGRES_DB: satrank
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U satrank -d satrank"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Build Docker image
@@ -60,9 +73,9 @@ jobs:
       - name: Verify container starts
         run: |
           docker run -d --name satrank-test \
+            --network host \
             -e NODE_ENV=development \
-            -e DB_PATH=./data/satrank.db \
-            -p 3000:3000 \
+            -e DATABASE_URL=postgresql://satrank:satrank@localhost:5432/satrank \
             satrank:${{ github.sha }}
           sleep 5
           curl -sf http://localhost:3000/api/health || (docker logs satrank-test && exit 1)
