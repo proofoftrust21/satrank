@@ -98,28 +98,76 @@ export class SsrfBlockedError extends Error {
   }
 }
 
-type LookupCb = (err: NodeJS.ErrnoException | null, address: string, family: number) => void;
+// Node's net.connect + undici Agent support two lookup callback shapes:
+//   - legacy (all:false)  : cb(err, address: string, family: number)
+//   - happy-eyeballs (all:true) : cb(err, addresses: Array<{address, family}>)
+// Node 20+/22 enables autoSelectFamily by default, which calls lookup with
+// { all: true }. Returning a single string in that path surfaces as
+// ERR_INVALID_IP_ADDRESS ("Invalid IP address: undefined") at connect time.
+// We must honor opts.all to stay compatible with both shapes.
+export type SafeLookupOpts =
+  | { all?: boolean; family?: number; hints?: number }
+  | null
+  | undefined;
+export type SafeLookupEntry = { address: string; family: number };
+type LookupCbAll = (
+  err: NodeJS.ErrnoException | null,
+  addresses: ReadonlyArray<SafeLookupEntry>,
+) => void;
+type LookupCbSingle = (
+  err: NodeJS.ErrnoException | null,
+  address: string,
+  family: number,
+) => void;
+export type SafeLookupCb = LookupCbAll & LookupCbSingle;
 
-function safeLookup(hostname: string, opts: unknown, cb: LookupCb): void {
-  dns.lookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
-    if (err) return cb(err, '', 0);
-    const list = Array.isArray(addresses) ? addresses : [];
-    if (list.length === 0) {
-      const e = new Error('SSRF: DNS returned no addresses') as NodeJS.ErrnoException;
-      e.code = 'ENOTFOUND';
-      return cb(e, '', 0);
-    }
-    for (const a of list) {
-      if (isIpBlocked(a.address)) {
-        const e = new Error(`URL_NOT_ALLOWED: resolved IP ${a.address} is blocked`) as NodeJS.ErrnoException;
-        e.code = 'URL_NOT_ALLOWED';
-        return cb(e, '', 0);
+// dns.lookup shape used below; isolated for unit-test injection because the
+// ESM namespace object is not configurable and cannot be spied on.
+type DnsLookupImpl = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+  cb: (err: NodeJS.ErrnoException | null, addresses: SafeLookupEntry[]) => void,
+) => void;
+
+/** Build a safeLookup function against a specific dns.lookup implementation.
+ *  Exposed for tests — production code uses the `safeLookup` export below. */
+export function createSafeLookup(dnsLookup: DnsLookupImpl) {
+  return function safeLookupImpl(
+    hostname: string,
+    opts: SafeLookupOpts,
+    cb: SafeLookupCb,
+  ): void {
+    const wantsAll = opts != null && typeof opts === 'object' && opts.all === true;
+    const fail = (err: NodeJS.ErrnoException): void => {
+      if (wantsAll) (cb as LookupCbAll)(err, []);
+      else (cb as LookupCbSingle)(err, '', 0);
+    };
+    dnsLookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
+      if (err) return fail(err);
+      const list = Array.isArray(addresses) ? addresses : [];
+      if (list.length === 0) {
+        const e = new Error('SSRF: DNS returned no addresses') as NodeJS.ErrnoException;
+        e.code = 'ENOTFOUND';
+        return fail(e);
       }
-    }
-    const pick = list[0];
-    cb(null, pick.address, pick.family);
-  });
+      for (const a of list) {
+        if (isIpBlocked(a.address)) {
+          const e = new Error(`URL_NOT_ALLOWED: resolved IP ${a.address} is blocked`) as NodeJS.ErrnoException;
+          e.code = 'URL_NOT_ALLOWED';
+          return fail(e);
+        }
+      }
+      if (wantsAll) {
+        (cb as LookupCbAll)(null, list);
+        return;
+      }
+      const pick = list[0];
+      (cb as LookupCbSingle)(null, pick.address, pick.family);
+    });
+  };
 }
+
+export const safeLookup = createSafeLookup(dns.lookup as unknown as DnsLookupImpl);
 
 let _safeDispatcher: UndiciAgent | null = null;
 function getSafeDispatcher(): UndiciAgent {
