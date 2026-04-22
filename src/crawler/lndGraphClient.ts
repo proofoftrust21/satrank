@@ -76,6 +76,10 @@ export interface LndGraphClient {
   getNodeInfo(pubkey: string): Promise<LndNodeInfo | null>;
   queryRoutes(pubkey: string, amountSats: number, sourcePubKey?: string): Promise<LndQueryRoutesResponse>;
   decodePayReq?(payReq: string): Promise<{ destination: string; num_satoshis?: string } | null>;
+  /** Like decodePayReq but throws on any failure (swallows nothing). The
+   *  backfill uses this to classify errors (malformed BOLT11 vs LND unreachable
+   *  vs network mismatch) instead of getting a uniform null. */
+  decodePayReqStrict?(payReq: string): Promise<{ destination: string; num_satoshis?: string }>;
   payInvoice?(paymentRequest: string, feeLimitSat?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
   canPayInvoices?(): boolean;
 }
@@ -214,17 +218,20 @@ export class HttpLndGraphClient implements LndGraphClient {
 
   async decodePayReq(payReq: string): Promise<{ destination: string; num_satoshis?: string } | null> {
     try {
-      const data = await this.request<{ destination: string; num_satoshis?: string }>(`/v1/payreq/${payReq}`);
-      if (!data?.destination) {
-        logger.warn({ payReqPrefix: payReq.slice(0, 24) }, 'LND decodePayReq: no destination in response');
-        return null;
-      }
-      return { destination: data.destination, num_satoshis: data.num_satoshis };
+      return await this.decodePayReqStrict(payReq);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn({ payReqPrefix: payReq.slice(0, 24), error: errMsg }, 'LND decodePayReq threw');
       return null;
     }
+  }
+
+  async decodePayReqStrict(payReq: string): Promise<{ destination: string; num_satoshis?: string }> {
+    const data = await this.request<{ destination: string; num_satoshis?: string }>(`/v1/payreq/${payReq}`);
+    if (!data?.destination) {
+      throw new Error('LND decodePayReq: no destination in response');
+    }
+    return { destination: data.destination, num_satoshis: data.num_satoshis };
   }
 
   async payInvoice(paymentRequest: string, feeLimitSat: number = 10): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }> {
@@ -294,7 +301,17 @@ export class HttpLndGraphClient implements LndGraphClient {
 
       if (!response.ok) {
         const body = await response.text().catch(() => '');
-        this.breaker.onFailure();
+        // Invoice-level parse errors (malformed BOLT11 / bad checksum) on
+        // /v1/payreq/* mean the input data is bad, not that LND is unhealthy.
+        // Without this carve-out, a provider serving 5+ malformed invoices
+        // trips the breaker and causes 30s of collateral skips against other
+        // providers' probes (observed 2026-04-22: lightningfaucet's 5 bad
+        // invoices skipped 23 unrelated URLs until the breaker half-opened).
+        const isInvoiceParseError = path.startsWith('/v1/payreq/')
+          && /invalid index|checksum failed/i.test(body);
+        if (!isInvoiceParseError) {
+          this.breaker.onFailure();
+        }
         throw new Error(`HTTP ${response.status}: ${response.statusText} — ${body.slice(0, 200)}`);
       }
 

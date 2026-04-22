@@ -35,6 +35,16 @@ export interface BackfillSummary {
   skippedNoInvoice: number;
   skippedNotL402: number;
   skippedSsrf: number;
+  /** Malformed BOLT11 (LND rejected with "invalid index" or "checksum failed").
+   *  Permanent — the provider is serving bad data, won't resolve by retry. */
+  skippedInvoiceMalformed: number;
+  /** BOLT11 for a different network (mainnet LND got a testnet/signet invoice). */
+  skippedNetworkMismatch: number;
+  /** LND circuit breaker was open when we attempted decode. Retriable — would
+   *  succeed if breaker is closed. After the 2026-04-22 breaker carve-out for
+   *  invoice parse errors, this should only fire when LND itself is unhealthy. */
+  skippedBreakerOpen: number;
+  /** Everything else (unexpected LND error, missing destination, etc.). */
   skippedDecodeFailed: number;
   skippedZeroPrice: number;
   skippedNetworkError: number;
@@ -83,6 +93,9 @@ export async function backfillServicePrices(
     skippedNoInvoice: 0,
     skippedNotL402: 0,
     skippedSsrf: 0,
+    skippedInvoiceMalformed: 0,
+    skippedNetworkMismatch: 0,
+    skippedBreakerOpen: 0,
     skippedDecodeFailed: 0,
     skippedZeroPrice: 0,
     skippedNetworkError: 0,
@@ -156,19 +169,39 @@ export async function backfillServicePrices(
       }
 
       const invoice = invoiceMatch[1];
-      let decoded: { destination: string; num_satoshis?: string } | null;
+      let decoded: { destination: string; num_satoshis?: string };
       try {
-        decoded = await lndClient.decodePayReq!(invoice);
+        if (lndClient.decodePayReqStrict) {
+          decoded = await lndClient.decodePayReqStrict(invoice);
+        } else {
+          const maybe = await lndClient.decodePayReq!(invoice);
+          if (!maybe) throw new Error('decodePayReq returned null (legacy client)');
+          decoded = maybe;
+        }
       } catch (err: unknown) {
-        summary.skippedDecodeFailed += 1;
         const errMsg = err instanceof Error ? err.message : String(err);
-        logger.warn({ url, error: errMsg }, 'backfillServicePrices: decodepayreq failed');
-        emitSkip('decode_threw', { url, httpStatus: resp.status, wwwAuth, invoice, lndError: errMsg });
+        const lower = errMsg.toLowerCase();
+        let reason: string;
+        if (/invalid index|checksum failed/i.test(errMsg)) {
+          summary.skippedInvoiceMalformed += 1;
+          reason = 'invoice_malformed';
+        } else if (lower.includes('circuit breaker open')) {
+          summary.skippedBreakerOpen += 1;
+          reason = 'breaker_open';
+        } else if (lower.includes('testnet') || lower.includes('signet') || lower.includes('wrong network')) {
+          summary.skippedNetworkMismatch += 1;
+          reason = 'network_mismatch';
+        } else {
+          summary.skippedDecodeFailed += 1;
+          reason = 'decode_other';
+        }
+        logger.warn({ url, error: errMsg, reason }, 'backfillServicePrices: decodepayreq failed');
+        emitSkip(reason, { url, httpStatus: resp.status, wwwAuth, invoice, lndError: errMsg });
         await sleep(rateLimitMs);
         continue;
       }
 
-      if (!decoded?.num_satoshis) {
+      if (!decoded.num_satoshis) {
         summary.skippedDecodeFailed += 1;
         logger.debug({ url }, 'backfillServicePrices: decoded payload missing num_satoshis');
         emitSkip('decode_missing_num_satoshis', { url, invoice, decoded });

@@ -10,13 +10,22 @@ let testDb: TestDb;
 
 // Minimal LND stub — only decodePayReq is exercised. Other methods throw to
 // catch accidental misuse by the backfill script.
-function mockLndClient(decodeMap: Record<string, { destination: string; num_satoshis?: string } | null>): LndGraphClient {
+function mockLndClient(
+  decodeMap: Record<string, { destination: string; num_satoshis?: string } | null>,
+  strictErrorMap: Record<string, string> = {},
+): LndGraphClient {
   return {
     getInfo: async () => { throw new Error('unexpected getInfo call'); },
     getGraph: async () => { throw new Error('unexpected getGraph call'); },
     getNodeInfo: async () => { throw new Error('unexpected getNodeInfo call'); },
     queryRoutes: async () => { throw new Error('unexpected queryRoutes call'); },
     decodePayReq: async (payReq: string) => decodeMap[payReq] ?? null,
+    decodePayReqStrict: async (payReq: string) => {
+      if (strictErrorMap[payReq]) throw new Error(strictErrorMap[payReq]);
+      const r = decodeMap[payReq];
+      if (!r?.destination) throw new Error(`mock decode: no result for ${payReq}`);
+      return r;
+    },
   } as LndGraphClient;
 }
 
@@ -160,6 +169,42 @@ describe('backfillServicePrices', async () => {
     const summary = await backfillServicePrices(pool, lnd, { rateLimitMs: 0 });
 
     expect(summary.skippedDecodeFailed).toBe(1);
+  });
+
+  it('counts skippedInvoiceMalformed on LND bech32 parse errors', async () => {
+    const url = 'https://backfill-malformed.example.com';
+    const pubkey = '02' + '3'.repeat(64);
+    await repo.upsert(sha256(pubkey), url, 402, 100, '402index');
+
+    const invoice = 'lnbc1pvjluezsp5zyg3zyg3';
+    global.fetch = mockFetch({ [url]: { status: 402, invoice } });
+    const lnd = mockLndClient(
+      {},
+      { [invoice]: 'HTTP 500: Internal Server Error — {"code":2, "message":"invalid index of 1"}' },
+    );
+
+    const summary = await backfillServicePrices(pool, lnd, { rateLimitMs: 0 });
+
+    expect(summary.skippedInvoiceMalformed).toBe(1);
+    expect(summary.skippedDecodeFailed).toBe(0);
+  });
+
+  it('counts skippedBreakerOpen when LND circuit breaker is open', async () => {
+    const url = 'https://backfill-breaker.example.com';
+    const pubkey = '02' + '4'.repeat(64);
+    await repo.upsert(sha256(pubkey), url, 402, 100, '402index');
+
+    const invoice = 'lnbc10n1pbreakeropen';
+    global.fetch = mockFetch({ [url]: { status: 402, invoice } });
+    const lnd = mockLndClient(
+      {},
+      { [invoice]: 'LND circuit breaker open — skipping request: /v1/payreq/...' },
+    );
+
+    const summary = await backfillServicePrices(pool, lnd, { rateLimitMs: 0 });
+
+    expect(summary.skippedBreakerOpen).toBe(1);
+    expect(summary.skippedDecodeFailed).toBe(0);
   });
 
   it('throws if decodePayReq is not available on the client', async () => {
