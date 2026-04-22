@@ -262,7 +262,7 @@ export function createApp() {
 
   // Self-registration — uses LND BOLT11 decoder if available
   const decodeBolt11 = lndClient.isConfigured() && lndClient.decodePayReq
-    ? (invoice: string) => lndClient.decodePayReq!(invoice).then(r => r ? { destination: r.destination, num_satoshis: undefined } : null)
+    ? (invoice: string) => lndClient.decodePayReq!(invoice)
     : undefined;
   const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11, preimagePoolRepo) : null;
   const serviceRegisterController = new ServiceRegisterController(registryCrawler);

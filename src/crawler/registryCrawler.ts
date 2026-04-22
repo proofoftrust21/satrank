@@ -83,15 +83,25 @@ export class RegistryCrawler {
             if (existing) {
               await this.serviceEndpointRepo.updateMetadata(svc.url, meta);
               result.updated++;
-              continue; // already registered, skip node discovery
+              // Re-probe only if price is still null — avoid needless GET on healthy, priced endpoints
+              if (existing.service_price_sats === null) {
+                const probe = await this.discoverNodeFromUrl(svc.url);
+                if (probe?.priceSats && probe.priceSats > 0) {
+                  await this.serviceEndpointRepo.updatePrice(svc.url, probe.priceSats);
+                }
+              }
+              continue;
             }
 
-            // New URL — try to discover the backing LN node
-            const agentHash = await this.discoverNodeFromUrl(svc.url);
-            if (agentHash) {
+            // New URL — discover the backing LN node, then upsert, then price
+            const discovered = await this.discoverNodeFromUrl(svc.url);
+            if (discovered?.agentHash) {
               result.discovered++;
-              await this.serviceEndpointRepo.upsert(agentHash, svc.url, 0, 0, '402index');
+              await this.serviceEndpointRepo.upsert(discovered.agentHash, svc.url, 0, 0, '402index');
               await this.serviceEndpointRepo.updateMetadata(svc.url, meta);
+              if (discovered.priceSats && discovered.priceSats > 0) {
+                await this.serviceEndpointRepo.updatePrice(svc.url, discovered.priceSats);
+              }
             }
           } catch (err: unknown) {
             result.errors++;
@@ -137,9 +147,12 @@ export class RegistryCrawler {
    *  a random submitter from renaming "Weather Intel: Forecast" to "test". */
   async registerSelfSubmitted(serviceUrl: string, meta?: { name?: string; description?: string; category?: string; provider?: string }): Promise<{ agentHash: string; priceSats: number | null; fieldsUpdated: string[] } | null> {
     if (!isSafeUrl(serviceUrl)) return null;
-    const agentHash = await this.discoverNodeFromUrl(serviceUrl);
-    if (!agentHash) return null;
-    await this.serviceEndpointRepo.upsert(agentHash, serviceUrl, 0, 0, 'self_registered');
+    const discovered = await this.discoverNodeFromUrl(serviceUrl);
+    if (!discovered?.agentHash) return null;
+    await this.serviceEndpointRepo.upsert(discovered.agentHash, serviceUrl, 0, 0, 'self_registered');
+    if (discovered.priceSats && discovered.priceSats > 0) {
+      await this.serviceEndpointRepo.updatePrice(serviceUrl, discovered.priceSats);
+    }
 
     const updated: string[] = [];
     if (meta) {
@@ -159,12 +172,13 @@ export class RegistryCrawler {
       await this.serviceEndpointRepo.updateMetadata(serviceUrl, patch);
     }
     const ep = await this.serviceEndpointRepo.findByUrl(serviceUrl);
-    return { agentHash, priceSats: ep?.service_price_sats ?? null, fieldsUpdated: updated };
+    return { agentHash: discovered.agentHash, priceSats: ep?.service_price_sats ?? null, fieldsUpdated: updated };
   }
 
   /** GET the service URL, expect a 402 with WWW-Authenticate header containing a BOLT11 invoice.
-   *  Decode the invoice to extract the payee node pubkey. Return SHA256(pubkey) as agent_hash. */
-  private async discoverNodeFromUrl(serviceUrl: string): Promise<string | null> {
+   *  Decode the invoice to extract the payee node pubkey and price in sats.
+   *  Returns { agentHash: SHA256(pubkey), priceSats: num_satoshis | null } or null. */
+  private async discoverNodeFromUrl(serviceUrl: string): Promise<{ agentHash: string; priceSats: number | null } | null> {
     try {
       // SSRF hardening: fetchSafeExternal does connect-time DNS validation so a
       // user-controlled URL that rebinds to a private IP is rejected before
@@ -208,12 +222,8 @@ export class RegistryCrawler {
         const decoded = await this.decodeBolt11(invoice);
         if (decoded?.destination) {
           const agentHash = sha256(decoded.destination);
-          // Store the price from the invoice
           const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
-          if (priceSats && priceSats > 0) {
-            await this.serviceEndpointRepo.updatePrice(serviceUrl, priceSats);
-          }
-          return agentHash;
+          return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null };
         }
       }
 

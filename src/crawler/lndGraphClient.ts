@@ -75,7 +75,7 @@ export interface LndGraphClient {
   getGraph(): Promise<LndGraph>;
   getNodeInfo(pubkey: string): Promise<LndNodeInfo | null>;
   queryRoutes(pubkey: string, amountSats: number, sourcePubKey?: string): Promise<LndQueryRoutesResponse>;
-  decodePayReq?(payReq: string): Promise<{ destination: string } | null>;
+  decodePayReq?(payReq: string): Promise<{ destination: string; num_satoshis?: string } | null>;
   payInvoice?(paymentRequest: string, feeLimitSat?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
   canPayInvoices?(): boolean;
 }
