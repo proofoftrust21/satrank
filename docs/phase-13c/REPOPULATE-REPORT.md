@@ -1,13 +1,15 @@
-# Phase 13C — Repopulate service_endpoints + operators : Phase C réussie
+# Phase 13C — Repopulate service_endpoints + operators : Phases C+D réussies
 
 **Date :** 2026-04-22
 **Branche :** `phase-13c-repopulate`
 **Auteur :** autonomous agent
-**Statut :** **Phase C réussie — service_endpoints repeuplé (157 rows, 11 agents). Phases D/E/F restantes.**
+**Statut :** **Phases C+D réussies — service_endpoints repeuplé (157 rows, 11 agents), operators seedés (12306 pending, 12306 owns_node). Phases E/F restantes.**
 
 ---
 
 ## Résumé exécutif
+
+**Update 2026-04-22 17:40 UTC** — Phase D exécutée. Nouveau script `seedOperatorsFromAgents.ts` écrit + testé (10 tests vitest verts) + deployé via rsync vers `/opt/satrank/` + rebuild api image + force-recreate. Dry-run puis run réel : **12306 operators pending créés, 12306 owns_node, 127 owns_endpoint, 128 service_endpoints linked, 0 errors**. Option A retenue (Option B restore SQLite écartée car skip ETL = décision Phase 12B). `operator_identities=0` intentionnel (attend verifs Nostr). Endpoint public `/api/operator/:hash` retourne l'operator avec catalog.nodes peuplé. Phases E (SDK validation), F (gh pr ready) restantes.
 
 **Update 2026-04-22 17:20 UTC** — Phase C exécutée. Crawler rebuild depuis `/opt/satrank/` (source canonique), recreate depuis `/root/satrank/` (env canonique). Registry crawl inline complet : **157 discovered, 1 updated, 0 errors** en 781s sur 1111 services scannés. Table `service_endpoints` peuplée (157 rows, 11 distinct agents, source=402index). `/api/intent/categories` retourne 12+ catégories avec endpoint_counts non-nuls. Cardinal rules intactes (aucun octet LND modifié). Phases D (seed operators), E (SDK validation), F (gh pr ready) restantes.
 
@@ -316,6 +318,107 @@ SELECT source, COUNT(*) FROM service_endpoints GROUP BY source;
 
 ---
 
+## S9 — Phase D : seedOperatorsFromAgents (2026-04-22 17:30–17:40 UTC)
+
+### Décision Option A vs B vs C
+
+Le brief S4 listait trois options quand `inferOperatorsFromExistingData` a trouvé 0 proto-operators :
+
+- **Option A** (retenue) — nouveau script `seedOperatorsFromAgents` qui itère `agents` directement. Respecte l'intent Phase 7 (1 operator par node) sans dépendre de transactions enrichies.
+- **Option B** — restaurer `operator_id`/`endpoint_hash`/`source`/`window_bucket` depuis un dump SQLite pré-12B. **Écartée** : le skip de l'ETL legacy a été une décision explicite Phase 12B (big-bang cut-over), et rien ne garantit que le dump SQLite existe toujours ou qu'il contienne les valeurs v31.
+- **Option C** — laisser operators à 0 et attendre les nouvelles transactions L402. **Écartée** : `/api/operators` reste vide pendant des semaines/mois, bloquant les SDK consumers Phase 13B.
+
+Option A a l'avantage d'être **idempotente** — si jamais un backfill v31 arrive plus tard (improbable), `inferOperatorsFromExistingData` tournera et trouvera `operatorsAlreadyExisting` pour chaque match.
+
+### Script
+
+`src/scripts/seedOperatorsFromAgents.ts` (231 LOC) + `src/tests/seedOperatorsFromAgents.test.ts` (10 tests).
+
+Pattern aligné sur `inferOperatorsFromExistingData` :
+- Transaction unique PG (`BEGIN` / `COMMIT` ou `ROLLBACK` en dry-run)
+- `OperatorService` injecté avec tous les repositories
+- `ON CONFLICT DO NOTHING` sur tous les INSERT → idempotent
+- Filtre pubkey LN strict : `/^(02|03)[0-9a-f]{64}$/i`
+
+Pour chaque agent valide :
+1. `upsertOperator(public_key_hash, first_seen)` → operator pending
+2. `claimOwnership('node', public_key, last_seen)` → 1 row dans `operator_owns_node`
+3. `UPDATE agents SET operator_id = public_key_hash WHERE ...`
+4. Pour chaque URL dans `service_endpoints WHERE agent_hash = operator_id` : `claimOwnership('endpoint', endpointHash(url), last_seen)` + `UPDATE service_endpoints SET operator_id = ...`
+5. `operators.touch(last_seen)` — figer `last_activity`
+
+### Tests unitaires (10/10 ✅, 8.37s)
+
+- no-op summary quand aucun agent
+- création operator pending pour chaque agent valide
+- claim node ownership avec public_key littéral
+- link `agents.operator_id = public_key_hash`
+- claim endpoint ownership via service_endpoints observés
+- skip agents avec public_key NULL ou format invalide
+- idempotence sur re-run (`operatorsAlreadyExisting` incrémenté)
+- dry-run rempli summary mais aucune écriture
+- first_seen/last_activity bornés par `agents.first_seen`/`last_seen`
+- URL malformée dans service_endpoints → warn + skip, pas de crash
+
+### Déploiement prod
+
+```bash
+# 1. Sync local → /opt/satrank/ (canonical source)
+SATRANK_HOST=root@178.104.108.108 REMOTE_DIR=/opt/satrank make deploy
+
+# 2. Rebuild api image depuis /opt/
+ssh root@178.104.108.108 "cd /opt/satrank && docker compose build api"
+# New image: 10f222c19e9a (vs précédent)
+
+# 3. Force-recreate depuis /root/ env canonique
+ssh root@178.104.108.108 "cd /root/satrank && docker compose up -d --force-recreate --no-deps api"
+# Healthy in 15s
+
+# 4. Dry-run
+docker exec satrank-api node dist/scripts/seedOperatorsFromAgents.js --dry-run
+# → agentsScanned=12306, operatorsCreated=12306, endpointOwnershipsClaimed=127
+
+# 5. Real run
+docker exec satrank-api node dist/scripts/seedOperatorsFromAgents.js
+# → mêmes chiffres, no rollback
+```
+
+### Validation post-run
+
+```sql
+-- PG VM 178.104.142.150
+SELECT
+  (SELECT COUNT(*) FROM operators) AS operators,                              -- 12306
+  (SELECT COUNT(*) FROM operators WHERE status='pending') AS pending,         -- 12306
+  (SELECT COUNT(*) FROM operator_owns_node) AS owns_node,                     -- 12306
+  (SELECT COUNT(*) FROM operator_owns_endpoint) AS owns_endpoint,             --   127
+  (SELECT COUNT(*) FROM operator_identities) AS identities;                   --     0
+```
+
+`operator_identities=0` est **intentionnel** — les identités cryptographiques sont créées uniquement via `POST /api/operator/register` (proof-of-control DNS/Nostr/LN) ou kind 30385. La Phase D seede le *container* operator, pas l'identité.
+
+Endpoint public test (top agent) :
+
+```bash
+$ HASH=713519e5aca513a070deedc0520be905e0fc3e36f555c33f977b6c369b7d76fb
+$ curl -s https://satrank.dev/api/operator/$HASH | jq '.data.catalog.nodes[0]'
+{
+  "node_pubkey": "037659a0ac8eb3b8d0a720114efc861d3a940382dcfa1403746b4f8f6b2e8810ba",
+  "claimed_at": 1776876856,
+  "verified_at": null,
+  "alias": null,
+  "avg_score": null
+}
+```
+
+`.data.operator.status=pending`, `.data.identities=[]`, `.data.catalog.nodes.length=1` ✅
+
+### Correction petit nit
+
+La Phase 13C stipulait `~12291` operators attendus (brief original). Run réel : **12306** (comptage `agents` à jour au moment du seed, +15 agents indexés entre le brief et l'exec). Écart trivial et cohérent avec l'indexation continue du graph LN.
+
+---
+
 ## Recommandations Phase 14
 
 ### Priorité 1 — Fix SSRF (P0, bloquant 6 modules)
@@ -369,9 +472,8 @@ Le registry crawler a tourné 16h sans une seule ligne d'erreur alors qu'il ne p
 
 ---
 
-## Ce qui n'a PAS été fait (Phase 13C Phases D→F restantes)
+## Ce qui n'a PAS été fait (Phase 13C Phases E→F restantes)
 
-- **Phase D** — script `seedOperatorsFromAgents.ts` (1 operator par agent, ~12 291 pending, `verification_score=0`)
 - **Phase E** — validation SDK end-to-end depuis `/tmp/phase-13c-validation` contre prod repopulée
 - **Phase F** — mise à jour finale du rapport, `gh pr ready 18`, **sans merge** (décision produit)
 
@@ -380,3 +482,4 @@ Ce qui a déjà été fait dans la branche `phase-13c-repopulate` :
 - ✅ Phase A — Fix SSRF `safeLookup` undici v6+ (commit `036bd33`)
 - ✅ Phase B — Deploy fix + recovery outage + rebuild crawler image depuis `/opt/`
 - ✅ Phase C — Registry crawl inline : 157 endpoints écrits en PG prod
+- ✅ Phase D — seedOperatorsFromAgents : 12306 operators pending, 12306 owns_node, 127 owns_endpoint
