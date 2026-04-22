@@ -1,49 +1,8 @@
 (function () {
   var API = '/api';
 
-  // -- Helpers --
   function fmt(n) {
-    return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-  }
-
-  function scoreClass(score) {
-    if (score >= 60) return 'score-high';
-    if (score >= 35) return 'score-mid';
-    return 'score-low';
-  }
-
-  function scoreColor(score) {
-    if (score >= 60) return '#00c853';
-    if (score >= 35) return '#f7931a';
-    return '#ff5252';
-  }
-
-  function escapeNum(v) {
-    var n = Number(v);
-    return Number.isFinite(n) ? String(n) : '0';
-  }
-
-  function safeColor(c) {
-    return /^#[0-9a-f]{3,6}$/i.test(c) ? c : '#888';
-  }
-
-  function deltaHtml(delta) {
-    if (delta === null || delta === undefined) return '<span class="delta neutral">--</span>';
-    var safe = escapeNum(delta);
-    if (delta > 0) return '<span class="delta positive">+' + safe + '</span>';
-    if (delta < 0) return '<span class="delta negative">' + safe + '</span>';
-    return '<span class="delta neutral">0</span>';
-  }
-
-  function setStatError() {
-    ['stat-probed', 'stat-phantom', 'stat-reachable', 'stat-probes-24h'].forEach(function (id) {
-      var el = document.getElementById(id);
-      if (el) {
-        el.textContent = 'API unavailable';
-        el.classList.remove('loading');
-        el.style.fontSize = '0.9rem';
-      }
-    });
+    return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
   }
 
   function fetchJSON(url) {
@@ -64,74 +23,54 @@
     });
   }
 
-  function escapeHtml(val) {
-    var div = document.createElement('div');
-    div.textContent = String(val ?? '');
-    return div.innerHTML;
-  }
-
-  // Fade-update: fade out element, change content, fade back in
-  function fadeUpdate(el, newContent) {
-    if (!el || el.textContent === newContent) return;
-    el.classList.add('fade-out');
-    setTimeout(function () {
-      el.textContent = newContent;
-      el.classList.remove('fade-out');
-      el.classList.add('fade-in');
-      setTimeout(function () { el.classList.remove('fade-in'); }, 200);
-    }, 200);
-  }
-
-  // Fade-update innerHTML (for tables)
-  function fadeUpdateHtml(el, newHtml) {
-    if (!el) return;
-    el.classList.add('fade-out');
-    setTimeout(function () {
-      el.innerHTML = newHtml;
-      el.classList.remove('fade-out');
-      el.classList.add('fade-in');
-      setTimeout(function () { el.classList.remove('fade-in'); }, 200);
-    }, 200);
-  }
-
-  // -- Copy buttons --
-  function setupCopyBtn(btnId, codeId) {
-    var btn = document.getElementById(btnId);
-    if (btn) {
-      btn.addEventListener('click', function () {
-        var code = document.getElementById(codeId);
-        if (code) {
-          navigator.clipboard.writeText(code.textContent).then(function () {
-            btn.textContent = 'Copied!';
-            setTimeout(function () { btn.textContent = 'Copy'; }, 2000);
-          });
-        }
-      });
-    }
-  }
-  setupCopyBtn('copy-decide', 'decide-curl');
-  setupCopyBtn('copy-sdk', 'sdk-code');
-
-  // -- Stats + Leaderboard --
-  // The server injects cached data into the HTML as window.__SATRANK_BOOT__
-  // so both sections render at first paint without waiting for API fetches.
-  // Fallback to the fetch path if the boot data is missing (e.g. direct
-  // file open, CDN cache, or server running without warm-up).
-  var boot = window.__SATRANK_BOOT__ || null;
-  var totalAgentsHint = null;
-
-  function applyStats(s) {
-    totalAgentsHint = s.totalAgents;
-    document.getElementById('stat-probed').textContent = fmt(s.nodesProbed);
-    document.getElementById('stat-phantom').textContent = s.phantomRate + '%';
-    document.getElementById('stat-reachable').textContent = fmt(s.verifiedReachable);
-    document.getElementById('stat-probes-24h').textContent = fmt(s.probes24h);
-    ['stat-probed', 'stat-phantom', 'stat-reachable', 'stat-probes-24h'].forEach(function (id) {
+  function setStatError() {
+    ['stat-endpoints', 'stat-probed', 'stat-reachable', 'stat-probes-24h'].forEach(function (id) {
       var el = document.getElementById(id);
-      if (el) el.classList.remove('loading');
+      if (el) {
+        el.textContent = 'API unavailable';
+        el.classList.remove('loading');
+        el.style.fontSize = '0.9rem';
+      }
     });
   }
 
+  function endpointCount(s) {
+    if (s.serviceSources && typeof s.serviceSources === 'object') {
+      var sum = 0;
+      Object.keys(s.serviceSources).forEach(function (k) {
+        var v = Number(s.serviceSources[k]);
+        if (Number.isFinite(v)) sum += v;
+      });
+      if (sum > 0) return sum;
+    }
+    return Number(s.totalEndpoints) || 0;
+  }
+
+  function setText(id, value) {
+    var el = document.getElementById(id);
+    if (el) {
+      el.textContent = value;
+      el.classList.remove('loading');
+    }
+  }
+
+  function applyStats(s) {
+    setText('stat-endpoints', fmt(endpointCount(s)));
+    setText('stat-probed', fmt(s.nodesProbed));
+    setText('stat-reachable', fmt(s.verifiedReachable));
+    setText('stat-probes-24h', fmt(s.probes24h));
+
+    var heroEndpoints = document.getElementById('hero-endpoints');
+    if (heroEndpoints) heroEndpoints.textContent = endpointCount(s).toLocaleString('en-US');
+    var heroNodes = document.getElementById('hero-nodes');
+    if (heroNodes && typeof s.nodesProbed === 'number') heroNodes.textContent = s.nodesProbed.toLocaleString('en-US');
+    var heroProbes = document.getElementById('hero-probes');
+    if (heroProbes && typeof s.probes24h === 'number') heroProbes.textContent = fmt(s.probes24h);
+    var heroReachable = document.getElementById('hero-reachable');
+    if (heroReachable && typeof s.verifiedReachable === 'number') heroReachable.textContent = s.verifiedReachable.toLocaleString('en-US');
+  }
+
+  var boot = window.__SATRANK_BOOT__ || null;
   if (boot && boot.stats) {
     applyStats(boot.stats);
   } else {
@@ -140,278 +79,32 @@
       .catch(setStatError);
   }
 
-  if (boot && boot.leaderboard && boot.leaderboard.data) {
-    renderAgentRows(boot.leaderboard.data, false);
-  } else {
-    loadTopAgents();
-  }
-
-  // -- Agent table rendering --
-  var tbody = document.getElementById('top-agents');
-  var heading = document.getElementById('agents-heading');
-  var detailPanel = document.getElementById('agent-detail');
-
-  function miniBar(value, color) {
-    var pct = Math.min(100, Math.max(0, Number(value) || 0));
-    return '<div class="mini-bar-track"><div class="mini-bar-fill" style="width:' + pct + '%;background:' + safeColor(color) + '"></div></div><span class="mini-bar-val">' + Math.round(pct) + '</span>';
-  }
-
-  // Track first render so the initial skeleton → data transition snaps directly
-  // instead of doing a 400ms fade-out-then-fade-in on top of the API fetch.
-  var firstAgentRender = true;
-
-  function renderAgentRows(agents, isSearch) {
-    if (firstAgentRender) {
-      // Skeleton → data: instant replacement so the leaderboard appears as soon
-      // as the API responds. Subsequent renders (e.g. search) still use the fade.
-      firstAgentRender = false;
-      tbody.innerHTML = '';
-      renderAgentRowsInner(agents, isSearch);
-      return;
-    }
-    // Fade out old content, replace, fade in — used for search / re-renders
-    tbody.classList.add('fade-out');
-    setTimeout(function () {
-      tbody.innerHTML = '';
-      renderAgentRowsInner(agents, isSearch);
-      tbody.classList.remove('fade-out');
-      tbody.classList.add('fade-in');
-      setTimeout(function () { tbody.classList.remove('fade-in'); }, 200);
-    }, 200);
-  }
-
-  function renderAgentRowsInner(agents, isSearch) {
-    if (agents.length === 0) {
-      var tr = document.createElement('tr');
-      var td = document.createElement('td');
-      td.colSpan = 7;
-      td.style.textAlign = 'center';
-      td.style.color = '#555570';
-      td.textContent = isSearch ? 'No agents found' : 'No agents yet';
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-      return;
-    }
-    agents.forEach(function (a, i) {
-      var tr = document.createElement('tr');
-      tr.className = 'clickable';
-      tr.setAttribute('data-hash', a.publicKeyHash);
-      var hash = a.publicKeyHash.slice(0, 8) + '...' + a.publicKeyHash.slice(-6);
-
-      var rankCell = tr.insertCell();
-      rankCell.textContent = a.rank ? String(a.rank) : '--';
-
-      var aliasCell = tr.insertCell();
-      if (a.alias) {
-        aliasCell.textContent = a.alias;
-      } else {
-        var span = document.createElement('span');
-        span.className = 'mono';
-        span.textContent = hash;
-        aliasCell.appendChild(span);
-      }
-
-      var scoreCell = tr.insertCell();
-      var badge = document.createElement('span');
-      badge.className = 'score-badge ' + scoreClass(a.score);
-      badge.textContent = String(a.score);
-      scoreCell.appendChild(badge);
-
-      // Volume mini-bar
-      var volCell = tr.insertCell();
-      volCell.className = 'component-cell';
-      var vol = (a.components && a.components.volume) || 0;
-      volCell.innerHTML = miniBar(vol, '#f7931a');
-
-      // Reputation mini-bar
-      var repCell = tr.insertCell();
-      repCell.className = 'component-cell';
-      var rep = (a.components && a.components.reputation) || 0;
-      repCell.innerHTML = miniBar(rep, '#00c853');
-
-      // Delta column — use delta7d from API (enriched by backend), fallback to movers cross-ref
-      var deltaCell = tr.insertCell();
-      deltaCell.className = 'delta-cell';
-      var d7 = a.delta7d !== undefined && a.delta7d !== null ? a.delta7d : a._delta7d;
-      if (d7 !== undefined && d7 !== null) {
-        deltaCell.innerHTML = deltaHtml(d7);
-      } else {
-        deltaCell.innerHTML = '<span class="delta neutral">--</span>';
-      }
-
-      var sourceCell = tr.insertCell();
-      sourceCell.className = 'mono';
-      sourceCell.textContent = a.source;
-
-      tr.addEventListener('click', function () {
-        showAgentDetail(a);
-      });
-
-      tbody.appendChild(tr);
-    });
-  }
-
-  // -- Load top agents (delta7d comes from the API directly, no movers fetch needed) --
-  function loadTopAgents() {
-    fetchWithRetry(API + '/agents/top?limit=10', 1)
-      .then(function (result) {
-        renderAgentRows(result.data, false);
-      })
-      .catch(function () {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff5252">API unavailable</td></tr>';
-      });
-  }
-
-  // -- Search --
-  var searchInput = document.getElementById('search-input');
-  var clearBtn = document.getElementById('search-clear');
-  var debounceTimer = null;
-
-  searchInput.addEventListener('input', function () {
-    var query = searchInput.value.trim();
-    clearBtn.style.display = query ? 'block' : 'none';
-
-    clearTimeout(debounceTimer);
-
-    if (!query) {
-      heading.textContent = 'Leaderboard';
-      loadTopAgents();
-      return;
-    }
-
-    debounceTimer = setTimeout(function () {
-      heading.textContent = 'Search Results';
-      fetchJSON(API + '/agents/search?alias=' + encodeURIComponent(query) + '&limit=20')
-        .then(function (d) {
-          renderAgentRows(d.data, true);
-        })
-        .catch(function () {
-          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff5252">Search failed</td></tr>';
-        });
-    }, 300);
-  });
-
-  clearBtn.addEventListener('click', function () {
-    searchInput.value = '';
-    clearBtn.style.display = 'none';
-    heading.textContent = 'Leaderboard';
-    detailPanel.classList.remove('visible');
-    loadTopAgents();
-  });
-
-  // -- Agent detail (built from leaderboard/search data — no extra API call) --
-  function showAgentDetail(agent) {
-    detailPanel.classList.add('visible');
-
-    var alias = agent.alias ? escapeHtml(agent.alias) : '<span class="mono">' + escapeHtml(agent.publicKeyHash.slice(0, 16) + '...') + '</span>';
-    var comp = agent.components || {};
-    var d7 = agent.delta7d !== undefined && agent.delta7d !== null ? agent.delta7d : agent._delta7d;
-
-    var html = '';
-    html += '<div class="detail-header">';
-    html += '  <div>';
-    html += '    <div class="agent-name">' + alias + '</div>';
-    html += '    <div class="agent-hash">' + escapeHtml(agent.publicKeyHash) + '</div>';
-    html += '  </div>';
-    html += '  <button class="detail-close" id="detail-close-btn">Close</button>';
-    html += '</div>';
-
-    // Score + rank + delta
-    html += '<div class="detail-score-big" style="color:' + scoreColor(agent.score) + '">';
-    html += escapeHtml(agent.score);
-    if (agent.rank) {
-      var totalLabel = totalAgentsHint ? fmt(totalAgentsHint) + ' active agents' : 'active agents';
-      html += '<span class="confidence">#' + escapeHtml(agent.rank) + ' of ' + totalLabel + '</span>';
-    }
-    html += '</div>';
-
-    if (d7 !== undefined && d7 !== null) {
-      html += '<div class="delta-badges">';
-      html += '  <span class="delta-badge">7d: ' + deltaHtml(d7) + '</span>';
-      html += '</div>';
-    }
-
-    // Component bars
-    var components = ['volume', 'reputation', 'seniority', 'regularity', 'diversity'];
-    html += '<div class="component-bars">';
-    components.forEach(function (name) {
-      var val = comp[name] || 0;
-      var pct = Math.min(100, Math.round(val));
-      html += '<div class="bar-row">';
-      html += '  <span class="bar-label">' + name + '</span>';
-      html += '  <div class="bar-track"><div class="bar-fill ' + name + '" style="width:' + pct + '%"></div></div>';
-      html += '  <span class="bar-value">' + Math.round(val) + '</span>';
-      html += '</div>';
-    });
-    html += '</div>';
-
-    // Teaser — what the full API returns
-    html += '<div class="detail-teaser">';
-    html += '  <div class="teaser-title">Full API response includes</div>';
-    html += '  <div class="teaser-grid">';
-    html += '    <span class="teaser-item">Verdict (SAFE / RISKY / UNKNOWN)</span>';
-    html += '    <span class="teaser-item">Survival score &amp; prediction</span>';
-    html += '    <span class="teaser-item">Probe reachability &amp; uptime</span>';
-    html += '    <span class="teaser-item">Personalized pathfinding</span>';
-    html += '    <span class="teaser-item">Risk profile classification</span>';
-    html += '    <span class="teaser-item">Channel flow &amp; drain rate</span>';
-    html += '    <span class="teaser-item">Evidence (tx samples, LN+ ratings, mempool links)</span>';
-    html += '    <span class="teaser-item">24h / 7d / 30d deltas &amp; trend</span>';
-    html += '  </div>';
-    html += '  <div class="teaser-cta">';
-    html += '    <code>curl https://satrank.dev/api/agent/' + escapeHtml(agent.publicKeyHash) + '</code>';
-    html += '  </div>';
-    html += '  <div class="teaser-links">';
-    html += '    <a href="/api/docs">API Explorer</a>';
-    html += '    <a href="/methodology.html">Methodology</a>';
-    html += '  </div>';
-    html += '</div>';
-
-    detailPanel.innerHTML = html;
-
-    // Scroll after content is injected so the browser knows the panel's full height
-    requestAnimationFrame(function () {
-      detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-
-    var closeBtn = document.getElementById('detail-close-btn');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', function () {
-        detailPanel.classList.remove('visible');
-      });
-    }
-  }
-})();
-
-(function () {
-  var boot = window.__SATRANK_BOOT__;
-  if (!boot || !boot.stats) return;
-  var s = boot.stats;
-  var fmtHero = function (n) { return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n); };
-  var set = function (id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
-  if (typeof s.totalAgents === 'number') set('hero-nodes', s.totalAgents.toLocaleString('en-US'));
-  if (typeof s.probes24h === 'number') set('hero-probes', fmtHero(s.probes24h));
-  if (typeof s.phantomRate === 'number') {
-    set('hero-phantom', s.phantomRate + '%');
-    // Sim #9 LOW 1: keep the "Why" card number in sync with live stats so the
-    // narrative copy stops drifting from reality.
-    set('why-phantom-rate', s.phantomRate + '%');
-  }
-  if (typeof s.verifiedReachable === 'number') set('hero-reachable', s.verifiedReachable.toLocaleString('en-US'));
-})();
-
-(function () {
-  function wireCopy(btnId) {
+  function wireCopy(btnId, getText) {
     var btn = document.getElementById(btnId);
     if (!btn) return;
     btn.addEventListener('click', function () {
-      navigator.clipboard.writeText('npm install @satrank/sdk').then(function () {
+      var text = getText();
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(function () {
         var prev = btn.textContent;
         btn.textContent = 'Copied';
         setTimeout(function () { btn.textContent = prev; }, 1500);
       });
     });
   }
-  wireCopy('copy-install');
-  wireCopy('copy-install-2');
+
+  function copyFromElement(id) {
+    return function () {
+      var el = document.getElementById(id);
+      return el ? el.textContent : '';
+    };
+  }
+
+  wireCopy('copy-install', function () { return 'npm install @satrank/sdk'; });
+  wireCopy('copy-install-2', function () { return 'npm install @satrank/sdk'; });
+  wireCopy('copy-sdk-ts', copyFromElement('sdk-ts'));
+  wireCopy('copy-sdk-py', copyFromElement('sdk-py'));
+  wireCopy('copy-intent-req', copyFromElement('intent-req'));
+  wireCopy('copy-l402', copyFromElement('l402-req'));
+  wireCopy('copy-top', copyFromElement('top-resp'));
 })();

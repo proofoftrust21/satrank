@@ -387,16 +387,15 @@ export function createApp() {
     });
   });
 
-  // SSR boot: inject cached stats + leaderboard into index.html so the
-  // browser renders both sections at first paint, zero API fetch needed.
-  // The template is read once at startup (immutable inside the Docker image).
+  // SSR boot: inject cached stats into index.html so the hero/stats block
+  // renders at first paint, zero API fetch needed. The template is read once
+  // at startup (immutable inside the Docker image).
   const publicDir = path.join(__dirname, '..', 'public');
   const indexTemplate = readFileSync(path.join(publicDir, 'index.html'), 'utf8');
 
   app.get('/', (_req, res) => {
     const stats = cacheGetStale<Record<string, unknown>>('stats:network');
-    const top = cacheGetStale<{ data: unknown[] }>('agents:top:10:0:score');
-    const boot = { stats: stats ?? null, leaderboard: top ?? null };
+    const boot = { stats: stats ?? null };
     const safeJson = safeJsonForScript(boot);
     const script = `<script>window.__SATRANK_BOOT__=${safeJson}</script>`;
     res.type('html').send(indexTemplate.replace('</head>', script + '\n</head>'));
