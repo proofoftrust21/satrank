@@ -215,8 +215,14 @@ export class HttpLndGraphClient implements LndGraphClient {
   async decodePayReq(payReq: string): Promise<{ destination: string; num_satoshis?: string } | null> {
     try {
       const data = await this.request<{ destination: string; num_satoshis?: string }>(`/v1/payreq/${payReq}`);
-      return data?.destination ? { destination: data.destination, num_satoshis: data.num_satoshis } : null;
-    } catch {
+      if (!data?.destination) {
+        logger.warn({ payReqPrefix: payReq.slice(0, 24) }, 'LND decodePayReq: no destination in response');
+        return null;
+      }
+      return { destination: data.destination, num_satoshis: data.num_satoshis };
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.warn({ payReqPrefix: payReq.slice(0, 24), error: errMsg }, 'LND decodePayReq threw');
       return null;
     }
   }
