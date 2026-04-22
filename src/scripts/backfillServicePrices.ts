@@ -47,6 +47,10 @@ export interface BackfillOptions {
   fetchTimeoutMs?: number;
   /** Limit the number of rows processed (useful for smoke tests). */
   limit?: number;
+  /** When true, emits an info-level structured log per skip (reason + url + raw
+   *  context) so the 30 "skippedDecodeFailed" cases can be classified. Silent
+   *  by default — the default log level hides skip debug lines. */
+  verboseSkips?: boolean;
 }
 
 const DEFAULT_RATE_LIMIT_MS = 500;
@@ -67,6 +71,12 @@ export async function backfillServicePrices(
   const rateLimitMs = options.rateLimitMs ?? DEFAULT_RATE_LIMIT_MS;
   const fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const limit = options.limit;
+  const verboseSkips = options.verboseSkips ?? false;
+
+  function emitSkip(reason: string, details: Record<string, unknown>): void {
+    if (!verboseSkips) return;
+    logger.info({ skip: { reason, ...details } }, `backfillServicePrices: SKIP ${reason}`);
+  }
 
   const summary: BackfillSummary = {
     scanned: 0,
@@ -116,26 +126,31 @@ export async function backfillServicePrices(
         if (err instanceof SsrfBlockedError) {
           summary.skippedSsrf += 1;
           logger.debug({ url, reason: err.message }, 'backfillServicePrices: SSRF blocked');
+          emitSkip('ssrf_blocked', { url, errMsg: err.message });
         } else {
           summary.skippedNetworkError += 1;
-          logger.warn({ url, error: err instanceof Error ? err.message : String(err) }, 'backfillServicePrices: network error');
+          const errMsg = err instanceof Error ? err.message : String(err);
+          logger.warn({ url, error: errMsg }, 'backfillServicePrices: network error');
+          emitSkip('network_error', { url, errMsg });
         }
         await sleep(rateLimitMs);
         continue;
       }
 
+      const wwwAuth = resp.headers.get('www-authenticate') ?? '';
       if (resp.status !== 402) {
         summary.skippedNotL402 += 1;
         logger.debug({ url, status: resp.status }, 'backfillServicePrices: non-402 response');
+        emitSkip('not_l402', { url, httpStatus: resp.status, wwwAuth });
         await sleep(rateLimitMs);
         continue;
       }
 
-      const wwwAuth = resp.headers.get('www-authenticate') ?? '';
       const invoiceMatch = wwwAuth.match(/invoice="(lnbc[a-z0-9]+)"/i);
       if (!invoiceMatch) {
         summary.skippedNoInvoice += 1;
         logger.debug({ url }, 'backfillServicePrices: no BOLT11 invoice in header');
+        emitSkip('no_invoice', { url, httpStatus: resp.status, wwwAuth });
         await sleep(rateLimitMs);
         continue;
       }
@@ -146,7 +161,9 @@ export async function backfillServicePrices(
         decoded = await lndClient.decodePayReq!(invoice);
       } catch (err: unknown) {
         summary.skippedDecodeFailed += 1;
-        logger.warn({ url, error: err instanceof Error ? err.message : String(err) }, 'backfillServicePrices: decodepayreq failed');
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.warn({ url, error: errMsg }, 'backfillServicePrices: decodepayreq failed');
+        emitSkip('decode_threw', { url, httpStatus: resp.status, wwwAuth, invoice, lndError: errMsg });
         await sleep(rateLimitMs);
         continue;
       }
@@ -154,6 +171,7 @@ export async function backfillServicePrices(
       if (!decoded?.num_satoshis) {
         summary.skippedDecodeFailed += 1;
         logger.debug({ url }, 'backfillServicePrices: decoded payload missing num_satoshis');
+        emitSkip('decode_missing_num_satoshis', { url, invoice, decoded });
         await sleep(rateLimitMs);
         continue;
       }
@@ -162,6 +180,7 @@ export async function backfillServicePrices(
       if (!Number.isFinite(priceSats) || priceSats <= 0) {
         summary.skippedZeroPrice += 1;
         logger.debug({ url, num_satoshis: decoded.num_satoshis }, 'backfillServicePrices: zero or invalid price');
+        emitSkip('zero_price', { url, invoice, num_satoshis: decoded.num_satoshis });
         await sleep(rateLimitMs);
         continue;
       }
@@ -197,10 +216,11 @@ export async function backfillServicePrices(
 
 async function main(): Promise<void> {
   const dryRun = process.argv.includes('--dry-run');
+  const verboseSkips = process.argv.includes('--verbose-skips');
   const limitArg = process.argv.find((a) => a.startsWith('--limit='));
   const limit = limitArg ? parseInt(limitArg.slice('--limit='.length), 10) : undefined;
 
-  logger.info({ dryRun, limit }, 'backfillServicePrices: CLI invocation');
+  logger.info({ dryRun, limit, verboseSkips }, 'backfillServicePrices: CLI invocation');
 
   const pool = getCrawlerPool();
   await runMigrations(pool);
@@ -212,7 +232,7 @@ async function main(): Promise<void> {
   });
 
   try {
-    const summary = await backfillServicePrices(pool, lndClient, { dryRun, limit });
+    const summary = await backfillServicePrices(pool, lndClient, { dryRun, limit, verboseSkips });
     process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
   } finally {
     await closePools();
