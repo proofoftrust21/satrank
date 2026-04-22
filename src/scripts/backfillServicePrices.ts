@@ -28,6 +28,7 @@ import { ServiceEndpointRepository } from '../repositories/serviceEndpointReposi
 import { HttpLndGraphClient, type LndGraphClient } from '../crawler/lndGraphClient';
 import { config } from '../config';
 import { fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
+import { HostRateLimiter } from '../utils/hostRateLimiter';
 import { logger } from '../logger';
 
 export interface BackfillSummary {
@@ -48,6 +49,10 @@ export interface BackfillSummary {
   skippedDecodeFailed: number;
   skippedZeroPrice: number;
   skippedNetworkError: number;
+  /** Provider returned 429 with Retry-After > RATE_LIMIT_LONG_THRESHOLD_SEC,
+   *  or 429 without Retry-After. We don't block the backfill minutes for one
+   *  URL — re-run the script later to retry. */
+  skippedRateLimitedLong: number;
   priced: number;
 }
 
@@ -71,9 +76,22 @@ const DEFAULT_RATE_LIMIT_MS = 500;
 const DEFAULT_FETCH_TIMEOUT_MS = 5000;
 const DEFAULT_RETRY_BACKOFFS_MS = [500, 2000];
 const RETRYABLE_ERROR_PATTERN = /ECONNRESET|ETIMEDOUT|timeout|aborted/i;
+/** 429 with Retry-After above this threshold is skipped rather than awaited.
+ *  Keeps a single URL from stalling the full backfill. */
+const RATE_LIMIT_LONG_THRESHOLD_SEC = 30;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Parse a Retry-After header (RFC 7231). We only handle the integer-seconds
+ *  form — the HTTP-date form is rare in practice for rate limits. Returns null
+ *  when absent or malformed so the caller falls through to the "long wait" skip. */
+function parseRetryAfterSeconds(raw: string): number | null {
+  if (!raw) return null;
+  const n = parseInt(raw.trim(), 10);
+  if (Number.isFinite(n) && n >= 0) return n;
+  return null;
 }
 
 /** Re-probe every service_endpoint with service_price_sats=null and a trusted
@@ -141,8 +159,11 @@ export async function backfillServicePrices(
     skippedDecodeFailed: 0,
     skippedZeroPrice: 0,
     skippedNetworkError: 0,
+    skippedRateLimitedLong: 0,
     priced: 0,
   };
+
+  const hostLimiter = new HostRateLimiter(rateLimitMs);
 
   if (!lndClient.decodePayReq) {
     throw new Error('backfillServicePrices: LND decodePayReq is not available; macaroon misconfigured?');
@@ -176,6 +197,8 @@ export async function backfillServicePrices(
     for (const row of rows) {
       const { url } = row;
 
+      await hostLimiter.wait(url);
+
       let resp: Response;
       try {
         resp = await fetchWithRetry(url);
@@ -190,7 +213,6 @@ export async function backfillServicePrices(
           logger.warn({ url, error: errMsg }, 'backfillServicePrices: network error');
           emitSkip('network_error', { url, errMsg });
         }
-        await sleep(rateLimitMs);
         continue;
       }
 
@@ -200,8 +222,33 @@ export async function backfillServicePrices(
         const errMsg = `HTTP ${resp.status} after retries`;
         logger.warn({ url, status: resp.status }, 'backfillServicePrices: 5xx persisted after retries');
         emitSkip('network_error', { url, httpStatus: resp.status, errMsg });
-        await sleep(rateLimitMs);
         continue;
+      }
+
+      // 429: honor Retry-After when ≤ threshold, else skip as "rate_limited_long".
+      // Keeps one angry provider from stalling the whole backfill.
+      if (resp.status === 429) {
+        const retryAfterRaw = resp.headers.get('retry-after') ?? '';
+        const retryAfterSec = parseRetryAfterSeconds(retryAfterRaw);
+        if (retryAfterSec !== null && retryAfterSec > 0 && retryAfterSec <= RATE_LIMIT_LONG_THRESHOLD_SEC) {
+          logger.debug({ url, retryAfterSec }, 'backfillServicePrices: 429, awaiting Retry-After then one retry');
+          await sleep(retryAfterSec * 1000);
+          try {
+            resp = await fetchWithRetry(url);
+          } catch (err: unknown) {
+            summary.skippedNetworkError += 1;
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.warn({ url, error: errMsg }, 'backfillServicePrices: network error after 429 retry');
+            emitSkip('network_error', { url, errMsg });
+            continue;
+          }
+        }
+        if (resp.status === 429) {
+          summary.skippedRateLimitedLong += 1;
+          logger.warn({ url, retryAfter: retryAfterRaw || '(absent)' }, 'backfillServicePrices: 429 rate limited, skipped');
+          emitSkip('rate_limited_long', { url, retryAfter: retryAfterRaw || '(absent)' });
+          continue;
+        }
       }
 
       const wwwAuth = resp.headers.get('www-authenticate') ?? '';
@@ -209,7 +256,6 @@ export async function backfillServicePrices(
         summary.skippedNotL402 += 1;
         logger.debug({ url, status: resp.status }, 'backfillServicePrices: non-402 response');
         emitSkip('not_l402', { url, httpStatus: resp.status, wwwAuth });
-        await sleep(rateLimitMs);
         continue;
       }
 
@@ -218,7 +264,6 @@ export async function backfillServicePrices(
         summary.skippedNoInvoice += 1;
         logger.debug({ url }, 'backfillServicePrices: no BOLT11 invoice in header');
         emitSkip('no_invoice', { url, httpStatus: resp.status, wwwAuth });
-        await sleep(rateLimitMs);
         continue;
       }
 
@@ -251,7 +296,6 @@ export async function backfillServicePrices(
         }
         logger.warn({ url, error: errMsg, reason }, 'backfillServicePrices: decodepayreq failed');
         emitSkip(reason, { url, httpStatus: resp.status, wwwAuth, invoice, lndError: errMsg });
-        await sleep(rateLimitMs);
         continue;
       }
 
@@ -259,7 +303,6 @@ export async function backfillServicePrices(
         summary.skippedDecodeFailed += 1;
         logger.debug({ url }, 'backfillServicePrices: decoded payload missing num_satoshis');
         emitSkip('decode_missing_num_satoshis', { url, invoice, decoded });
-        await sleep(rateLimitMs);
         continue;
       }
 
@@ -268,15 +311,12 @@ export async function backfillServicePrices(
         summary.skippedZeroPrice += 1;
         logger.debug({ url, num_satoshis: decoded.num_satoshis }, 'backfillServicePrices: zero or invalid price');
         emitSkip('zero_price', { url, invoice, num_satoshis: decoded.num_satoshis });
-        await sleep(rateLimitMs);
         continue;
       }
 
       await repo.updatePrice(url, priceSats);
       summary.priced += 1;
       logger.info({ url, priceSats }, 'backfillServicePrices: price updated');
-
-      await sleep(rateLimitMs);
     }
 
     if (txClient) {

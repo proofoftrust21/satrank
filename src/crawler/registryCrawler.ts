@@ -11,6 +11,7 @@ import type { ServiceEndpointRepository } from '../repositories/serviceEndpointR
 import type { PreimagePoolRepository } from '../repositories/preimagePoolRepository';
 import { sha256 } from '../utils/crypto';
 import { isSafeUrl, fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
+import { HostRateLimiter } from '../utils/hostRateLimiter';
 import { parseBolt11, InvalidBolt11Error } from '../utils/bolt11Parser';
 import { validateCategoryOrNull } from '../utils/categoryValidation';
 
@@ -35,7 +36,13 @@ function sanitizeCrawledCategory(raw: string | undefined, url: string): string |
 }
 
 const PAGE_SIZE = 100;
-const RATE_LIMIT_MS = 500; // 2 req/sec to avoid overloading 402index
+// Minimum gap between calls to the SAME host. Historical global RATE_LIMIT_MS
+// was applied to every iteration regardless of destination, which serialized
+// unrelated hosts and still let dozens of same-host probes land inside a
+// narrow window (2026-04-22 plebtv incident: 28 URLs of the same host hit
+// plebtv's rate limit mid-backfill). HostRateLimiter keys cooldown on host
+// so independent providers aren't penalized for each other's pace.
+const PER_HOST_GAP_MS = 500;
 const FETCH_TIMEOUT_MS = 5000;
 
 // Minimal BOLT11 payee extraction without external dependency.
@@ -48,6 +55,8 @@ const FETCH_TIMEOUT_MS = 5000;
 // but works for the initial version. Production should use bolt11 npm pkg.
 
 export class RegistryCrawler {
+  private readonly hostLimiter = new HostRateLimiter(PER_HOST_GAP_MS);
+
   constructor(
     private serviceEndpointRepo: ServiceEndpointRepository,
     private decodeBolt11?: (invoice: string) => Promise<{ destination: string; num_satoshis?: string } | null>,
@@ -109,7 +118,6 @@ export class RegistryCrawler {
               logger.warn({ url: svc.url, error: err instanceof Error ? err.message : String(err) }, 'Registry: failed to discover node for URL');
             }
           }
-          await this.sleep(RATE_LIMIT_MS);
         }
 
         offset += services.length;
@@ -130,6 +138,7 @@ export class RegistryCrawler {
 
   private async fetchPage(offset: number): Promise<IndexService[]> {
     const url = `https://402index.io/api/v1/services?protocol=L402&limit=${PAGE_SIZE}&offset=${offset}`;
+    await this.hostLimiter.wait(url);
     const resp = await fetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
@@ -180,6 +189,7 @@ export class RegistryCrawler {
    *  Returns { agentHash: SHA256(pubkey), priceSats: num_satoshis | null } or null. */
   private async discoverNodeFromUrl(serviceUrl: string): Promise<{ agentHash: string; priceSats: number | null } | null> {
     try {
+      await this.hostLimiter.wait(serviceUrl);
       // SSRF hardening: fetchSafeExternal does connect-time DNS validation so a
       // user-controlled URL that rebinds to a private IP is rejected before
       // the socket opens. redirect: 'manual' is the default (no follow).
@@ -236,7 +246,4 @@ export class RegistryCrawler {
     }
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
 }

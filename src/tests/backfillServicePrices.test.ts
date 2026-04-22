@@ -68,7 +68,7 @@ describe('backfillServicePrices', async () => {
   // Per-URL attempt-tracking mock for retry tests. Advance through the array of
   // responses on each call; stay on the last entry once consumed.
   function mockFetchWithAttempts(
-    urlToResponses: Record<string, Array<{ status: number; invoice?: string; error?: string }>>,
+    urlToResponses: Record<string, Array<{ status: number; invoice?: string; error?: string; retryAfter?: string }>>,
   ): { fetch: typeof fetch; counts: Record<string, number> } {
     const counts: Record<string, number> = {};
     const impl = (async (input: string | URL | Request) => {
@@ -81,6 +81,7 @@ describe('backfillServicePrices', async () => {
       if (entry.error) throw new Error(entry.error);
       const headers = new Headers();
       if (entry.invoice) headers.set('www-authenticate', `L402 macaroon="fake", invoice="${entry.invoice}"`);
+      if (entry.retryAfter !== undefined) headers.set('retry-after', entry.retryAfter);
       return new Response('', { status: entry.status, headers });
     }) as typeof fetch;
     return { fetch: impl, counts };
@@ -337,6 +338,67 @@ describe('backfillServicePrices', async () => {
 
     expect(summary.skippedNotL402).toBe(1);
     expect(summary.priced).toBe(0);
+    expect(m.counts[url]).toBe(1);
+  });
+
+  it('429 with short Retry-After waits once and succeeds on retry', async () => {
+    const url = 'https://backfill-429-short.example.com';
+    const pubkey = '02' + 'a'.repeat(64);
+    await repo.upsert(sha256(pubkey), url, 402, 100, '402index');
+
+    const invoice = 'lnbc30n1pfake429retry';
+    const m = mockFetchWithAttempts({
+      [url]: [
+        { status: 429, retryAfter: '1' },
+        { status: 402, invoice },
+      ],
+    });
+    global.fetch = m.fetch;
+    const lnd = mockLndClient({ [invoice]: { destination: pubkey, num_satoshis: '30' } });
+
+    const summary = await backfillServicePrices(pool, lnd, { rateLimitMs: 0, retryBackoffsMs: [0, 0] });
+
+    expect(summary.priced).toBe(1);
+    expect(summary.skippedRateLimitedLong).toBe(0);
+    expect(m.counts[url]).toBe(2);
+  });
+
+  it('429 with Retry-After > threshold increments skippedRateLimitedLong', async () => {
+    const url = 'https://backfill-429-long.example.com';
+    const pubkey = '02' + 'b'.repeat(64);
+    await repo.upsert(sha256(pubkey), url, 402, 100, '402index');
+
+    const m = mockFetchWithAttempts({
+      [url]: [
+        { status: 429, retryAfter: '60' },
+      ],
+    });
+    global.fetch = m.fetch;
+    const lnd = mockLndClient({});
+
+    const summary = await backfillServicePrices(pool, lnd, { rateLimitMs: 0, retryBackoffsMs: [0, 0] });
+
+    expect(summary.skippedRateLimitedLong).toBe(1);
+    expect(summary.skippedNetworkError).toBe(0);
+    expect(m.counts[url]).toBe(1);
+  });
+
+  it('429 without Retry-After increments skippedRateLimitedLong (no retry)', async () => {
+    const url = 'https://backfill-429-no-header.example.com';
+    const pubkey = '02' + '4'.repeat(64);
+    await repo.upsert(sha256(pubkey), url, 402, 100, '402index');
+
+    const m = mockFetchWithAttempts({
+      [url]: [
+        { status: 429 },
+      ],
+    });
+    global.fetch = m.fetch;
+    const lnd = mockLndClient({});
+
+    const summary = await backfillServicePrices(pool, lnd, { rateLimitMs: 0, retryBackoffsMs: [0, 0] });
+
+    expect(summary.skippedRateLimitedLong).toBe(1);
     expect(m.counts[url]).toBe(1);
   });
 
