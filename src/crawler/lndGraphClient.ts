@@ -308,7 +308,7 @@ export class HttpLndGraphClient implements LndGraphClient {
         // providers' probes (observed 2026-04-22: lightningfaucet's 5 bad
         // invoices skipped 23 unrelated URLs until the breaker half-opened).
         const isInvoiceParseError = path.startsWith('/v1/payreq/')
-          && /invalid index|checksum failed/i.test(body);
+          && /invalid index|checksum failed|failed converting data|invalid character not part of charset/i.test(body);
         if (!isInvoiceParseError) {
           this.breaker.onFailure();
         }

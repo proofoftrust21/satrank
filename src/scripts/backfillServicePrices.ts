@@ -182,7 +182,7 @@ export async function backfillServicePrices(
         const errMsg = err instanceof Error ? err.message : String(err);
         const lower = errMsg.toLowerCase();
         let reason: string;
-        if (/invalid index|checksum failed/i.test(errMsg)) {
+        if (/invalid index|checksum failed|failed converting data|invalid character not part of charset/i.test(errMsg)) {
           summary.skippedInvoiceMalformed += 1;
           reason = 'invoice_malformed';
         } else if (lower.includes('circuit breaker open')) {
