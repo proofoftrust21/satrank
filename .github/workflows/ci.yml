@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Default least-privilege: jobs only need to read the repo. No job writes
+# issues, pushes tags, or publishes packages — keeping GITHUB_TOKEN
+# read-only limits the blast radius if a workflow step is compromised.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
