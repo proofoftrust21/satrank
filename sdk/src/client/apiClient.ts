@@ -59,12 +59,6 @@ export class ApiClient {
     });
   }
 
-  async getAgentVerdict(publicKeyHash: string): Promise<unknown> {
-    return this.request('GET', `/api/agent/${publicKeyHash}/verdict`, undefined, {
-      requireAuth: true,
-    });
-  }
-
   private async request<T>(
     method: 'GET' | 'POST',
     path: string,
