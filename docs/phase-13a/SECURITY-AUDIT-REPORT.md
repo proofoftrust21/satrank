@@ -10,20 +10,27 @@
 
 ## Executive summary
 
-| Severity | Count | Fixed (auto) | Pending user | Carry-over (intouchable) |
-|----------|------:|-------------:|-------------:|-------------------------:|
+| Severity | Count | Fixed | Pending user | Carry-over (intouchable) |
+|----------|------:|------:|-------------:|-------------------------:|
 | Critical | 0 | 0 | 0 | 0 |
-| High     | 1 | 0 | 1 | 0 |
-| Medium   | 3 | 0 | 3 | 0 |
+| High     | 1 | 1 | 0 | 0 |
+| Medium   | 3 | 1 | 2 | 0 |
 | Low      | 5 | 3 | 1 | 3 (macaroons 0755/0644) |
-| Info     | 4 | 0 | 4 | 0 |
+| Info     | 4 | 1 | 3 | 0 |
 
-**3 commits shipped** on `phase-13a-security`:
+**Commits shipped** on `phase-13a-security`:
 1. `76e5c97` — replace hardcoded TEST_PRIVKEY with ephemeral key (Cat B)
 2. `f438552` — add Permissions-Policy HTTP header (Cat A)
 3. `13a0ab0` — declare `permissions: contents: read` in CI (Cat I)
+4. `3058043` — UFW remediation log + Docker bypass finding (Cat F)
+5. (this commit) — close PG 5432 public access via iptables DOCKER-USER, chmod .env 0600, enable Dependabot (Cat F + Cat D + Cat I)
 
-**No prod changes applied.** All infrastructure findings require Romain's explicit GO.
+**Prod infra changes applied under Romain's GO (2026-04-22):**
+- PG VM (178.104.142.150): iptables DOCKER-USER rules ACCEPT from prod + DROP all, persisted via iptables-persistent. No container restart. **Zero impact on LND/Nostr/wallet zone** (separate VM).
+- Prod VM (178.104.108.108): `chmod 600 /root/satrank/.env`. No service impact.
+- GitHub repo: Dependabot vulnerability alerts enabled (API `PUT /vulnerability-alerts`).
+
+Full remediation log: `docs/phase-13a/UFW-REMEDIATION-LOG.md`.
 
 ---
 
@@ -111,13 +118,13 @@ No fixes required.
 - Public TCP listeners (`ss -tlnp`) match UFW. No surprise daemons. ✅
 
 **satrank-postgres VM (178.104.142.150)** — via external probe only:
-- **[HIGH — PENDING USER]** Port 5432 is **reachable from the public internet**. Expected per Phase 12B plan: UFW whitelist 178.104.108.108 only. Python TCP probe from a non-whitelisted residential IP succeeds.
+- **[HIGH — RESOLVED 2026-04-22]** Port 5432 was reachable from the public internet. UFW allow/deny did not work because `docker-proxy` publishes the port via Docker's iptables `DOCKER` chain (evaluated before UFW filter). **Fixed** via iptables `DOCKER-USER` rules: ACCEPT from `178.104.108.108`, DROP all other v4+v6. Persisted via `iptables-persistent`. External probe now timeouts, prod reachability preserved. See `UFW-REMEDIATION-LOG.md` for the full log.
 - **[MEDIUM — PENDING USER]** Postgres responds `N` to SSLRequest → connections between satrank VM and PG VM flow in **plaintext over the public internet**. DATABASE_URL credentials + query data are not TLS-encrypted.
 
-**Recommended remediation** (Romain decision):
-1. Apply UFW rule on PG VM: `ufw allow from 178.104.108.108 to any port 5432 && ufw deny 5432` (verify SSH remains reachable before enabling deny).
+**Remaining remediation** (Romain decision):
+1. ~~Apply UFW rule on PG VM~~ → RESOLVED via iptables DOCKER-USER.
 2. Enable Postgres SSL: set `ssl = on` in `postgresql.conf`, generate/install cert, update `pg_hba.conf` to require `hostssl` for non-local connections. Ensure the satrank API side sets `sslmode=require` in DATABASE_URL.
-3. If using Hetzner Cloud Firewall instead of UFW — configure there.
+3. Consider Hetzner Cloud Firewall as defense-in-depth (current iptables is host-level only).
 
 ---
 
