@@ -20,7 +20,8 @@ import { createBayesianScoringService } from './helpers/bayesianTestFactory';
 let testDb: TestDb;
 
 // --- Fixtures ---
-const TEST_PRIVKEY = 'e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db734';
+// Ephemeral privkey for signing fake BOLT11 invoices. No real sats touch this.
+const TEST_PRIVKEY = crypto.randomBytes(32).toString('hex');
 
 function makeInvoice(amountSats: number, paymentHashHex?: string): string {
   const paymentHash = paymentHashHex ?? crypto.randomBytes(32).toString('hex');

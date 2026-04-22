@@ -318,6 +318,22 @@ export function createApp() {
     },
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
+  // Permissions-Policy: deny powerful browser features the site does not use.
+  // Helmet 8 has no built-in middleware for this header yet, so we set it
+  // directly. All entries use `()` which means "disabled for all origins".
+  app.use((_req, res, next) => {
+    res.setHeader(
+      'Permissions-Policy',
+      'accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), ' +
+      'camera=(), cross-origin-isolated=(), display-capture=(), ' +
+      'document-domain=(), encrypted-media=(), fullscreen=(), geolocation=(), ' +
+      'gyroscope=(), interest-cohort=(), keyboard-map=(), magnetometer=(), ' +
+      'microphone=(), midi=(), payment=(), picture-in-picture=(), ' +
+      'publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), ' +
+      'usb=(), web-share=(), xr-spatial-tracking=()'
+    );
+    next();
+  });
   app.use(cors({ origin: config.CORS_ORIGIN }));
   // express.json() parses the body into req.body but does NOT expose the raw
   // bytes. NIP-98 signatures bind to sha256(rawBody) so we capture via the
