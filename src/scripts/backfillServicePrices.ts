@@ -162,10 +162,16 @@ export async function backfillServicePrices(
 
   if (rows.length === 0) return summary;
 
-  const client = await pool.connect();
+  // Non-dryRun: autocommit each UPDATE via the pool directly. Holding one
+  // transaction across the ~5-10 min loop collides with (a) the registry
+  // crawler writing to service_endpoints concurrently (55P03 lock_timeout),
+  // and (b) prod's idle_in_transaction_session_timeout. Partial progress is
+  // safe — the initial SELECT filters service_price_sats IS NULL, so a retry
+  // picks up rows that haven't been priced yet.
+  const txClient = dryRun ? await pool.connect() : null;
   try {
-    await client.query('BEGIN');
-    const repo = new ServiceEndpointRepository(client);
+    if (txClient) await txClient.query('BEGIN');
+    const repo = new ServiceEndpointRepository(txClient ?? pool);
 
     for (const row of rows) {
       const { url } = row;
@@ -273,22 +279,22 @@ export async function backfillServicePrices(
       await sleep(rateLimitMs);
     }
 
-    if (dryRun) {
-      await client.query('ROLLBACK');
+    if (txClient) {
+      await txClient.query('ROLLBACK');
       logger.info({ ...summary, dryRun: true }, 'backfillServicePrices: dry-run complete — rolled back');
       return summary;
     }
-
-    await client.query('COMMIT');
   } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {
-      // best-effort
+    if (txClient) {
+      try {
+        await txClient.query('ROLLBACK');
+      } catch {
+        // best-effort
+      }
     }
     throw err;
   } finally {
-    client.release();
+    if (txClient) txClient.release();
   }
 
   logger.info({ ...summary }, 'backfillServicePrices: complete');
