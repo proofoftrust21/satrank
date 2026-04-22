@@ -13,8 +13,10 @@ let testDb: TestDb;
 
 // --- Fixtures ---
 /** Private key used only to sign the fake BOLT11 invoices this test builds.
- *  Never used outside vitest — no real sats ever touch it. */
-const TEST_PRIVKEY = 'e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db734';
+ *  Generated once per test process — never used outside vitest, no real sats
+ *  ever touch it. Avoids committing a literal 32-byte hex that secret scanners
+ *  flag as a leaked key. */
+const TEST_PRIVKEY = crypto.randomBytes(32).toString('hex');
 
 /** Build a BOLT11 invoice that bolt11Parser will accept (encode → sign). */
 function makeInvoice(amountSats: number, paymentHashHex?: string): string {
