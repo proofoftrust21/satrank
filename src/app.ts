@@ -297,18 +297,7 @@ export function createApp() {
         scriptSrc: ["'self'"],
         styleSrc: ["'self'"],
         imgSrc: ["'self'", "data:"],
-        // The methodology page's live-circuit widget opens WebSocket
-        // connections to the 3 canonical Nostr relays from the browser
-        // to verify SatRank's NIP-85 events end-to-end. Without these
-        // entries, helmet's default `connect-src 'self'` makes the
-        // browser block all wss:// connections and the widget reports
-        // "0 / 3 relays responded" even when the events are present.
-        connectSrc: [
-          "'self'",
-          'wss://relay.damus.io',
-          'wss://nos.lol',
-          'wss://relay.primal.net',
-        ],
+        connectSrc: ["'self'"],
         frameAncestors: ["'none'"],
         // Lock <base> and <form action> to same-origin to block base-tag hijacking
         // and form-relay exfiltration if a DOM-XSS sneaks past scriptSrc 'self'.
