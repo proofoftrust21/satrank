@@ -1,0 +1,22 @@
+Phase 13C — Baseline prod (2026-04-22)
+
+$ ssh root@178.104.142.150 "docker exec -i satrank-postgres psql -U satrank -d satrank -t -c '...'"
+ service_endpoints=0 | operators=0 | operator_identities=0 | operator_owns_endpoint=0 | agents=12300 | transactions=24561 | token_balance=0
+
+$ curl -sS https://satrank.dev/api/health
+{"data":{"status":"error","agentsIndexed":8190,"staleAgents":4110,"totalTransactions":24561,"lastUpdate":1776843644,"scoringAgeSec":9987,"scoringStale":true,"uptime":59810,"schemaVersion":41,"expectedSchemaVersion":41,"dbStatus":"ok","lndStatus":"ok","lndLastProbeAgeSec":30,...}}
+
+$ curl -sS https://satrank.dev/api/intent/categories
+{"categories":[]}
+
+$ curl -sS "https://satrank.dev/api/operators?limit=3"
+{"data":[],"meta":{"total":0,"limit":3,"offset":0,"counts":{"verified":0,"pending":0,"rejected":0}}}
+
+$ ssh root@178.104.142.150 "docker exec -i satrank-postgres psql -U satrank -d satrank -t -c 'SELECT COUNT(*), COUNT(operator_id) FROM transactions;'"
+ 24561 | 0
+
+$ ssh root@178.104.142.150 "... 'SELECT (SELECT COUNT(*) FROM service_probes), (SELECT COUNT(*) FROM attestations);'"
+ 0 | 0
+
+$ ssh root@178.104.142.150 "... 'SELECT source, COUNT(*) FROM transactions GROUP BY source;'"
+ NULL | 24561
