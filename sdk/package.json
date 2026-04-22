@@ -20,7 +20,8 @@
   },
   "files": [
     "dist/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -47,7 +48,7 @@
     "nwc",
     "lnd"
   ],
-  "license": "AGPL-3.0",
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.7.3",
