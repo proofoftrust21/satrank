@@ -1669,3 +1669,159 @@ body.methodology-page { padding-top: 0; }
   .doc-section th, .doc-section td { padding: 10px 12px; }
   .doc-section pre { font-size: 0.78rem; padding: 14px 16px; }
 }
+
+/* =========================================
+   PHASE 14A additions — flow-step, subsection, pricing
+   ========================================= */
+
+.section-flow .flow-step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 30px;
+  margin-top: 28px;
+}
+.flow-step-head {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  margin-bottom: 22px;
+}
+.flow-step-num {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #07090d;
+  font-weight: 700;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.flow-step-head h3 {
+  font-size: 1.15rem;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 2px 0 8px;
+}
+.flow-step-head p {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.code-card-wide {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.subsection {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 26px 28px;
+  margin-top: 20px;
+}
+.subsection-head {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.subsection-num {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+.subsection-head h3 {
+  font-size: 1.1rem;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.subsection-desc {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  margin-bottom: 18px;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 8px;
+}
+.pricing-card {
+  padding: 26px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 200ms ease, transform 200ms ease;
+}
+.pricing-card:hover { border-color: var(--border-strong, #272b38); }
+.pricing-card-lead { border-color: var(--accent); }
+.pricing-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+.pricing-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.pricing-sub-top {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  min-height: 1.2em;
+}
+.pricing-sub {
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.sdk-note {
+  margin-top: 18px;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.sdk-note code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 0.82rem;
+}
+
+.factors-footnote {
+  margin-top: 18px;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.factors-footnote code {
+  font-size: 0.78rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+@media (max-width: 720px) {
+  .section-flow .flow-step { padding: 22px 20px; }
+  .subsection { padding: 22px 20px; }
+  .pricing-value { font-size: 1.4rem; }
+}
