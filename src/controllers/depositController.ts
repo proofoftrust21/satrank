@@ -13,7 +13,7 @@ import { DepositTierService } from '../services/depositTierService';
 import { withTransaction } from '../database/transaction';
 
 const MIN_DEPOSIT_SATS = 21;
-const MAX_DEPOSIT_SATS = 10_000;
+const MAX_DEPOSIT_SATS = 1_000_000;
 const INVOICE_EXPIRY_SEC = 600; // 10 minutes
 
 // Load invoice macaroon at startup (separate from the readonly one)
@@ -88,7 +88,7 @@ export class DepositController {
           currency: 'sats',
           rateUnit: 'sats per request',
           notes: [
-            'Rate is engraved on the token at creation — future schedule changes do not affect existing deposits.',
+            'Rate is engraved on the token at creation; future schedule changes do not affect existing deposits.',
             'A deposit below the tier-1 floor (21 sats) is rejected with NO_APPLICABLE_TIER.',
             'requestsPerDeposit shows how many regular requests a deposit exactly at that tier floor would buy.',
           ],
@@ -118,7 +118,7 @@ export class DepositController {
       // Phase 1: create invoice — always needs LND
       if (body.amount) {
         if (!invoiceMacaroonHex) {
-          res.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE', message: 'Deposit invoice generation unavailable — LND_INVOICE_MACAROON_PATH not configured' } });
+          res.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE', message: 'Deposit invoice generation unavailable (LND_INVOICE_MACAROON_PATH not configured)' } });
           return;
         }
         await this.createInvoice(req, res);
@@ -151,7 +151,7 @@ export class DepositController {
         invoice: result.payment_request,
         paymentHash: rHashHex,
         amount,
-        quotaGranted: amount, // 1 sat = 1 request
+        quotaGranted: amount, // raw sats balance; request credits = amount / rateSatsPerRequest (tier engraved on verify)
         expiresIn: INVOICE_EXPIRY_SEC,
         instructions: 'Pay the invoice, then call POST /api/deposit with { paymentHash, preimage } to activate your balance. Use Authorization: L402 deposit:<preimage> on paid endpoints.',
       },

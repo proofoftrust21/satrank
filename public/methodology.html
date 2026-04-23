@@ -141,7 +141,7 @@
 
         <h3>2.4 Reports</h3>
         <p>
-          A client that has already paid an L402 invoice can submit the preimage back to SatRank as a first-party report. The preimage proves payment, and the oracle's <code>decide_log</code> scopes the report strictly to the target that the client's token was issued for. Tiered weighting (<a href="#posterior">Section 3</a>) distinguishes anonymous preimage-only reports from NIP-98 signed reports.
+          A client that has already paid an L402 invoice can submit the preimage back to SatRank as a first-party report. The preimage proves payment, and the oracle's <code>token_query_log</code> scopes the report strictly to the target that the client's token was issued for. Tiered weighting (<a href="#posterior">Section 3</a>) distinguishes anonymous preimage-only reports from NIP-98 signed reports.
         </p>
 
         <h3>2.5 Attestations</h3>
@@ -151,7 +151,7 @@
 
         <h3>2.6 Database schema</h3>
         <p>
-          Schema version <strong>41</strong>. Twelve data tables: <code>agents</code>, <code>transactions</code>, <code>attestations</code>, <code>score_snapshots</code>, <code>probe_results</code>, <code>channel_snapshots</code>, <code>fee_snapshots</code>, <code>token_balance</code>, <code>service_endpoints</code>, <code>service_probes</code>, <code>decide_log</code>, <code>report_bonus_ledger</code>, plus streaming posteriors tables (<code>endpoint_streaming_posteriors</code>, <code>node_streaming_posteriors</code>) and <code>endpoint_daily_buckets</code> for recent-activity counts. Engine: PostgreSQL 16 (migrated from SQLite in Phase 12B).
+          Schema version <strong>41</strong>. Twelve data tables: <code>agents</code>, <code>transactions</code>, <code>attestations</code>, <code>score_snapshots</code>, <code>probe_results</code>, <code>channel_snapshots</code>, <code>fee_snapshots</code>, <code>token_balance</code>, <code>service_endpoints</code>, <code>service_probes</code>, <code>token_query_log</code>, <code>report_bonus_ledger</code>, plus streaming posteriors tables (<code>endpoint_streaming_posteriors</code>, <code>node_streaming_posteriors</code>) and <code>endpoint_daily_buckets</code> for recent-activity counts. Engine: PostgreSQL 16 (migrated from SQLite in Phase 12B).
         </p>
       </section>
 
@@ -179,7 +179,7 @@
             <tr><td><code>paid</code></td><td>2.00</td><td>First-party success proven by a valid preimage.</td></tr>
             <tr><td><code>report</code>, tier <code>LOW</code></td><td>0.30</td><td>Anonymous report without preimage.</td></tr>
             <tr><td><code>report</code>, tier <code>MEDIUM</code></td><td>0.50</td><td>Preimage-backed anonymous report.</td></tr>
-            <tr><td><code>report</code>, tier <code>HIGH</code></td><td>0.70</td><td>Preimage plus scoped <code>decide_log</code> token.</td></tr>
+            <tr><td><code>report</code>, tier <code>HIGH</code></td><td>0.70</td><td>Preimage plus scoped <code>token_query_log</code> token.</td></tr>
             <tr><td><code>report</code>, tier <code>NIP98</code></td><td>1.00</td><td>NIP-98 HTTP-auth signed by a known Nostr pubkey.</td></tr>
           </tbody>
         </table>
@@ -513,8 +513,8 @@ Content-Type: application/json
             <tr><td><code>/api/agent/:hash/attestations</code></td><td>GET</td><td>L402</td><td>Attestations received.</td></tr>
             <tr><td><code>/api/verdicts</code></td><td>POST</td><td>L402</td><td>Batch verdict lookup.</td></tr>
             <tr><td><code>/api/attestations</code></td><td>POST</td><td>API key</td><td>Write a signed attestation.</td></tr>
-            <tr><td><code>/api/report</code></td><td>POST</td><td>L402 or API key</td><td>Report an outcome; preimage-scoped via <code>decide_log</code>.</td></tr>
-            <tr><td><code>/api/deposit</code></td><td>POST</td><td>public</td><td>Buy an L402 token balance (21 to 10 000 sats).</td></tr>
+            <tr><td><code>/api/report</code></td><td>POST</td><td>L402 or API key</td><td>Report an outcome; preimage-scoped via <code>token_query_log</code>.</td></tr>
+            <tr><td><code>/api/deposit</code></td><td>POST</td><td>public</td><td>Buy an L402 token balance (21 to 1 000 000 sats, tiered rate).</td></tr>
             <tr><td><code>/api/deposit/tiers</code></td><td>GET</td><td>public</td><td>List of valid deposit tiers.</td></tr>
             <tr><td><code>/api/ping/:pubkey</code></td><td>GET</td><td>public</td><td>Ad-hoc probe at 1 000 sats (rate-limited).</td></tr>
             <tr><td><code>/api/services/register</code></td><td>POST</td><td>API key</td><td>Submit an L402 endpoint URL.</td></tr>
@@ -538,17 +538,17 @@ WWW-Authenticate: L402 macaroon="MDAyN…", invoice="lnbc10n1p…"</code></pre>
         </p>
         <pre><code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;</code></pre>
         <p>
-          The middleware validates that <code>sha256(preimage) == payment_hash</code> embedded in the macaroon, marks the token as spent, and forwards. Each standard token buys 21 requests.
+          The middleware validates that <code>sha256(preimage) == payment_hash</code> embedded in the macaroon, marks the token as spent, and forwards.
         </p>
 
-        <h3>7.3 Deposit (variable-amount token)</h3>
+        <h3>7.3 Deposit (variable-amount token, tiered rate)</h3>
         <p>
-          For agents that need more than 21 requests from a single payment, <code>POST /api/deposit</code> issues a BOLT11 invoice of <em>N</em> sats (21 ≤ N ≤ 10 000). The client pays and posts the preimage back; the oracle credits 1 sat = 1 request on a token identified by that preimage. The token format is <code>Authorization: L402 deposit:&lt;preimage&gt;</code>. Rate limit: 3 invoices per minute per IP. Nginx routes <code>L402 deposit:*</code> directly to Express, bypassing Aperture, because the invoice is generated by our own LND through the invoice-only macaroon.
+          <code>POST /api/deposit</code> issues a BOLT11 invoice of <em>N</em> sats in the range [21, 1 000 000]. The client pays and posts the preimage back; the oracle looks up the deposit tier whose floor is the highest floor less than or equal to <em>N</em> and credits <code>N / rate</code> requests to a token identified by that preimage, where <code>rate</code> is the tier rate in sats per request. Tier rates are public at <code>GET /api/deposit/tiers</code> and currently run 1.0, 0.5, 0.2, 0.1, 0.05 sat per request across the five tiers. The rate is engraved on the token at creation: a later edit to the <code>deposit_tiers</code> table does not affect existing tokens. The token format is <code>Authorization: L402 deposit:&lt;preimage&gt;</code>. Rate limit: 3 invoices per minute per IP. Nginx routes <code>L402 deposit:*</code> directly to Express, bypassing Aperture, because the invoice is generated by our own LND through the invoice-only macaroon.
         </p>
 
         <h3>7.4 Preimage-as-report</h3>
         <p>
-          A client that has already paid <em>any</em> L402 invoice (ours or a third-party endpoint discovered through <code>/api/intent</code>) can reuse that preimage as a report. <code>POST /api/report</code> accepts the preimage as authentication; the oracle matches it against <code>decide_log</code> to confirm the report's scope is the same target the client was last directed to. A report signed with NIP-98 (Nostr HTTP auth) carries the highest source weight (1.00) because the signer's Nostr pubkey is reusable in other evidence.
+          A client that has already paid <em>any</em> L402 invoice (ours or a third-party endpoint discovered through <code>/api/intent</code>) can reuse that preimage as a report. <code>POST /api/report</code> accepts the preimage as authentication; the oracle matches it against <code>token_query_log</code> to confirm the report's scope is the same target the client was last directed to. A report signed with NIP-98 (Nostr HTTP auth) carries the highest source weight (1.00) because the signer's Nostr pubkey is reusable in other evidence.
         </p>
 
         <h3>7.5 Cross-cutting invariants</h3>
@@ -700,9 +700,9 @@ Relays (DEFAULT_NOSTR_RELAYS, src/nostr/relays.ts):
           Anyone can fork the repo, run SatRank locally against the same gossip data, and compare outputs node by node. Any deviation indicates either a bug or tampering. Mathematical reproducibility becomes social verifiability. The AGPL obligation to publish source for any modified deployment closes the loophole where a private fork could be used to replace the oracle covertly.
         </p>
 
-        <h3>10.3 Flat pricing</h3>
+        <h3>10.3 Mechanical volume-based pricing</h3>
         <p>
-          1 sat per paid call, identical across all callers and all endpoints. No enterprise tier, no partner discount, no featured listing, no revenue share with top-ranked nodes. The business model cannot bias the ranking because the ranking is not what is sold. The deposit endpoint (21 to 10,000 sats, 1:1 ratio) is a convenience for agents who prefer to pre-buy a quota over handling 402 challenges; it grants no discount and no privileged access.
+          Pricing is tiered, but every tier boundary is public and every rate is deterministic. The five tiers (21, 1000, 10000, 100000, 1000000 sats) are stored in <code>deposit_tiers</code>, a read-only seeded table published in the schema. When an agent deposits N sats, the handler looks up the tier whose floor is the highest floor less than or equal to N and writes that tier's rate into the deposit record linked to the payment hash. The rate cannot be changed after the fact: subsequent <code>deposit_tiers</code> edits would not affect existing deposits. The business model cannot bias the ranking because the ranking is not what is sold, and it cannot reward individual callers because the tier is a function of the deposited amount, not of the caller's identity. Two agents depositing the same amount receive the same rate, always.
         </p>
 
         <h3>10.4 What operators can and cannot do</h3>
@@ -719,7 +719,7 @@ Relays (DEFAULT_NOSTR_RELAYS, src/nostr/relays.ts):
           <li>The <code>components</code> field in <code>GET /api/agent/:hash</code> (paid, 1 sat) exposes the five-component decomposition with dynamically renormalized weights.</li>
           <li>The <code>sources</code> field exposes the breakdown of evidence behind the posterior.</li>
           <li>The Nostr stream exposes the full state continuously on public relays.</li>
-          <li>The <code>token_query_log</code> (formerly <code>decide_log</code>) records every paid call with timestamp and target, queryable by the caller via their L402 macaroon.</li>
+          <li>The <code>token_query_log</code> records every paid call with timestamp and target, queryable by the caller via their L402 macaroon.</li>
         </ul>
 
         <h3>10.6 Anti-gaming defenses</h3>

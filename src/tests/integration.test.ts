@@ -315,9 +315,9 @@ describe('Integration — HTTP endpoints', async () => {
 
   // --- POST attestation (API key required in prod, passthrough in dev) ---
 
-  it('POST /api/attestation creates an attestation', async () => {
+  it('POST /api/attestationscreates an attestation', async () => {
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .send({
         txId,
         attesterHash: agentA.public_key_hash,
@@ -330,16 +330,16 @@ describe('Integration — HTTP endpoints', async () => {
     expect(res.body.data).toHaveProperty('timestamp');
   });
 
-  it('POST /api/attestation rejects invalid input', async () => {
+  it('POST /api/attestationsrejects invalid input', async () => {
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .send({ txId: 'not-a-uuid', attesterHash: 'bad', subjectHash: 'bad', score: 999 });
     expect(res.status).toBe(400);
   });
 
-  it('POST /api/attestation rejects self-attestation', async () => {
+  it('POST /api/attestationsrejects self-attestation', async () => {
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .send({
         txId,
         attesterHash: agentA.public_key_hash,
@@ -394,11 +394,11 @@ describe('Integration — HTTP endpoints', async () => {
 
   // --- Duplicate attestation ---
 
-  it('POST /api/attestation returns 409 on duplicate', async () => {
+  it('POST /api/attestationsreturns 409 on duplicate', async () => {
     // First attestation was already created in the test above (agentA → agentB)
     // Submit the same pair again — should conflict on UNIQUE(attester_hash, subject_hash)
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .send({
         txId,
         attesterHash: agentA.public_key_hash,
@@ -621,7 +621,7 @@ describe.skip('Integration — Security headers and Content-Type', async () => {
 
   it('POST with Content-Type: text/plain returns 415', async () => {
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .set('Content-Type', 'text/plain')
       .send('not json');
     expect(res.status).toBe(415);
@@ -630,7 +630,7 @@ describe.skip('Integration — Security headers and Content-Type', async () => {
 
   it('POST with no Content-Type returns 415', async () => {
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .set('Content-Type', '')
       .send('');
     expect(res.status).toBe(415);
@@ -638,7 +638,7 @@ describe.skip('Integration — Security headers and Content-Type', async () => {
 
   it('POST with application/json Content-Type is accepted', async () => {
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .set('Content-Type', 'application/json')
       .send(JSON.stringify({
         txId,

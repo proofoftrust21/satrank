@@ -540,7 +540,7 @@ describe.skip('Verdict endpoint integration', async () => {
   });
 
   // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
-  it.skip('POST /api/attestation accepts category field', async () => {
+  it.skip('POST /api/attestations accepts category field', async () => {
     const attester = makeAgent({ public_key_hash: sha256('cat-attester'), alias: 'CatAttester' });
     const subject = makeAgent({ public_key_hash: sha256('cat-subject'), alias: 'CatSubject' });
     await agentRepo.insert(attester);
@@ -554,7 +554,7 @@ describe.skip('Verdict endpoint integration', async () => {
     );
 
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .set('Content-Type', 'application/json')
       .set('X-API-Key', process.env.SATRANK_API_KEY || 'test-key')
       .send({

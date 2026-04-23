@@ -387,8 +387,8 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         </div>
         <div class="why-card">
           <div class="why-num">03</div>
-          <h3>Flat pricing.</h3>
-          <p>1 sat per request, across all endpoints, for every caller. No enterprise tier, no partner discount, no rev-share with the top of the leaderboard. The business model can't influence the ranking because the ranking isn't what's sold.</p>
+          <h3>Rate-locked pricing.</h3>
+          <p>Deposit tiers are public, and the rate is burnt into the macaroon at deposit time. The business model cannot bias the ranking because the ranking is not what is sold, and it cannot reward individual callers because the tier is a function of the deposited amount, not of the caller's identity.</p>
         </div>
       </div>
     </div>
@@ -399,32 +399,31 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
     <div class="container">
       <div class="section-head">
         <div class="section-kicker">Pricing</div>
-        <h2 class="section-title">1 sat per paid endpoint. Nothing else.</h2>
-        <p class="section-desc">Two ways to pay a SatRank paid endpoint: handle the L402 challenge on each call, or pre-fund a deposit once and reuse the resulting macaroon. Same unit price either way. No volume discount, no subscription, no API key.</p>
+        <h2 class="section-title">Pay per call, or deposit for a burnt-in discount.</h2>
+        <p class="section-desc">Every paid request passes through Aperture and is gated by a Lightning invoice. The base rate is 1 sat per request with no setup. Agents that prefer to pre-buy a quota can deposit into one of five public tiers; the deposit tier determines the rate, and that rate is burnt into the macaroon at deposit time. No account, no API key, no monthly billing.</p>
       </div>
 
-      <div class="pricing-grid">
-        <div class="pricing-card">
-          <div class="pricing-label">Pay-per-call</div>
-          <div class="pricing-value">1 sat</div>
-          <div class="pricing-sub-top">per paid endpoint</div>
-          <div class="pricing-sub">None. Your client handles <code>402</code>, pays the invoice, retries with the L402 token.</div>
-        </div>
-        <div class="pricing-card pricing-card-lead">
-          <div class="pricing-label">Pre-paid deposit</div>
-          <div class="pricing-value">1 sat</div>
-          <div class="pricing-sub-top">per paid endpoint</div>
-          <div class="pricing-sub"><code>POST /api/deposit { "amount": N }</code> with N in [21, 10000]. Macaroon returned covers N requests at 1:1. No volume discount.</div>
-        </div>
-        <div class="pricing-card">
-          <div class="pricing-label">Free endpoints</div>
-          <div class="pricing-value">0 sats</div>
-          <div class="pricing-sub-top">&nbsp;</div>
-          <div class="pricing-sub">Intent discovery, reports, deposit invoices, stats, health, openapi.</div>
-        </div>
+      <div class="pricing-table-wrap">
+        <table class="pricing-table">
+          <thead>
+            <tr>
+              <th scope="col">Deposit (sats)</th>
+              <th scope="col">Rate (sat/req)</th>
+              <th scope="col">Requests per deposit</th>
+              <th scope="col">Effective discount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>21</td><td>1.0</td><td>21</td><td>0%</td></tr>
+            <tr><td>1,000</td><td>0.5</td><td>2,000</td><td>50%</td></tr>
+            <tr><td>10,000</td><td>0.2</td><td>50,000</td><td>80%</td></tr>
+            <tr><td>100,000</td><td>0.1</td><td>1,000,000</td><td>90%</td></tr>
+            <tr><td>1,000,000</td><td>0.05</td><td>20,000,000</td><td>95%</td></tr>
+          </tbody>
+        </table>
       </div>
 
-      <p class="api-footnote">Paid tokens carry as <code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;</code>, or <code>Authorization: L402 deposit:&lt;preimage&gt;</code> for deposit credits. No account. No email. No key rotation.</p>
+      <p class="api-footnote">The rate is locked into your macaroon when you pay the deposit invoice. If tiers change tomorrow, your rate stays at what you paid. This is the mechanical half of "mechanical neutrality": SatRank cannot retroactively charge you more. Your macaroon is the contract.</p>
     </div>
   </section>
 

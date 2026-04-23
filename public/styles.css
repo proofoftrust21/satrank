@@ -1170,45 +1170,42 @@ body.methodology-page { padding-top: 0; }
   margin-bottom: 18px;
 }
 
-.pricing-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
+.pricing-table-wrap {
   margin-top: 8px;
-}
-.pricing-card {
-  padding: 26px 24px;
-  background: var(--surface);
+  overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  transition: border-color 200ms ease, transform 200ms ease;
+  background: var(--surface);
 }
-.pricing-card:hover { border-color: var(--border-strong, #272b38); }
-.pricing-card-lead { border-color: var(--accent); }
-.pricing-label {
+.pricing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.pricing-table th,
+.pricing-table td {
+  padding: 14px 20px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.pricing-table th:first-child,
+.pricing-table td:first-child {
+  text-align: left;
+}
+.pricing-table thead th {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-dim);
-  margin-bottom: 10px;
+  font-weight: 600;
+  background: var(--bg);
 }
-.pricing-value {
-  font-size: 1.6rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+.pricing-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.pricing-table tbody td {
   color: var(--text);
-  margin-bottom: 2px;
-}
-.pricing-sub-top {
-  font-size: 0.8rem;
-  color: var(--text-dim);
-  margin-bottom: 12px;
-  min-height: 1.2em;
-}
-.pricing-sub {
-  font-size: 0.85rem;
-  line-height: 1.55;
-  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .sdk-note {
@@ -1242,5 +1239,6 @@ body.methodology-page { padding-top: 0; }
 @media (max-width: 720px) {
   .section-flow .flow-step { padding: 22px 20px; }
   .subsection { padding: 22px 20px; }
-  .pricing-value { font-size: 1.4rem; }
+  .pricing-table th,
+  .pricing-table td { padding: 10px 12px; font-size: 0.82rem; }
 }

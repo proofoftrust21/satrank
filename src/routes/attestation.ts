@@ -27,8 +27,6 @@ export function createAttestationRoutes(controller: AttestationController, balan
 
   router.get('/agent/:publicKeyHash/attestations', apertureGateAuth, balanceAuth, controller.getBySubject);
   router.post('/attestations', writeRateLimit, apiKeyAuth, controller.create);
-  // Temporary alias — remove after SDK clients migrate
-  router.post('/attestation', writeRateLimit, apiKeyAuth, controller.create);
 
   return router;
 }
