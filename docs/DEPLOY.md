@@ -1,122 +1,122 @@
 # Deploy procedure
 
-## Règle mécanique
+## Mechanical rule
 
-**Tout déploiement doit passer par `make deploy`.** Jamais un rsync manuel contre
-prod. Les exclusions sont centralisées dans `.rsync-exclude` (voir la racine du
-repo) et la Makefile refuse de déployer si ce fichier est absent.
+**Every deploy must go through `make deploy`.** Never an ad-hoc rsync against
+prod. Exclusions are centralized in `.rsync-exclude` (see repo root) and the
+Makefile refuses to deploy if that file is missing.
 
-### Historique des incidents
+### Incident history
 
-| Date       | Phase    | Fichier effacé             | Cause racine                                                       |
-|------------|----------|----------------------------|---------------------------------------------------------------------|
-| 2026-04-19 | Phase 7  | `.env.production`          | `rsync --delete` ad-hoc, exclusion oubliée                          |
-| 2026-04-20 | Phase 9  | `probe-pay.macaroon`       | `rsync --delete` ad-hoc, exclusion oubliée                          |
+| Date       | Phase    | Erased file                | Root cause                                                         |
+|------------|----------|----------------------------|--------------------------------------------------------------------|
+| 2026-04-19 | Phase 7  | `.env.production`          | Ad-hoc `rsync --delete`, exclusion forgotten                       |
+| 2026-04-20 | Phase 9  | `probe-pay.macaroon`       | Ad-hoc `rsync --delete`, exclusion forgotten                       |
 
-Les deux incidents sont la **même faute procédurale** : bypass de `make deploy`
-pour un rsync manuel. Cette page est la règle écrite qui rend ça illégal.
+Both incidents are the **same procedural fault**: bypassing `make deploy` for a
+manual rsync. This page is the written rule that makes that bypass illegal.
 
 ---
 
-## Fichiers qui NE DOIVENT JAMAIS être effacés par rsync en prod
+## Files that MUST NEVER be erased by rsync in prod
 
-Ces fichiers vivent uniquement sur prod, ne sont pas dans le repo, et seraient
-catastrophiques à perdre :
+These files live only on prod, are not in the repo, and would be catastrophic
+to lose:
 
 ### Secrets
-- `.env.production` — variables d'env prod (clés API, secrets DB, config LND)
+- `.env.production` — prod env variables (API keys, DB secrets, LND config)
 - `.env`, `.env.local`, `.env.*.local`
 
-### Credentials LND (macaroons)
-- `probe-pay.macaroon` — scoped admin pour `/api/probe` (offchain:read+write)
-- `admin.macaroon` — admin complet (si monté)
-- `invoice.macaroon` — pour `/api/deposit` (invoice-only)
-- `readonly.macaroon` — pour le crawler LND
-- Règle globale : `*.macaroon` à n'importe quelle profondeur
+### LND credentials (macaroons)
+- `probe-pay.macaroon` — scoped admin for `/api/probe` (offchain:read+write)
+- `admin.macaroon` — full admin (if mounted)
+- `invoice.macaroon` — for `/api/deposit` (invoice-only)
+- `readonly.macaroon` — for the LND crawler
+- Global rule: `*.macaroon` at any depth
 
-### Config L402
-- `aperture.yaml` — config Aperture (reverse-proxy L402, référence des secrets)
-- `aperture.local.yaml`
+### L402 Config
+- Express serves the L402 gate natively since Phase 14D.3.0 (middleware `src/middleware/l402Native.ts`). No proxy config file to exclude.
+- The `aperture.yaml` and `aperture.local.yaml` entries in `.rsync-exclude` remain as defense-in-depth. They will be removed during the final post-sunset code cleanup (planned 2026-04-30, after 7 days of stable prod observation).
 
 ### Runtime state
-- `data/` — dossier SQLite (contient `satrank.db`, `satrank.db-wal`, etc.)
+- `data/` — SQLite directory (holds `satrank.db`, `satrank.db-wal`, etc.)
 - `*.db`, `*.sqlite`, `*.sqlite-journal`, `*.sqlite-shm`, `*.sqlite-wal`
-- `backups/` — snapshots DB
+- `backups/` — DB snapshots
 
-### Logs (hors app dir, documenté pour info)
-- `/var/log/satrank/` — vit sur l'hôte, jamais dans le dossier projet rsyncé.
-  Si un opérateur pense à rsyncer `/var/`, il ne devrait pas.
+### Logs (outside app dir, documented for info)
+- `/var/log/satrank/` — lives on the host, never inside the rsynced project
+  directory. If an operator thinks about rsyncing `/var/`, they should not.
 
 ---
 
-## Procédure de deploy
+## Deploy procedure
 
 ```bash
-# Depuis le repo local, commit propre :
-git status                      # doit être clean (sauf build-info.json)
+# From the local repo, clean commit state:
+git status                      # must be clean (except build-info.json)
 git push origin main
 
-# Deploy :
+# Deploy:
 SATRANK_HOST=root@178.104.108.108 REMOTE_DIR=/opt/satrank make deploy
 
-# Rebuild + restart container :
+# Rebuild + restart container:
 ssh root@178.104.108.108 'cd /opt/satrank && docker compose build api && docker compose up -d --force-recreate api'
 
-# Pour le crawler si dépendances non bloquantes :
+# For the crawler when dependencies are non-blocking:
 ssh root@178.104.108.108 'cd /opt/satrank && docker compose up -d --no-deps crawler'
 ```
 
-La Makefile passe `--exclude-from=.rsync-exclude` automatiquement. Aucun flag
-d'exclusion manuel nécessaire.
+The Makefile passes `--exclude-from=.rsync-exclude` automatically. No manual
+exclude flag is required.
 
 ---
 
-## Interdictions
+## Prohibitions
 
-1. **Ne JAMAIS faire** :
+1. **NEVER run**:
    ```bash
    rsync -az --delete ./ root@prod:/opt/satrank/
    ```
-   Même avec des `--exclude` inline. Les exclusions inline se désynchronisent
-   de la liste canonique et finissent par oublier un fichier critique.
+   Even with inline `--exclude` flags. Inline exclusions drift from the
+   canonical list and eventually forget a critical file.
 
-2. **Ne JAMAIS faire** :
+2. **NEVER run**:
    ```bash
-   rsync -az --delete / root@prod:/       # évident mais à rappeler
+   rsync -az --delete / root@prod:/       # obvious but worth restating
    ```
 
-3. **Ne pas modifier `.rsync-exclude` sans PR/review.** Toute entrée ajoutée
-   est un engagement à la préserver en prod.
+3. **Do not modify `.rsync-exclude` without PR and review.** Any entry added
+   is a commitment to preserve it on prod.
 
 ---
 
-## Si la règle est violée (recovery)
+## If the rule is violated (recovery)
 
-### `.env.production` effacé
-- Restaurer depuis backup opérateur (ne pas me demander).
-- Sinon : reconstruire à partir des variables connues. Risque de downtime.
+### `.env.production` erased
+- Restore from operator backup (do not ask me).
+- Otherwise: reconstruct from known variables. Downtime risk.
 
-### Macaroon effacé
-- Re-baker depuis LND :
+### Macaroon erased
+- Re-bake from LND:
   ```bash
   ssh root@178.104.108.108 'rmdir /opt/satrank/probe-pay.macaroon 2>/dev/null; \
     lncli --lnddir=/mnt/lnd-data/lnd --network=mainnet bakemacaroon \
     offchain:read offchain:write \
     --save_to=/opt/satrank/probe-pay.macaroon'
   ```
-- Les macaroons LND ne sont **pas réversibles** — baker en régénère un
-  nouveau, pas besoin de restaurer l'original.
+- LND macaroons are **not reversible** — baking regenerates a new one, no
+  need to restore the original.
 
-### `data/satrank.db` effacée
-- Restaurer depuis backup (cron journalier — voir `make backup`).
-- Perte de données entre dernier backup et l'incident. Aucun rollback
-  partiel possible (pas de réplication).
+### `data/satrank.db` erased
+- Restore from backup (daily cron — see `make backup`).
+- Data loss between the last backup and the incident. No partial rollback
+  possible (no replication).
 
 ---
 
-## Références
+## References
 
-- `.rsync-exclude` — liste canonique des exclusions
-- `Makefile` — cible `deploy`
-- `feedback_rsync_delete_env.md` — mémoire Claude Code de l'incident Phase 7
-- `feedback_safety_rules.md` — règles de sécurité SatRank globales
+- `.rsync-exclude` — canonical exclusion list
+- `Makefile` — `deploy` target
+- `feedback_rsync_delete_env.md` — Claude Code memory of the Phase 7 incident
+- `feedback_safety_rules.md` — global SatRank safety rules

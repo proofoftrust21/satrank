@@ -965,7 +965,7 @@ export const openapiSpec = {
       l402: {
         type: 'http',
         scheme: 'L402',
-        description: 'L402 Lightning payment authentication. Base rate is 1 sat per request (tier 1). Two token options: (1) Aperture-issued: send a request without credentials to receive HTTP 402 with a Lightning invoice. Pay and include: Authorization: L402 <macaroon>:<preimage>. (2) Deposit: POST /api/deposit with { amount: N } (21 to 1,000,000 sats), pay the invoice, verify, and use: Authorization: L402 deposit:<preimage>. Deposit tokens are priced at the tier rate burnt in at deposit time (see GET /api/deposit/tiers). Both token types work on all paid endpoints. X-SatRank-Balance header tracks remaining requests.',
+        description: 'L402 Lightning payment authentication. Base rate is 1 sat per request (tier 1). Two token options: (1) Fresh macaroon: send a request without credentials to receive HTTP 402 with a Lightning invoice. Pay and include: Authorization: L402 <macaroon>:<preimage>. (2) Deposit: POST /api/deposit with { amount: N } (21 to 1,000,000 sats), pay the invoice, verify, and use: Authorization: L402 deposit:<preimage>. Deposit tokens are priced at the tier rate burnt in at deposit time (see GET /api/deposit/tiers). Both token types work on all paid endpoints. X-SatRank-Balance header tracks remaining requests.',
       },
     },
     parameters: {

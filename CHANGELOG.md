@@ -60,6 +60,24 @@ API and each SDK are versioned independently; entries are prefixed with
 - `sr.fulfill(intent, budget)` with the same client-side flow as the TypeScript SDK.
 - Production / Stable classifier, Python >= 3.10, MIT license.
 
+## [Infrastructure] - 2026-04-23
+
+### Changed
+
+- L402 gate middleware is now served natively by Express (`src/middleware/l402Native.ts`). The Aperture reverse proxy (lightninglabs/aperture) that previously handled 402 challenges has been retired.
+- nginx configuration simplified: paid routes proxy directly to Express on 127.0.0.1:3000 instead of routing through Aperture on 127.0.0.1:8082.
+- Macaroon format changed from Aperture native to HMAC-SHA256 with v1 JSON payload. Macaroons issued by Aperture before this date are no longer accepted; clients retry and receive a fresh 402 challenge.
+- Operator admin bypass header renamed from `X-Aperture-Token` to `X-Operator-Token`. Same functional behavior.
+
+### Removed
+
+- Aperture systemd service on the production VM.
+- Aperture SQLite database. Token state already lived in Postgres after the Phase 12B migration.
+
+### Rationale
+
+- Simpler stack, fewer dependencies, better alignment with mechanical neutrality: the L402 gate is now fully AGPL and forkable, with no external Go binary in the critical path.
+
 ## [Infrastructure] - 2026-04-22
 
 ### Changed
