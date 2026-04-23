@@ -26,7 +26,7 @@ const sk = hexToBytes(skHex);
 const profile = {
   name: 'SatRank',
   display_name: 'SatRank',
-  about: 'Route reliability for Lightning payments. NIP-85 kind 30382:rank provider — the only one bridging Lightning payment data into the Web of Trust.\n\nDual publishing: ~2,400 Lightning-indexed events per 6h cycle (d=ln_pubkey, ~13,900 nodes scored) + strict Nostr-indexed events (d=nostr_pubkey) built by mining NIP-57 zap receipts across 6 relays.\n\nBacked by a full bitcoind+LND node — not gossip. ~60% of the Lightning graph is phantoms; SatRank tells you which nodes are actually alive. Built for the agentic economy.',
+  about: 'SatRank provides route reliability for Lightning payments. Agents declare an intent (endpoint, budget, constraints), get a Bayesian posterior with 95% credible interval, and pay 1 sat via native L402. Tiered deposits (21 to 1M sats) lock a per-request rate into the macaroon.\n\nNIP-85 kind 30382 provider: Lightning payment data meets Web of Trust. Dual publishing (Lightning-indexed + Nostr-indexed).\n\nBacked by a full bitcoind and LND node. Real probes, not gossip.',
   website: 'https://satrank.dev',
   nip05: 'satrank@satrank.dev',
   lud16: 'wavykettle725@walletofsatoshi.com',
