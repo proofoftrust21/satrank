@@ -40,7 +40,7 @@ async function main(): Promise<void> {
 
   const endpointState: EndpointEndorsementState = {
     url_hash: 'a2c5d680750f333f535286a5527a18b4ea0dcb2195e7e5fd710b1407270a4308',
-    url: 'https://satrank.dev/api/decide',
+    url: 'https://satrank.dev/api/intent',
     verdict: 'INSUFFICIENT',
     p_success: 0.5,
     ci95_low: 0.061,
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
     price_sats: 21,
     median_latency_ms: null,
     category: 'bitcoin',
-    service_name: 'SatRank Decide',
+    service_name: 'SatRank Intent',
     operator_id: 'fce15c4cf8db86db85778ea4ba9a382075d36d8c19c7ad2c6ffe8f624a5f42cb',
   };
 

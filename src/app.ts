@@ -499,7 +499,7 @@ export function createApp() {
   }
   const balanceAuth = createBalanceAuth(pool, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(pool);
-  api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // decide, report, deposit, profile
+  api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // report, deposit, profile (decide/best-route are 410 Gone)
   // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the
   // balanceAuth middleware takes 1 credit upstream, probeController debits
   // the remaining 4 atomically. Gated on Aperture like the other paid routes.

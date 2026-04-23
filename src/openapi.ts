@@ -1458,12 +1458,15 @@ export const openapiSpec = {
       },
       DepositInvoiceResponse: {
         type: 'object',
-        required: ['invoice', 'paymentHash', 'amount', 'quotaGranted', 'expiresIn', 'instructions'],
+        required: ['invoice', 'paymentHash', 'amount', 'quotaGranted', 'tierId', 'rateSatsPerRequest', 'discountPct', 'expiresIn', 'instructions'],
         properties: {
           invoice: { type: 'string', description: 'BOLT11 invoice to pay.' },
           paymentHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
           amount: { type: 'integer', description: 'Deposit amount in sats.' },
-          quotaGranted: { type: 'integer', description: 'Sats that will be credited on the token after verification (equals amount; credits are amount / rateSatsPerRequest once the tier is looked up at verification time).' },
+          quotaGranted: { type: 'integer', description: 'Sats that will be credited on the token after verification (equals amount; credits are amount / rateSatsPerRequest).' },
+          tierId: { type: 'integer', description: 'The tier matched by the deposit amount (1 to 5).' },
+          rateSatsPerRequest: { type: 'number', description: 'Effective rate for this deposit, in sats per request. Locked upon settlement of the Lightning invoice.' },
+          discountPct: { type: 'number', minimum: 0, maximum: 100, description: 'Discount vs base rate (tier 1), for display purposes only.' },
           expiresIn: { type: 'integer', description: 'Invoice expiry in seconds.' },
           instructions: { type: 'string' },
         },

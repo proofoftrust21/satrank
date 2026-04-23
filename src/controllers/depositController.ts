@@ -138,12 +138,16 @@ export class DepositController {
       throw new ValidationError(`amount must be an integer between ${MIN_DEPOSIT_SATS} and ${MAX_DEPOSIT_SATS}`);
     }
 
+    const tier = await this.tierService.lookupTierForAmount(amount);
+    if (!tier) {
+      throw new ValidationError(`No deposit tier matches amount ${amount}`);
+    }
+
     const result = await lndAddInvoice(amount, `SatRank deposit: ${amount} requests`);
 
-    // r_hash from LND is base64-encoded
     const rHashHex = Buffer.from(result.r_hash, 'base64').toString('hex');
 
-    logger.info({ amount, rHashHex: rHashHex.slice(0, 16) }, 'Deposit invoice created');
+    logger.info({ amount, tierId: tier.tier_id, rHashHex: rHashHex.slice(0, 16) }, 'Deposit invoice created');
     depositPhaseTotal.inc({ phase: 'invoice_created' });
 
     res.status(402).json({
@@ -151,7 +155,10 @@ export class DepositController {
         invoice: result.payment_request,
         paymentHash: rHashHex,
         amount,
-        quotaGranted: amount, // raw sats balance; request credits = amount / rateSatsPerRequest (tier engraved on verify)
+        quotaGranted: amount,
+        tierId: tier.tier_id,
+        rateSatsPerRequest: tier.rate_sats_per_request,
+        discountPct: tier.discount_pct,
         expiresIn: INVOICE_EXPIRY_SEC,
         instructions: 'Pay the invoice, then call POST /api/deposit with { paymentHash, preimage } to activate your balance. Use Authorization: L402 deposit:<preimage> on paid endpoints.',
       },
