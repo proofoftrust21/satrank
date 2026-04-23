@@ -505,7 +505,7 @@ A fully commented walkthrough of the flow (health, stats, leaderboard, ping, pai
 BASE_URL=https://satrank.dev ./scripts/demo.sh
 ```
 
-Every curl is preceded by a plain-English banner explaining what the step is and why it matters. The script is designed to be recorded end-to-end for the WoT-a-thon video submission.
+Every curl is preceded by a plain-English banner explaining what the step is and why it matters. The script is designed to be recorded end-to-end as an integration demo.
 
 ## Tech Stack
 
