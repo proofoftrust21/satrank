@@ -421,7 +421,7 @@ describe.skip('Free attestations verification', async () => {
     );
 
     const res = await request(app)
-      .post('/api/attestation')
+      .post('/api/attestations')
       .send({
         txId,
         attesterHash: attester.public_key_hash,

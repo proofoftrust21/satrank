@@ -3,7 +3,7 @@ export const openapiSpec = {
   openapi: '3.1.0',
   info: {
     title: 'SatRank API',
-    version: '1.0.0',
+    version: '1.1.0',
     description: 'Trust score for autonomous agents on Bitcoin Lightning. The PageRank of the agentic economy.',
     license: { name: 'AGPL-3.0' },
   },
@@ -68,7 +68,7 @@ export const openapiSpec = {
     },
     '/verdicts': {
       post: {
-        summary: 'Batch verdict — up to 100 hashes in one request',
+        summary: 'Batch verdict (up to 100 hashes in one request)',
         operationId: 'batchVerdicts',
         description: 'Returns SAFE/RISKY/UNKNOWN for multiple agents in one request. Triggers auto-indexation for unknown Lightning pubkeys.',
         tags: ['Agents'],
@@ -268,7 +268,7 @@ export const openapiSpec = {
     },
     '/attestations': {
       post: {
-        summary: 'Submit an attestation (FREE — no L402 payment required)',
+        summary: 'Submit an attestation (free, no L402 payment required)',
         operationId: 'createAttestation',
         description: 'Attestations are free. They are the fuel of the trust network. Requires an API key (X-API-Key header) for identity verification, but no Lightning payment.',
         tags: ['Attestations'],
@@ -313,7 +313,7 @@ export const openapiSpec = {
             } } },
           },
           '503': {
-            description: 'Service degraded — database unreachable or schema mismatch',
+            description: 'Service degraded (database unreachable or schema mismatch)',
             content: { 'application/json': { schema: {
               type: 'object',
               properties: { data: { $ref: '#/components/schemas/HealthResponse' } },
@@ -373,9 +373,9 @@ export const openapiSpec = {
     },
     '/report': {
       post: {
-        summary: 'Report transaction outcome',
+        summary: 'Report outcome',
         operationId: 'report',
-        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously queried this target — see token_query_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
+        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously queried this target; see token_query_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
         tags: ['Reports'],
         security: [{ apiKey: [] }, { l402: [] }],
         requestBody: {
@@ -391,7 +391,7 @@ export const openapiSpec = {
           '401': { description: 'Missing or invalid auth (no X-API-Key and no query-scoped L402 token for this target)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '403': { description: 'L402 token not scoped to this target (no token_query_log row linking token→target within the auth window)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '404': { $ref: '#/components/responses/NotFound' },
-          '409': { description: 'Duplicate report — same reporter+target within 1 hour (error.code = DUPLICATE_REPORT)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '409': { description: 'Duplicate report (same reporter+target within 1 hour, error.code = DUPLICATE_REPORT)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },
       },
     },
@@ -423,7 +423,7 @@ export const openapiSpec = {
       get: {
         summary: 'Real-time reachability check',
         operationId: 'ping',
-        description: 'QueryRoutes in real-time via LND. Returns whether a Lightning node is reachable right now, hops, and fees. Free — no L402 required. Use ?from=<your_pubkey> for personalized pathfinding.',
+        description: 'QueryRoutes in real-time via LND. Returns whether a Lightning node is reachable right now, hops, and fees. Free (no L402 required). Use ?from=<your_pubkey> for personalized pathfinding.',
         tags: ['Discovery'],
         parameters: [
           { name: 'pubkey', in: 'path', required: true, schema: { type: 'string', pattern: '^(02|03)[a-f0-9]{64}$' }, description: '66-char Lightning pubkey' },
@@ -451,29 +451,23 @@ export const openapiSpec = {
     },
     '/deposit': {
       post: {
-        summary: 'Buy requests via variable-amount Lightning invoice',
+        summary: 'Buy requests via variable-amount Lightning invoice (tiered rate)',
         operationId: 'deposit',
-        description: 'Two-phase deposit (1 sat = 1 request). Phase 1: send { amount } (21-10,000) to receive a BOLT11 invoice. Phase 2: after payment, send { paymentHash, preimage } to verify and credit the balance. Use the resulting token on all paid endpoints: Authorization: L402 deposit:<preimage>. Rate limited to 3 invoices/min/IP.',
+        description: 'Two-phase deposit with tiered rate. Phase 1: send { amount } (21 to 1,000,000 sats) to receive a BOLT11 invoice. Phase 2: after payment, send { paymentHash, preimage } to verify and credit the balance. The oracle looks up the tier whose floor is the highest floor less than or equal to amount and engraves its rate (sats per request) onto the resulting token. Tier rates and floors are public at GET /api/deposit/tiers. Use the resulting token on all paid endpoints: Authorization: L402 deposit:<preimage>. Rate limited to 3 invoices/min/IP.',
         tags: ['Payment'],
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { oneOf: [
-            { type: 'object', properties: { amount: { type: 'integer', minimum: 21, maximum: 10000, description: 'Sats to deposit (1 sat = 1 request)' } }, required: ['amount'] },
+            { type: 'object', properties: { amount: { type: 'integer', minimum: 21, maximum: 1000000, description: 'Sats to deposit (21 to 1,000,000). The tier whose floor is the highest floor ≤ amount determines the rate engraved on the resulting token.' } }, required: ['amount'] },
             { type: 'object', properties: { paymentHash: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Payment hash from the invoice' }, preimage: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Payment preimage (proof of payment)' } }, required: ['paymentHash', 'preimage'] },
           ] } } },
         },
         responses: {
-          '201': { description: 'Deposit verified — balance credited', content: { 'application/json': { schema: { type: 'object', properties: {
-            balance: { type: 'integer', description: 'Total requests available' },
-            paymentHash: { type: 'string' },
-            token: { type: 'string', example: 'L402 deposit:<preimage>', description: 'Use as Authorization header on paid endpoints' },
+          '201': { description: 'Deposit verified, balance credited', content: { 'application/json': { schema: { type: 'object', properties: {
+            data: { $ref: '#/components/schemas/DepositVerifiedResponse' },
           } } } } },
           '402': { description: 'Phase 1: invoice generated. Phase 2: payment not yet settled.', content: { 'application/json': { schema: { type: 'object', properties: {
-            invoice: { type: 'string', description: 'BOLT11 Lightning invoice (phase 1)' },
-            paymentHash: { type: 'string' },
-            amount: { type: 'integer' },
-            quotaGranted: { type: 'integer', description: '1 sat = 1 request' },
-            expiresIn: { type: 'integer', description: 'Invoice expiry in seconds (600)' },
+            data: { $ref: '#/components/schemas/DepositInvoiceResponse' },
           } } } } },
           '400': { $ref: '#/components/responses/ValidationError' },
           '429': { description: 'Rate limited (3 invoices/min/IP)' },
@@ -485,11 +479,11 @@ export const openapiSpec = {
       get: {
         summary: 'Poll for verdict changes on watched targets',
         operationId: 'getWatchlist',
-        description: 'Returns verdicts that changed since the given timestamp. Free endpoint — use as a fallback when Nostr NIP-85 subscription is not available. For real-time updates, subscribe to kind 30382 events on relay.damus.io, nos.lol, or relay.primal.net (published every 30 min, delta-only).',
+        description: 'Returns verdicts that changed since the given timestamp. Free endpoint. Use as a fallback when Nostr NIP-85 subscription is not available. For real-time updates, subscribe to kind 30382 events on relay.damus.io, nos.lol, or relay.primal.net (published every 30 min, delta-only).',
         tags: ['Monitoring'],
         parameters: [
           { name: 'targets', in: 'query', required: true, schema: { type: 'string' }, description: 'Comma-separated 64-char hex hashes (max 50)' },
-          { name: 'since', in: 'query', required: false, schema: { type: 'integer', minimum: 0 }, description: 'Unix timestamp — only return changes after this time. Omit for all latest verdicts.' },
+          { name: 'since', in: 'query', required: false, schema: { type: 'integer', minimum: 0 }, description: 'Unix timestamp; only return changes after this time. Omit for all latest verdicts.' },
         ],
         responses: {
           '200': { description: 'Changed verdicts since the given timestamp', content: { 'application/json': { schema: { type: 'object', properties: {
@@ -598,7 +592,7 @@ export const openapiSpec = {
       get: {
         summary: 'Discover L402 services by category or keyword',
         operationId: 'searchServices',
-        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with the SatRank canonical Bayesian block for the backing Lightning node. Free endpoint — no L402 required. Data sourced from 402index.io, refreshed every 24h.',
+        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with the SatRank canonical Bayesian block for the backing Lightning node. Free endpoint (no L402 required). Data sourced from 402index.io, refreshed every 24h.',
         tags: ['Discovery'],
         parameters: [
           { name: 'q', in: 'query', required: false, schema: { type: 'string', maxLength: 100 }, description: 'Fulltext search across name, description, category, and provider' },
@@ -729,6 +723,231 @@ export const openapiSpec = {
         },
       },
     },
+    '/deposit/tiers': {
+      get: {
+        summary: 'Public deposit pricing schedule',
+        operationId: 'getDepositTiers',
+        tags: ['Payment'],
+        description: 'Returns the live deposit tier table: floor, rate, discount, and the number of requests each tier floor buys. Free endpoint. The rate in effect at deposit time is engraved on the resulting token and never changes; future schedule updates apply only to new deposits.',
+        responses: {
+          '200': {
+            description: 'Tier schedule + unit metadata',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              properties: {
+                data: {
+                  type: 'object',
+                  properties: {
+                    tiers: { type: 'array', items: { $ref: '#/components/schemas/DepositTier' } },
+                    currency: { type: 'string', example: 'sats' },
+                    rateUnit: { type: 'string', example: 'sats per request' },
+                    notes: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            } } },
+          },
+        },
+      },
+    },
+    '/probe': {
+      post: {
+        summary: 'Probe an L402 endpoint end-to-end via SatRank LND',
+        operationId: 'probeEndpoint',
+        tags: ['Discovery'],
+        security: [{ l402: [] }],
+        description: 'SatRank fetches the target URL, parses the L402 challenge, pays the BOLT11 invoice from its own LND node, and retries the request with the preimage. Returns the full telemetry: first fetch, challenge, payment outcome, authenticated retry. Costs 5 credits per call (1 deducted by balanceAuth, 4 deducted in the handler).',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: {
+            type: 'object',
+            required: ['url'],
+            properties: {
+              url: { type: 'string', format: 'uri', description: 'http(s) URL of the L402 endpoint to probe.' },
+            },
+          } } },
+        },
+        responses: {
+          '200': {
+            description: 'Probe telemetry',
+            content: { 'application/json': { schema: {
+              type: 'object',
+              properties: { data: { $ref: '#/components/schemas/ProbeResult' } },
+            } } },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '402': { description: 'Insufficient credits (need 5) or L402 auth missing', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '429': { description: 'Rate limited (per-token and global caps)' },
+          '503': { description: 'Probe service unavailable (SatRank admin macaroon not configured)' },
+        },
+      },
+    },
+    '/operator/register': {
+      post: {
+        summary: 'Self-declare an operator with identities and ownerships',
+        operationId: 'registerOperator',
+        tags: ['Operators'],
+        description: 'Self-register an operator, claim identities (ln_pubkey, nip05, dns), and claim ownerships over nodes, endpoints, or services. Requires a valid NIP-98 Authorization header (kind 27235 event signed by a Nostr pubkey, with `u` tag matching the full request URL). Identities are claimed immediately; inline proofs (LN signature, NIP-05 fetch, DNS TXT) are verified live. A proof that fails does not block the claim; the identity is recorded with verified_at=NULL so the claimant can iterate.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: {
+            type: 'object',
+            required: ['operator_id'],
+            properties: {
+              operator_id: { type: 'string', minLength: 3, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$', description: 'Opaque operator identifier. Accepts hex sha256 (64 chars) or any free-form id in [A-Za-z0-9._:-].' },
+              identities: {
+                type: 'array', maxItems: 10,
+                items: {
+                  type: 'object',
+                  required: ['type', 'value'],
+                  properties: {
+                    type: { type: 'string', enum: ['ln_pubkey', 'nip05', 'dns'] },
+                    value: { type: 'string', minLength: 1, maxLength: 256 },
+                    signature_hex: { type: 'string', pattern: '^[0-9a-fA-F]+$', minLength: 128, maxLength: 144, description: 'Required for ln_pubkey: ECDSA signature (compact 64-byte = 128 hex) of operator_id by the LN pubkey.' },
+                    expected_pubkey: { type: 'string', pattern: '^[0-9a-fA-F]{64}$', description: 'Required for nip05: the Nostr pubkey that /.well-known/nostr.json should map to the identity value.' },
+                  },
+                },
+              },
+              ownerships: {
+                type: 'array', maxItems: 50,
+                items: {
+                  type: 'object',
+                  required: ['type', 'id'],
+                  properties: {
+                    type: { type: 'string', enum: ['node', 'endpoint', 'service'] },
+                    id: { type: 'string', minLength: 1, maxLength: 256 },
+                  },
+                },
+              },
+            },
+          } } },
+        },
+        responses: {
+          '201': { description: 'Operator registered (status remains pending until proofs converge)', content: { 'application/json': { schema: {
+            type: 'object',
+            properties: {
+              data: {
+                type: 'object',
+                properties: {
+                  operator_id: { type: 'string' },
+                  status: { type: 'string', enum: ['pending', 'verified', 'rejected'] },
+                  verification_score: { type: 'number' },
+                  verifications: { type: 'array', items: {
+                    type: 'object',
+                    properties: {
+                      type: { type: 'string', enum: ['ln_pubkey', 'nip05', 'dns'] },
+                      value: { type: 'string' },
+                      valid: { type: 'boolean' },
+                      reason: { type: 'string', description: 'Failure detail returned to the claimant (e.g. bad_signature, pubkey_mismatch).' },
+                    },
+                  } },
+                  catalog: { type: 'object', description: 'Full operator catalog snapshot (identities + claimed resources + aggregated bayesian).' },
+                  nip98_pubkey: { type: 'string', pattern: '^[0-9a-fA-F]{64}$', description: 'Nostr pubkey that signed the NIP-98 auth event.' },
+                },
+              },
+            },
+          } } } },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { description: 'NIP-98 Authorization missing or invalid', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '429': { description: 'Rate limited (discoveryRateLimit)' },
+        },
+      },
+    },
+    '/operators': {
+      get: {
+        summary: 'List operators (paginated, filterable by status)',
+        operationId: 'listOperators',
+        tags: ['Operators'],
+        description: 'Returns a paginated list of operators with their verification status and activity timestamps. No per-operator bayesian aggregate (too expensive in list mode); use GET /api/operator/{id} for the full catalog and posterior.',
+        parameters: [
+          { name: 'status', in: 'query', required: false, schema: { type: 'string', enum: ['verified', 'pending', 'rejected'] } },
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 } },
+          { name: 'offset', in: 'query', required: false, schema: { type: 'integer', minimum: 0, default: 0 } },
+        ],
+        responses: {
+          '200': { description: 'Operator list with status counts', content: { 'application/json': { schema: {
+            type: 'object',
+            properties: {
+              data: { type: 'array', items: {
+                type: 'object',
+                properties: {
+                  operator_id: { type: 'string' },
+                  status: { type: 'string', enum: ['verified', 'pending', 'rejected'] },
+                  verification_score: { type: 'number' },
+                  first_seen: { type: 'integer' },
+                  last_activity: { type: 'integer' },
+                  created_at: { type: 'integer' },
+                },
+              } },
+              meta: { type: 'object', properties: {
+                total: { type: 'integer' },
+                limit: { type: 'integer' },
+                offset: { type: 'integer' },
+                counts: { type: 'object', properties: {
+                  verified: { type: 'integer' },
+                  pending: { type: 'integer' },
+                  rejected: { type: 'integer' },
+                } },
+              } },
+            },
+          } } } },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '503': { description: 'Operator listing not wired (operator repository not provided)' },
+        },
+      },
+    },
+    '/operator/{id}': {
+      get: {
+        summary: 'Get operator detail (catalog + bayesian aggregate)',
+        operationId: 'getOperator',
+        tags: ['Operators'],
+        description: 'Returns the full operator catalog: identities with their verification state, all claimed resources (nodes, endpoints, services) enriched with metadata, and the aggregated Bayesian posterior across every resource with evidence beyond the prior.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 3, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' } },
+        ],
+        responses: {
+          '200': { description: 'Operator catalog', content: { 'application/json': { schema: {
+            type: 'object',
+            properties: {
+              data: {
+                type: 'object',
+                properties: {
+                  operator: { type: 'object', properties: {
+                    operator_id: { type: 'string' },
+                    status: { type: 'string', enum: ['verified', 'pending', 'rejected'] },
+                    verification_score: { type: 'number' },
+                    first_seen: { type: 'integer' },
+                    last_activity: { type: 'integer' },
+                    created_at: { type: 'integer' },
+                  } },
+                  identities: { type: 'array', items: {
+                    type: 'object',
+                    properties: {
+                      type: { type: 'string', enum: ['ln_pubkey', 'nip05', 'dns'] },
+                      value: { type: 'string' },
+                      verified_at: { type: ['integer', 'null'] },
+                      verification_proof: { type: ['string', 'null'] },
+                    },
+                  } },
+                  catalog: { type: 'object', description: 'Enriched claims: nodes (pubkey + alias + avg_score), endpoints (url_hash + url + name + category + price_sats), services (service_hash). Every claim is listed, even without observations.' },
+                  bayesian: { type: 'object', properties: {
+                    posterior_alpha: { type: 'number' },
+                    posterior_beta: { type: 'number' },
+                    p_success: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+                    n_obs_effective: { type: 'number', description: 'Evidence mass beyond the prior, summed across all resources that contribute.' },
+                    resources_counted: { type: 'integer', description: 'Number of claimed resources with evidence beyond the prior. Subset of catalog.*.length.' },
+                    at_ts: { type: 'integer' },
+                  } },
+                },
+              },
+              meta: { type: 'object', properties: { computedAt: { type: 'integer' } } },
+            },
+          } } } },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
     '/openapi.json': {
       get: {
         summary: 'OpenAPI specification',
@@ -746,7 +965,7 @@ export const openapiSpec = {
       l402: {
         type: 'http',
         scheme: 'L402',
-        description: 'L402 Lightning payment authentication (1 sat = 1 request). Two options: (1) Standard L402 — send a request without credentials to receive HTTP 402 with a Lightning invoice for 21 sats (21 requests). Pay and include: Authorization: L402 <macaroon>:<preimage>. (2) Deposit — POST /api/deposit with { amount: N } (21-10,000 sats), pay the invoice, verify, and use: Authorization: L402 deposit:<preimage>. Both token types work on all paid endpoints. X-SatRank-Balance header tracks remaining requests.',
+        description: 'L402 Lightning payment authentication. Base rate is 1 sat per request (tier 1). Two token options: (1) Aperture-issued: send a request without credentials to receive HTTP 402 with a Lightning invoice. Pay and include: Authorization: L402 <macaroon>:<preimage>. (2) Deposit: POST /api/deposit with { amount: N } (21 to 1,000,000 sats), pay the invoice, verify, and use: Authorization: L402 deposit:<preimage>. Deposit tokens are priced at the tier rate burnt in at deposit time (see GET /api/deposit/tiers). Both token types work on all paid endpoints. X-SatRank-Balance header tracks remaining requests.',
       },
     },
     parameters: {
@@ -800,16 +1019,16 @@ export const openapiSpec = {
       },
       BayesianScoreBlock: {
         type: 'object',
-        description: 'Canonical Bayesian posterior block — shared shape across all public endpoints (verdict, intent, profile, service, endpoint). Phase 3 C9 : streaming exponential decay (τ=7d), plus de champ `window` — l\'ancienne fenêtre a été remplacée par `time_constant_days`, `recent_activity`, `risk_profile`, `last_update`.',
+        description: 'Canonical Bayesian posterior block shared across all public endpoints (verdict, intent, profile, service, endpoint). Streaming exponential decay with time constant τ=7 days. The legacy `window` field was removed and replaced by `time_constant_days`, `recent_activity`, `risk_profile`, and `last_update`.',
         required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile'],
         properties: {
-          p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Beta-Binomial posterior mean (streaming, décroissance τ=7j).' },
+          p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Beta-Binomial posterior mean (streaming, decay τ=7 days).' },
           ci95_low:  { type: 'number', minimum: 0, maximum: 1, description: 'Lower bound of the 95% credible interval.' },
           ci95_high: { type: 'number', minimum: 0, maximum: 1, description: 'Upper bound of the 95% credible interval.' },
-          n_obs: { type: 'number', description: 'Observations effectives (excès d\'évidence au-delà du prior) — somme décayée τ=7j des 3 sources.' },
+          n_obs: { type: 'number', description: 'Effective observations (excess evidence beyond the prior), summed with τ=7d decay across the three sources.' },
           verdict: { type: 'string', enum: ['SAFE', 'UNKNOWN', 'RISKY', 'INSUFFICIENT'], description: 'Priority: INSUFFICIENT > RISKY > UNKNOWN > SAFE.' },
-          time_constant_days: { type: 'number', description: 'Constante τ exposée (décroissance exponentielle, jours). Actuellement 7.' },
-          last_update: { type: 'number', description: 'Unix seconds de la dernière ingestion connue — max sur les 3 sources. 0 si aucune observation.' },
+          time_constant_days: { type: 'number', description: 'Exposed time constant τ (exponential decay, days). Currently 7.' },
+          last_update: { type: 'number', description: 'Unix seconds of the most recent ingestion, taken as the max over the three sources. 0 when no observation has been recorded.' },
           sources: {
             type: 'object',
             required: ['probe', 'report', 'paid'],
@@ -823,14 +1042,14 @@ export const openapiSpec = {
           recent_activity: {
             type: 'object',
             required: ['last_24h', 'last_7d', 'last_30d'],
-            description: 'n_obs cumulé sur 24h/7d/30d (daily_buckets, toutes sources) — display-only, indépendant du verdict.',
+            description: 'Cumulative n_obs over 24h/7d/30d windows (daily_buckets, all sources). Display only, independent of the verdict.',
             properties: {
               last_24h: { type: 'integer', minimum: 0 },
               last_7d:  { type: 'integer', minimum: 0 },
               last_30d: { type: 'integer', minimum: 0 },
             },
           },
-          risk_profile: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'], description: 'Trend delta success_rate 7j récents vs 23j antérieurs — Option B.' },
+          risk_profile: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'], description: 'Trend delta: success_rate over the last 7 days vs the preceding 23 days.' },
         },
       },
       PaginationMeta: {
@@ -863,7 +1082,7 @@ export const openapiSpec = {
       },
       AgentScoreResponse: {
         type: 'object',
-        description: 'Agent profile: identity + stats + evidence overlay + canonical Bayesian block. No composite score surface — `bayesian` is the source of truth.',
+        description: 'Agent profile: identity, stats, evidence overlay, and canonical Bayesian block. No composite score surface; `bayesian` is the source of truth.',
         required: ['agent', 'bayesian', 'stats', 'evidence', 'alerts'],
         properties: {
           agent: {
@@ -932,18 +1151,16 @@ export const openapiSpec = {
             oneOf: [
               {
                 type: 'object',
+                description: 'Sovereign PageRank signal computed on the SatRank peer-trust graph, supplemented by legacy external signals where available.',
                 properties: {
-                  positiveRatings: { type: 'integer' },
-                  negativeRatings: { type: 'integer' },
-                  lnplusRank: { type: 'integer', minimum: 0, maximum: 10 },
-                  hubnessRank: { type: 'integer', description: 'LN+ hubness rank — influence in the network (supplemented by sovereign PageRank)' },
-                  betweennessRank: { type: 'integer', description: 'LN+ betweenness rank — frequency on shortest paths (supplemented by sovereign PageRank)' },
-                  sourceUrl: { type: 'string', format: 'uri', description: 'Verify on LightningNetwork.plus' },
+                  pageRank: { type: ['number', 'null'], description: 'Sovereign PageRank on the SatRank peer-trust graph (0-1). Primary reputation signal since v19.' },
+                  positiveRatings: { type: 'integer', description: 'Legacy count. Kept for backward compatibility. Not weighted in the current score.' },
+                  negativeRatings: { type: 'integer', description: 'Legacy count. Kept for backward compatibility. Not weighted in the current score.' },
                 },
               },
               { type: 'null' },
             ],
-            description: 'LN+ community ratings. Null if no ratings exist.',
+            description: 'Sovereign reputation signals. Null if none exist.',
           },
           popularity: {
             type: 'object',
@@ -956,7 +1173,7 @@ export const openapiSpec = {
             oneOf: [
               {
                 type: 'object',
-                description: 'Route probe data — proprietary reachability test from our Lightning node',
+                description: 'Route probe data (proprietary reachability test from our Lightning node).',
                 properties: {
                   reachable: { type: 'boolean', description: 'Whether a route exists to this node' },
                   latencyMs: { type: ['integer', 'null'], description: 'Route query response time in ms' },
@@ -982,7 +1199,7 @@ export const openapiSpec = {
       },
       AgentSummary: {
         type: 'object',
-        description: 'Leaderboard row — identity + canonical Bayesian block.',
+        description: 'Leaderboard row: identity plus canonical Bayesian block.',
         required: ['publicKeyHash', 'alias', 'rank', 'totalTransactions', 'source', 'bayesian'],
         properties: {
           publicKeyHash: { type: 'string' },
@@ -995,7 +1212,7 @@ export const openapiSpec = {
       },
       AgentSearchResult: {
         type: 'object',
-        description: 'Search result — identity + canonical Bayesian block.',
+        description: 'Search result: identity plus canonical Bayesian block.',
         required: ['publicKeyHash', 'alias', 'rank', 'totalTransactions', 'source', 'bayesian'],
         properties: {
           publicKeyHash: { type: 'string' },
@@ -1084,7 +1301,7 @@ export const openapiSpec = {
       },
       PathfindingResult: {
         type: 'object',
-        description: 'Real-time personalized route query from the calling agent to the target, via LND QueryRoutes with source_pub_key. This is proprietary data — no free alternative provides personalized pathfinding as a service.',
+        description: 'Real-time personalized route query from the calling agent to the target, via LND QueryRoutes with source_pub_key. Proprietary data; no free alternative provides personalized pathfinding as a service.',
         properties: {
           reachable: { type: 'boolean', description: 'Whether a route exists from the caller to this target' },
           hops: { type: ['integer', 'null'], description: 'Number of hops in the best route from the caller' },
@@ -1119,7 +1336,7 @@ export const openapiSpec = {
         properties: {
           status: { type: 'string', enum: ['ok', 'error'] },
           agentsIndexed: { type: 'integer', description: 'Active agents (not seen in the graph within 90 days are excluded)' },
-          staleAgents: { type: 'integer', description: 'Fossil agents — not seen in 90+ days, kept for history but excluded from stats' },
+          staleAgents: { type: 'integer', description: 'Fossil agents (not seen in 90+ days, kept for history but excluded from stats).' },
           totalTransactions: { type: 'integer' },
           lastUpdate: { type: 'integer' },
           uptime: { type: 'integer', description: 'Seconds since process start' },
@@ -1134,11 +1351,11 @@ export const openapiSpec = {
           totalAgents: { type: 'integer', description: 'Active Lightning agents indexed across all sources (stale >90d excluded)' },
           totalEndpoints: { type: 'integer', description: 'Total registered endpoints (agents + service_endpoints)' },
           nodesProbed: { type: 'integer', description: 'Nodes probed at least once via LND QueryRoutes (used as the denominator for phantomRate)' },
-          phantomRate: { type: 'number', description: 'Percentage of probed nodes that are unreachable in routing (0–100). Computed live from the last 24h probe window' },
-          verifiedReachable: { type: 'integer', description: 'Nodes with at least one successful probe in the last 24h — "who you can actually pay"' },
+          phantomRate: { type: 'number', description: 'Percentage of probed nodes that are unreachable in routing (0 to 100). Computed live from the last 24h probe window.' },
+          verifiedReachable: { type: 'integer', description: 'Nodes with at least one successful probe in the last 24h, i.e. "who you can actually pay".' },
           probes24h: { type: 'integer', description: 'Total QueryRoutes probes executed in the last 24h rolling window (all amount tiers combined)' },
           totalChannels: { type: 'integer', description: 'Sum of Lightning channels across all lightning_graph agents' },
-          nodesWithRatings: { type: 'integer', description: 'Number of agents with non-zero sovereign reputation (PageRank > 0 on SatRank peer-trust graph; LN+ has been deprecated since v19)' },
+          nodesWithRatings: { type: 'integer', description: 'Number of agents with non-zero sovereign reputation (PageRank > 0 on the SatRank peer-trust graph).' },
           networkCapacityBtc: { type: 'number', description: 'Total network capacity in BTC (sum of all validated channel capacities)' },
           totalVolumeBuckets: {
             type: 'object',
@@ -1177,7 +1394,7 @@ export const openapiSpec = {
               totalSubmitted: { type: 'integer', description: 'Reports submitted in the window' },
               totalVerified: { type: 'integer', description: 'Reports with verified=1 (payment hash matched an on-chain/LN payment)' },
               distinctReporters: { type: 'integer', description: 'Unique reporter npubs / keys in the window' },
-              targetN: { type: 'integer', description: 'Target report count — 200 by default' },
+              targetN: { type: 'integer', description: 'Target report count (200 by default).' },
               progressPct: { type: 'number', minimum: 0, maximum: 100, description: 'totalSubmitted / targetN, capped at 100, 1-decimal precision' },
             },
           },
@@ -1213,19 +1430,78 @@ export const openapiSpec = {
           version: { type: 'string' },
         },
       },
-      SurvivalResult: {
+      DepositTier: {
         type: 'object',
-        description: 'Predicts whether a node will still be reachable in 7 days, based on score trajectory, probe stability, and gossip freshness.',
+        required: ['tierId', 'minDepositSats', 'rateSatsPerRequest', 'discountPct', 'requestsPerDeposit'],
         properties: {
-          score: { type: 'integer', minimum: 0, maximum: 100, description: 'Survival score (0 = likely dead, 100 = stable)' },
-          prediction: { type: 'string', enum: ['stable', 'at_risk', 'likely_dead'] },
-          signals: { type: 'object', properties: {
-            scoreTrajectory: { type: 'string' },
-            probeStability: { type: 'string' },
-            gossipFreshness: { type: 'string' },
+          tierId: { type: 'integer', description: 'Tier index (1 is the base tier, 5 is the deepest discount).' },
+          minDepositSats: { type: 'integer', description: 'Lowest deposit amount that maps to this tier.' },
+          rateSatsPerRequest: { type: 'number', description: 'Cost in sats charged per paid request for deposits at this tier.' },
+          discountPct: { type: 'number', minimum: 0, maximum: 100, description: 'Discount vs the base tier-1 rate (0 at tier 1, up to 95 at tier 5).' },
+          requestsPerDeposit: { type: 'number', description: 'How many requests a deposit exactly at this floor buys (minDepositSats / rateSatsPerRequest).' },
+        },
+      },
+      DepositVerifiedResponse: {
+        type: 'object',
+        required: ['balance', 'balanceCredits', 'rateSatsPerRequest', 'tierId', 'paymentHash', 'instructions'],
+        properties: {
+          balance: { type: 'integer', description: 'Remaining sats on the token (matches token_balance.remaining).' },
+          balanceCredits: { type: 'integer', description: 'Remaining request credits on the token (balance / rateSatsPerRequest).' },
+          rateSatsPerRequest: { type: 'number', description: 'Rate engraved at deposit time. Immutable for the lifetime of the token.' },
+          tierId: { type: 'integer', description: 'Tier id whose rate is engraved on this token.' },
+          discountPct: { type: 'number', minimum: 0, maximum: 100, description: 'Discount engraved at deposit time (returned on fresh credits, omitted on alreadyRedeemed replays).' },
+          paymentHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          alreadyRedeemed: { type: 'boolean', description: 'True when the verify call was a replay of an already-credited deposit.' },
+          token: { type: 'string', description: 'Full Authorization header value to reuse on paid endpoints (format: L402 deposit:<preimage>).' },
+          instructions: { type: 'string' },
+        },
+      },
+      DepositInvoiceResponse: {
+        type: 'object',
+        required: ['invoice', 'paymentHash', 'amount', 'quotaGranted', 'expiresIn', 'instructions'],
+        properties: {
+          invoice: { type: 'string', description: 'BOLT11 invoice to pay.' },
+          paymentHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          amount: { type: 'integer', description: 'Deposit amount in sats.' },
+          quotaGranted: { type: 'integer', description: 'Sats that will be credited on the token after verification (equals amount; credits are amount / rateSatsPerRequest once the tier is looked up at verification time).' },
+          expiresIn: { type: 'integer', description: 'Invoice expiry in seconds.' },
+          instructions: { type: 'string' },
+        },
+      },
+      ProbeResult: {
+        type: 'object',
+        required: ['url', 'target', 'firstFetch', 'totalLatencyMs', 'cost'],
+        properties: {
+          url: { type: 'string', format: 'uri' },
+          target: { type: 'string', enum: ['L402', 'NOT_L402', 'UNREACHABLE'], description: 'Classification of the target after the first fetch.' },
+          firstFetch: { type: 'object', required: ['status', 'latencyMs'], properties: {
+            status: { type: ['integer', 'null'] },
+            latencyMs: { type: 'integer' },
+            httpError: { type: 'string', description: 'Populated when the first fetch failed at the transport level.' },
+          } },
+          l402Challenge: { type: 'object', description: 'Parsed WWW-Authenticate when target is L402. Absent otherwise.', properties: {
+            macaroonLen: { type: 'integer' },
+            invoiceSats: { type: ['integer', 'null'] },
+            invoicePaymentHash: { type: 'string' },
+          } },
+          payment: { type: 'object', description: 'SatRank-side payment attempt. Absent when no challenge was payable (target NOT_L402, unreachable, or invalid bolt11).', properties: {
+            paymentHash: { type: 'string' },
+            preimage: { type: 'string' },
+            paymentError: { type: 'string' },
+            durationMs: { type: 'integer' },
+          } },
+          secondFetch: { type: 'object', description: 'Authenticated retry after payment (absent if payment did not succeed).', properties: {
+            status: { type: 'integer' },
+            latencyMs: { type: 'integer' },
+            bodyBytes: { type: 'integer' },
+            bodyHash: { type: 'string' },
+            bodyPreview: { type: 'string' },
+          } },
+          totalLatencyMs: { type: 'integer' },
+          cost: { type: 'object', required: ['creditsDeducted'], properties: {
+            creditsDeducted: { type: 'integer', description: 'Credits charged to the caller (5 per call: 1 via balanceAuth, 4 by the handler).' },
           } },
         },
-        required: ['score', 'prediction', 'signals'],
       },
       ReportRequest: {
         type: 'object',
@@ -1339,7 +1615,6 @@ export const openapiSpec = {
             successRate: { type: 'number', minimum: 0, maximum: 1 },
           } },
           probeUptime: { type: ['number', 'null'], description: 'Probe reachability ratio over 7 days (0-1)' },
-          survival: { $ref: '#/components/schemas/SurvivalResult' },
           channelFlow: { oneOf: [{ type: 'object', properties: { net7d: { type: ['integer', 'null'] }, capacityDelta7d: { type: ['integer', 'null'] }, trend: { type: 'string', enum: ['growing', 'stable', 'declining'] } } }, { type: 'null' }], description: 'Net channel change over 7 days' },
           capacityHealth: { oneOf: [{ type: 'object', properties: { drainRate24h: { type: ['number', 'null'] }, drainRate7d: { type: ['number', 'null'] }, trend: { type: 'string', enum: ['growing', 'stable', 'declining'] } } }, { type: 'null' }], description: 'Capacity drain rate' },
           feeVolatility: { oneOf: [{ type: 'object', properties: { index: { type: 'integer' }, interpretation: { type: 'string', enum: ['stable', 'moderate', 'volatile'] }, changesLast7d: { type: 'integer' } } }, { type: 'null' }], description: 'Fee policy volatility index' },
@@ -1373,7 +1648,7 @@ export const openapiSpec = {
         } } },
       },
       PaymentRequired: {
-        description: 'L402 payment required (1 sat = 1 request). Pay the Lightning invoice and retry with the L402 token. If the error code is BALANCE_EXHAUSTED, remove the Authorization header and retry to get a new 21-sat invoice, or use POST /api/deposit to buy 21-10,000 requests at once.',
+        description: 'L402 payment required. Base rate is 1 sat per request (tier 1). Pay the Lightning invoice and retry with the L402 token. If the error code is BALANCE_EXHAUSTED, remove the Authorization header and retry to get a new tier-1 invoice, or use POST /api/deposit to buy a larger batch at a discounted rate (21 to 1,000,000 sats, see GET /api/deposit/tiers).',
         headers: {
           'WWW-Authenticate': {
             description: 'L402 challenge containing a macaroon and a Lightning invoice. Format: L402 macaroon="<base64>", invoice="<bolt11>"',
