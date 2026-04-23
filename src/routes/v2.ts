@@ -48,6 +48,7 @@ export function createV2Routes(
   balanceAuth: RequestHandler = noopMiddleware,
   reportAuth: RequestHandler = apiKeyAuth,
   depositController?: DepositController,
+  paidGate: RequestHandler = apertureGateAuth,
 ): Router {
   const router = Router();
 
@@ -68,7 +69,7 @@ export function createV2Routes(
   // Phase 2 : dispatch anonyme (X-L402-Preimage ou body.preimage sans reporter)
   // bypass reportAuth ; chemin legacy délègue au middleware fourni.
   router.post('/report', reportRateLimit, createReportDispatchAuth(reportAuth), controller.report);
-  router.get('/profile/:id', apertureGateAuth, balanceAuth, controller.profile);
+  router.get('/profile/:id', paidGate, balanceAuth, controller.profile);
 
   // Deposit: variable-amount L402 token purchase (bypasses Aperture, free endpoint)
   if (depositController) {

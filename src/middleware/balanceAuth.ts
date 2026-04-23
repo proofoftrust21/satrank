@@ -1,4 +1,4 @@
-// L402 token balance middleware — quota system (21 requests per token)
+// L402 token balance middleware — quota system (1 request per token)
 // After apertureGateAuth verifies the L402 token is valid, this middleware
 // tracks usage via a per-payment_hash counter in PostgreSQL.
 //
@@ -7,13 +7,17 @@
 // IP-based rate limiting (express-rate-limit) provides the first layer;
 // token balance provides the economic layer. IPv6 subnet rotation can
 // bypass IP limits but cannot bypass token balance (attacker must pay).
+//
+// Phase 14D.3.0 — TOKEN_QUOTA descendu de 21 a 1 pour aligner le flow L402
+// natif (Aperture sunset) sur la doc publique : 1 sat = 1 requete, tier 1
+// rate 1.0. Pour un quota prepaye, passer par /api/deposit (21 - 10 000 sats).
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { Pool } from 'pg';
 import { AppError } from '../errors';
 import { logger } from '../logger';
 
-const TOKEN_QUOTA = 21;
+const TOKEN_QUOTA = 1;
 
 // HTTP status codes for which the balance decrement is refunded. Covers client
 // input errors that short-circuit before any business logic runs: zod parse
