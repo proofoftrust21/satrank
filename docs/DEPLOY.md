@@ -1,5 +1,21 @@
 # Deploy procedure
 
+## Canonical workspace
+
+Production workspace on the VM: `/root/satrank/`.
+
+- Source of truth: `git fetch origin main && git reset --hard origin/main` keeps
+  it aligned with `main`.
+- Docker builds and runs from this directory:
+  `docker compose build && docker compose up -d --force-recreate`.
+- Secrets (`.env.production`, `*.macaroon`) are not in git, are preserved across
+  rsync deploys via `.rsync-exclude`, and must be rotated manually when needed.
+- The legacy `/opt/satrank/` workspace is archived under
+  `/opt/satrank-archived-YYYYMMDD/`. It will be removed after 7 days of stable
+  observation.
+
+---
+
 ## Mechanical rule
 
 **Every deploy must go through `make deploy`.** Never an ad-hoc rsync against
