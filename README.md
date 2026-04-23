@@ -1,578 +1,184 @@
 # SatRank
 
-**Route reliability for Lightning payments. Built for the agentic economy.**
+**The Lightning trust oracle for the agentic economy.**
 
-SatRank is a trust oracle for the Lightning Network. Before each payment, an agent queries SatRank for a GO/NO-GO decision: one request, one answer, 1 sat via L402 (21 requests) or deposit (up to 10,000 requests).
+[![npm](https://img.shields.io/npm/v/@satrank/sdk.svg?label=%40satrank%2Fsdk)](https://www.npmjs.com/package/@satrank/sdk)
+[![PyPI](https://img.shields.io/pypi/v/satrank.svg)](https://pypi.org/project/satrank/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](./LICENSE)
+[![API docs](https://img.shields.io/badge/API-OpenAPI%203.1-blueviolet.svg)](https://satrank.dev/api/docs)
 
-- Backed by a full **bitcoind v28.1** node + **LND**, not Neutrino or gossip. Every channel capacity is UTXO-validated.
-- Tracks **~13,964 active Lightning nodes** (schema v29, post-migration), probes them every 30 minutes at multiple amount tiers, publishes trust assertions on Nostr every 6 hours.
-- **63 %** of the Lightning graph is unreachable in routing ("phantom nodes"). The exact rate varies probe-to-probe and is published live by `/api/stats`. SatRank tells you which nodes are actually alive.
-- First **NIP-85** provider bridging the Lightning payment graph into the Web of Trust. Every other NIP-85 implementation scores the Nostr social graph. SatRank scores who you can actually pay.
+## What it is
 
-## Quick Start: consume SatRank trust assertions in 3 steps
+SatRank is a sovereign trust oracle for the Lightning Network. Autonomous agents pay Lightning-native HTTP services every day, and most of the graph they have to navigate is noise: a large share of public Lightning nodes never route a payment, and L402 endpoints ship without SLAs, without catalogs, without reputation. SatRank measures the part of the graph that actually settles and publishes a Bayesian posterior per node.
 
-Any Nostr client can read SatRank's Lightning trust scores without an SDK, an API key, or a Lightning payment:
+The product has two steps. `POST /api/intent` takes a natural-language intent and returns the top-ranked L402 candidates for that intent. `POST /api/fulfill` settles the chosen candidate through the L402 paywall and returns the proof. Agents resolve the intent first, settle second, and only settle against a target they believe in.
 
-```bash
-# 1) Install nak -- the command-line Nostr utility (https://github.com/fiatjaf/nak)
-go install github.com/fiatjaf/nak@latest
+Every score is a posterior, not a composite number. For each node the API returns `p_success`, `ci95_low`, `ci95_high`, `n_obs`, and `time_constant_days`. Uncertainty is first-class. Every QueryRoutes probe, every preimage-verified report, and every fulfilled intent updates the same α, β cycle.
 
-# 2) Fetch the 5 latest trust assertions for Lightning nodes
-nak req -k 30382 -a 5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4 \
-  --limit 5 wss://relay.damus.io
+SatRank runs the full stack: a Bitcoin full node (no Neutrino, no third-party gossip), its own LND, its own Nostr identity, its own probe fleet, its own relay-publishing pipeline.
 
-# 3) The returned events include a `rank` tag (0-100 normalized trust score),
-#    a `verdict` tag (SAFE/RISKY/UNKNOWN), a `reachable` tag, five component
-#    scores, an alias, and the Lightning pubkey in the `d` tag. Parse any of
-#    them with jq or your favorite Nostr client.
-```
+## Quick start
 
-Prefer HTTP? SatRank also exposes the same data via a free `GET /api/agents/top` endpoint and a paid `POST /api/decide` endpoint (1 sat/request). Two payment paths: standard L402 (21 sats = 21 requests, auto-invoice) or `POST /api/deposit` (21–10,000 requests in a single invoice).
-
-## Agent workflow: screen, route, decide
-
-The recommended pattern for autonomous agents making payments: screen many, pick the best route, then decide on the winner.
-
-**Step 1: Screen.** `POST /api/verdicts` with up to 100 target hashes in a single request. Returns score, verdict (SAFE/RISKY/UNKNOWN), and confidence for each target. 1 request from your L402 balance.
-
-**Step 2: Route.** `POST /api/best-route` with the SAFE subset from step 1. Returns the top 3 candidates sorted by a composite rank (score, hops, fees). All pathfinding runs in parallel. 1 request.
-
-**Step 3: Decide.** `POST /api/decide` on the top candidate from step 2. Returns GO/NO-GO, 5 probability components, personalized pathfinding from your position (or from your wallet provider's hub via `walletProvider`), risk profile, survival prediction, fee stability, and max routable amount. 1 request.
-
-```bash
-# Step 1: Screen 100 candidates (1 request from L402 balance)
-curl -X POST https://satrank.dev/api/verdicts \
-  -H "Content-Type: application/json" \
-  -d '{"hashes": ["<hash1>", "<hash2>", "...up to 100"]}'
-
-# Step 2: Find best route among SAFE candidates (1 request)
-curl -X POST https://satrank.dev/api/best-route \
-  -H "Content-Type: application/json" \
-  -d '{"targets": ["<safe1>", "<safe2>", "..."], "caller": "<your-hash>", "amountSats": 50000}'
-
-# Step 3: Decide on the winner (1 request)
-# walletProvider tells SatRank to compute pathfinding from your wallet's hub node
-curl -X POST https://satrank.dev/api/decide \
-  -H "Content-Type: application/json" \
-  -d '{"target": "<best-route-hash>", "caller": "<your-hash>", "walletProvider": "phoenix"}'
-```
-
-| Step | Endpoint | Latency | Cost | Returns |
-|------|----------|---------|------|---------|
-| Screen | `POST /api/verdicts` | ~250 ms | 1 request | verdict + score + confidence per target |
-| Route | `POST /api/best-route` | ~100 ms | 1 request | top 3 candidates by composite rank |
-| Decide | `POST /api/decide` | ~150 ms | 1 request | GO/NO-GO + success rate + pathfinding + fee volatility |
-| **Total** | | **~500 ms** | **3 requests** | **Fully informed decision from 100 candidates** |
-
-**Pricing:** 1 sat = 1 request. Two paths: standard L402 (auto-invoice 21 sats for 21 requests, 7 workflows per token) or `POST /api/deposit` (buy 21–10,000 requests in a single invoice). The `X-SatRank-Balance` header tracks remaining requests. Both token types work on all paid endpoints.
-
-**Concrete example:** Agent has 100 candidate nodes for a payment. Screen returns 42 SAFE, 31 UNKNOWN, 27 RISKY in ~250 ms. Best-route narrows to the top 3 by route quality in ~100 ms. Decide on the winner returns GO with rate=0.987, targetFeeStability=0.91, maxRoutableAmount=100000 in ~150 ms. Total: 3 requests, under 1 second.
-
-### Cost vs. value
-
-An agent making 1,000 payments/day spends ~3,000 sats/day on oracle fees. One avoided failed payment saves more: routing fees are lost on failure, the HTLC timeout locks capital for 30-60 seconds, and the retry adds another round-trip. At scale, the oracle pays for itself many times over.
-
-| Volume | Daily oracle cost | Break-even |
-|--------|-------------------|------------|
-| 100 payments/day | ~300 sats | 1 avoided failure |
-| 1,000 payments/day | ~3,000 sats | 1 avoided failure |
-| 10,000 payments/day | ~30,000 sats | 1 avoided failure |
-
-### Positional pathfinding
-
-Most autonomous agents don't run their own LND node. They pay via wallet providers (Phoenix, WoS, Strike, etc.) and don't know their position in the graph. Without positional context, SatRank computes P_path from its own node -- a poor proxy for the agent's actual route quality.
-
-Pass `walletProvider` in `/api/decide` and SatRank computes pathfinding from the provider's hub node instead:
-
-```json
-{ "target": "<hash>", "caller": "<hash>", "walletProvider": "phoenix" }
-```
-
-Supported providers: `phoenix`, `wos`, `strike`, `blink`, `breez`, `zeus`, `coinos`, `cashapp`. Alternatively, pass `callerNodePubkey` with any Lightning pubkey to use as the pathfinding source.
-
-Impact: a Phoenix agent querying Binance gets 1-hop / 0-fee pathfinding (P_path=0.97) instead of a null fallback (P_path=0.50). The successRate jumps from 0.74 to 0.98.
-
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph Trust_Root["Trust root (on-prem)"]
-    BTC[bitcoind v28.1<br/>full node]
-    LND[LND<br/>+ gossip + QueryRoutes]
-  end
-
-  BTC --> LND
-  LND --> GC[Graph crawler<br/>hourly]
-  LND --> PC[Probe crawler<br/>every 30 min]
-  LND --> LP[LN+ crawler<br/>daily]
-  OBS[Observer Protocol<br/>5 min] --> SE
-
-  GC --> DB[(SQLite<br/>schema v29)]
-  PC --> DB
-  LP --> DB
-
-  DB --> SE[Scoring engine<br/>5 components + anti-gaming]
-  SE --> API[REST API<br/>27 endpoints]
-  SE --> NP[NIP-85 publisher<br/>kind 30382:rank<br/>every 6h]
-  SE --> DVM[DVM<br/>kind 5900 → 6900]
-
-  NP --> R1((relay.damus.io))
-  NP --> R2((nos.lol))
-  NP --> R3((relay.primal.net))
-  DVM --> R1
-  DVM --> R2
-  DVM --> R3
-
-  API -->|free| Agents
-  API -->|L402 21 sats via Aperture<br/>or deposit 21-10k sats| L402[Aperture<br/>paywall]
-  L402 --> Agents[Autonomous agents]
-  R1 --> Clients[Any Nostr client<br/>nak / nostcat / njump]
-  R2 --> Clients
-  R3 --> Clients
-
-  User[Any Nostr user] -->|kind 10040<br/>trust declaration| R1
-```
-
-The full path: **bitcoind → LND → crawlers/probes → scoring engine → NIP-85 publisher + L402 API + DVM → 3 relays / HTTP clients / autonomous agents.** Every layer is reproducible from the code in this repo.
-
-## Current network snapshot (2026-04-16)
-
-| Metric | Value | Source |
-|---|---|---|
-| Active Lightning nodes indexed | **13,964** | `/api/stats` `totalAgents` |
-| Stale (not seen 90+ days, excluded from scoring) | **4,260** | `/api/health` `staleAgents` |
-| Phantom rate (unreachable in routing) | **63 %** (live) | `/api/stats` `phantomRate` |
-| Verified reachable | **5,219** (live) | `/api/stats` `verifiedReachable` |
-| Total channels | **88,377** (live) | `/api/stats` `totalChannels` |
-| Network capacity (validated) | **9,540.6 BTC** (live) | `/api/stats` `networkCapacityBtc` |
-| Probes executed / 24 h | **~149,500** (live · 24 h rolling) | `/api/stats` `probes24h` |
-| Paid L402 services indexed (402index) | **94** | `/api/stats` `serviceSources.402index` |
-| NIP-85 events published per cycle | **~5,000** (score ≥ 30) | crawler log |
-| Tests (vitest) | **573 / 45 files** green | `npm test` |
-| Schema version | **v29** | `/api/health` `schemaVersion` |
-
-Numbers are pulled live from `/api/stats` and `/api/health` (free endpoints, no auth). The landing page at [satrank.dev](https://satrank.dev) renders them client-side on every visit.
-
-## Scoring Algorithm
-
-Composite score 0-100 computed from 5 weighted components:
-
-| Component | Weight | Measures |
-|---|---|---|
-| **Volume** | **25 %** | Channels x capacity blend (50/50 log scale, ref 500 ch / 50 BTC) or verified transactions (log) |
-| **Reputation** | **30 %** | 5 sub-signals (weighted to 100): sovereign PageRank centrality 20, peer trust 30, routing quality 20, capacity trend 15, fee stability 15. LN+ positive deprecated since v19. |
-| **Seniority** | **15 %** | Days since first seen, exponential growth with 2-year half-life |
-| **Regularity** | **15 %** | Multi-axis consistency over 7 d (uptime 70 % + latency stability 20 % + hop stability 10 %) |
-| **Diversity** | **15 %** | Unique peers (log, ref 500) or unique counterparties (log) |
-
-Multiplicative modifiers: verified-tx x1.0-1.10, probe penalty x0.65-0.90 (graduated by cause: dead/zombie/liquidity). Popularity bonus removed (gameable). LN+ positive modifier retired in v19 — the sovereign-PageRank centrality signal inside the Reputation composite replaces it with 100 % coverage.
-
-**Anti-gaming:**
-- Mutual attestation loop detection (A↔B) with 95 % penalty
-- Circular cluster detection (A→B→C→A) with 90 % penalty
-- Extended cycle detection via BFS (up to 4 hops) with 90 % penalty
-- Minimum 7-day seniority required to attest
-- Attester score weighting (PageRank-like recursion)
-- Attestation source concentration penalty
-
-**Verdict thresholds** (`GET /api/agent/{hash}/verdict`): SAFE >= 47 (post-v19 recalibration, stable through v29), UNKNOWN 30-46, RISKY < 30 or critical flags. The verdict response also includes `riskProfile` (low/medium/high, from score + 7-day volatility) and `survival` (stable/at_risk/likely_dead, from uptime + capacity trend). See `public/methodology.html` for the full rationale.
-
-**Reporter badge tiers.** Every `/api/report` submission carries a reporter weight derived from the reporter's agent score and their badge tier (`novice` → `contributor` → `trusted`). Preimage-verified reports double the weight. Tiers come from historical accuracy and recency of the reporter's own submissions. See `methodology.html#data-validation` for the exact calibration.
-
-## API
-
-### Decision API (primary interface for agents)
-
-```bash
-# GO / NO-GO decision with success probability (L402, 1 request from balance)
-curl -X POST https://satrank.dev/api/decide \
-  -H "Content-Type: application/json" \
-  -d '{"target": "<hash>", "caller": "<your-hash>"}'
-
-# Report transaction outcome (authenticated, no quota consumed)
-# Accepts X-API-Key OR an L402 deposit token scoped to this target via decide_log
-curl -X POST https://satrank.dev/api/report \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: <key>" \
-  -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success", "preimage": "<64-hex optional, 2x weight>"}'
-
-# Agent profile with reports, uptime, rank
-curl https://satrank.dev/api/profile/<hash>
-
-# Real-time reachability check (free)
-curl https://satrank.dev/api/ping/<ln-pubkey>
-curl "https://satrank.dev/api/ping/<ln-pubkey>?from=<your-ln-pubkey>"
-```
-
-### Score & Verdict API
-
-```bash
-curl https://satrank.dev/api/agent/<hash>/verdict
-# Returns: SAFE / RISKY / UNKNOWN with confidence, flags, risk profile, personalized pathfinding
-```
-
-### Other endpoints
-
-| Method | Endpoint | Purpose | Cost |
-|---|---|---|---|
-| POST | `/api/decide` | GO/NO-GO with success probability + pathfinding + fee volatility + max routable amount | 1 req |
-| POST | `/api/best-route` | Batch pathfinding for up to 50 targets, returns top 3 by composite rank | 1 req |
-| POST | `/api/report` | Report transaction outcome (weighted by reporter score + badge tier; preimage 2x) | free (API key or decide-scoped L402 token) |
-| GET | `/api/profile/:id` | Full agent profile with reports, uptime, rank | 1 req |
-| GET | `/api/ping/:pubkey` | Real-time reachability (QueryRoutes live) | free |
-| GET | `/api/agent/:hash` | Detailed score + evidence | 1 req |
-| GET | `/api/agent/:hash/verdict` | SAFE/RISKY/UNKNOWN + flags + risk profile | 1 req |
-| GET | `/api/agent/:hash/history` | Score snapshots with deltas | 1 req |
-| GET | `/api/agent/:hash/attestations` | Received attestations (list) | 1 req |
-| GET | `/api/agents/top` | Leaderboard by score | free |
-| GET | `/api/agents/movers` | Top 7-day movers | free |
-| GET | `/api/agents/search?alias=…` | Search by alias | free |
-| POST | `/api/verdicts` | Batch verdicts for up to 100 hashes | 1 req |
-| POST | `/api/attestations` | Submit attestation | free (API key) |
-| POST | `/api/deposit` | Buy 21–10,000 requests in one invoice | free |
-| GET | `/api/health` | DB status, schema version, agents indexed, uptime | free |
-| GET | `/api/version` | Build version and schema info | free |
-| GET | `/api/stats` | Network statistics | free |
-| GET | `/api/docs` | Interactive Swagger UI | free |
-| GET | `/api/openapi.json` | OpenAPI 3 spec | free |
-| GET | `/.well-known/nostr.json` | NIP-05 handler (satrank@satrank.dev) | free |
-
-Live Swagger UI: [satrank.dev/api/docs](https://satrank.dev/api/docs).
-
-## Nostr Integration
-
-SatRank is a [NIP-85](https://github.com/nostr-protocol/nips/blob/master/85.md) Trusted Assertion provider. It publishes kind `30382:rank` assertions for Lightning Network nodes, declares itself as a provider via kind `10040`, operates a NIP-90 DVM for real-time trust checks, and exposes NIP-05 verification.
-
-**NIP-85 scope note.** NIP-85's "User as Subject" is defined generically for a 32-byte pubkey; SatRank extends the semantics to Lightning node pubkeys (same secp256k1 format, different key space). The canonical `rank` tag is published alongside SatRank-specific tags so strict NIP-85 consumers can read assertions without SatRank-specific knowledge, while clients that want the richer signal can read the component tags too.
-
-### Kind 30382: Trusted Assertions (published)
-
-- `rank` (0-100 normalized trust score), the canonical NIP-85 tag
-- `verdict` (SAFE/RISKY/UNKNOWN)
-- `reachable` (boolean, from live probes)
-- `survival` (stable / at_risk / likely_dead)
-- five component scores: `volume`, `reputation`, `seniority`, `regularity`, `diversity`
-- `alias` and the Lightning pubkey in the `d` tag (replaceable events)
-
-**Frequency:** every 6 hours. Nodes published per cycle: ~5,000 (score ≥ 30 on ~13,900 active).
-
-**Event format:**
-```json
-{
-  "kind": 30382,
-  "tags": [
-    ["d", "<lightning_pubkey>"],
-    ["n", "lightning"],
-    ["rank", "94"],
-    ["alias", "Kraken"],
-    ["score", "94"],
-    ["verdict", "SAFE"],
-    ["reachable", "true"],
-    ["survival", "stable"],
-    ["volume", "100"],
-    ["reputation", "79"],
-    ["seniority", "87"],
-    ["regularity", "100"],
-    ["diversity", "100"]
-  ],
-  "content": ""
-}
-```
-
-**Query from any Nostr client:**
-```
-["REQ", "satrank", {"kinds": [30382], "authors": ["5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4"]}]
-```
-
-### Dual publishing: strict NIP-85 + Lightning-indexed extension
-
-SatRank publishes kind 30382 events in **two indexed namespaces** to serve both the letter and the spirit of NIP-85:
-
-- **Lightning-indexed (extension).** `d = <66-char Lightning node pubkey>`, the default stream. Emitted every 6 hours for every active node with score ≥ 30 (~5,000 events per cycle). This extends NIP-85's "User as Subject" semantics from 32-byte Nostr pubkeys to 66-byte Lightning pubkeys (same secp256k1, different key space). It's the stream that makes the Lightning payment graph queryable via NIP-85 for the first time.
-- **Nostr-indexed (strict).** `d = <64-char Nostr pubkey>`, strictly conformant to NIP-85's subject-key requirement. Emitted for every (Nostr operator, Lightning node) pair SatRank can verify cryptographically.
-
-**How we build the mapping.** NIP-57 zap receipts (kind 9735) contain the recipient's Nostr pubkey in the `p` tag and the paid invoice in the `bolt11` tag. The BOLT11 invoice's destination (`payee_node_key`) is the Lightning node that settled the payment, cryptographically guaranteed by the invoice signature. Cross-referencing `p` and `payee_node_key` gives a verifiable `(nostr_pubkey, ln_pubkey)` tuple. The miner paginates backwards across 9 relays (`damus.io`, `nos.lol`, `relay.primal.net`, `relay.nostr.band`, `nostr.wine`, `relay.snort.social` and 3 others) via NIP-01 `until`-based pagination, walking up to 40 pages × 500 events per relay with a 90-day age wall.
-
-**Latest production run (2026-04-10):** ~15,500 distinct zap receipts decoded across 9 relays with a 90-day age wall, **105 strict-NIP-85 events** published after all filters (score >= 30, not stale, custodian alias rejected, exactly 1 nostr pk per ln pk).
-
-**Custodian filtering.** The same BOLT11 destination across many distinct Nostr pubkeys means a custodial wallet (Wallet of Satoshi, Alby, Minibits, …). SatRank drops any ln_pubkey paired with more than 1 distinct Nostr pubkey in the mining sample AND any node whose alias matches a known custodial/LSP pattern (`zlnd*`, `lndus*`, `*coordinator*`, `*.cash`, `zeus`, `alby`, `wos`, `cashu`, `minibits`, `phoenix`, `breez`, `muun`, `primal`, `nwc`, `fountain`, `wavlake`, `fedi`, `fewsats`, `lightspark`, `voltage`, `strike`, …). What remains is a conservative set of self-hosted operators.
-
-**Commands:**
-
-```bash
-# 1) Mine zap receipts across the canonical relays (+ Primal cache), build the mapping
-npx tsx scripts/nostr-mine-zap-mappings.ts
-# → scripts/nostr-mappings.json
-
-# 2) Preview the strict events that would be published from the mined mappings
-DRY_RUN=1 DB_PATH=./data/satrank.db \
-  npx tsx scripts/nostr-publish-nostr-indexed.ts
-
-# 3) Publish for real (once you're happy with the preview)
-NOSTR_PRIVATE_KEY=<hex> DB_PATH=./data/satrank.db \
-  npx tsx scripts/nostr-publish-nostr-indexed.ts
-
-# 4) One-shot self-declaration event: SatRank's own Nostr pk → SatRank's Lightning node
-NOSTR_PRIVATE_KEY=<hex> DB_PATH=./data/satrank.db \
-  npx tsx scripts/nostr-publish-self-declaration.ts
-```
-
-Both streams carry the same score payload (`rank`, `verdict`, `reachable`, `survival`, 5 components). A strictly-conformant NIP-85 client can filter on `"#d": ["<nostr_pubkey>"]` and get a score assertion without needing any SatRank-specific knowledge of the Lightning key space.
-
-### Kind 10040: Trusted Provider Declaration
-
-Any Nostr user can declare SatRank as their trusted provider for Lightning node trust assertions by publishing a kind 10040 event with one tag per (provider, relay) combo:
-
-```json
-{
-  "kind": 10040,
-  "tags": [
-    ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.damus.io"],
-    ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://nos.lol"],
-    ["30382:rank", "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.primal.net"]
-  ],
-  "content": ""
-}
-```
-
-Multiple relay entries are independent; a client picks whichever relay is reachable. **You can combine SatRank with other NIP-85 providers in the same kind 10040 event.** For example, a client using Brainstorm ([NosFabrica/brainstorm](https://github.com/nosFabrica/brainstorm)) for social-graph trust assertions can add SatRank's row to the same 10040 declaration:
-
-```json
-{
-  "kind": 10040,
-  "tags": [
-    ["30382:followRank", "<BRAINSTORM_PUBKEY>", "wss://relay.damus.io"],
-    ["30382:rank",       "5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4", "wss://relay.damus.io"]
-  ],
-  "content": ""
-}
-```
-
-A client fulfilling `30382:rank` queries will then receive both providers' assertions in parallel (social trust from Brainstorm, Lightning payment reliability from SatRank) with no SatRank-specific SDK or API key. This is the point of NIP-85: interoperability by design.
-
-**Quick-paste with `nak`:**
-
-```bash
-nak event -k 10040 \
-  --tag '30382:rank;5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4;wss://relay.damus.io' \
-  --sec <your-nsec> wss://relay.damus.io
-```
-
-SatRank itself publishes a self-declaration kind 10040 from its service key (see `scripts/nostr-publish-10040.ts`) so clients have an on-chain reference example to copy.
-
-**Why `rank` is free (and `/api/decide` is not).** Global scores are the trailer, great for discovery and social integration. The personalized `/api/decide` (pathfinding from YOUR position, survival, P_empirical) is the film: 1 sat/request via L402 or deposit.
-
-### Kind 5900 / 6900: DVM Trust-Check (NIP-90)
-
-SatRank runs a DVM that responds to trust-check job requests on Nostr. Any agent can publish a kind 5900 event with `["j", "trust-check"]` and `["i", "<ln_pubkey>", "text"]`, and SatRank responds with a signed kind 6900 containing score, verdict, and reachability. **Free, no payment required.** Unknown nodes trigger an on-demand `QueryRoutes` probe so the answer reflects the live graph.
-
-### NIP-05 verification
-
-- `satrank@satrank.dev` resolves to the service pubkey via `/.well-known/nostr.json`
-- Relays: `relay.damus.io`, `nos.lol`, `relay.primal.net`
-- Service pubkey: `5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4`
-- `npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4`
-
-### Verifying the live circuit
-
-The script below queries each canonical relay for kind 0, 30382, and 10040 events and prints a per-relay summary. Non-zero exit if any of the three kinds is missing.
-
-```bash
-npx tsx scripts/nostr-verify.ts
-```
-
-## Reusable building block
-
-SatRank is designed to be consumed piecewise by anyone, with zero lock-in:
-
-- **Any Nostr client** can read kind `30382:rank` events without an SDK, an API key, or a Lightning payment.
-- **The NIP-90 DVM** (kind 5900 → 6900) gives agents a signed real-time trust check over Nostr with zero account creation.
-- **The MCP Server** exposes 12 tools (`decide`, `ping`, `report`, `get_profile`, `get_verdict`, `get_batch_verdicts`, `get_top_agents`, `search_agents`, `get_network_stats`, `get_top_movers`, `submit_attestation`, `get_agent_score`) to any MCP-aware client (Claude Code, Cursor, VS Code, …). Listed on [glama.ai/mcp/servers](https://glama.ai/mcp/servers).
-- **The open-source TypeScript SDK** (`@satrank/sdk`, `sdk/`) reduces the decide → pay → report loop to a single `client.transact(…)` call.
-- **L402 / 402index.io.** SatRank is listed on [402index.io](https://402index.io) as a paid L402 endpoint, discoverable alongside every other L402-enabled service.
-- **OpenAPI spec** at `/api/openapi.json` and interactive Swagger UI at `/api/docs` for code generators.
-
-## MCP Server
-
-SatRank exposes a Model Context Protocol server for agent-native access via stdio. Install in Claude Code:
-
-```bash
-claude mcp add satrank -- npx tsx src/mcp/server.ts
-```
-
-Or with environment variables:
-
-```bash
-claude mcp add satrank -e DB_PATH=./data/satrank.db -e SATRANK_API_KEY=<key> -- npx tsx src/mcp/server.ts
-```
-
-Install in Cursor / VS Code by adding the following to `.cursor/mcp.json` or `.vscode/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "satrank": {
-      "command": "npx",
-      "args": ["tsx", "src/mcp/server.ts"],
-      "cwd": "/path/to/satrank",
-      "env": {
-        "DB_PATH": "./data/satrank.db",
-        "SATRANK_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-Run manually:
-
-```bash
-npm run mcp        # Development
-npm run mcp:prod   # Production
-```
-
-## SDK 1.0 available
-
-One verb — `fulfill()` — bundles discovery, payment, and reporting into a single
-call with a hard budget guarantee. TypeScript + Python, same API.
-
-### TypeScript
-
-```bash
-npm install @satrank/sdk
-```
+Install the SDK, hand it a wallet, describe the need.
 
 ```typescript
 import { SatRank } from '@satrank/sdk';
-import { LndWallet } from '@satrank/sdk/wallet';
 
-const sr = new SatRank({
-  apiBase: 'https://satrank.dev',
-  wallet: new LndWallet({ restEndpoint: 'https://127.0.0.1:8080', macaroonHex: process.env.LND_MACAROON! }),
-  caller: 'my-agent',
-});
+const sr = new SatRank({ wallet: myLnWallet });
 
 const result = await sr.fulfill({
-  intent: { category: 'data/weather', keywords: ['paris'] },
+  category: 'energy/intelligence',
   budget_sats: 50,
 });
 
-console.log(result.success ? result.response_body : result.error);
-```
-
-### Python
-
-```bash
-pip install satrank
+console.log(result.response);     // the paid API response
+console.log(result.endpoint_url); // which endpoint served it
+console.log(result.paid_sats);    // what it cost
 ```
 
 ```python
-import asyncio
 from satrank import SatRank
-from satrank.wallet import LndWallet
 
-async def main() -> None:
-    async with SatRank(
-        api_base="https://satrank.dev",
-        wallet=LndWallet(rest_endpoint="https://127.0.0.1:8080", macaroon_hex="..."),
-        caller="my-agent",
-    ) as sr:
-        result = await sr.fulfill(
-            intent={"category": "data/weather", "keywords": ["paris"]},
-            budget_sats=50,
-        )
-        print(result["response_body"] if result["success"] else result["error"])
+sr = SatRank(wallet=my_ln_wallet)
 
-asyncio.run(main())
+result = sr.fulfill(
+    category="energy/intelligence",
+    budget_sats=50,
+)
+
+print(result.response)      # the paid API response
+print(result.endpoint_url)  # which endpoint served it
+print(result.paid_sats)     # what it cost
 ```
 
-### Docs
+The SDK resolves the intent against the live registry, picks the top-ranked endpoint inside the budget, handles the L402 handshake, pays the invoice with the wallet, and returns the service response. Fallbacks on failure.
 
-- [TypeScript quickstart](docs/sdk/quickstart-ts.md)
-- [Python quickstart](docs/sdk/quickstart-python.md)
-- [Wallet drivers (LND / NWC / LNURL)](docs/sdk/wallet-drivers.md)
-- [NLP helper — `parseIntent`](docs/sdk/nlp-helper.md)
-- [Migration 0.2.x → 1.0](docs/sdk/migration-0.2-to-1.0.md)
+Prefer raw HTTP? See the [OpenAPI 3.1 spec](https://satrank.dev/api/openapi.json) or the interactive [Swagger UI](https://satrank.dev/api/docs).
 
-Discovery (`listCategories` / `resolveIntent`) works without a wallet; only
-`fulfill()` needs one.
-
-## End-to-end demo
-
-A fully commented walkthrough of the flow (health, stats, leaderboard, ping, paid decide, report, profile, Nostr distribution) lives in `scripts/demo.sh`:
+## Installation
 
 ```bash
-BASE_URL=https://satrank.dev ./scripts/demo.sh
+# TypeScript / Node
+npm install @satrank/sdk
+
+# Python
+pip install satrank
 ```
 
-Every curl is preceded by a plain-English banner explaining what the step is and why it matters. The script is designed to be recorded end-to-end as an integration demo.
+Requirements: Node `>=18.0.0`, Python `>=3.10`. Both SDKs are thin wrappers over the public REST API and work with any Lightning wallet that can pay a BOLT11 invoice.
 
-## Tech Stack
+## Core concepts
 
-- **TypeScript** strict mode, Node 22
-- **Express** for the REST API (27 endpoints)
-- **better-sqlite3** for the embedded database, WAL mode, chunked retention cron
-- **bitcoind v28.1 + LND** as trust root, gossip ingestion, QueryRoutes probing
-- **nostr-tools** for NIP-85 publishing, NIP-90 DVM, NIP-01 event signing
-- **zod** for input validation at every API boundary
-- **pino** for structured logging
-- **Aperture / L402 + deposit** as Lightning paywall for `/api/decide` and scored endpoints (1 sat/request, up to 10k via deposit)
-- **Docker Compose** for api + crawler containers with cap-drop-ALL, read-only FS, tmpfs, healthchecks
-- **vitest** for 573 unit + integration tests across 45 files, all green on the submission commit
+**Intent then fulfill.** Agents post a natural-language intent and receive a ranked shortlist of L402 endpoints. They choose one and settle through the L402 paywall. The two-step shape separates discovery from payment: an agent can re-rank, cache, or batch candidates before committing sats.
 
-## Scripts
+**Posterior, not a magic number.** Every score is a Beta-distributed posterior. `p_success = 0.87` with `ci95 = [0.81, 0.92]` is a different signal than `p_success = 0.87` with `ci95 = [0.40, 0.99]`. The API returns both, along with `n_obs` (observation count) and `time_constant_days` (decay). Composite 0 to 100 numbers are deprecated and no longer exposed.
 
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Development with hot reload (tsx watch) |
-| `npm run build` | TypeScript compilation |
-| `npm start` | Production |
-| `npm test` | Tests (vitest) |
-| `npm run lint` | TypeScript check (`tsc --noEmit`) |
-| `npm run crawl` | Observer Protocol + LND graph + probe crawlers |
-| `npm run crawl:cron` | Crawler in cron mode |
-| `npm run mcp` | MCP server (dev) |
-| `npm run mcp:prod` | MCP server (production) |
-| `npm run purge` | Purge stale data |
-| `npm run backup` | Database backup |
-| `npm run rollback` | Database rollback |
-| `npm run calibrate` | Scoring calibration report |
-| `npm run demo` | Attestation demo script |
-| `npm run sdk:build` | Build TypeScript SDK |
-| `npm run nostr:verify` | Live kind 0 / 30382 / 10040 check against all 3 relays |
-| `npm run nostr:publish-10040` | Publish SatRank's NIP-85 self-declaration (requires `NOSTR_PRIVATE_KEY`) |
-| `scripts/demo.sh` | End-to-end curl walkthrough against any base URL |
+**Deterministic, auditable scoring.** The scoring function is code, not a judgment call. It is published under AGPL-3.0 and the Bayesian derivation is documented in the [methodology](https://satrank.dev/methodology). No featured listing, no paid placement, no boost.
 
-## Roadmap
+**Preimage closes the loop.** The same 32-byte preimage that unlocks an L402 response is the proof that the payment settled. SatRank accepts it as a first-class report input, weighted higher than self-reported outcomes. No account, no tracking, no login.
 
-- [x] Decision API: GO/NO-GO with success probability, outcome reports, agent profiles
-- [x] Personalized pathfinding: real-time route from caller to target via LND QueryRoutes
-- [x] Aperture integration (L402 reverse proxy): monetize queries in sats
-- [x] Observer Protocol crawler: automatic on-chain data ingestion
-- [x] Lightning graph crawler: channel topology and capacity via LND node (bitcoind v28.1 UTXO-validated)
-- [x] Route probe crawler: reachability testing every 30 minutes, multi-amount probing (1k/10k/100k/1M sats)
-- [x] TypeScript SDK for agents (`@satrank/sdk`)
-- [x] Verdict API: SAFE/RISKY/UNKNOWN binary decision
-- [x] MCP server: agent-native access via stdio (12 tools)
-- [x] Auto-indexation: unknown pubkeys indexed on demand
-- [x] NIP-85 publisher (kind 30382 with canonical `rank` tag)
-- [x] NIP-85 kind 10040 self-declaration script
-- [x] NIP-90 DVM for real-time trust checks (kind 5900 → 6900)
-- [x] NIP-05 verification (`satrank@satrank.dev`)
-- [x] Chunked retention cleanup cron for time-series tables
-- [x] v19 scoring calibration: sovereign PageRank, 5 reputation sub-signals, multiplicative modifiers
-- [x] v20: multi-amount probing (1k/10k/100k/1M sats), re-probe on-demand for stale data, best-route batch pathfinding, targetFeeStability, maxRoutableAmount
-- [x] v21: L402 balance system (21 sats = 21 requests), positional pathfinding (walletProvider + callerNodePubkey), reportedSuccessRate
-- [x] v22-v25: Sovereign Oracle -- HTTP service health check (serviceUrl in /decide, serviceHealth in response), autonomous endpoint registry (94 endpoints indexed from 402index + L402Apps), composite best-route 3D ranking (route + trust + health), service pricing from BOLT11, report via L402 token scoped through decide_log, SSRF protection with DNS resolution
-- [x] v26-v29: Risk profiles (low/medium/high from score + 7d volatility), survival predictor (stable/at_risk/likely_dead published in kind 30382), reporter badge tiers (novice → contributor → trusted), reporter bonus economic loop (shipped behind `REPORT_BONUS_ENABLED=false` flag), security hardening (NIP-98 rawBody digest, safe constant-time comparison, windowed deposit guard, full-digest auth), 573/45 test coverage, reputation sub-signal audit v26+
-- [ ] 4tress connector: verified attestations
-- [ ] Trust network visualization dashboard
-- [ ] Per-component NIP-85 keys (`30382:volume`, `30382:reputation`, …)
+## Pricing
 
-## Vision
+SatRank has a free tier and five paid deposit tiers. The base rate is 1 sat per paid request with no setup. Agents that pre-buy a quota deposit into one of the tiers below, and the per-request rate is locked into the L402 macaroon at deposit time.
 
-SatRank is the reliability check before every Lightning payment. **63 %** of the Lightning graph is phantom nodes. We tell you which endpoints are alive, score them on Nostr, and gate the personalized decision behind a single satoshi.
+| Deposit (sats) | Rate (sat/req) | Requests per deposit | Effective discount |
+|---|---|---|---|
+| 21 | 1.0 | 21 | 0 % |
+| 1,000 | 0.5 | 2,000 | 50 % |
+| 10,000 | 0.2 | 50,000 | 80 % |
+| 100,000 | 0.1 | 1,000,000 | 90 % |
+| 1,000,000 | 0.05 | 20,000,000 | 95 % |
 
----
+The rate is engraved on the macaroon at settlement. A future tier change cannot retroactively raise the rate on a paid-up token. This is the mechanical half of mechanical neutrality: the business model cannot bias the ranking because the ranking is not what is sold, and it cannot reward individual callers because the tier is a function of the deposited amount, not of the caller.
 
-**Project:** [satrank.dev](https://satrank.dev) · **NIP-05:** `satrank@satrank.dev` · **Contact:** contact@satrank.dev · **Code:** [github.com/proofoftrust21/satrank](https://github.com/proofoftrust21/satrank) · **License:** AGPL-3.0
+Live tier schedule: `GET /api/deposit/tiers`. Flow: `POST /api/deposit` with `{ amount }` returns a BOLT11 invoice plus `tierId`, `rateSatsPerRequest`, and `quotaGranted`. Pay the invoice, then `POST /api/deposit` with `{ paymentHash, preimage }` to claim the macaroon.
+
+## API surface
+
+All endpoints are versionless and live under `https://satrank.dev`. Full reference: [OpenAPI 3.1](https://satrank.dev/api/openapi.json) / [Swagger UI](https://satrank.dev/api/docs).
+
+| Method | Endpoint | Purpose | Cost |
+|---|---|---|---|
+| GET | `/api/intent/categories` | Enumerate the category taxonomy used by intent resolution | free |
+| POST | `/api/intent` | Resolve a natural-language intent, return ranked L402 candidates with posterior | free, 10 req / 60 s / IP |
+| POST | `/api/fulfill` | Settle the chosen candidate through L402, return the response and proof | paid, 1 req from balance |
+| GET | `/api/agents/top` | Leaderboard: rank, alias, pubkey hash, posterior | free |
+| GET | `/api/services` | Browse the L402 service registry by keyword, category, uptime | free |
+| GET | `/api/agent/:hash` | Full node profile: posterior, components, reports, survival | 1 req |
+| POST | `/api/report` | Submit a paid-call outcome; preimage-verified reports carry extra weight | free |
+| POST | `/api/deposit` | Buy a rate-locked L402 quota in one of five public tiers | free (invoice phase) |
+| GET | `/api/deposit/tiers` | Public deposit tier schedule | free |
+| GET | `/api/stats` | Network counters: nodes, channels, probes, services | free |
+| GET | `/api/health` | Liveness: database, LND, bitcoind, Nostr relay status | free |
+
+Payment is gated by L402. A free-tier caller gets 21 requests on the first auto-issued macaroon (1 sat per request). A deposit caller gets the requests their tier grants, at the rate their tier locked in.
+
+## Nostr distribution
+
+SatRank publishes its entire trust graph to public Nostr relays. Any Nostr client can subscribe and verify the signatures without talking to satrank.dev at all.
+
+- **npub**: `npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4`
+- **NIP-05**: `satrank@satrank.dev`
+- **Relays**: `relay.damus.io`, `nos.lol`, `relay.primal.net`
+
+Event kinds:
+
+| Kind | Contents |
+|---|---|
+| 10040 | NIP-85 self-declaration |
+| 20900 | Verdict flash: ephemeral broadcast on each verdict transition |
+| 30382 | Node endorsement: posterior, verdict, component signals per node |
+| 30383 | Service endpoint: URL, price, category, operator pubkey |
+| 30384 | Operator profile: NIP-05, verified identity, badge |
+| 30385 | Report: outcome, preimage-verified flag, reporter tier |
+| 5900 / 6900 | NIP-90 DVM: on-demand score as a Nostr job |
+
+If satrank.dev goes offline, the last 30 days of published scores remain verifiable on the relays above via events signed by the SatRank npub. Full protocol detail: [methodology § Nostr distribution](https://satrank.dev/methodology#nostr-distribution).
+
+## Run your own SatRank
+
+The code is [AGPL-3.0](./LICENSE). Fork it, run your own bitcoind, run your own LND, publish under your own Nostr identity. The deployment guide, including infra layout, Postgres schema, and service boundaries, lives in [DEPLOY.md](./DEPLOY.md).
+
+Local development:
+
+```bash
+npm install
+npm run build
+npm start
+```
+
+Full command list is in [CLAUDE.md](./CLAUDE.md) (dev scripts, crawler, MCP server, calibration report, Nostr publisher).
+
+## Repo structure
+
+```
+src/                TypeScript service (Express, Postgres, scoring engine)
+  routes/           endpoint definitions
+  controllers/      input validation, response shaping
+  services/         scoring, intent resolution, fulfill orchestration
+  repositories/     Postgres data access
+  crawler/          LN graph + probe fleet
+  nostr/            NIP-85 publisher, DVM, verdict flash
+  mcp/              Model Context Protocol server
+public/             landing page, methodology, static assets
+docs/               phase reports, design documents, migration notes
+sdk/                TypeScript SDK (@satrank/sdk on npm)
+python-sdk/         Python SDK (satrank on PyPI)
+scripts/            backup, rollback, calibration, purge utilities
+infra/              deployment scaffolding, nginx, compose
+```
+
+## Contributing, license, contact
+
+Security: see [SECURITY.md](./SECURITY.md) for the responsible disclosure policy. Do not open a public issue for security-sensitive reports; email `security@satrank.dev` instead.
+
+License: [AGPL-3.0](./LICENSE). Forking is encouraged. If you run a modified SatRank as a public service, the AGPL requires publishing your modifications.
+
+Why it exists: [IMPACT-STATEMENT.md](./IMPACT-STATEMENT.md) covers the problem, the solution, the differentiation, and the strategic bet.
+
+Methodology in depth: [satrank.dev/methodology](https://satrank.dev/methodology).
+
+- **Project**: [satrank.dev](https://satrank.dev)
+- **Contact**: `contact@satrank.dev`
+- **Nostr**: `satrank@satrank.dev`
+- **Code**: [github.com/proofoftrust21/satrank](https://github.com/proofoftrust21/satrank)
