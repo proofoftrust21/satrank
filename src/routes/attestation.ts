@@ -22,10 +22,14 @@ const writeRateLimit = rateLimit({
 
 const noopMiddleware: RequestHandler = (_req, _res, next) => next();
 
-export function createAttestationRoutes(controller: AttestationController, balanceAuth: RequestHandler = noopMiddleware): Router {
+export function createAttestationRoutes(
+  controller: AttestationController,
+  balanceAuth: RequestHandler = noopMiddleware,
+  paidGate: RequestHandler = apertureGateAuth,
+): Router {
   const router = Router();
 
-  router.get('/agent/:publicKeyHash/attestations', apertureGateAuth, balanceAuth, controller.getBySubject);
+  router.get('/agent/:publicKeyHash/attestations', paidGate, balanceAuth, controller.getBySubject);
   router.post('/attestations', writeRateLimit, apiKeyAuth, controller.create);
 
   return router;

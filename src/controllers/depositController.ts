@@ -2,58 +2,18 @@
 // Bypasses Aperture: Express generates the invoice directly via LND,
 // the agent pays, verifies, and gets a deposit token usable on all paid endpoints.
 import crypto from 'crypto';
-import { readFileSync } from 'fs';
 import type { Request, Response, NextFunction } from 'express';
 import type { Pool } from 'pg';
-import { config } from '../config';
 import { ValidationError } from '../errors';
 import { logger } from '../logger';
 import { depositPhaseTotal } from '../middleware/metrics';
 import { DepositTierService } from '../services/depositTierService';
+import { LndInvoiceService } from '../services/lndInvoiceService';
 import { withTransaction } from '../database/transaction';
 
 const MIN_DEPOSIT_SATS = 21;
 const MAX_DEPOSIT_SATS = 1_000_000;
 const INVOICE_EXPIRY_SEC = 600; // 10 minutes
-
-// Load invoice macaroon at startup (separate from the readonly one)
-let invoiceMacaroonHex: string | null = null;
-if (config.LND_INVOICE_MACAROON_PATH) {
-  try {
-    invoiceMacaroonHex = readFileSync(config.LND_INVOICE_MACAROON_PATH).toString('hex');
-    logger.info({ path: config.LND_INVOICE_MACAROON_PATH }, 'Invoice macaroon loaded for /api/deposit');
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: msg }, 'Failed to load invoice macaroon — /api/deposit will be unavailable');
-  }
-}
-
-async function lndAddInvoice(valueSat: number, memo: string): Promise<{ r_hash: string; payment_request: string }> {
-  const resp = await fetch(`${config.LND_REST_URL}/v1/invoices`, {
-    method: 'POST',
-    headers: { 'Grpc-Metadata-macaroon': invoiceMacaroonHex!, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: String(valueSat), memo, expiry: String(INVOICE_EXPIRY_SEC) }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`LND addInvoice failed: ${resp.status} ${text.slice(0, 200)}`);
-  }
-  return resp.json() as Promise<{ r_hash: string; payment_request: string }>;
-}
-
-async function lndLookupInvoice(rHashHex: string): Promise<{ settled: boolean; value: string; memo: string }> {
-  // LND REST /v1/invoice/{r_hash_str} expects hex-encoded hash
-  const resp = await fetch(`${config.LND_REST_URL}/v1/invoice/${rHashHex}`, {
-    headers: { 'Grpc-Metadata-macaroon': invoiceMacaroonHex! },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`LND lookupInvoice failed: ${resp.status} ${text.slice(0, 200)}`);
-  }
-  return resp.json() as Promise<{ settled: boolean; value: string; memo: string }>;
-}
 
 interface TokenBalanceRow {
   remaining: number;
@@ -65,10 +25,12 @@ interface TokenBalanceRow {
 export class DepositController {
   private pool: Pool;
   private tierService: DepositTierService;
+  private lndInvoice: LndInvoiceService;
 
-  constructor(pool: Pool) {
+  constructor(pool: Pool, lndInvoice: LndInvoiceService) {
     this.pool = pool;
     this.tierService = new DepositTierService(pool);
+    this.lndInvoice = lndInvoice;
   }
 
   /** GET /api/deposit/tiers — public schedule, no auth required.
@@ -117,7 +79,7 @@ export class DepositController {
 
       // Phase 1: create invoice — always needs LND
       if (body.amount) {
-        if (!invoiceMacaroonHex) {
+        if (!this.lndInvoice.isAvailable()) {
           res.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE', message: 'Deposit invoice generation unavailable (LND_INVOICE_MACAROON_PATH not configured)' } });
           return;
         }
@@ -143,7 +105,7 @@ export class DepositController {
       throw new ValidationError(`No deposit tier matches amount ${amount}`);
     }
 
-    const result = await lndAddInvoice(amount, `SatRank deposit: ${amount} requests`);
+    const result = await this.lndInvoice.addInvoice(amount, `SatRank deposit: ${amount} requests`, INVOICE_EXPIRY_SEC);
 
     const rHashHex = Buffer.from(result.r_hash, 'base64').toString('hex');
 
@@ -210,7 +172,7 @@ export class DepositController {
 
     // Beyond this point we need LND. If macaroon is missing, the paymentHash is
     // unknown to SatRank and we can't verify it.
-    if (!invoiceMacaroonHex) {
+    if (!this.lndInvoice.isAvailable()) {
       depositPhaseTotal.inc({ phase: 'verify_not_found' });
       res.status(404).json({
         error: { code: 'NOT_FOUND', message: 'paymentHash not found in SatRank balance table. The deposit was either never created here or is awaiting verification (LND lookup unavailable).' },
@@ -220,7 +182,7 @@ export class DepositController {
     }
 
     // Verify payment settled in LND
-    const invoice = await lndLookupInvoice(body.paymentHash);
+    const invoice = await this.lndInvoice.lookupInvoice(body.paymentHash);
 
     if (!invoice.settled) {
       depositPhaseTotal.inc({ phase: 'verify_pending' });

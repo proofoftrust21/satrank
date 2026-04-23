@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { config } from './config';
+import { config, featureFlags } from './config';
 import { DEFAULT_NOSTR_RELAYS } from './nostr/relays';
 import { getPool } from './database/connection';
 import { requestIdMiddleware } from './middleware/requestId';
@@ -31,6 +31,7 @@ import { VerdictService } from './services/verdictService';
 import { RiskService } from './services/riskService';
 import { ReportService } from './services/reportService';
 import { ReportBonusService } from './services/reportBonusService';
+import { LndInvoiceService } from './services/lndInvoiceService';
 import { ReportBonusRepository } from './repositories/reportBonusRepository';
 import { NpubAgeCache } from './nostr/npubAgeCache';
 import { SurvivalService } from './services/survivalService';
@@ -82,6 +83,7 @@ import {
 } from './repositories/dailyBucketsRepository';
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
+import { createL402Native } from './middleware/l402Native';
 import { createReportAuth, apertureGateAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { PreimagePoolRepository } from './repositories/preimagePoolRepository';
@@ -237,7 +239,11 @@ export function createApp() {
   const healthController = new HealthController(statsService);
   const v2Controller = new V2Controller(reportService, agentService, agentRepo, attestationRepo, scoringService, trendService, riskService, probeRepo, survivalService, channelFlowService, feeVolatilityService, pool, reportBonusService, preimagePoolRepo);
   const pingController = new PingController(lndClient.isConfigured() ? lndClient : undefined, agentRepo, probeRepo);
-  const depositController = new DepositController(pool);
+  const lndInvoiceService = new LndInvoiceService({
+    restUrl: config.LND_REST_URL,
+    macaroonPath: config.LND_INVOICE_MACAROON_PATH,
+  });
+  const depositController = new DepositController(pool, lndInvoiceService);
   const probeController = new ProbeController(pool, lndClient, {
     txRepo,
     bayesian: bayesianScoringService,
@@ -499,7 +505,33 @@ export function createApp() {
   }
   const balanceAuth = createBalanceAuth(pool, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(pool);
-  api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController)); // report, deposit, profile (decide/best-route are 410 Gone)
+
+  // Phase 14D.3.0 — L402 native gate (Aperture sunset). Coexistence via
+  // featureFlags.l402Native : false = status quo apertureGateAuth, true =
+  // middleware natif Express. Rollback = flip env + restart, pas de rebuild.
+  // Retrait definitif de apertureGateAuth planifie Phase 14D.3.0 etape 8.
+  const paidGate = featureFlags.l402Native
+    ? createL402Native({
+        secret: Buffer.from(config.L402_MACAROON_SECRET ?? '', 'hex'),
+        lndInvoice: lndInvoiceService,
+        pool,
+        priceSats: config.L402_DEFAULT_PRICE_SATS,
+        ttlSeconds: 30 * 24 * 60 * 60,
+        expirySeconds: config.L402_INVOICE_EXPIRY_SECONDS,
+        pricingMap: {
+          '/probe': 5,
+          '/verdicts': 1,
+          '/agent/:publicKeyHash': 1,
+          '/agent/:publicKeyHash/verdict': 1,
+          '/agent/:publicKeyHash/history': 1,
+          '/agent/:publicKeyHash/attestations': 1,
+          '/profile/:id': 1,
+        },
+        operatorSecret: config.OPERATOR_BYPASS_SECRET,
+      })
+    : apertureGateAuth;
+
+  api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController, paidGate)); // report, deposit, profile (decide/best-route are 410 Gone)
   // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the
   // balanceAuth middleware takes 1 credit upstream, probeController debits
   // the remaining 4 atomically. Gated on Aperture like the other paid routes.
@@ -510,10 +542,10 @@ export function createApp() {
     perTokenPerHour: config.PROBE_RATE_LIMIT_PER_TOKEN_PER_HOUR,
     globalPerHour: config.PROBE_RATE_LIMIT_GLOBAL_PER_HOUR,
   });
-  api.post('/probe', apertureGateAuth, probeLimits.perToken, probeLimits.global, balanceAuth, probeController.probe);
+  api.post('/probe', paidGate, probeLimits.perToken, probeLimits.global, balanceAuth, probeController.probe);
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
-  api.use(createAgentRoutes(agentController, balanceAuth));            // agent/:hash, verdict, top, search, movers
-  api.use(createAttestationRoutes(attestationController, balanceAuth));// attestations (GET paid, POST free)
+  api.use(createAgentRoutes(agentController, balanceAuth, paidGate));  // agent/:hash, verdict, top, search, movers
+  api.use(createAttestationRoutes(attestationController, balanceAuth, paidGate));// attestations (GET paid, POST free)
   // Dedicated tight limiter on /api/version — the response is a thin build-info
   // document with commit hash + build time, so probing it at rate for
   // deploy-detection has no legitimate use. 60/min/IP keeps monitoring happy

@@ -7,6 +7,7 @@ import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './hel
 import express from 'express';
 import request from 'supertest';
 import { DepositController } from '../controllers/depositController';
+import { LndInvoiceService } from '../services/lndInvoiceService';
 import { createV2Routes } from '../routes/v2';
 import { errorHandler } from '../middleware/errorHandler';
 import { requestIdMiddleware } from '../middleware/requestId';
@@ -15,7 +16,7 @@ let testDb: TestDb;
 async function buildApp(): Promise<{ app: express.Express; db: Pool }> {
   testDb = await setupTestPool();
   const db = testDb.pool;
-  const depositController = new DepositController(db);
+  const depositController = new DepositController(db, new LndInvoiceService({ restUrl: 'http://lnd.test' }));
   const app = express();
   app.use(express.json());
   app.use(requestIdMiddleware);

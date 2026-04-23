@@ -163,6 +163,33 @@ const configSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true' || v === '1'),
+
+  // --- Phase 14D.3.0 — L402 native middleware (Aperture sunset) ---
+  // Secret HMAC pour sceller les macaroons L402 synthetiques. Doit etre
+  // 32 octets hex (64 chars). Sans ce secret, le middleware L402 natif refuse
+  // de servir les routes payantes. Rotation : generer
+  //   openssl rand -hex 32
+  // et injecter via .env.production sans rsync --delete. Ne jamais logger.
+  L402_MACAROON_SECRET: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/, 'L402_MACAROON_SECRET must be 32-byte hex (64 chars)')
+    .optional(),
+  // Duree de vie de l'invoice BOLT11 generee pour le challenge L402 (secondes).
+  L402_INVOICE_EXPIRY_SECONDS: z.coerce.number().int().positive().default(600),
+  // Prix par defaut du challenge L402 en sats (quand la route n'a pas de prix
+  // explicite dans la pricing map). Aligne sur la doc publique Phase 14 :
+  // 1 sat per request, tier 1 rate 1.0.
+  L402_DEFAULT_PRICE_SATS: z.coerce.number().int().positive().default(1),
+  // Operator bypass — shared secret verifie par timing-safe equal contre le
+  // header X-Operator-Token. Match => passe-plat du gate L402 (free unlimited
+  // access). Utilise pour tests admin SatRank + health checks CI/CD. Leak =
+  // unlimited free access aux paid endpoints. Rotate :
+  //   openssl rand -hex 32
+  // Successeur post-sunset Aperture de APERTURE_SHARED_SECRET (deprecated).
+  OPERATOR_BYPASS_SECRET: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/, 'OPERATOR_BYPASS_SECRET must be 32-byte hex (64 chars)')
+    .optional(),
 });
 
 const parsed = configSchema.safeParse(process.env);
@@ -263,4 +290,5 @@ export const featureFlags = {
   pathfindingProbe: !!parsed.data.LND_MACAROON_PATH,
   nodeChannelHint: !!parsed.data.NODE_PUBKEY,
   l402Bypass: parsed.data.L402_BYPASS,
+  l402Native: !!parsed.data.L402_MACAROON_SECRET && !!parsed.data.LND_INVOICE_MACAROON_PATH,
 } as const;
