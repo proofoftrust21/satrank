@@ -11,7 +11,7 @@
 
 SatRank is a sovereign trust oracle for the Lightning Network. Autonomous agents pay Lightning-native HTTP services every day, and most of the graph they have to navigate is noise: a large share of public Lightning nodes never route a payment, and L402 endpoints ship without SLAs, without catalogs, without reputation. SatRank measures the part of the graph that actually settles and publishes a Bayesian posterior per node.
 
-The product has two steps. `POST /api/intent` takes a natural-language intent and returns the top-ranked L402 candidates for that intent. `POST /api/fulfill` settles the chosen candidate through the L402 paywall and returns the proof. Agents resolve the intent first, settle second, and only settle against a target they believe in.
+The product exposes `POST /api/intent`: it takes a natural-language intent and returns the top-ranked L402 candidates, each with its full Bayesian posterior. Settlement happens client-side. The SDK helper `sr.fulfill(intent, budget)` calls `/api/intent`, selects a candidate from the ranked list, and performs the L402 payment flow directly against the provider's endpoint. SatRank never custodies sats and never sees the preimage. The resulting payment proof stays in your wallet.
 
 Every score is a posterior, not a composite number. For each node the API returns `p_success`, `ci95_low`, `ci95_high`, `n_obs`, and `time_constant_days`. Uncertainty is first-class. Every QueryRoutes probe, every preimage-verified report, and every fulfilled intent updates the same α, β cycle.
 
@@ -101,7 +101,6 @@ All endpoints are versionless and live under `https://satrank.dev`. Full referen
 |---|---|---|---|
 | GET | `/api/intent/categories` | Enumerate the category taxonomy used by intent resolution | free |
 | POST | `/api/intent` | Resolve a natural-language intent, return ranked L402 candidates with posterior | free, 10 req / 60 s / IP |
-| POST | `/api/fulfill` | Settle the chosen candidate through L402, return the response and proof | paid, 1 req from balance |
 | GET | `/api/agents/top` | Leaderboard: rank, alias, pubkey hash, posterior | free |
 | GET | `/api/services` | Browse the L402 service registry by keyword, category, uptime | free |
 | GET | `/api/agent/:hash` | Full node profile: posterior, components, reports, survival | 1 req |
@@ -112,6 +111,8 @@ All endpoints are versionless and live under `https://satrank.dev`. Full referen
 | GET | `/api/health` | Liveness: database, LND, bitcoind, Nostr relay status | free |
 
 Payment is gated by L402. A free-tier caller gets 21 requests on the first auto-issued macaroon (1 sat per request). A deposit caller gets the requests their tier grants, at the rate their tier locked in.
+
+Fulfillment itself is not an endpoint on satrank.dev. The SDK helper `sr.fulfill()` performs the L402 handshake directly against the selected candidate's `endpoint_url`. See [INTEGRATION.md](./INTEGRATION.md) Path 1 for the flow.
 
 ## Nostr distribution
 
