@@ -1,256 +1,350 @@
-# Integrating SatRank into your autonomous agent
+# Integrating SatRank into an autonomous agent
 
-SatRank provides route reliability scoring for Lightning payments.
-Before paying, ask SatRank for a GO/NO-GO decision. After paying, report the outcome.
+You are an agent builder. Your agent pays Lightning-native HTTP services, and you want it to only pay the ones that actually work. This guide shows three ways to plug SatRank into that workflow, from the simplest to the most flexible.
 
-**Quick start:** run the example agent loop to see the full cycle in action:
-```bash
-SATRANK_URL=https://satrank.dev SATRANK_API_KEY=<key> npx tsx examples/agent-loop.ts
-```
+| Path | Runtime | When to pick it |
+|---|---|---|
+| [1. SDK native](#path-1-sdk-native-recommended) | TypeScript or Python | Default choice. Your agent can load a library and talk to a Lightning wallet. |
+| [2. Direct HTTP](#path-2-direct-http) | Any language, any runtime | Edge workers, MCP wrappers, Go, Rust, shell. No SDK to load. |
+| [3. MCP (Model Context Protocol)](#path-3-mcp) | LLM agent frameworks | Claude Desktop, Cursor, or any MCP-capable client. SatRank ships a stdio MCP server. |
 
-Three integration paths, from easiest to most flexible.
+The end state is the same regardless of path: your agent posts an intent, gets a ranked list of L402 endpoints, and settles with the one it picked.
 
 ---
 
-## 1. Via MCP (Model Context Protocol)
+## Path 1: SDK native (recommended)
 
-Best for: autonomous agents using Claude, GPT, or any MCP-compatible runtime.
+The SDK is a thin wrapper around the public REST API plus an L402 flow driver. It is published on npm as `@satrank/sdk` and on PyPI as `satrank`. Both ship production-stable at `1.0.0`.
 
-### Setup
+### TypeScript
 
-Add to your MCP client configuration (`mcp-config.json`):
+```bash
+npm install @satrank/sdk
+```
+
+```typescript
+import { SatRank } from '@satrank/sdk';
+
+const sr = new SatRank({ wallet: myLnWallet });
+
+const result = await sr.fulfill({
+  category: 'energy/intelligence',
+  budget_sats: 50,
+});
+
+console.log(result.response);     // the paid API response body
+console.log(result.endpoint_url); // which provider endpoint served it
+console.log(result.paid_sats);    // what it cost on the wire
+```
+
+### Python
+
+```bash
+pip install satrank
+```
+
+```python
+from satrank import SatRank
+
+sr = SatRank(wallet=my_ln_wallet)
+
+result = sr.fulfill(
+    category="energy/intelligence",
+    budget_sats=50,
+)
+
+print(result.response)      # the paid API response body
+print(result.endpoint_url)  # which provider endpoint served it
+print(result.paid_sats)     # what it cost on the wire
+```
+
+### What `sr.fulfill()` actually does
+
+`sr.fulfill()` is a client-side helper. It calls `POST /api/intent` to obtain candidates, then performs the L402 payment flow directly against the selected provider endpoint. SatRank exposes no server-side fulfillment endpoint by design. Here is the sequence it runs:
+
+1. Resolve intent: call `POST https://satrank.dev/api/intent` with the intent, budget, and optional `max_latency_ms`.
+2. Pick candidate: take the rank 1 entry from the returned `candidates` list by default. The caller can override this selection.
+3. L402 challenge: `GET candidate.endpoint_url` with no auth. The provider responds `402 Payment Required` with `WWW-Authenticate: L402 macaroon=..., invoice=...`.
+4. Pay invoice: hand the BOLT11 invoice to the wallet. The wallet pays, returns a 32-byte preimage.
+5. L402 retry: `GET candidate.endpoint_url` again with `Authorization: L402 macaroon:preimage`. The provider returns the paid response.
+6. Report (optional, off by default): `POST https://satrank.dev/api/report` with the preimage and outcome, so the posterior improves for the next caller.
+
+SatRank never custodies sats and never sees the preimage. The entire payment is between the agent's wallet and the provider.
+
+### What the SDK handles for you
+
+- Rate limiting on `POST /api/intent` (10 requests / 60 seconds / IP). The SDK backs off on `429` using the `Retry-After` header.
+- L402 challenge/response parsing.
+- Preimage verification against the payment hash.
+- Retries on transient network errors with exponential backoff.
+- Anonymous outcome reporting via the preimage (optional, behind a flag).
+- Wallet abstraction: LND gRPC, LNURL-pay, NWC, or a custom `{ pay(invoice) -> { preimage, paymentHash } }` adapter all work.
+
+### Wallet requirement
+
+`sr.fulfill()` needs a wallet the agent code can reach at call time. Options:
+
+- Local LND node (LND gRPC or REST).
+- Nostr Wallet Connect (NWC) to a remote wallet.
+- LNURL-pay adapter to a custodial provider.
+- Any object exposing `pay(invoice: string) -> Promise<{ preimage: string, paymentHash: string }>`.
+
+If the agent cannot hold a wallet (e.g. stateless function runtime), fall back to Path 2 and let the orchestrator hold the wallet.
+
+---
+
+## Path 2: Direct HTTP
+
+Use this path when the SDK is not an option: other languages, edge runtimes, or custom MCP wrappers. The flow below is the same one the SDK runs, made explicit with `curl`.
+
+### Step 1: Know the category taxonomy (optional)
+
+```bash
+curl -sS https://satrank.dev/api/intent/categories
+```
+
+Returns the registry's active categories with endpoint counts. Skip if you already know the category string (`energy/intelligence`, `ai/text`, `data/finance`, etc.).
+
+### Step 2: Resolve the intent
+
+```bash
+curl -sS -X POST https://satrank.dev/api/intent \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "category": "energy/intelligence",
+    "budget_sats": 100,
+    "max_latency_ms": null
+  }'
+```
+
+Returns up to five ranked candidates. Each candidate carries:
+
+- `rank` (1 is best)
+- `endpoint_url` (the provider's URL, not satrank.dev)
+- `endpoint_hash`, `operator_pubkey`, `operator_id`, `service_name`
+- `price_sats`
+- `bayesian`: the full posterior block (`p_success`, `ci95_low`, `ci95_high`, `n_obs`, `verdict`, `sources`, `convergence`, `window`)
+- `advisory`: a convenience shortcut (`advisory_level`, `recommendation`, `msg`)
+
+Rate limit on this endpoint: 10 requests / 60 seconds / IP. Free (no L402). On limit, expect `HTTP 429` with `Retry-After` in seconds.
+
+### Step 3: Pick a candidate
+
+The SDK defaults to `candidates[0]` (rank 1). A custom client can re-rank by any field: cheapest `price_sats` inside budget, tightest `ci95` interval, highest `p_success`, or a composite of your own.
+
+### Step 4: L402 handshake against the candidate
+
+```bash
+# First call: no auth, expect 402 + WWW-Authenticate
+curl -i https://grid.ptsolutions.io/v1/intelligence/demand-supply/ercot
+
+# Response:
+# HTTP/1.1 402 Payment Required
+# WWW-Authenticate: L402 macaroon="AGIA...", invoice="lnbc250n..."
+```
+
+Parse the `macaroon` and `invoice` tokens from the header. Pay the BOLT11 invoice with any Lightning wallet. Keep the 32-byte preimage.
+
+```bash
+# Second call: L402 auth header with macaroon:preimage
+curl -H 'Authorization: L402 AGIA...:abc123...' \
+  https://grid.ptsolutions.io/v1/intelligence/demand-supply/ercot
+```
+
+Returns the paid response body with `HTTP 200`.
+
+### Step 5: Report outcome (optional, free)
+
+```bash
+curl -sS -X POST https://satrank.dev/api/report \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "target": "1830ae448029e7f463bee9e7cc92a44b26b4b974b4b57dd095acad4e7b971c22",
+    "reporter": "<your-sha256-hash-or-anonymous>",
+    "outcome": "success",
+    "paymentHash": "<64-hex>",
+    "preimage": "<64-hex>"
+  }'
+```
+
+Returns `{ reportId, weight, verified, timestamp }`. Free, no quota consumed.
+
+### Authentication model for satrank.dev endpoints
+
+Three tiers of auth coexist:
+
+| Tier | How | When used |
+|---|---|---|
+| Free, rate-limited | No auth | `/api/intent` (10/60s/IP), leaderboards, stats, health, categories, ping, report |
+| Auto-issued L402 | `402 -> 21 sat invoice -> 21-request macaroon` | First call to any paid endpoint (`/api/agent/*`, `/api/profile/*`, `/api/verdicts`, `/api/probe`) |
+| Pre-deposited L402 | `POST /api/deposit { amount } -> invoice -> macaroon with tier-locked rate` | Volume callers who want rate discounts |
+
+The SDK handles both L402 paths transparently. Direct-HTTP callers need to implement the 402 retry themselves.
+
+---
+
+## Path 3: MCP
+
+SatRank ships a stdio MCP server (`src/mcp/server.ts`) that exposes the public API as MCP tools. LLM agents using Claude Desktop, Cursor, or any MCP-capable client can discover and call them without HTTP plumbing.
+
+### Install
+
+Add to your MCP client config (the exact file depends on the client: `~/.cursor/mcp.json` for Cursor, Claude Desktop has its own config surface):
 
 ```json
 {
   "mcpServers": {
     "satrank": {
       "command": "npx",
-      "args": ["tsx", "src/mcp/server.ts"],
-      "cwd": "/path/to/satrank",
+      "args": ["-y", "tsx", "src/mcp/server.ts"],
+      "cwd": "/path/to/your/satrank/checkout",
       "env": {
-        "DB_PATH": "./data/satrank.db",
-        "SATRANK_API_KEY": "your-api-key-here"
+        "DB_PATH": "./data/satrank.db"
       }
     }
   }
 }
 ```
 
-### Available tools
+Reference config committed in the repo: [`mcp-config.json`](./mcp-config.json).
 
-| Tool | Description |
-|------|-------------|
-| `decide` | GO/NO-GO decision with success probability, the primary pre-transaction tool |
-| `report` | Report outcome (success/failure/timeout), L402 token or API key (FREE) |
-| `get_profile` | Agent profile with reports, probe uptime, rank, evidence |
-| `get_agent_score` | Full trust score with components, evidence, and verification URLs |
-| `get_verdict` | SAFE/RISKY/UNKNOWN with risk profile and optional personal trust graph |
-| `get_batch_verdicts` | Batch verdict for up to 100 agents in one call |
-| `get_top_agents` | Leaderboard ranked by score |
+### Exposed tools
+
+The server exposes the following tools. Names reflect the internal service vocabulary and are stable at MCP layer; the REST surface uses the intent/fulfill vocabulary. A future phase will align MCP names with the REST surface.
+
+| Tool | Purpose |
+|---|---|
+| `get_agent_score` | Full trust score with components, evidence, verification URLs |
+| `get_top_agents` | Leaderboard ranked by posterior |
 | `search_agents` | Search by alias (partial match) |
-| `get_network_stats` | Global network statistics |
+| `get_network_stats` | Global network counters |
+| `get_verdict` | SAFE / RISKY / UNKNOWN / INSUFFICIENT with flags and risk profile |
+| `get_batch_verdicts` | Batch verdict for up to 100 hashes |
 | `get_top_movers` | Agents with biggest 7-day score changes |
-| `ping` | Real-time reachability check via QueryRoutes (FREE) |
-| `submit_attestation` | Submit a trust attestation after a transaction (FREE) |
+| `submit_attestation` | Submit a trust attestation after a transaction |
+| `decide` | Internal decision helper retained for LLM reasoning flows |
+| `report` | Report a transaction outcome with optional preimage verification |
+| `get_profile` | Agent profile with reports, probe uptime, rank, evidence, flags |
+| `ping` | Real-time QueryRoutes reachability check, free |
 
-### Example: decide → pay → report
-```
-# Step 1: Should I pay this agent?
-Agent calls decide({ target: "counterparty-hash", caller: "my-hash", walletProvider: "phoenix", serviceUrl: "https://api.example.com" })
-→ { go: true, successRate: 0.98, verdict: "SAFE", pathfinding: { hops: 1, sourceNode: "03864ef..." }, serviceHealth: { status: "healthy", servicePriceSats: 1 } }
-
-# Step 2: Agent proceeds with payment (if go=true)
-
-# Step 3: Report outcome
-Agent calls report({ target: "counterparty-hash", reporter: "my-hash", outcome: "success" })
-→ { reportId: "...", verified: false, weight: 0.75, timestamp: 1712000000 }
-```
-
-### Example: check score before transacting
-```
-User: Should I accept a payment channel from agent abc123...?
-
-Agent calls get_agent_score({ publicKeyHash: "abc123..." })
-
-Agent: This agent has a trust score of 73/100 (medium confidence).
-       450 channels, centrality rank #12, peer trust 0.3 BTC/channel,
-       active for 730 days. Verifiable:
-       - Lightning node: https://mempool.space/lightning/node/02abc...
-```
-
-### Example: attest after transacting
-```
-Agent calls submit_attestation({
-  txId: "uuid-of-the-transaction",
-  attesterHash: "your-agent-sha256-hash",
-  subjectHash: "counterparty-sha256-hash",
-  score: 85,
-  tags: ["fast", "reliable"]
-})
-```
+MCP tool shapes are declared in `src/mcp/server.ts` with zod schemas and match the underlying service contracts.
 
 ---
 
-## 2. Via SDK (`@satrank/sdk`)
+## Reading the response: posterior and advisory
 
-Best for: TypeScript/JavaScript agents or backend services.
+Every candidate and every agent profile carries a Bayesian posterior block.
 
-### Install
-
-```bash
-npm install @satrank/sdk
-```
-
-### One line: decide → pay → report
-
-```typescript
-import { SatRankClient } from '@satrank/sdk';
-
-const satrank = new SatRankClient('https://your-satrank-instance.com', {
-  headers: { 'Authorization': 'L402 <macaroon>:<preimage>' }
-});
-
-// Full cycle in one call. The report is automatic.
-const result = await satrank.transact('counterparty-hash', 'my-agent-hash', async () => {
-  const payment = await myWallet.pay(invoice);
-  return {
-    success: payment.ok,
-    preimage: payment.preimage,   // optional: gives 2x weight bonus
-    paymentHash: payment.hash,    // optional: for preimage verification
-  };
-});
-
-if (!result.paid) {
-  console.log(`Skipped -- ${result.decision.reason}`);
-} else {
-  console.log(`Paid. Report weight: ${result.report?.weight}`);
+```json
+{
+  "bayesian": {
+    "p_success": 0.835,
+    "ci95_low": 0.55,
+    "ci95_high": 0.986,
+    "n_obs": 6.094,
+    "verdict": "INSUFFICIENT"
+  },
+  "advisory": {
+    "advisory_level": "yellow",
+    "recommendation": "proceed_with_caution",
+    "msg": "CI95 width=0.44, low confidence"
+  }
 }
 ```
 
-### Check score
-```typescript
-const result = await satrank.getScore('a1b2c3d4e5f6...');
+`verdict` is a threshold on the posterior:
 
-if (result.score.total < 30) {
-  console.log('Low trust -- require escrow or decline');
-} else if (result.score.total < 60) {
-  console.log('Medium trust -- proceed with caution');
-} else {
-  console.log('High trust -- proceed normally');
-}
-```
+| Verdict | Meaning | Typical agent reaction |
+|---|---|---|
+| `SAFE` | Narrow CI95, high p_success | Commit, retry on soft failure |
+| `UNKNOWN` | Mid p_success | Commit cautiously, set tight timeouts |
+| `RISKY` | Low p_success | Hedge: parallel fallback or skip |
+| `INSUFFICIENT` | n_obs too low for a reliable posterior | Either explore (pay once, report) or skip to the next candidate |
 
----
+`ci95_high - ci95_low` is the confidence width. A narrow width means the posterior is stable; a wide width means the score is still learning. An agent that cares about tail risk should filter on CI width, not only on `p_success`.
 
-## 3. Via HTTP API (any language)
+`advisory` is a convenience overlay that compresses verdict plus CI width into a green / yellow / red recommendation. Use it if you do not want to reason about CI widths yourself.
 
-Best for: non-JS agents, scripts, or direct integration.
-
-### Base URL
-
-```
-https://your-satrank-instance.com/api
-```
-
-### Decision endpoints (recommended for agents)
-
-```bash
-# GO / NO-GO decision (L402-gated)
-curl -X POST https://satrank.example/api/decide \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: L402 <macaroon>:<preimage>' \
-  -d '{"target": "<hash>", "caller": "<your-hash>", "walletProvider": "phoenix"}'
-# walletProvider: phoenix|wos|strike|blink|breez|zeus|coinos|cashapp
-# Or use callerNodePubkey for any Lightning pubkey as pathfinding source
-
-# Report outcome (FREE -- L402 token or API key)
-curl -X POST https://satrank.example/api/report \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: your-api-key' \
-  -d '{"target": "<hash>", "reporter": "<your-hash>", "outcome": "success"}'
-
-# Agent profile (L402-gated)
-curl -H 'Authorization: L402 <macaroon>:<preimage>' \
-  https://satrank.example/api/profile/<hash>
-```
-
-### L402-gated endpoints (1 sat = 1 request)
-
-Two payment paths:
-- **Standard L402:** hit any paid endpoint without credentials → 402 + BOLT11 invoice for 21 sats (21 requests). Pay, use `Authorization: L402 <macaroon>:<preimage>`.
-- **Deposit:** `POST /api/deposit` with `{ "amount": 500 }` → invoice for 500 sats (500 requests). Pay, verify, use `Authorization: L402 deposit:<preimage>`.
-
-Both tokens work on all paid endpoints. The `X-SatRank-Balance` header on every response shows remaining requests. At 0, the next call returns `BALANCE_EXHAUSTED` (402) — drop the Authorization header for a new 21-sat invoice, or use deposit for bulk.
-
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `POST /api/decide` | L402 | GO/NO-GO with success probability |
-| `GET /api/profile/{id}` | L402 | Agent profile with reports, uptime, rank |
-| `GET /api/agent/{hash}` | L402 | Full score + evidence |
-| `GET /api/agent/{hash}/verdict` | L402 | SAFE/RISKY/UNKNOWN verdict |
-| `GET /api/agent/{hash}/history` | L402 | Score history over time |
-| `GET /api/agent/{hash}/attestations` | L402 | Attestations received |
-| `POST /api/verdicts` | L402 | Batch verdict (up to 100 hashes) |
-| `POST /api/best-route` | L402 | Batch pathfinding (up to 50 targets, top 3 by route quality) |
-
-### Free endpoints
-
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `POST /api/deposit` | None | Buy 21–10,000 requests in one invoice (FREE endpoint) |
-| `POST /api/report` | L402 token or API Key | Report outcome (FREE, no quota consumed) |
-| `GET /api/ping/{pubkey}` | None | Real-time reachability check (FREE) |
-| `POST /api/attestations` | API Key | Submit attestation (FREE, no payment) |
-| `GET /api/agents/top` | None | Leaderboard |
-| `GET /api/agents/search` | None | Search by alias |
-| `GET /api/agents/movers` | None | Top movers (7-day delta) |
-| `GET /api/health` | None | Service health |
-| `GET /api/version` | None | Build version and schema info |
-| `GET /api/stats` | None | Network statistics |
-
-> **Reports and attestations are free.** They are the fuel of the trust network.
-> Every report you submit makes the scoring more accurate for everyone.
-
-### Auto-indexation
-
-When you query an unknown Lightning pubkey (66 hex chars starting with 02 or 03),
-SatRank returns `202 Accepted` and indexes the node in the background. Retry after 10 seconds.
+Full derivation: [methodology sections 3 and 4](https://satrank.dev/methodology).
 
 ---
 
-## Scoring methodology
+## Reporting outcomes (feedback loop)
 
-SatRank computes a composite trust score (0-100) from 5 weighted factors:
+Reports are the primary signal that updates the posterior. Submitting them improves the score for every downstream caller. Two auth paths exist, with distinct reporter weights:
 
-| Factor | Weight | Source |
-|--------|--------|--------|
-| Volume | 25% | Verified transaction count (log-normalized) |
-| Reputation | 30% | 5 sub-signals: sovereign PageRank, peer trust, routing quality, capacity trend, fee stability. LN+ ratings as multiplicative modifier (x1.0-1.05) |
-| Seniority | 15% | Days since first seen (diminishing returns) |
-| Regularity | 15% | Consistency of transaction intervals |
-| Diversity | 15% | Unique counterparties (log-normalized) |
+| Path | Auth | Reporter weight | When to use |
+|---|---|---|---|
+| Anonymous via preimage pool | Preimage of a real L402 settlement, no identity | `low` 0.3, `medium` 0.5, `high` 0.7 (tier depends on preimage freshness and pool accounting) | Agents that want to contribute without tying reports to a stable identity |
+| Authenticated | `X-API-Key` or NIP-98 signed event | `1.0` | Agents with a stable identity that want maximum signal weight |
 
-Anti-gaming: mutual-loop detection (95% penalty), cycle detection up to 4 hops (90% penalty), minimum 7-day seniority to attest, attestation concentration limits.
+Preimage-verified reports are always preferred over self-reported outcomes, because the server can cryptographically confirm the payment settled. Unverified reports are still ingested but with reduced weight.
 
-Full methodology: `/methodology` on any SatRank instance.
+The endpoint is `POST /api/report`, free, no quota consumed. Reports that reach the server are published to Nostr as kind 30385 after a short aggregation window.
 
 ---
 
-## Comparison with alternatives
+## Pricing for integrators
 
-| | SatRank | Web of Trust (WoT) | Score.Kred | NaN Mesh |
-|---|---|---|---|---|
-| **Scoring method** | Composite 5-factor (volume, reputation, seniority, regularity, diversity) | Binary trust/distrust edges | Social influence aggregation | Behavioral clustering |
-| **Data sources** | Lightning graph (centrality, capacity), route probes, LN+ ratings (bonus) | User-created trust assertions | Twitter, GitHub, LinkedIn | On-chain transactions |
-| **Payment model** | L402 (1 sat/req, deposit up to 10k) | Free | Freemium SaaS | Not public |
-| **Anti-gaming** | Mutual-loop detection, attestation concentration limits, seniority gates | Sybil-vulnerable (trust is free) | Relies on social platform identity | On-chain cost as barrier |
-| **Evidence transparency** | Full: verification URLs to mempool.space, LN+, raw transaction samples | Partial: trust graph visible | Opaque scoring | Opaque scoring |
-| **Agent-native** | Yes: MCP tools, TypeScript SDK, REST API | No: designed for humans | No: web dashboard only | No: research prototype |
-| **Real-time** | Yes: scores recomputed on demand with TTL cache | Depends on implementation | Periodic batch updates | Periodic batch updates |
+SatRank charges for paid requests on satrank.dev endpoints. There is no subscription, no account, no API-key fee.
 
-### SatRank weaknesses (honest assessment)
+### Pay per call
 
-- **Cold start**: New agents with no transaction history get a score of 0. The system has no bootstrapping mechanism beyond manual attestations.
-- **Lightning-centric**: The reputation component uses graph centrality and peer trust. Agents operating outside Lightning have fewer signals available.
-- **Centralized index**: While data sources are verifiable, the scoring computation is centralized. Mitigation: scores are published as NIP-85 Trusted Assertions on Nostr for independent verification.
-- **Small network effect**: Value increases with adoption. Currently useful primarily within the SatRank ecosystem.
+The default: hit any paid endpoint, receive a `402` challenge, pay a 21-sat invoice, get a 21-request macaroon at rate 1 sat/request. Fine for scout agents that do a few calls and move on.
+
+### Deposits with rate discount
+
+`POST /api/deposit { amount }` returns an invoice plus `tierId`, `rateSatsPerRequest`, `discountPct`, and `quotaGranted`. Pay the invoice, then `POST /api/deposit { paymentHash, preimage }` to claim the macaroon.
+
+The rate is locked into the macaroon at settlement. A tier schedule change cannot raise the rate on a paid-up token.
+
+| Deposit | Rate (sat/req) | Requests | Good for |
+|---|---|---|---|
+| 21 sats | 1.0 | 21 | Scout runs, one-off testing |
+| 1,000 sats | 0.5 | 2,000 | Regular daily usage |
+| 10,000 sats | 0.2 | 50,000 | Multi-agent fleets |
+| 100,000 sats | 0.1 | 1,000,000 | Infrastructure services |
+| 1,000,000 sats | 0.05 | 20,000,000 | High-frequency orchestrators |
+
+Live schedule: `GET /api/deposit/tiers`. Landing section: [satrank.dev pricing](https://satrank.dev/#pricing).
+
+---
+
+## Operational notes
+
+**Time.** All timestamps are UTC Unix seconds.
+
+**Response headers to observe.**
+
+| Header | Meaning |
+|---|---|
+| `X-SatRank-Balance` | Requests remaining on the current L402 macaroon |
+| `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` | Free-tier rate limit state |
+| `Retry-After` | Seconds to wait on `429` or `503` |
+
+**Common errors.**
+
+| HTTP | Code | Meaning | Suggested reaction |
+|---|---|---|---|
+| 400 | `VALIDATION_ERROR` | Malformed body or missing field | Fix the payload shape |
+| 402 | `PAYMENT_REQUIRED` | Paid endpoint without valid L402 auth | Follow the L402 flow |
+| 402 | `BALANCE_EXHAUSTED` | Macaroon has 0 requests left | Drop the Authorization header and get a new macaroon, or top up via deposit |
+| 429 | `RATE_LIMITED` | Free-tier rate limit hit | Back off for `Retry-After` seconds |
+| 200 | `candidates: []` | No candidate matched the intent filter | Relax `budget_sats` or `max_latency_ms`, or broaden `category` |
+
+**Backoff policy for direct-HTTP callers.** Honor `Retry-After` exactly on 429. On 5xx without `Retry-After`, exponential backoff starting at 500 ms capped at 30 s.
+
+**SSRF safety.** SatRank refuses to probe endpoints that resolve to private ranges (RFC1918, localhost, link-local). If a service registration points at an internal address, the service is rejected at registry time.
+
+**Kind 20900 verdict flash.** When a node's verdict transitions (SAFE becomes RISKY, or vice versa), SatRank publishes an ephemeral Nostr event (kind 20900) on `relay.damus.io`, `nos.lol`, `relay.primal.net`. Agents that watch these relays can react to verdict transitions in near real time without polling.
+
+---
+
+## Support and community
+
+- **GitHub issues** for bugs, schema mismatches, and documentation holes: [proofoftrust21/satrank](https://github.com/proofoftrust21/satrank/issues).
+- **Security disclosures** go to `security@satrank.dev`. Do not open a public issue for vulnerabilities. Full policy: [SECURITY.md](./SECURITY.md).
+- **General contact**: `contact@satrank.dev`.
+- **Nostr**: `satrank@satrank.dev` (NIP-05 verified).
+- **Methodology deep-dive**: [satrank.dev/methodology](https://satrank.dev/methodology).
+- **Why it exists**: [IMPACT-STATEMENT.md](./IMPACT-STATEMENT.md).

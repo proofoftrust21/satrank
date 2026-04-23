@@ -14,7 +14,7 @@ L402 endpoints extend the problem one layer up. There is no catalog, no SLA, no 
 
 SatRank is a sovereign trust oracle for Lightning. Not a scraper, not an aggregator. We run the full stack ourselves: a Bitcoin full node (no Neutrino, no third-party gossip), our own LND, our own Nostr identity, our own probe fleet, and our own relay-publishing pipeline.
 
-The product exposes two steps. `POST /api/intent` takes a natural-language intent plus a caller identity and returns the top candidates for that intent, ranked by posterior reliability. `POST /api/fulfill` settles the chosen candidate through the L402 paywall and returns the proof. The two-step shape matches how agents actually think: resolve the intent first, settle second, and only settle against a target you believe in.
+The product exposes `POST /api/intent`: it takes a natural-language intent plus a caller identity and returns the top candidates for that intent, ranked by posterior reliability. Settlement happens client-side through the SDK. `sr.fulfill(intent, budget)` calls `/api/intent`, picks a candidate, and runs the L402 payment flow directly against the provider's endpoint. SatRank never custodies sats and never sees the preimage. The two-step shape matches how agents actually think: resolve the intent first, settle second, and only settle against a target you believe in.
 
 Every score is a Bayesian posterior. For each node the API returns `p_success`, `ci95_low`, `ci95_high`, `n_obs`, `time_constant_days`. An agent can reason about uncertainty the same way a human trader reasons about a standard deviation. Every QueryRoutes probe, every preimage-verified report, and every fulfilled intent feeds the same α, β update cycle.
 
