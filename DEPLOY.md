@@ -1,457 +1,223 @@
 # DEPLOY.md
 
-Production deployment guide for SatRank on a VPS with L402 via Aperture.
+Production deployment guide for SatRank: a native-L402 Lightning trust oracle running on two Hetzner Cloud VMs with a full bitcoind node and a self-hosted LND.
 
-## Pre-deploy checklist
+## 1. Overview
 
-Before any production deploy, run the anti-drift guard:
+SatRank runs its own Bitcoin (bitcoind v28.1) and Lightning (LND v0.20.1) nodes. The Express api container mints and verifies L402 macaroons natively via HMAC-SHA256; no L402 reverse proxy sits in front of it. Nginx terminates TLS and forwards to Express on loopback. Postgres 16 runs on a second VM reachable only over a Hetzner private network.
+
+```
+Internet (443 TLS)
+  |
+  v
+nginx (VM1, 443) --> Express api (VM1, 127.0.0.1:3000)
+                        |
+                        +--> L402 native middleware (HMAC macaroons)
+                        +--> LND v0.20.1 (VM1, gRPC 10009, REST 8080)
+                        |       |
+                        |       v
+                        |    bitcoind v28.1 (VM1, mainnet full node)
+                        |
+                        +--> Postgres 16 (VM2, 5432 over private network)
+
+crawler (VM1, Docker, same image as api)
+  +--> LND graph, probes, registry
+  +--> metrics on 127.0.0.1:9091
+```
+
+## 2. Architecture
+
+Two Hetzner Cloud VMs (AMD EPYC):
+
+- VM1 SatRank CPX32 (8 vCPU, 16 GB RAM): Docker compose (api + crawler), nginx, LND v0.20.1, bitcoind v28.1, certbot. Server ID 125533390. System disk 75 GB.
+- VM2 satrank-postgres CPX42 (16 vCPU, 32 GB RAM): Postgres 16, reachable only from VM1 over Hetzner private network. Server ID 127633334. System disk 301 GB.
+
+Hetzner Block Storage volumes attached to VM1:
+
+- lnd-data (21 GB, mounted at /mnt/lnd-data): LND chain data, channel state, on-disk macaroons.
+- bitcoin-data (1 TB, mounted at /mnt/bitcoin-data): bitcoind chainstate and blocks. Currently at 81% capacity; review quarterly, resize before 90%.
+
+Canonical workspace on VM1: /root/satrank/. Source of truth is origin/main (git fetch && git reset --hard origin/main). Docker builds and runs from this directory. Secrets (.env.production, .macaroon files) live alongside but are excluded from git and from rsync deploys via .rsync-exclude.
+
+## 3. Prerequisites
+
+VM1 host packages:
+
+- Ubuntu 22.04 LTS
+- Docker 24+ with compose plugin
+- nginx 1.18+
+- certbot with nginx plugin
+- LND v0.20.1 + bitcoind v28.1 running as systemd units (see /etc/systemd/system/bitcoind.service, lnd.service)
+- Node 20+ only required if building outside Docker
+- make, rsync, openssl
+
+VM2 host packages: Postgres 16 with role `satrank`, database `satrank`, pg_hba.conf restricted to VM1 private IP.
+
+LND macaroons (bake on VM1, not in git):
 
 ```bash
-npm run check-drift                       # runs against https://satrank.dev
-npm run check-drift -- --api=http://localhost:3000
-npm run check-drift -- --strict           # treat warnings as failures (CI mode)
+# Invoice macaroon: mints invoices via addInvoice
+lncli bakemacaroon invoices:read invoices:write --save_to /root/satrank/invoice.macaroon
+# Readonly macaroon: standard LND readonly.macaroon (all nine :read scopes)
+cp <LND_DATA_DIR>/data/chain/bitcoin/mainnet/readonly.macaroon /root/satrank/readonly.macaroon
+# Pay macaroon: outbound probe payments, offchain scope only
+lncli bakemacaroon offchain:read offchain:write --save_to /root/satrank/probe-pay.macaroon
+chmod 600 /root/satrank/*.macaroon
 ```
 
-This single script enforces three invariants that historically drifted between releases (caught in sim #9):
-
-1. **IMPACT-STATEMENT.md numbers** stay within 5% of the live `/api/stats/network` response (phantom rate gated by a 5pp absolute band).
-2. **`sdk/src/types.ts` shape** matches `src/openapi.ts` for every Request/Response schema — any property added on one side without the other triggers a FAIL.
-3. **`sdk/package.json` version** is strictly ahead of the latest `@satrank/sdk` version published on npm — prevents "forgot to bump" before `npm publish`.
-
-A non-zero exit blocks the deploy. Warnings surface caveats (offline npm, missing endpoint) without blocking by default.
-
-## Architecture
-
-```
-Internet → nginx (443) → Aperture (8082) → Express (3000)
-                                ↕
-                         LND + bitcoind (mainnet)
-```
-
-- **nginx**: TLS termination, static assets, proxy to Aperture
-- **Aperture**: L402 reverse proxy that generates invoices and verifies payments
-- **Express**: SatRank API (Docker container)
-- **LND**: Lightning node, backed by a local **bitcoind v28.1** full node for UTXO-validated channel data. Any LND deployment (self-hosted, Voltage, Nodana, ...) works; it just needs to expose gRPC or REST with a macaroon.
-
-## Prerequisites
-
-- Ubuntu 22.04+ VPS
-- Domain pointed to your VPS IP
-- An LND node (mainnet) with an admin macaroon available to Aperture and a readonly macaroon available to the SatRank crawler container
-- Go 1.21+ (to build Aperture)
-
-## 1. Aperture
-
-### Install
+Secret generation (run once per fresh deploy):
 
 ```bash
-git clone https://github.com/lightninglabs/aperture.git /opt/aperture
-cd /opt/aperture && go build -o /usr/local/bin/aperture ./cmd/aperture
+openssl rand -hex 32    # L402_MACAROON_SECRET
+openssl rand -hex 32    # OPERATOR_BYPASS_SECRET
+openssl rand -hex 32    # API_KEY
+openssl rand -hex 32    # APERTURE_SHARED_SECRET (legacy, see section 7)
 ```
 
-### Config: /etc/aperture/aperture.yaml
+## 4. First deploy
 
-```yaml
-listenaddr: "127.0.0.1:8082"
-debuglevel: "info"
-autocert: false
-
-authenticator:
-  lnd:
-    # gRPC host of the LND node Aperture uses to mint L402 invoices.
-    # Prefer "localhost:10009" when LND runs on the same host -- this avoids
-    # copying macaroons/certs around and picks up LND cert regenerations
-    # automatically (Aperture re-reads `tlspath` on restart).
-    host: "localhost:10009"
-    macaroonpath: "<LND_DATA_DIR>/data/chain/bitcoin/mainnet/admin.macaroon"
-    tlscertpath: "<LND_DATA_DIR>/tls.cert"
-
-services:
-  - name: "satrank-api"
-    hostregexp: "satrank.dev"
-    pathregexp: '^/api/(decide|verdicts|best-route|profile/|agent/[a-f0-9])'
-    protocol: "http"
-    address: "localhost:3000"
-    auth: "on"
-    price: 21
-    dynamicprice:
-      enabled: false
-
-dbbackend: "sqlite"
-```
-
-**Notes:**
-- `price: 21`: 21 sats per standard L402 token = 21 requests (1 sat/request). For bulk, agents use `POST /api/deposit` (21–10,000 sats, bypasses Aperture, generates invoice via LND directly)
-- Express tracks the balance via `token_balance` table and returns `X-SatRank-Balance` header for both L402 and deposit tokens
-- `pathregexp`: covers decide, verdicts, best-route, profile, agent/:hash (and sub-routes). Health/stats/ping/report are free
-- Replace `<LND_DATA_DIR>` with the absolute path to your LND data directory (where `tls.cert` and `data/chain/bitcoin/mainnet/admin.macaroon` live). Pointing Aperture at LND's live files instead of a copy means a cert regeneration on the LND side is picked up by `systemctl restart aperture` without any file juggling.
-- `host: "localhost:10009"` assumes LND is on the same host and listens on the loopback interface (recommended; see the `restlisten=127.0.0.1:10009` convention in `lnd.conf`). If LND is remote, replace with `hostname:port` and add that IP to LND's `tlsextraip`.
-
-### Systemd: /etc/systemd/system/aperture.service
-
-```ini
-[Unit]
-Description=Aperture L402 Reverse Proxy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=aperture
-Group=aperture
-ExecStart=/usr/local/bin/aperture --configfile=/etc/aperture/aperture.yaml
-Restart=always
-RestartSec=5
-LimitNOFILE=65536
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/aperture
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-```
+From an operator workstation with an SSH key on VM1:
 
 ```bash
-sudo useradd -r -s /usr/sbin/nologin aperture
-sudo mkdir -p /var/lib/aperture
-sudo chown aperture:aperture /var/lib/aperture
-sudo systemctl daemon-reload
-sudo systemctl enable --now aperture
+git clone git@github.com:proofoftrust21/satrank.git
+cd satrank
+
+# Prepare .env.production locally using the template in docs/env.example.md.
+# Transfer it manually out of band (never via rsync, never via git):
+scp .env.production root@VM1:/root/satrank/.env.production
+ssh root@VM1 'chmod 600 /root/satrank/.env.production'
+
+# Push source tree to VM1 (secrets preserved by .rsync-exclude)
+SATRANK_HOST=root@VM1 REMOTE_DIR=/root/satrank make deploy
 ```
 
-## 2. nginx
-
-### /etc/nginx/sites-available/satrank.dev
-
-```nginx
-server {
-    listen 80;
-    server_name satrank.dev;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name satrank.dev;
-
-    ssl_certificate /etc/letsencrypt/live/satrank.dev/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/satrank.dev/privkey.pem;
-
-    # Security headers (duplicated from Express helmet for defense-in-depth)
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-
-    # L402-gated endpoints -- proxy through Aperture.
-    # `/api/agent/{hash}` and `/api/agent/{hash}/{verdict,history,attestations}`
-    # all match because the regex requires a 64-hex-char id after `/agent/`.
-    # `/api/agents/top`, `/api/agents/movers`, `/api/agents/search` do NOT match
-    # (no hex id after `/agents/`) -- they fall through to Express and are free.
-    location ~ ^/api/agent/[a-f0-9]+ {
-        proxy_pass https://127.0.0.1:8082;
-        proxy_ssl_verify off;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # Explicit paid routes (exact match on /api/decide, prefix on /api/profile/).
-    location = /api/decide {
-        proxy_pass https://127.0.0.1:8082;
-        proxy_ssl_verify off;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location ~ ^/api/profile/ {
-        proxy_pass https://127.0.0.1:8082;
-        proxy_ssl_verify off;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # Free endpoint -- report goes direct to Express (API key auth, no L402).
-    location = /api/report {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # NIP-05 (.well-known/nostr.json) -- public JSON, needs CORS.
-    location /.well-known/nostr.json {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        add_header Access-Control-Allow-Origin * always;
-    }
-
-    # Catch-all -- every non-paid `/api/*` (health, stats, agents/top,
-    # agents/movers, agents/search, ping, verdicts, attestations, docs,
-    # openapi.json), plus static assets (landing page, methodology, icons).
-    # `/api/verdicts` is L402-gated at the Express level via `apertureGateAuth`,
-    # so reaching Express direct returns 402 for external callers.
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
+On VM1:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/satrank.dev /etc/nginx/sites-enabled/
-sudo certbot --nginx -d satrank.dev
+cd /root/satrank
+docker compose build
+docker compose up -d
+docker compose ps
+curl -fsS http://127.0.0.1:3000/api/health
+```
+
+Smoke-test the L402 gate from outside:
+
+```bash
+curl -i -X POST https://satrank.dev/api/intent \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"<64hex>","caller":"<64hex>"}'
+# Expect: HTTP/2 402, WWW-Authenticate: L402 macaroon="...", invoice="lnbc..."
+```
+
+## 5. Nginx config
+
+Canonical file, checked into the repo: `infra/nginx/satrank.conf.l402-native`. Deploy it once on VM1:
+
+```bash
+sudo cp /root/satrank/infra/nginx/satrank.conf.l402-native /etc/nginx/sites-available/satrank.dev
+sudo ln -sf /etc/nginx/sites-available/satrank.dev /etc/nginx/sites-enabled/satrank.dev
+sudo certbot --nginx -d satrank.dev -d api.satrank.dev
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-**Routing logic (matches README + landing page cost tables):**
-- `/api/agent/{hash}`, `/api/agent/{hash}/verdict`, `/api/agent/{hash}/history`, `/api/agent/{hash}/attestations` → nginx → Aperture → Express (L402, 1 req from balance)
-- `/api/decide` → nginx → Aperture → Express (L402, 1 req from balance)
-- `/api/profile/{id}` → nginx → Aperture → Express (L402, 1 req from balance)
-- `/api/verdicts` → nginx → Aperture → Express (L402, 1 request from balance)
-- `/api/best-route` → nginx → Aperture → Express (L402, 1 request from balance)
-- `/api/deposit` → nginx → Express direct (free endpoint, rate-limited 3/min/IP, generates LND invoice directly)
-- `/api/report`, `/api/attestations` → nginx → Express direct (free, X-API-Key required)
-- `/api/health`, `/api/stats`, `/api/ping/{pubkey}`, `/api/agents/top`, `/api/agents/movers`, `/api/agents/search`, `/api/docs`, `/api/openapi.json` → nginx → Express direct (free, no auth)
-- `/`, static assets, `/methodology.html` → nginx → Express static (free)
-- `/.well-known/nostr.json` → nginx → Express direct (free, CORS enabled for NIP-05)
+Nginx does pure TLS termination and reverse proxy. All L402 logic (challenge minting, macaroon verification, balance deduction) runs inside Express via `src/middleware/l402Native.ts`. Nginx carries no L402 awareness: it forwards /api/* to 127.0.0.1:3000 and serves static assets from Express.
 
-## 3. SatRank (Docker)
-
-### Deploy
+## 6. Continuous deploys
 
 ```bash
-SATRANK_HOST=<user>@<your.server> REMOTE_DIR=/path/to/satrank make deploy
-# expands to:
-# rsync -avz --exclude node_modules --exclude dist --exclude .git \
-#   --exclude .env.production --exclude data --exclude '*.macaroon' \
-#   --exclude aperture.yaml --exclude '.claude' \
-#   . <user>@<your.server>:/path/to/satrank/
+# 1. Align local tree with main
+git fetch origin && git reset --hard origin/main
+
+# 2. Rsync source to VM1 (secrets excluded via .rsync-exclude)
+SATRANK_HOST=root@VM1 REMOTE_DIR=/root/satrank make deploy
+
+# 3. Rebuild image + recreate containers (runtime code changes require rebuild)
+ssh root@VM1 'cd /root/satrank && docker compose build api && docker compose up -d --force-recreate api'
+
+# 4. Verify
+curl -fsS https://satrank.dev/api/health
 ```
 
-### Start on server
+Downtime during --force-recreate is typically 5 to 10 seconds (Express cold boot plus healthcheck start_period). Rollback uses the same flow with a previous SHA: `git reset --hard <sha> && make deploy && docker compose build api && docker compose up -d --force-recreate api`.
+
+The `.rsync-exclude` file at the repo root is authoritative. It keeps `.env*`, `data/`, `*.db`, `*.sqlite*`, `*.macaroon`, `node_modules/`, `dist/`, `.git/`, `.claude/`, `sdk/`, `python-sdk/.venv/`, logs, coverage, and IDE directories out of the payload. Read it before running any ad-hoc rsync.
+
+## 7. Secrets management
+
+Secrets live only in `/root/satrank/.env.production` on VM1 (chmod 600) plus the three `.macaroon` files alongside. Never in git, never in Docker images, never in rsync payloads.
+
+| Secret | Purpose | Leak impact | Rotation |
+|--------|---------|-------------|----------|
+| L402_MACAROON_SECRET | HMAC seal of L402 macaroons | Forgeable macaroons, still blocked by preimage mismatch at LND | `openssl rand -hex 32`, restart api. Old macaroons become invalid (no sliding window). |
+| OPERATOR_BYPASS_SECRET | X-Operator-Token header for CI and admin bypass | Unlimited free access to paid endpoints until rotation | `openssl rand -hex 32`, restart api. |
+| API_KEY | Write-endpoint auth (report, attestations) | Write access to index and report ingestion | `openssl rand -hex 32`, restart api. |
+| NOSTR_PRIVATE_KEY | Signs NIP-85 and NIP-05 events | Identity impersonation on relays | New keypair, refresh NIP-05 DNS, re-publish kind 10040. |
+| LND invoice macaroon | Mints invoices via LND REST addInvoice for deposit and L402 challenge flows | Scope `invoices:read invoices:write`. Can mint arbitrary invoices and look up invoice status. Cannot move funds, cannot open or close channels. | `lncli bakemacaroon invoices:read invoices:write --save_to invoice.macaroon`, swap file, restart api. |
+| LND readonly macaroon | Crawler graph reads and node status checks (describegraph, listchannels, getinfo) | LND default readonly.macaroon with nine `:read` scopes (address, info, invoices, macaroon, message, offchain, onchain, peers, signer). Cannot move funds, cannot bake new macaroons. | Copy LND default `readonly.macaroon` from its data directory, swap file, restart crawler. |
+| LND pay macaroon | Outbound probe payments | Scope `offchain:read offchain:write`. Can initiate outbound Lightning payments up to available channel liquidity. No on-chain funds access, no channel open or close. | `lncli bakemacaroon offchain:read offchain:write --save_to probe-pay.macaroon`, swap file, restart api. |
+| APERTURE_SHARED_SECRET | Legacy required at boot, no longer read at runtime | None (not consumed by l402Native middleware) | Scheduled removal 2026-04-30. |
+
+The LND seed phrase is the operator's responsibility: stored offline, never on VM1, never in any backup that leaves the operator's physical custody. A full VM1 loss with the seed recovers channel funds via LND SCB restore (see section 10); without the seed, channel funds are lost.
+
+Recovery backups of `.env.production` are kept as `.bak-YYYYMMDD` suffixes in the same directory. These are manual, operator-managed, never committed. Purge stale `.bak-*` files after each rotation lands.
+
+## 8. Monitoring
+
+Live endpoints (public, no auth):
+
+- GET /api/health: node pubkey, block height, channel count, DB ping.
+- GET /api/stats: aggregate counts (agents, transactions, reports).
+- GET /api/stats/reports: Tier 1 and Tier 2 report economy metrics.
+
+Prometheus scraping:
+
+- api container exposes /metrics on its Express bind (127.0.0.1:3000/metrics). Loopback access is free; external access requires `X-API-Key`.
+- crawler container exposes /metrics on 127.0.0.1:9091 (env `CRAWLER_METRICS_PORT`). Loopback bound, same auth rule.
+
+Logs:
 
 ```bash
-ssh <user>@<your.server>
-cd /path/to/satrank
-docker compose up -d
-```
-
-### Verify
-
-```bash
-# Health (free, bypasses Aperture)
-curl https://satrank.dev/api/health
-
-# Free endpoint (no L402)
-curl https://satrank.dev/api/agents/top
-
-# L402-gated endpoint -- should return 402 with 21-sat invoice
-curl -i -X POST https://satrank.dev/api/decide \
-  -H 'Content-Type: application/json' \
-  -d '{"target": "<hash>", "caller": "<hash>"}'
-# HTTP/2 402
-# WWW-Authenticate: L402 macaroon="...", invoice="lnbc210n1..."
-
-# Pay with lncli and retry -- token gives 21 requests
-lncli payinvoice lnbc210n1...
-curl -X POST -H "Authorization: L402 <macaroon>:<preimage>" \
-  -H 'Content-Type: application/json' \
-  https://satrank.dev/api/decide \
-  -d '{"target": "<hash>", "caller": "<hash>"}'
-# X-SatRank-Balance: 20
-```
-
-## 4. Secrets management
-
-Replace `$SATRANK_DIR` below with your install directory (e.g. `/opt/satrank`).
-
-| Secret | Location on server | NOT in repo |
-|--------|--------------------|-------------|
-| API_KEY | `$SATRANK_DIR/.env.production` | .gitignore |
-| APERTURE_SHARED_SECRET | `$SATRANK_DIR/.env.production` | .gitignore |
-| LND admin macaroon | `/etc/aperture/admin.macaroon` | manual copy |
-| LND readonly macaroon | `$SATRANK_DIR/readonly.macaroon` | manual copy (bind-mounted into crawler container) |
-| LND TLS cert | `/etc/aperture/tls.cert` | manual copy |
-| Let's Encrypt certs | `/etc/letsencrypt/` | certbot |
-
-**Rotate API_KEY:**
-```bash
-NEW_KEY=$(openssl rand -hex 32)
-sed -i "s/^API_KEY=.*/API_KEY=$NEW_KEY/" "$SATRANK_DIR/.env.production"
-cd "$SATRANK_DIR" && docker compose restart api
-```
-
-## 5. Monitoring
-
-```bash
-# Container health
-docker ps --format "table {{.Names}}\t{{.Status}}"
-
-# Logs
 docker logs -f satrank-api --since 1h
 docker logs -f satrank-crawler --since 1h
-
-# Aperture logs
-journalctl -u aperture -f
-
-# nginx access
-tail -f /var/log/nginx/access.log | grep satrank
+journalctl -u nginx -f
+journalctl -u lnd -f
+journalctl -u bitcoind -f
 ```
 
-### Prometheus scraping
+Alerting: Brevo SMTP via msmtp on VM1 for cron failures. Current Brevo delivery to ProtonMail fails SPF silently (see section 10). Email alerts are best-effort; Prometheus plus a manual daily health check is the primary signal.
 
-Add to your `prometheus.yml`:
+## 9. Database migrations
 
-```yaml
-scrape_configs:
-  - job_name: satrank
-    scrape_interval: 15s
-    static_configs:
-      - targets: ['satrank-api:3000']
-    metrics_path: /metrics
-```
+Postgres 16 on VM2, consolidated schema at version 41. Migrations are bootstrapped idempotently at api container start from `src/database/migrations.ts` using `src/database/postgres-schema.sql` as the source of truth. There is no manual migration step during continuous deploys.
 
-### Alerting rules
+For forward migrations in new phases, edit `src/database/migrations.ts`, increment `CONSOLIDATED_VERSION`, add ALTER statements in the sequence block. `src/tests/migrations.test.ts` validates replay from v1. On deploy, the api container runs migrations before accepting traffic.
 
-Create `satrank-alerts.yml` and include it in your Alertmanager config:
+Postgres backups: Hetzner Cloud Backups on VM2 (server ID 127633334), daily snapshot with 7-day rotation. No pg_dump cron layer at this time; recovery goes through the Hetzner console (snapshot to new VM or in-place restore). See section 11 for the single-provider consideration.
 
-```yaml
-groups:
-  - name: satrank
-    rules:
-      # API is down
-      - alert: SatRankDown
-        expr: up{job="satrank"} == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "SatRank API is unreachable"
+## 10. Backup strategy
 
-      # No agents indexed (data loss or failed migration)
-      - alert: SatRankNoAgents
-        expr: satrank_agents_total == 0
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "No agents indexed -- possible data loss or migration failure"
+Four independent layers:
 
-      # p99 latency > 5s
-      - alert: SatRankHighLatency
-        expr: histogram_quantile(0.99, rate(satrank_http_request_duration_seconds_bucket[5m])) > 5
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "SatRank p99 latency > 5s"
+1. LND SCB (channel.backup): cron on VM1 at `/root/backups/lnd/backup.sh` runs daily at 06:00 UTC, writes a timestamped channel.backup file, retains 90 days locally on VM1. Mirrored daily to an operator local Mac via launchd plus rsync pull over SSH (read-only, no push path). SCB plus seed equals full channel recovery.
+2. Hetzner Cloud Backups on VM1 (server ID 125533390): daily auto-snapshot, 7-day rotation. Captures the root filesystem and attached Block Storage volumes, including .env.production and macaroons in place.
+3. Hetzner Cloud Backups on VM2 (server ID 127633334): daily auto-snapshot, 7-day rotation. Captures the Postgres data directory.
+4. LND seed phrase: offline, operator-held, never on infrastructure. Without the seed, no layer above can recover channel funds.
 
-      # Score computation > 2s (should be <100ms normally)
-      - alert: SatRankSlowScoring
-        expr: histogram_quantile(0.99, rate(satrank_score_compute_duration_seconds_bucket[5m])) > 2
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Score computation p99 > 2s -- possible DB performance issue"
+bitcoind chainstate is intentionally not backed up. A full VM1 loss triggers IBD from the P2P network (roughly 24 to 48 hours for a fresh 1 TB chainstate). Chainstate is reproducible from network consensus.
 
-      # Crawler taking too long (> 5 minutes)
-      - alert: SatRankCrawlSlow
-        expr: histogram_quantile(0.99, rate(satrank_crawl_duration_seconds_bucket[30m])) > 300
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Crawler run exceeding 5 minutes"
+## 11. Troubleshooting and known operational risks
 
-      # High error rate (> 5% of requests returning 5xx)
-      - alert: SatRankHighErrorRate
-        expr: rate(satrank_requests_total{status=~"5.."}[5m]) / rate(satrank_requests_total[5m]) > 0.05
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "SatRank 5xx error rate > 5%"
-```
+Common issues:
 
-## 6. Backup
+- /api/health returns 503: check `docker compose ps` for api container state, then `docker logs --tail 100 satrank-api` for boot errors (missing env, LND unreachable, Postgres down).
+- 402 response missing the `invoice` field: `L402_MACAROON_SECRET` unset or the LND invoice macaroon missing. Check `docker logs satrank-api | grep -i l402`.
+- Scoring pipeline stalls: inspect crawler /metrics for a flat `scored_total` counter. Restart: `docker compose restart crawler`.
 
-```bash
-# Manual backup
-docker compose exec api node dist/scripts/backup.js
+Known operational risks:
 
-# Automated hourly backup via cron (replace $SATRANK_DIR with your install path)
-0 * * * * cd $SATRANK_DIR && docker compose exec -T api node dist/scripts/backup.js >> /var/log/satrank-backup.log 2>&1
-```
-
-Backups are stored in `data/backups/`, with the 24 most recent retained automatically.
-Each backup is verified with `PRAGMA integrity_check` after copy.
-
-## 7. Crawl intervals
-
-Each data source runs on its own timer in `--cron` mode. At startup, a full crawl of all sources runs immediately, then each source follows its own interval.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CRAWL_INTERVAL_LND_GRAPH_MS` | `3600000` (1 hour) | LND full graph (~14k active nodes on mainnet) |
-| `CRAWL_INTERVAL_LNPLUS_MS` | `86400000` (24 hours) | LN+ community ratings |
-| `CRAWL_INTERVAL_PROBE_MS` | `1800000` (30 min) | Route probe (reachability check) |
-| `PROBE_MAX_PER_SECOND` | `15` | Max probes per second (rate limiter) |
-| `PROBE_AMOUNT_SATS` | `1000` | Base amount in sats to test routes with (multi-amount probing escalates to 10k/100k/1M for hot nodes) |
-| `DECIDE_REPROBE_STALE_SEC` | `1800` | Max age (seconds) of probe data before `/api/decide` fires a live re-probe at the caller's amountSats |
-
-Override in `.env.production`:
-
-```bash
-# Aggressive: refresh everything often (higher resource usage)
-CRAWL_INTERVAL_LND_GRAPH_MS=300000      # 5 minutes
-CRAWL_INTERVAL_LNPLUS_MS=3600000        # 1 hour
-
-# Relaxed: save resources
-CRAWL_INTERVAL_LND_GRAPH_MS=21600000    # 6 hours
-CRAWL_INTERVAL_LNPLUS_MS=86400000       # 24 hours
-```
-
-After each LND crawl, the scoring pipeline runs in two passes: first any unscored
-agents that accumulated since the last cycle (bulk scoring, unscored), then all
-previously scored agents are rescored with fresh data (bulk rescore). On a normal
-cycle this touches every eligible agent in the index, not a top-N subset. Logs
-show exact counts (`scored X/Y errors=0`) for each pass.
-
-## 8. Snapshot retention
-
-The `score_snapshots` table grows with every score computation. On the production
-mainnet instance each cycle writes ~7,000+ rows, and the retention cron keeps the
-last 45 days.
-
-The retention policy is defined in `src/config/retention.ts` and applied by a
-dedicated cron inside the crawler process (not embedded in each crawl):
-
-- **`RETENTION_POLICIES`** (flat cutoff per table):
-  - `probe_results`: 14 days (regularity uses the last 7, kept 2x for margin)
-  - `score_snapshots`: **45 days** (delta windows up to 30d, kept 1.5x for margin)
-  - `channel_snapshots`: 14 days
-  - `fee_snapshots`: 14 days
-- **`RETENTION_CHUNK_SIZE`**: deletes run in chunks of 50,000 rows per
-  transaction so the SQLite WAL never balloons (previous multi-million-row
-  monolithic `DELETE` grew the WAL past 1 GB and stalled, which is why chunking).
-- **`RETENTION_INTERVAL_MS`**: the retention cron runs every **24 hours**,
-  independent from the crawler's data ingestion cycle. At startup it also runs
-  once immediately.
-
-The retention cron is started from `src/crawler/run.ts` and logs each table's
-`{deleted, durationMs}` after every sweep.
+- LND graph breaker carve-out depends on string matching against LND v0.20.1 error surfaces. Any LND upgrade requires re-validating the regex set in `src/lnd/lndGraphClient.ts`.
+- Single-host SPOF on VM1: nginx, api, crawler, LND, bitcoind all co-located. No hot standby. RTO for a full VM1 loss is bounded by Hetzner snapshot restore (typically 20 to 40 minutes) plus bitcoind IBD when the chainstate volume is the loss.
+- /mnt/bitcoin-data at 81% capacity. Review quarterly; resize the Block Storage volume before the 90% threshold.
+- Postgres backups depend on a single provider (Hetzner Cloud Backups). A Hetzner outage during a recovery window leaves no fallback. An offsite pg_dump is a known gap.
+- Brevo SMTP alerts to ProtonMail fail SPF silently. Treat email as best-effort and rely on Prometheus plus manual health checks.
