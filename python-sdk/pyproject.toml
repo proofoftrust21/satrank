@@ -41,7 +41,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://satrank.dev"
-Repository = "https://github.com/lochju/satrank"
+Repository = "https://github.com/proofoftrust21/satrank"
 
 [tool.setuptools.packages.find]
 include = ["satrank*"]
