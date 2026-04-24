@@ -8,6 +8,15 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [SDK] - 2026-04-24
+
+### Added
+
+- `@satrank/sdk` v1.0.1 published to the npm registry (https://www.npmjs.com/package/@satrank/sdk).
+- `satrank` v1.0.1 published to PyPI (https://pypi.org/project/satrank/1.0.1/).
+
+Both SDKs provide the high-level `sr.fulfill(intent, budget)` interface along with lower-level access to all public endpoints. See `docs/MIGRATION-TO-1.0.md` for usage. Patch bump from 1.0.0 to avoid a version clash with the existing registry entries; no behavioral change relative to the 1.0.0 tarballs shipped in-tree.
+
 ## [API 1.1.0] - 2026-04-23
 
 ### Added
