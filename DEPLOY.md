@@ -183,7 +183,32 @@ journalctl -u lnd -f
 journalctl -u bitcoind -f
 ```
 
-Alerting: Brevo SMTP via msmtp on VM1 for cron failures. Current Brevo delivery to ProtonMail fails SPF silently (see section 10). Email alerts are best-effort; Prometheus plus a manual daily health check is the primary signal.
+### External monitoring (BetterStack)
+
+Four BetterStack uptime monitors check production endpoints externally and alert via email + mobile push on failure. SSL and domain expiration alerts are enabled with 14 day lead time.
+
+- SatRank API health: GET https://satrank.dev/api/health, 3 min interval, status 200 + body contains `"status":"ok"`.
+- SatRank stats endpoint: GET https://satrank.dev/api/stats, 5 min interval, status 200 + body contains `agentsIndexed`.
+- SatRank L402 challenge gate: GET https://satrank.dev/api/agent/<zero-hash>, 5 min interval, status 402 expected (verifies the L402 native gate is active).
+- SatRank OpenAPI spec: GET https://satrank.dev/api/openapi.json, 10 min interval, status 200 + body contains `satrank`.
+
+Configured via the BetterStack v2 API. Monitor management lives in the BetterStack dashboard.
+
+### Internal degradation monitor
+
+`scripts/satrank-health-check.sh` is deployed to VM1 at `/root/satrank-health-check.sh` and runs every 5 minutes via cron. It checks the local `/api/health` endpoint for degraded states that BetterStack cannot detect from outside the API:
+
+- `data.status` not equal to `ok`.
+- `data.dbStatus` or `data.lndStatus` not equal to `ok`.
+- `data.schemaVersion` drift relative to the expected schema (currently 41).
+- `data.scoringStale` true.
+- `data.scoringAgeSec` greater than 7200 (2h scoring loop guardrail).
+
+On any degradation, the script sends an email via msmtp Brevo to the operator address. Logs are appended to `/root/satrank-health-check.log` (append-only, manual rotation via logrotate if it grows). Brevo delivery to ProtonMail still fails SPF silently (see section 10), so this is a best-effort backup channel; BetterStack remains the primary alerting layer.
+
+### Cron failures (legacy)
+
+Brevo SMTP via msmtp on VM1 also covers LND backup cron failures (see `/root/backups/lnd/backup.sh`).
 
 ## 9. Database migrations
 
