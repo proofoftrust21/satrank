@@ -31,10 +31,6 @@ backups/
 # Covers probe-pay.macaroon, admin.macaroon, invoice.macaroon, readonly.macaroon.
 *.macaroon
 
-# ── L402/Aperture config (prod-only, references secrets) ─────────────────
-aperture.yaml
-aperture.local.yaml
-
 # ── Build artifacts (rebuilt on prod inside Docker) ──────────────────────
 node_modules/
 dist/

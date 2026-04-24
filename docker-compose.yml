@@ -12,7 +12,7 @@ services:
       # on 127.0.0.1:3000. Binding to 0.0.0.0 is a defense-in-depth failure:
       # if the host firewall or cloud firewall ever drops its rules, port
       # 3000 would be reachable directly and bypass nginx rate limits and
-      # the Aperture L402 gate.
+      # the L402 native gate.
       - "127.0.0.1:${PORT:-3000}:3000"
     env_file:
       - .env.production
