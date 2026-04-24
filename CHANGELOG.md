@@ -8,6 +8,24 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [Infrastructure] - 2026-04-24
+
+### Removed
+
+- `apertureGateAuth` middleware and every remaining Aperture reference across source code, tests, config, nginx, and docs. Aperture L402 reverse proxy was sunset 2026-04-23 (Phase 14D.3.0); the L402 gate has run natively in Express (`src/middleware/l402Native.ts`) for 9 days without regression.
+- `APERTURE_SHARED_SECRET` environment variable (schema, prod validation, dev guard, `.env.example`, `docs/env.example.md`, `DEPLOY.md` secrets table). `OPERATOR_BYPASS_SECRET` is the only remaining operator bypass secret.
+- `PaymentRequiredError` error class (unused after `apertureGateAuth` removal).
+- `infra/nginx/satrank.conf.l402-native` (promoted to the canonical `infra/nginx/satrank.conf`).
+- `scripts/cutover-l402-native.sh` and `scripts/rollback-l402-native.sh` archived to `docs/archive/phase-14d/` (one-shot migration scripts, no longer runnable).
+- On VM1: `aperture.service` systemd unit, `/usr/local/bin/aperture` Go binary (75 MB), `/root/.aperture/` data directory (`aperture.db` 612 KB + `aperture.log` 9 MB), and `/root/aperture-sunset-backup-20260423-194945/` snapshot (644 KB).
+
+### Changed
+
+- Route factory defaults (`src/routes/{agent,attestation,v2}.ts`) use `noopMiddleware` instead of `apertureGateAuth`. `app.ts` always passes `createL402Native` explicitly; the default only affects test fixtures.
+- `infra/nginx/satrank.conf` is now the single canonical nginx config (L402 native gate). Deploy command updated.
+- `infra/nginx/README.md` rewritten to describe nginx as a simple reverse proxy.
+- Comments and test descriptions across `src/middleware/`, `src/utils/`, `src/controllers/`, and `src/tests/` scrubbed of Aperture vocabulary; `X-Aperture-Token` header references replaced by `X-Operator-Token`.
+
 ## [Maintenance] - 2026-04-24
 
 ### Removed
