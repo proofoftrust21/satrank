@@ -45,7 +45,7 @@ We bet on the sovereign path. That is why the product is built the way it is: de
 - Read the methodology: [satrank.dev/methodology](https://satrank.dev/methodology)
 - Install the TypeScript SDK: `npm install @satrank/sdk`
 - Install the Python SDK: `pip install satrank`
-- Integrate an agent: see `docs/integration.md` and `INTEGRATION.md`
+- Integrate an agent: see `INTEGRATION.md`
 - Contact: contact@satrank.dev
 - Nostr: `satrank@satrank.dev`
 

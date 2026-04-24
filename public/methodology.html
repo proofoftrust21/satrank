@@ -757,7 +757,7 @@ Relays (DEFAULT_NOSTR_RELAYS, src/nostr/relays.ts):
 
         <h3>11.3 Provider-side dependencies</h3>
         <p>
-          SatRank depends on external services. The 402index registry for L402 endpoint discovery, the LND gossip network for node discovery, and the providers themselves for BOLT11 invoice generation. If these degrade, SatRank degrades. Observed example: a provider returning HTTP 500 for its L402 challenge will show <code>n_obs = 0</code> on its endpoints until recovery (the posterior has no signal to update). See <code>docs/phase-13d/PHASE-13D-REPORT-2026-04-22.md</code> for detailed case analysis.
+          SatRank depends on external services. The 402index registry for L402 endpoint discovery, the LND gossip network for node discovery, and the providers themselves for BOLT11 invoice generation. If these degrade, SatRank degrades. Observed example: a provider returning HTTP 500 for its L402 challenge will show <code>n_obs = 0</code> on its endpoints until recovery (the posterior has no signal to update). See <code>docs/archive/phase-13d/PHASE-13D-REPORT-2026-04-22.md</code> for detailed case analysis.
         </p>
 
         <h3>11.4 Historical, not predictive</h3>
