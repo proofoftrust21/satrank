@@ -221,3 +221,28 @@ Known operational risks:
 - /mnt/bitcoin-data at 81% capacity. Review quarterly; resize the Block Storage volume before the 90% threshold.
 - Postgres backups depend on a single provider (Hetzner Cloud Backups). A Hetzner outage during a recovery window leaves no fallback. An offsite pg_dump is a known gap.
 - Brevo SMTP alerts to ProtonMail fail SPF silently. Treat email as best-effort and rely on Prometheus plus manual health checks.
+
+## 12. rsync safety and incident history
+
+### Mechanical rule
+
+Every deploy must go through `make deploy`. Never an ad-hoc `rsync` against prod. Exclusions are centralized in `.rsync-exclude` at the repo root, and the Makefile refuses to deploy if that file is missing.
+
+### Files that must never be erased by rsync
+
+These are never in git and must be preserved across every deploy.
+
+- Environment secrets: `.env.production`, `.env`, `.env.local`, `.env.*.local`
+- LND macaroons: `probe-pay.macaroon`, `admin.macaroon`, `invoice.macaroon`, `readonly.macaroon`, pattern `*.macaroon`
+- Runtime state: `data/`, `*.db`, `*.sqlite*`, `backups/`
+
+The `.rsync-exclude` file at the repo root enforces these exclusions. Read it before any ad-hoc rsync.
+
+### Incident history
+
+| Date | Phase | File erased | Root cause |
+|------|-------|-------------|------------|
+| 2026-04-19 | Phase 7 | .env.production | Ad-hoc rsync --delete, exclusion forgotten |
+| 2026-04-20 | Phase 9 | probe-pay.macaroon | Ad-hoc rsync --delete, exclusion forgotten |
+
+Both incidents are the same procedural fault: bypassing `make deploy` for a manual rsync. This section is the written rule that makes that bypass illegal.
