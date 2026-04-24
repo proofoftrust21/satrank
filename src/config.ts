@@ -23,10 +23,8 @@ const configSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   CORS_ORIGIN: z.string().url('CORS_ORIGIN must be a valid URL').default('http://localhost:3000')
     .refine(v => process.env.NODE_ENV !== 'production' || v.startsWith('https://'), 'CORS_ORIGIN must use https:// in production'),
-  // API key for write endpoints — will be replaced by L402/Aperture
+  // API key for write endpoints
   API_KEY: z.string().min(1).optional(),
-  // Shared secret between Aperture and Express — defense in depth for L402 gate
-  APERTURE_SHARED_SECRET: z.string().min(1).optional(),
   // LND REST API (primary Lightning source)
   LND_REST_URL: z.string().url().default('http://localhost:8080'),
   LND_MACAROON_PATH: z.string().default('/app/data/readonly.macaroon'),
@@ -164,7 +162,7 @@ const configSchema = z.object({
     .optional()
     .transform((v) => v === 'true' || v === '1'),
 
-  // --- Phase 14D.3.0 — L402 native middleware (Aperture sunset) ---
+  // --- Phase 14D.3.0 — L402 native middleware ---
   // Secret HMAC pour sceller les macaroons L402 synthetiques. Doit etre
   // 32 octets hex (64 chars). Sans ce secret, le middleware L402 natif refuse
   // de servir les routes payantes. Rotation : generer
@@ -185,7 +183,6 @@ const configSchema = z.object({
   // access). Utilise pour tests admin SatRank + health checks CI/CD. Leak =
   // unlimited free access aux paid endpoints. Rotate :
   //   openssl rand -hex 32
-  // Successeur post-sunset Aperture de APERTURE_SHARED_SECRET (deprecated).
   OPERATOR_BYPASS_SECRET: z
     .string()
     .regex(/^[a-f0-9]{64}$/, 'OPERATOR_BYPASS_SECRET must be 32-byte hex (64 chars)')
@@ -212,14 +209,10 @@ if (parsed.data.NODE_ENV === 'production' && parsed.data.L402_BYPASS) {
   process.exit(1);
 }
 
-// In production, API_KEY and APERTURE_SHARED_SECRET are required
+// In production, API_KEY is required
 if (parsed.data.NODE_ENV === 'production') {
   if (!parsed.data.API_KEY) {
     process.stderr.write('API_KEY is required in production\n');
-    process.exit(1);
-  }
-  if (!parsed.data.APERTURE_SHARED_SECRET) {
-    process.stderr.write('APERTURE_SHARED_SECRET is required in production\n');
     process.exit(1);
   }
   // Phase 11ter F-05: the SSRF self-block requires the public IP to be
@@ -236,18 +229,18 @@ if (parsed.data.NODE_ENV === 'production') {
 // misconfigured — refuse to start to prevent silent auth bypass
 if (
   parsed.data.NODE_ENV === 'development' &&
-  (parsed.data.API_KEY || parsed.data.APERTURE_SHARED_SECRET)
+  parsed.data.API_KEY
 ) {
   process.stderr.write(
-    'NODE_ENV is \'development\' but production secrets (API_KEY/APERTURE_SHARED_SECRET) are set. ' +
-    'Set NODE_ENV=production explicitly or remove the secrets.\n'
+    'NODE_ENV is \'development\' but production secret API_KEY is set. ' +
+    'Set NODE_ENV=production explicitly or remove the secret.\n'
   );
   process.exit(1);
 }
 
 // Reject obvious placeholders that must never reach production
 const PLACEHOLDER_KEYS = ['changeme-in-production', 'changeme', 'changeme_generate_with_openssl_rand_hex_32'];
-for (const field of ['API_KEY', 'APERTURE_SHARED_SECRET'] as const) {
+for (const field of ['API_KEY'] as const) {
   const val = parsed.data[field];
   if (val && PLACEHOLDER_KEYS.includes(val.trim().toLowerCase())) {
     process.stderr.write(`${field} contains a placeholder. Generate a real key: openssl rand -hex 32\n`);

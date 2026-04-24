@@ -33,7 +33,6 @@ function bootConfig(env: Record<string, string | undefined>): { code: number | n
     // Baseline required when NODE_ENV=production so only the L402_BYPASS
     // guard can fail the boot (not the API_KEY or SERVER_IP guards).
     API_KEY: 'ci-test-api-key-not-a-placeholder',
-    APERTURE_SHARED_SECRET: 'ci-test-aperture-shared-secret',
     SERVER_IP: '203.0.113.1',
     CORS_ORIGIN: 'https://example.test',
     // Drop any L402_BYPASS inherited from the parent so the test owns it
@@ -66,7 +65,6 @@ describe('L402_BYPASS double-gate (config fail-safe)', () => {
       // Must strip production secrets or the "dev + secrets" guard (lines
       // 177-186 of config.ts) would eat the test; undefined removes them.
       API_KEY: undefined,
-      APERTURE_SHARED_SECRET: undefined,
     });
     expect(code, `stderr:\n${stderr}`).toBe(0);
     expect(stderr).not.toMatch(/REFUSED/);
