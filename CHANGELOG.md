@@ -8,6 +8,20 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [Maintenance] - 2026-04-24
+
+### Removed
+
+- `sdk/satrank-sdk-1.0.0-rc.1.tgz` artifact. Superseded by npm publish 1.0.0+1.0.1; fetch from npm now.
+
+### Fixed
+
+- `python-sdk/pyproject.toml` `Repository` URL corrected to `github.com/proofoftrust21/satrank`.
+
+### Known debt
+
+- `vitest` 1.x moderate severity audit warnings on TS SDK devDependencies (vite/vite-node/esbuild transitive chain). Runtime consumer bundle unaffected — `npm audit --production` reports 0 vulnerabilities, and `files: [dist/, README.md, LICENSE]` excludes dev deps from the published tarball. `vitest` v2 upgrade planned separately (breaking config refactor).
+
 ## [SDK] - 2026-04-24
 
 ### Added
