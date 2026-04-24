@@ -2,14 +2,13 @@
 import { Router } from 'express';
 import type { RequestHandler } from 'express';
 import type { AgentController } from '../controllers/agentController';
-import { apertureGateAuth } from '../middleware/auth';
 
 const noopMiddleware: RequestHandler = (_req, _res, next) => next();
 
 export function createAgentRoutes(
   controller: AgentController,
   balanceAuth: RequestHandler = noopMiddleware,
-  paidGate: RequestHandler = apertureGateAuth,
+  paidGate: RequestHandler = noopMiddleware,
 ): Router {
   const router = Router();
 

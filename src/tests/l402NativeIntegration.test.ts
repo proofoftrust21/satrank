@@ -1,7 +1,7 @@
 // Phase 14D.3.0 etape 3 — tests integration du wiring l402Native sur les 7
 // routes paid (6 originales + /api/probe). Valide :
-//   - feature flag OFF : paidGate = apertureGateAuth (status quo)
-//   - feature flag ON  : chaque route emet un 402 + challenge au premier hit
+//   - gate permissif : paidGate = noop (smoke test : les routes passent)
+//   - gate L402 actif : chaque route emet un 402 + challenge au premier hit
 //   - pricingMap : /probe = 5 sats, les 6 autres = 1 sat
 //   - deposit token : bypass macaroon (passe-plat)
 //   - paiement settled : 200 end-to-end
@@ -121,12 +121,10 @@ describe('l402Native wiring — 7 paid routes integration', () => {
     vi.clearAllMocks();
   });
 
-  describe('feature flag OFF — paidGate is a pass-through (smoke)', () => {
-    // When featureFlags.l402Native === false, production wires
-    // paidGate = apertureGateAuth (real auth stack). For this smoke test we
-    // pass a permissive no-op to prove the route factories accept the gate
-    // injection without affecting the handler path — the actual
-    // apertureGateAuth behavior is covered elsewhere.
+  describe('noop gate — paidGate is a pass-through (smoke)', () => {
+    // Smoke test proving the route factories accept a permissive gate
+    // injection without affecting the handler path. The real paidGate is
+    // createL402Native (covered by the "L402 gate actif" suite below).
     const noopGate: RequestHandler = (_req, _res, next) => next();
 
     for (const route of SEVEN_PAID_ROUTES) {
@@ -139,7 +137,7 @@ describe('l402Native wiring — 7 paid routes integration', () => {
     }
   });
 
-  describe('feature flag ON — l402Native emits 402 challenge per route', () => {
+  describe('L402 gate actif — l402Native emits 402 challenge per route', () => {
     for (const route of SEVEN_PAID_ROUTES) {
       it(`${route.label} -> 402 with priceSats=${route.expectedPriceSats}`, async () => {
         const addInvoice = vi.fn().mockResolvedValue({
@@ -168,7 +166,7 @@ describe('l402Native wiring — 7 paid routes integration', () => {
     }
   });
 
-  describe('feature flag ON — settled macaroon path', () => {
+  describe('L402 gate actif — settled macaroon path', () => {
     it('GET /api/agent/:hash with valid L402 Authorization + settled invoice -> 200', async () => {
       const preimage = 'c'.repeat(64);
       const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -203,7 +201,7 @@ describe('l402Native wiring — 7 paid routes integration', () => {
     });
   });
 
-  describe('feature flag ON — deposit token bypass', () => {
+  describe('L402 gate actif — deposit token bypass', () => {
     it('GET /api/profile/:id with L402 deposit:<preimage> -> 200 without LND call', async () => {
       const preimage = 'd'.repeat(64);
       const lnd = makeLnd();
@@ -229,7 +227,7 @@ describe('l402Native wiring — 7 paid routes integration', () => {
     });
   });
 
-  describe('feature flag ON — LND unavailable', () => {
+  describe('L402 gate actif — LND unavailable', () => {
     it('returns 503 when LND invoice macaroon not loaded', async () => {
       const lnd = makeLnd({ available: false });
       const pool = makePool();
