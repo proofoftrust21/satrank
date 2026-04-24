@@ -10,18 +10,12 @@ Source of truth for the nginx config that fronts `satrank.dev` /
 
 ## Why this directory exists
 
-nginx lives outside the Docker Compose stack on the prod host (it
-terminates TLS and routes to either Aperture `:8082` for L402-gated
-paths or Express `:3000` for free / Phase 10 retired paths).
-Historically this file was edited directly on the server and never
-tracked — a redeploy from a clean nginx install would silently drop
-host-side patches.
-
-In Phase 10 we added a host-side patch to route `/api/decide` and
-`/api/best-route` direct to Express so the 410 Gone handler is
-reached instead of Aperture's 402 gate. The patch is committed here
-as the authoritative copy; any future edit must land here first and
-be pushed to the host, never the other way around.
+nginx lives outside the Docker Compose stack on the prod host
+(it terminates TLS and routes to Express `:3000`). The L402 gate is
+native Express (see `src/middleware/l402Native.ts`); nginx is just a
+reverse proxy. Historically this file was edited directly on the
+server and never tracked — a redeploy from a clean nginx install
+would silently drop host-side patches.
 
 ## Deploy
 

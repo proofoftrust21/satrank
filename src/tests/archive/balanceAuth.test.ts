@@ -383,7 +383,7 @@ describe.skip('balanceAuth middleware — Phase 9 credit path', async () => {
 
   // TODO Phase 12B: port SQLite fixtures (db.prepare/run/get/all) to pg before unskipping.
   it.skip('legacy tokens (rate_sats_per_request IS NULL) still decrement remaining', async () => {
-    // Aperture-auto-created token: inserted by middleware itself, rate IS NULL
+    // Auto-created legacy token: inserted by middleware itself, rate IS NULL
     const preimage = crypto.randomBytes(32).toString('hex');
 
     // First call creates the legacy row with remaining=20

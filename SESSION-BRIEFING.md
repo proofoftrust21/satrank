@@ -232,7 +232,7 @@ cd /Users/lochju/satrank/sdk/typosquat-shells/lightning-trust-oracle && npm publ
 - Local: `/Users/lochju/satrank`
 - Prod: `178.104.108.108`
 - Deploy: `make deploy` (now chowns root + perms 600)
-- Docker: `satrank-api` (Express :3000), `satrank-crawler` (:9091 metrics), fronted by Aperture L402 gate (:8082) and Nginx (hardened TLS).
+- Docker: `satrank-api` (Express :3000), `satrank-crawler` (:9091 metrics), fronted by Nginx (hardened TLS). L402 gate is native Express (`src/middleware/l402Native.ts`).
 - `/opt/satrank` chowned `root:root`.
 - Scoring validation cron: active on prod, output at `/root/scoring-validation/snapshots.csv`.
 - Nginx backup: `/root/nginx-satrank-backup-20260416.conf`.

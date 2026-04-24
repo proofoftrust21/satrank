@@ -1,5 +1,5 @@
 // L402 token balance middleware — quota system (1 request per token)
-// After apertureGateAuth verifies the L402 token is valid, this middleware
+// After the L402 native gate verifies the token is valid, this middleware
 // tracks usage via a per-payment_hash counter in PostgreSQL.
 //
 // Security note: the token balance IS the rate limit for paid endpoints.
@@ -9,8 +9,8 @@
 // bypass IP limits but cannot bypass token balance (attacker must pay).
 //
 // Phase 14D.3.0 — TOKEN_QUOTA descendu de 21 a 1 pour aligner le flow L402
-// natif (Aperture sunset) sur la doc publique : 1 sat = 1 requete, tier 1
-// rate 1.0. Pour un quota prepaye, passer par /api/deposit (21 - 10 000 sats).
+// natif sur la doc publique : 1 sat = 1 requete, tier 1 rate 1.0. Pour un
+// quota prepaye, passer par /api/deposit (21 - 10 000 sats).
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { Pool } from 'pg';
@@ -131,7 +131,7 @@ export function createBalanceAuth(pool: Pool, opts: BalanceAuthOptions = {}) {
   // Phase 9: tokens come in two flavours.
   //  - Phase 9 deposit tokens: rate_sats_per_request IS NOT NULL → the
   //    decrement axis is `balance_credits` (1 credit per regular request).
-  //  - Legacy tokens (Aperture auto-created + pre-Phase-9 deposits that
+  //  - Legacy tokens (auto-created pre-sunset + pre-Phase-9 deposits that
   //    haven't been backfilled yet): rate_sats_per_request IS NULL → the
   //    decrement axis is `remaining` (the original 1-sat-per-request flow).
   // Each UPDATE is atomic at the DB level; we try Phase 9 first and fall back
@@ -174,8 +174,8 @@ export function createBalanceAuth(pool: Pool, opts: BalanceAuthOptions = {}) {
 
   return async function balanceAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      // Skip balance check for operator token (X-Aperture-Token path)
-      // These requests bypass Aperture entirely — no L402 header present
+      // Skip balance check for operator token (X-Operator-Token path)
+      // These requests bypass the L402 gate entirely — no L402 header present
       const authHeader = req.headers.authorization ?? '';
       if (!authHeader.startsWith('L402 ') && !authHeader.startsWith('LSAT ')) {
         // No L402 header = operator path or dev mode — skip balance
@@ -239,7 +239,7 @@ export function createBalanceAuth(pool: Pool, opts: BalanceAuthOptions = {}) {
         return;
       }
 
-      // Aperture token — first use, create with remaining = quota - 1 (this request counts)
+      // Auto-created legacy token — first use, create with remaining = quota - 1 (this request counts)
       await pool.query(
         'INSERT INTO token_balance (payment_hash, remaining, created_at, max_quota) VALUES ($1, $2, $3, $4) ON CONFLICT (payment_hash) DO NOTHING',
         [paymentHash, TOKEN_QUOTA - 1, now, TOKEN_QUOTA],

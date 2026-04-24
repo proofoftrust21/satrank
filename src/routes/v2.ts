@@ -6,7 +6,7 @@ import rateLimit from 'express-rate-limit';
 import type { RequestHandler } from 'express';
 import type { V2Controller } from '../controllers/v2Controller';
 import type { DepositController } from '../controllers/depositController';
-import { apiKeyAuth, apertureGateAuth, createReportDispatchAuth } from '../middleware/auth';
+import { apiKeyAuth, createReportDispatchAuth } from '../middleware/auth';
 import { rateLimitHits } from '../middleware/metrics';
 import { createGoneHandler } from '../controllers/legacyGoneController';
 
@@ -48,7 +48,7 @@ export function createV2Routes(
   balanceAuth: RequestHandler = noopMiddleware,
   reportAuth: RequestHandler = apiKeyAuth,
   depositController?: DepositController,
-  paidGate: RequestHandler = apertureGateAuth,
+  paidGate: RequestHandler = noopMiddleware,
 ): Router {
   const router = Router();
 
@@ -71,7 +71,7 @@ export function createV2Routes(
   router.post('/report', reportRateLimit, createReportDispatchAuth(reportAuth), controller.report);
   router.get('/profile/:id', paidGate, balanceAuth, controller.profile);
 
-  // Deposit: variable-amount L402 token purchase (bypasses Aperture, free endpoint)
+  // Deposit: variable-amount L402 token purchase (free endpoint, no paidGate)
   if (depositController) {
     // GET /deposit/tiers — public, no rate limit needed (read-only, cheap SELECT).
     // Register before POST so Express can match the more specific path first.

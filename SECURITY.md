@@ -65,7 +65,7 @@ Secret leak impact:
 
 Recent audits:
 
-- `docs/archive/SECURITY-AUDIT-REPORT-2026-04-20.md`: pre-sunset audit before Aperture removal. All critical and high severity findings closed.
+- `docs/archive/SECURITY-AUDIT-REPORT-2026-04-20.md`: pre-sunset audit. All critical and high severity findings closed.
 
 ## 6. Security update policy
 

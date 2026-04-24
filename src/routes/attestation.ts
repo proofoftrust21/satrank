@@ -3,7 +3,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { RequestHandler } from 'express';
 import type { AttestationController } from '../controllers/attestationController';
-import { apiKeyAuth, apertureGateAuth } from '../middleware/auth';
+import { apiKeyAuth } from '../middleware/auth';
 import { rateLimitHits } from '../middleware/metrics';
 
 // Stricter rate limit for write operations (10 req/min per IP)
@@ -25,7 +25,7 @@ const noopMiddleware: RequestHandler = (_req, _res, next) => next();
 export function createAttestationRoutes(
   controller: AttestationController,
   balanceAuth: RequestHandler = noopMiddleware,
-  paidGate: RequestHandler = apertureGateAuth,
+  paidGate: RequestHandler = noopMiddleware,
 ): Router {
   const router = Router();
 

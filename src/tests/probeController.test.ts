@@ -170,7 +170,7 @@ describe('ProbeController', async () => {
     });
 
     it('returns INSUFFICIENT_CREDITS for a legacy token (rate IS NULL)', async () => {
-      // Legacy Aperture token — should not be accepted on the paid probe endpoint.
+      // Legacy auto-created token — should not be accepted on the paid probe endpoint.
       const preimage = crypto.randomBytes(32).toString('hex');
       const ph = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest();
       // Seed a legacy row (rate NULL) with plenty of remaining sats.

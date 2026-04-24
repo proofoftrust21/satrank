@@ -84,7 +84,7 @@ import {
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createL402Native } from './middleware/l402Native';
-import { createReportAuth, apertureGateAuth, safeEqual } from './middleware/auth';
+import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { PreimagePoolRepository } from './repositories/preimagePoolRepository';
 
@@ -506,35 +506,31 @@ export function createApp() {
   const balanceAuth = createBalanceAuth(pool, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(pool);
 
-  // Phase 14D.3.0 — L402 native gate (Aperture sunset). Coexistence via
-  // featureFlags.l402Native : false = status quo apertureGateAuth, true =
-  // middleware natif Express. Rollback = flip env + restart, pas de rebuild.
-  // Retrait definitif de apertureGateAuth planifie Phase 14D.3.0 etape 8.
-  const paidGate = featureFlags.l402Native
-    ? createL402Native({
-        secret: Buffer.from(config.L402_MACAROON_SECRET ?? '', 'hex'),
-        lndInvoice: lndInvoiceService,
-        pool,
-        priceSats: config.L402_DEFAULT_PRICE_SATS,
-        ttlSeconds: 30 * 24 * 60 * 60,
-        expirySeconds: config.L402_INVOICE_EXPIRY_SECONDS,
-        pricingMap: {
-          '/probe': 5,
-          '/verdicts': 1,
-          '/agent/:publicKeyHash': 1,
-          '/agent/:publicKeyHash/verdict': 1,
-          '/agent/:publicKeyHash/history': 1,
-          '/agent/:publicKeyHash/attestations': 1,
-          '/profile/:id': 1,
-        },
-        operatorSecret: config.OPERATOR_BYPASS_SECRET,
-      })
-    : apertureGateAuth;
+  // L402 native gate — all paid endpoints go through createL402Native.
+  const paidGate = createL402Native({
+    secret: Buffer.from(config.L402_MACAROON_SECRET ?? '', 'hex'),
+    lndInvoice: lndInvoiceService,
+    pool,
+    priceSats: config.L402_DEFAULT_PRICE_SATS,
+    ttlSeconds: 30 * 24 * 60 * 60,
+    expirySeconds: config.L402_INVOICE_EXPIRY_SECONDS,
+    pricingMap: {
+      '/probe': 5,
+      '/verdicts': 1,
+      '/agent/:publicKeyHash': 1,
+      '/agent/:publicKeyHash/verdict': 1,
+      '/agent/:publicKeyHash/history': 1,
+      '/agent/:publicKeyHash/attestations': 1,
+      '/profile/:id': 1,
+    },
+    operatorSecret: config.OPERATOR_BYPASS_SECRET,
+  });
 
   api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController, paidGate)); // report, deposit, profile (decide/best-route are 410 Gone)
   // Phase 9 C6 — POST /api/probe. Paid endpoint (5 credits per call): the
   // balanceAuth middleware takes 1 credit upstream, probeController debits
-  // the remaining 4 atomically. Gated on Aperture like the other paid routes.
+  // the remaining 4 atomically. Gated by the L402 native middleware like
+  // the other paid routes.
   // Phase 9 C8 — two rate limiters in front of balanceAuth so rejections
   // never consume credits. See src/middleware/probeRateLimit.ts for ordering
   // rationale.

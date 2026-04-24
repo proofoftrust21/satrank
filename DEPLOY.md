@@ -71,7 +71,6 @@ Secret generation (run once per fresh deploy):
 openssl rand -hex 32    # L402_MACAROON_SECRET
 openssl rand -hex 32    # OPERATOR_BYPASS_SECRET
 openssl rand -hex 32    # API_KEY
-openssl rand -hex 32    # APERTURE_SHARED_SECRET (legacy, see section 7)
 ```
 
 ## 4. First deploy
@@ -156,7 +155,6 @@ Secrets live only in `/root/satrank/.env.production` on VM1 (chmod 600) plus the
 | LND invoice macaroon | Mints invoices via LND REST addInvoice for deposit and L402 challenge flows | Scope `invoices:read invoices:write`. Can mint arbitrary invoices and look up invoice status. Cannot move funds, cannot open or close channels. | `lncli bakemacaroon invoices:read invoices:write --save_to invoice.macaroon`, swap file, restart api. |
 | LND readonly macaroon | Crawler graph reads and node status checks (describegraph, listchannels, getinfo) | LND default readonly.macaroon with nine `:read` scopes (address, info, invoices, macaroon, message, offchain, onchain, peers, signer). Cannot move funds, cannot bake new macaroons. | Copy LND default `readonly.macaroon` from its data directory, swap file, restart crawler. |
 | LND pay macaroon | Outbound probe payments | Scope `offchain:read offchain:write`. Can initiate outbound Lightning payments up to available channel liquidity. No on-chain funds access, no channel open or close. | `lncli bakemacaroon offchain:read offchain:write --save_to probe-pay.macaroon`, swap file, restart api. |
-| APERTURE_SHARED_SECRET | Legacy required at boot, no longer read at runtime | None (not consumed by l402Native middleware) | Scheduled removal 2026-04-30. |
 
 The LND seed phrase is the operator's responsibility: stored offline, never on VM1, never in any backup that leaves the operator's physical custody. A full VM1 loss with the seed recovers channel funds via LND SCB restore (see section 10); without the seed, channel funds are lost.
 

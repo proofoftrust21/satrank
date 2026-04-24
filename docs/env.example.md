@@ -33,14 +33,6 @@ L402_INVOICE_EXPIRY_SECONDS=600
 OPERATOR_BYPASS_SECRET=<64-char-hex>
 ```
 
-## Legacy (required at boot only)
-
-`APERTURE_SHARED_SECRET` is no longer read at runtime after the Aperture sunset. It remains required at boot for backward compatibility; scheduled removal 2026-04-30. Generate with `openssl rand -hex 32` and keep alongside the other secrets until the removal lands.
-
-```
-APERTURE_SHARED_SECRET=<64-char-hex>
-```
-
 ## Server
 
 ```
