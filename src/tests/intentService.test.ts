@@ -220,12 +220,18 @@ describe('IntentService', async () => {
     });
 
     it('limit par défaut 5, clamp à 20', async () => {
-      for (let i = 0; i < 30; i++) {
-        await seedEndpoint(db, serviceRepo, agentRepo, {
-          hash: sha256(`bulk-${i}`), url: `https://bulk.example/${i}`, priceSats: 3,
-          name: `bulk-${i}`, category: 'data', seedSafe: true,
-        });
-      }
+      // Parallélisation des seeds : chaque endpoint a un hash + URL uniques,
+      // donc aucune collision sur les indexes ni dépendance d'ordre. Passe de
+      // ~1900ms (30 awaits séquentiels) à <500ms — large marge sous le timeout
+      // 20s même sur runner CI lent.
+      await Promise.all(
+        Array.from({ length: 30 }, (_, i) =>
+          seedEndpoint(db, serviceRepo, agentRepo, {
+            hash: sha256(`bulk-${i}`), url: `https://bulk.example/${i}`, priceSats: 3,
+            name: `bulk-${i}`, category: 'data', seedSafe: true,
+          }),
+        ),
+      );
       const svc = buildService(db);
       expect((await svc.resolveIntent({ category: 'data' }, undefined)).candidates.length).toBe(5);
       expect((await svc.resolveIntent({ category: 'data' }, 10)).candidates.length).toBe(10);
