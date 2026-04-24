@@ -1,7 +1,7 @@
-// L402 native middleware — Phase 14D.3.0 (Aperture sunset, 2026-04-23).
+// L402 native middleware — Phase 14D.3.0 (deployed 2026-04-23).
 //
-// Remplace Aperture (reverse proxy L402 :8082) par une implementation native
-// Express. Le middleware gere trois branches :
+// Implementation native Express du protocole L402 (remplace le reverse proxy
+// externe qui tournait sur :8082). Le middleware gere trois branches :
 //
 //   1. Pas d'Authorization header       -> 402 + challenge (invoice + macaroon)
 //   2. Authorization L402 deposit:...   -> passe-plat (balanceAuth traite)
@@ -114,8 +114,7 @@ export function createL402Native(opts: L402NativeOptions) {
       // unlimited free access to paid endpoints. Rotate via :
       //   openssl rand -hex 32 -> update .env.production -> rebuild + restart api.
       // balanceAuth downstream skip aussi car pas de header L402/LSAT dans ce
-      // path. Pas de log (undocumented admin backdoor, same status que
-      // l'ancien X-Aperture-Token).
+      // path. Pas de log (undocumented admin backdoor).
       if (opts.operatorSecret) {
         const provided = req.headers['x-operator-token'];
         if (typeof provided === 'string' && provided.length > 0 && safeEqual(provided, opts.operatorSecret)) {

@@ -201,9 +201,9 @@ export class ProbeController {
 
       // Deduct the remaining 4 credits atomically. rate_sats_per_request
       // IS NOT NULL guard ensures this only fires for Phase 9 tokens — a
-      // legacy Aperture token should never reach /api/probe (which is a paid
-      // endpoint). If the token is legacy or short on balance, the UPDATE
-      // changes 0 rows → 402.
+      // legacy auto-created token should never reach /api/probe (which is a
+      // paid endpoint). If the token is legacy or short on balance, the
+      // UPDATE changes 0 rows → 402.
       const debitResult = await this.pool.query(
         `UPDATE token_balance
          SET balance_credits = balance_credits - $1

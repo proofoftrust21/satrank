@@ -1,8 +1,8 @@
 // L402 challenge parser — extracts macaroon + invoice from a WWW-Authenticate
 // header returned by a 402-gated endpoint.
 //
-// Target formats (per L402 spec — RFC-ish, as implemented by Aperture and
-// common L402 servers):
+// Target formats (per L402 spec — RFC-ish, as implemented by common
+// L402 servers):
 //   WWW-Authenticate: L402 macaroon="<base64>", invoice="<bolt11>"
 //   WWW-Authenticate: LSAT macaroon="<base64>", invoice="<bolt11>"   (legacy)
 //

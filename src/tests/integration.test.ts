@@ -443,10 +443,10 @@ describe.skip('Integration — L402 perimeter (production mode)', async () => {
     await agentRepo.insert(agent);
     agentHash = agent.public_key_hash;
 
-    // Simulate production apertureGateAuth — in production, the middleware checks
-    // for localhost IP (Aperture reverse proxy sits on the same host). Non-localhost
-    // requests are rejected with 402. In tests (NODE_ENV !== 'production'), the
-    // real middleware always passes through.
+    // Simulate a simple localhost-only gate — historical test fixture that
+    // predates the L402 native middleware. Non-localhost requests are rejected
+    // with 402; in tests (NODE_ENV !== 'production') the real middleware
+    // always passes through.
     function prodLocalhostGateAuth(req: express.Request, _res: express.Response, next: express.NextFunction): void {
       const ip = req.ip || req.socket.remoteAddress || '';
       const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
@@ -490,9 +490,8 @@ describe.skip('Integration — L402 perimeter (production mode)', async () => {
   });
 
   // In tests, supertest connects via localhost, so the localhost gate passes through.
-  // This verifies that the gated endpoints work when accessed from localhost (as
-  // Aperture would in production).
-  it('GET /api/agent/:hash returns 200 from localhost (Aperture passthrough)', async () => {
+  // This verifies that the gated endpoints work when accessed from localhost.
+  it('GET /api/agent/:hash returns 200 from localhost (gate passthrough)', async () => {
     const res = await request(app).get(`/api/agent/${agentHash}`);
     expect(res.status).toBe(200);
   });

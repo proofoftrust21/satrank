@@ -1,6 +1,6 @@
 // Deposit controller — variable-amount L402 token purchase
-// Bypasses Aperture: Express generates the invoice directly via LND,
-// the agent pays, verifies, and gets a deposit token usable on all paid endpoints.
+// Express generates the invoice directly via LND, the agent pays, verifies,
+// and gets a deposit token usable on all paid endpoints.
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { Pool } from 'pg';

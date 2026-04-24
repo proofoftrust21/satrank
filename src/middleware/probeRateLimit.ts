@@ -12,7 +12,7 @@
 //     multi-token spam that individually stays under the per-token ceiling.
 //
 // Ordering in the request pipeline (see app.ts):
-//   apertureGateAuth → perToken → global → balanceAuth → controller
+//   l402Native → perToken → global → balanceAuth → controller
 // Both limiters run BEFORE balanceAuth so a 429 does not consume credits.
 // Per-token runs before global because when both would reject we'd rather
 // burn the attacker's per-token counter than the shared global headroom —

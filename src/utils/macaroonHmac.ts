@@ -1,5 +1,5 @@
 // HMAC-SHA256 macaroon synthétique — scellage anti-tampering pour le flow L402
-// natif (Phase 14D.3.0, post-Aperture).
+// natif (Phase 14D.3.0).
 //
 // Le macaroon est un JWT-like structuré : base64url(payload) + "." + base64url(hmac).
 // Pas de capability chains à la libmacaroon (flat pricing, une clé root unique).
