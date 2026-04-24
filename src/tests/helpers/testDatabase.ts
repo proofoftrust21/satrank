@@ -51,6 +51,13 @@ export async function setupTestPool(): Promise<TestDb> {
   }
   const databaseUrl = withDatabase(process.env.DATABASE_URL ?? 'postgresql://satrank:satrank@localhost:5432/satrank', dbName);
   const pool = new Pool({ connectionString: databaseUrl, max: 4, idleTimeoutMillis: 1_000 });
+  // CI race : `pool.end()` résout dès que les clients idle ont reçu COM_QUIT,
+  // mais le serveur peut encore émettre FATAL 57P01 vers ces sockets en cours
+  // de fermeture quand `DROP DATABASE … WITH (FORCE)` les force-termine.
+  // Sans listener `error`, pg-pool relance l'erreur en `unhandledRejection`
+  // → crash de vitest. Ce listener silencieux absorbe la fenêtre courte entre
+  // `pool.end()` et la fermeture TCP effective.
+  pool.on('error', () => { /* late termination during teardown — safe to ignore */ });
   return { pool, databaseUrl, dbName };
 }
 
@@ -64,6 +71,8 @@ export async function teardownTestPool(db: TestDb): Promise<void> {
   const admin = new Pool({ connectionString: adminUrl(), max: 1 });
   try {
     // Force-disconnect any stragglers before DROP. WITH (FORCE) needs PG ≥ 13.
+    // Le listener `error` posé dans setupTestPool absorbe les 57P01 que cette
+    // commande peut envoyer aux sockets résiduels du pool fermé.
     await admin.query(`DROP DATABASE IF EXISTS ${db.dbName} WITH (FORCE)`);
   } finally {
     await admin.end();
