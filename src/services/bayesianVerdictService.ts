@@ -39,8 +39,14 @@ import { computePosterior } from '../utils/betaBinomial';
 
 /** Min p_success delta to trigger a new snapshot row (Phase 3 C8). */
 const SNAPSHOT_CHANGE_THRESHOLD = 0.005;
-/** Heartbeat — force ≥ 1 snapshot/agent/day even if p_success is static. */
-const SNAPSHOT_HEARTBEAT_SEC = 86_400;
+/** Heartbeat — force ≥ 1 snapshot/agent/h even if p_success is static. Aligné
+ *  sur le seuil staleness de /api/health (SCORING_STALE_THRESHOLD_SEC=7200) :
+ *  sans ce heartbeat sub-2h, une cohorte mature aux posteriors stables ne
+ *  produit aucune nouvelle ligne pendant des heures et MAX(computed_at) gèle,
+ *  ce qui flippait /api/health en HTTP 503 alors que le scoring tournait
+ *  normalement (incident 2026-04-25). Storage : ~8 k lignes/h ≈ 200 k/jour,
+ *  largement absorbé par purgeOldSnapshots. */
+const SNAPSHOT_HEARTBEAT_SEC = 3_600;
 
 /** Contexte d'une requête verdict — clés d'identification de la cible. */
 export interface BayesianVerdictQuery {
