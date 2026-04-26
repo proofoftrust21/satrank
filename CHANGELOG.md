@@ -8,6 +8,15 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [SDK] - 2026-04-26
+
+### Fixed
+
+- `@satrank/sdk` v1.0.2 published: removed em-dash from npm `description` (publishable metadata polish, no code change).
+- `satrank` v1.0.2 published: removed em-dash from PyPI `description`. Republishing also fixes the stale `Repository` URL in PyPI sidebar (1.0.1 was published before the URL fix landed in `pyproject.toml`); 1.0.2 now points to `github.com/proofoftrust21/satrank`.
+- Em-dash and en-dash characters scrubbed from `docs/MIGRATION-TO-1.0.md`, `docs/sdk/quickstart-ts.md`, `docs/sdk/quickstart-python.md`, and the `vitest` debt note in this file.
+- Stale `[1.0.0-rc.1]` link target corrected from `github.com/orsonio/satrank` to `github.com/proofoftrust21/satrank`.
+
 ## [Infrastructure] - 2026-04-24
 
 ### Removed
@@ -38,7 +47,7 @@ API and each SDK are versioned independently; entries are prefixed with
 
 ### Known debt
 
-- `vitest` 1.x moderate severity audit warnings on TS SDK devDependencies (vite/vite-node/esbuild transitive chain). Runtime consumer bundle unaffected — `npm audit --production` reports 0 vulnerabilities, and `files: [dist/, README.md, LICENSE]` excludes dev deps from the published tarball. `vitest` v2 upgrade planned separately (breaking config refactor).
+- `vitest` 1.x moderate severity audit warnings on TS SDK devDependencies (vite/vite-node/esbuild transitive chain). Runtime consumer bundle unaffected: `npm audit --production` reports 0 vulnerabilities, and `files: [dist/, README.md, LICENSE]` excludes dev deps from the published tarball. `vitest` v2 upgrade planned separately (breaking config refactor).
 
 ## [SDK] - 2026-04-24
 
@@ -271,4 +280,4 @@ exhaustive before/after examples and a sed upgrade script.
 Pre-1.0 per-endpoint client. See git history on the `sdk/` directory for
 changes before this changelog was introduced.
 
-[1.0.0-rc.1]: https://github.com/orsonio/satrank/releases/tag/v1.0.0-rc.1
+[1.0.0-rc.1]: https://github.com/proofoftrust21/satrank/releases/tag/v1.0.0-rc.1

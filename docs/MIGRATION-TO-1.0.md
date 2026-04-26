@@ -1,4 +1,4 @@
-# Migration guide — SatRank 0.x → 1.0
+# Migration guide: SatRank 0.x to 1.0
 
 Phase 10 retires two legacy HTTP endpoints. This guide covers every
 caller-visible change in 1.0 and the exact replacement call.
@@ -7,12 +7,12 @@ caller-visible change in 1.0 and the exact replacement call.
 
 | Before (0.x) | After (1.0) | Change |
 |---|---|---|
-| `POST /api/decide` | `POST /api/intent` | **410 Gone** — rewrite required |
-| `POST /api/best-route` | `GET /api/services/best` **or** `POST /api/intent` | **410 Gone** — rewrite required |
+| `POST /api/decide` | `POST /api/intent` | **410 Gone** (rewrite required) |
+| `POST /api/best-route` | `GET /api/services/best` **or** `POST /api/intent` | **410 Gone** (rewrite required) |
 | `GET /api/agent/:hash` | `GET /api/agent/:hash` | **No change** (camelCase preserved) |
 | Table `decide_log` | Table `token_query_log` | Internal only; migration v41 runs automatically |
 
-API version header `X-API-Version: 1.0` is unchanged — the header was
+API version header `X-API-Version: 1.0` is unchanged; the header was
 already 1.0 in 0.x.
 
 ## `/api/decide` → `/api/intent`
@@ -20,9 +20,9 @@ already 1.0 in 0.x.
 The old `/api/decide` returned a GO/NO-GO boolean with pathfinding and a
 survival verdict. Callers were mixing three concerns:
 
-1. **Neutral discovery** — "which service should I use for X?"
-2. **Trust check** — "is this agent safe to transact with?"
-3. **Personalized pathfinding** — "which hub gives me the best route?"
+1. **Neutral discovery**: "which service should I use for X?"
+2. **Trust check**: "is this agent safe to transact with?"
+3. **Personalized pathfinding**: "which hub gives me the best route?"
 
 In 1.0, concern (1) lives on `/api/intent`, (2) on `/api/agent/:hash/verdict`,
 and (3) on `/api/services/best`.
@@ -41,7 +41,7 @@ Content-Type: application/json
 }
 ```
 
-### After — discovery intent
+### After: discovery intent
 
 ```bash
 POST /api/intent
@@ -55,10 +55,10 @@ Content-Type: application/json
 }
 ```
 
-Response gives a ranked service list (best route, trust-weighted) —
+Response gives a ranked service list (best route, trust-weighted);
 pick the top `service.url` and proceed.
 
-### After — verdict check (if you already know the target)
+### After: verdict check (if you already know the target)
 
 ```bash
 GET /api/agent/<hash>/verdict
@@ -75,7 +75,7 @@ Returns `SAFE / RISKY / UNKNOWN` with risk profile.
 - For a **known service URL**, call `GET /api/services/best?serviceUrl=...`
   (free discovery endpoint, rate-limited).
 - For a **high-level user goal** ("I need an image API under 100 sats"),
-  call `POST /api/intent` — it runs the same composite ranker and
+  call `POST /api/intent`; it runs the same composite ranker and
   returns a ranked list.
 
 ### Before
@@ -101,8 +101,8 @@ v40 → v41). This table logs which targets a given L402 token has
 queried, used by `/api/report` for scope-checking (a token can only
 report on targets it has decided within the auth window).
 
-If you have external tooling reading this table directly (unusual —
-it's an internal implementation detail), update the table name.
+If you have external tooling reading this table directly (unusual,
+since it's an internal implementation detail), update the table name.
 
 The v41 migration has a matching down migration if you need to roll
 back to v40. No data is dropped.
@@ -118,7 +118,7 @@ We audited all 1.0 response surfaces in C6. The summary:
   fields like `n_obs`, `p_success`, `verification_score`, `url_hash`,
   `lnp_rank`, `hubness_rank`.
 
-If you're using the SDK (`@satrank/sdk`), you don't need to worry —
+If you're using the SDK (`@satrank/sdk`), you don't need to worry;
 the SDK surface is camelCase throughout. The snake_case fields only
 appear in raw HTTP responses.
 

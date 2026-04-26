@@ -1,4 +1,4 @@
-# Quickstart — TypeScript
+# Quickstart: TypeScript
 
 `@satrank/sdk` turns any Lightning-native (L402) HTTP service into a typed async
 call. Give the SDK an `intent` and a `budget_sats`, and it handles discovery
@@ -47,7 +47,7 @@ type FulfillResult = {
   response_body?: unknown;          // parsed JSON from the candidate, if any
   response_code?: number;           // 2xx on success
   response_latency_ms?: number;
-  cost_sats: number;                // total spent — always ≤ budget_sats
+  cost_sats: number;                // total spent, always <= budget_sats
   preimage?: string;                // hex preimage of the winning payment
   endpoint_used?: { url; service_name; operator_pubkey };
   candidates_tried: Array<{
@@ -116,10 +116,10 @@ See [wallet-drivers.md](./wallet-drivers.md) to choose between `LndWallet`,
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
-| `apiBase` | `string` | — | Required. Usually `https://satrank.dev`. |
+| `apiBase` | `string` | n/a | Required. Usually `https://satrank.dev`. |
 | `wallet` | `Wallet` | `undefined` | Required for `fulfill()`. Not needed for discovery. |
 | `caller` | `string` | `undefined` | Piped into `/api/intent` logs. Overridable per-call. |
-| `depositToken` | `string` | `undefined` | `"L402 deposit:<preimage>"` — required to auto-report outcomes. |
+| `depositToken` | `string` | `undefined` | `"L402 deposit:<preimage>"` (required to auto-report outcomes). |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | DI hook for tests / TLS / undici agents. |
 | `request_timeout_ms` | `number` | `10_000` | Per-call API timeout. |
 
