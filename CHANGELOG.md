@@ -8,6 +8,27 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [Maintenance] - 2026-04-26
+
+### Fixed
+
+- Server `package-lock.json`: `postcss` bumped from 8.5.8 to 8.5.10 (closes [GHSA-qx2v-qp2m-jg93](https://github.com/advisories/GHSA-qx2v-qp2m-jg93), CVE-2026-41305, dev-only via `vitest@3.2.4 -> vite@6.4.2 -> postcss`). Lockfile-only change, zero source diff.
+
+### Known dev/runtime debt (audited, non-exploitable in our usage)
+
+After explicit review of the four remaining open Dependabot alerts:
+
+- **GHSA-w5hq-g745-h8pq (uuid <14.0.0, server runtime, direct, medium)**. CVE triggers only when callers pass an external `buf` argument to `v3/v5/v6`. SatRank uses `import { v4 as uuid } from 'uuid'` in 17 files (3 src, 14 tests/scripts) and always calls the default form `uuid()` with no buffer. Not reachable. Bumping to v14 is a semver-major change deferred to a focused dependency phase post-announce.
+- **GHSA-848j-6mx2-7j84 (elliptic <=6.6.1, server runtime, transitive, low)**. Pulled in only via `bolt11@1.4.1 -> secp256k1@4.0.4 -> elliptic`. The `bolt11` package is used in `src/` exclusively for invoice **decoding** (read-only parsing); all production payment signing happens inside LND (Go binary, `btcd/btcec`), not in JS. `bolt11.sign` only appears in test fixtures with throwaway keys. The CVE requires the attacker to obtain both a faulty and a correct ECDSA signature for the same input under the same private key, which our code path never produces. **No patched version exists upstream.**
+- **GHSA-4w7w-66w2-5vf9 (vite <=6.4.1, sdk dev, transitive via vitest@1.6.1, medium)**. dev-only on the SDK package. Path-traversal in vite dev server `.map` handling, only exploitable when running `vitest --ui` or `vite dev` with `--host` exposing the server to the network. SatRank CI / local dev uses `vitest run` (no dev server, no `--host`). The published `@satrank/sdk` tarball ships only `dist/`, `README.md`, and `LICENSE` — vite is never installed by SDK consumers.
+- **GHSA-67mh-4wv8-2f99 (esbuild <=0.24.2, sdk dev, transitive via vitest@1.6.1, medium)**. Same chain as vite. esbuild dev-server CORS issue, never invoked in our test pipeline (`vitest run` doesn't start an esbuild dev server). Same shipping argument: not in the consumer tarball.
+
+For the SDK consumer surface, `cd sdk && npm audit --omit=dev` reports **0 vulnerabilities**.
+
+For the server runtime, `npm audit --omit=dev` reports 4 (1 medium uuid + 3 low elliptic chain). Both are documented above as not reachable in the executed code paths.
+
+A focused dependency-bump phase will land post-announce to upgrade vitest 1.x -> latest on the SDK and uuid 11 -> 14 on the server (both behind major-bump risk; deserve their own PR + soak time, not a metadata patch release).
+
 ## [SDK] - 2026-04-26
 
 ### Fixed
