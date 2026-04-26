@@ -13,6 +13,7 @@
 import { endpointHash } from '../utils/urlCanonical';
 import { computeAdvisoryReport } from './advisoryService';
 import { deriveRecommendation } from '../utils/recommendation';
+import { probeUrlsNow } from './freshProbeService';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type {
@@ -53,6 +54,40 @@ const MAX_POOL_SCAN = 500;
 /** Clamp max côté serveur même si le controller laisse passer. */
 export const INTENT_LIMIT_DEFAULT = 5;
 export const INTENT_LIMIT_MAX = 20;
+
+/** Pricing Mix A+D — when fresh=true, we synchronously probe the top-N
+ *  candidates to guarantee `last_probe_age_sec < 60`. N is bounded so a
+ *  caller cannot turn one paid request into a high-fanout amplifier. */
+export const FRESH_PROBE_TOP_N = 3;
+
+/** Per-candidate freshness bucket. Drives the `freshness_status` field on
+ *  the advisory block. Thresholds align with advisoryService:
+ *    fresh      — within the hot-tier cycle (1 min)
+ *    recent     — within the warm-tier window (1 h, applyFreshnessGate cutoff)
+ *    stale      — within 24 h, posterior not freshly verified
+ *    very_stale — older than 24 h (or never probed) */
+export type FreshnessStatus = 'fresh' | 'recent' | 'stale' | 'very_stale';
+const FRESHNESS_RECENT_THRESHOLD_SEC = 60;
+const FRESHNESS_STALE_THRESHOLD_SEC = 60 * 60;
+const FRESHNESS_VERY_STALE_THRESHOLD_SEC = 24 * 60 * 60;
+
+function freshnessStatusFromAge(ageSec: number | null): FreshnessStatus {
+  if (ageSec == null) return 'very_stale';
+  if (ageSec < FRESHNESS_RECENT_THRESHOLD_SEC) return 'fresh';
+  if (ageSec < FRESHNESS_STALE_THRESHOLD_SEC) return 'recent';
+  if (ageSec < FRESHNESS_VERY_STALE_THRESHOLD_SEC) return 'stale';
+  return 'very_stale';
+}
+
+/** Mix A+D — message offered on free `/intent` calls so agents see exactly
+ *  how to upgrade to a synchronously-probed result. Pricing in sats matches
+ *  pricingMap['/intent'] in src/app.ts. */
+export const INTENT_FRESH_UPGRADE_PATH = {
+  flag: 'fresh=true' as const,
+  cost_sats: 2,
+  message:
+    'Pass fresh=true (2 sats) to force a synchronous HTTP probe on the top candidates and guarantee fresh status.',
+};
 
 export interface IntentServiceDeps {
   serviceEndpointRepo: ServiceEndpointRepository;
@@ -114,8 +149,17 @@ export class IntentService {
     return new Set(categories.map(c => c.category));
   }
 
-  /** POST /api/intent — résout l'intention en candidats triés. */
-  async resolveIntent(req: IntentRequest, rawLimit: number | undefined): Promise<IntentResponse> {
+  /** POST /api/intent — résout l'intention en candidats triés.
+   *  `opts.fresh` (Mix A+D) — when true, after sort/trim we run a synchronous
+   *  HTTP probe on the top candidates and re-enrich them so the response
+   *  carries `last_probe_age_sec` ≈ 0. The caller is responsible for the L402
+   *  paywall — the service layer trusts the flag at this point. */
+  async resolveIntent(
+    req: IntentRequest,
+    rawLimit: number | undefined,
+    opts: { fresh?: boolean } = {},
+  ): Promise<IntentResponse> {
+    const fresh = opts.fresh === true;
     const limit = Math.min(
       Math.max(1, rawLimit ?? INTENT_LIMIT_DEFAULT),
       INTENT_LIMIT_MAX,
@@ -157,17 +201,43 @@ export class IntentService {
     const sorted = [...tierPool].sort(compareCandidates);
     const trimmed = sorted.slice(0, limit);
 
-    const candidates: IntentCandidate[] = trimmed.map((c, idx) =>
+    // Mix A+D — when ?fresh=true, force a synchronous probe on the top-N
+    // URLs so the response carries a probe younger than the hot-tier cadence.
+    // The probe service upserts via repo.upsert (preserving trust source);
+    // we then re-fetch and re-enrich each touched candidate so the updated
+    // last_checked_at, http_status, latency_ms reach the formatter.
+    let finalCandidates = trimmed;
+    if (fresh && trimmed.length > 0) {
+      const probeBatch = trimmed.slice(0, FRESH_PROBE_TOP_N);
+      await probeUrlsNow(
+        probeBatch.map(c => c.svc.url),
+        this.deps.serviceEndpointRepo,
+      );
+      const refreshed: EnrichedCandidate[] = [];
+      for (let i = 0; i < trimmed.length; i++) {
+        const original = trimmed[i];
+        const inProbeBatch = i < FRESH_PROBE_TOP_N;
+        if (!inProbeBatch) {
+          refreshed.push(original);
+          continue;
+        }
+        const updatedSvc = await this.deps.serviceEndpointRepo.findByUrl(original.svc.url);
+        refreshed.push(updatedSvc ? await this.enrich(updatedSvc) : original);
+      }
+      finalCandidates = refreshed;
+    }
+
+    const candidates: IntentCandidate[] = finalCandidates.map((c, idx) =>
       this.formatCandidate(c, idx + 1),
     );
 
     // Axe 1 — record that these URLs were just surfaced. Drives the
     // hot/warm/cold tiering in serviceHealthCrawler. Best-effort: a
     // failed UPDATE must not break the response.
-    if (trimmed.length > 0) {
+    if (finalCandidates.length > 0) {
       try {
         await this.deps.serviceEndpointRepo.markIntentQuery(
-          trimmed.map(c => c.svc.url),
+          finalCandidates.map(c => c.svc.url),
         );
       } catch {
         // Tiering will fall back to legacy single-tier on next crawl cycle —
@@ -182,6 +252,7 @@ export class IntentService {
         budget_sats: req.budget_sats ?? null,
         max_latency_ms: req.max_latency_ms ?? null,
         resolved_at: this.now(),
+        fresh,
       },
       candidates,
       meta: {
@@ -189,6 +260,7 @@ export class IntentService {
         returned: candidates.length,
         strictness,
         warnings,
+        ...(fresh ? {} : { upgrade_path: INTENT_FRESH_UPGRADE_PATH }),
       },
     };
   }
@@ -288,6 +360,7 @@ export class IntentService {
         risk_score: advisoryReport.risk_score,
         advisories: advisoryReport.advisories,
         recommendation,
+        freshness_status: freshnessStatusFromAge(c.lastProbeAgeSec),
       },
       health: {
         reachability: c.reachability != null ? Math.round(c.reachability * 1000) / 1000 : null,

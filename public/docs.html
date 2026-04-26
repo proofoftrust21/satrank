@@ -189,10 +189,17 @@ sr.report(target="&lt;url&gt;", outcome="success", preimage="&lt;hex&gt;")</code
         <table>
           <thead><tr><th>Endpoint</th><th>Method</th><th>Auth</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td><code>/api/intent</code></td><td>POST</td><td>public</td><td>Resolve intent to ranked candidates. Free, rate-limited.</td></tr>
+            <tr><td><code>/api/intent</code></td><td>POST</td><td>public</td><td>Resolve intent to ranked candidates. Free, rate-limited (10/min/IP). Each candidate carries an <code>advisory.freshness_status</code> bucket; the response meta includes an <code>upgrade_path</code> pointing at the paid fresh probe.</td></tr>
+            <tr><td><code>/api/intent?fresh=true</code></td><td>POST</td><td>L402 (2 sats)</td><td>Same shape as <code>/api/intent</code>, but the server runs a synchronous HTTP probe on the top candidates so <code>last_probe_age_sec</code> is &lt; 60 s on every returned row.</td></tr>
             <tr><td><code>/api/intent/categories</code></td><td>GET</td><td>public</td><td>Live category list with endpoint and active counts.</td></tr>
             <tr><td><code>/api/agents/top</code></td><td>GET</td><td>public</td><td>Ranked list sorted by <code>p_success</code>.</td></tr>
-            <tr><td><code>/api/agent/:hash/verdict</code></td><td>GET</td><td>L402 (1 sat)</td><td>Full posterior, advisory, sources for one target.</td></tr>
+            <tr><td><code>/api/agent/:hash</code></td><td>GET</td><td>public</td><td>Agent score and metadata. Free directory read (10/min/IP).</td></tr>
+            <tr><td><code>/api/agent/:hash/verdict</code></td><td>GET</td><td>public</td><td>SAFE / RISKY / UNKNOWN with confidence and flags. Free directory read (10/min/IP).</td></tr>
+            <tr><td><code>/api/agent/:hash/history</code></td><td>GET</td><td>public</td><td>Bayesian posterior history for one target. Free directory read (10/min/IP).</td></tr>
+            <tr><td><code>/api/agent/:hash/attestations</code></td><td>GET</td><td>public</td><td>Attestations received by the agent. Free directory read (10/min/IP).</td></tr>
+            <tr><td><code>/api/profile/:id</code></td><td>GET</td><td>L402 (1 sat)</td><td>Full agent profile with reports, uptime, rank, and evidence.</td></tr>
+            <tr><td><code>/api/verdicts</code></td><td>POST</td><td>L402 (1 sat)</td><td>Batch verdict for up to 100 hashes in one request.</td></tr>
+            <tr><td><code>/api/probe</code></td><td>POST</td><td>L402 (5 sats)</td><td>End-to-end L402 probe via SatRank LND, with full telemetry.</td></tr>
             <tr><td><code>/api/report</code></td><td>POST</td><td>L402 or API key</td><td>Submit a first-party outcome with preimage proof.</td></tr>
             <tr><td><code>/api/deposit</code></td><td>POST</td><td>public</td><td>Buy an L402 token balance (21 to 1 000 000 sats, tiered rate).</td></tr>
             <tr><td><code>/api/health</code></td><td>GET</td><td>public</td><td>Liveness, schema version, LND probe age.</td></tr>

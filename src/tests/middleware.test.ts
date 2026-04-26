@@ -309,15 +309,17 @@ describe('OpenAPI spec auth alignment', () => {
     expect(searchOp).not.toHaveProperty('security');
   });
 
-  it('requires L402 on individual agent endpoints', async () => {
+  it('does not require L402 on individual agent endpoints (Mix A+D free directory)', async () => {
     const { openapiSpec } = await import('../openapi');
 
     const agentOp = openapiSpec.paths['/agent/{publicKeyHash}'].get;
+    const verdictOp = openapiSpec.paths['/agent/{publicKeyHash}/verdict'].get;
     const historyOp = openapiSpec.paths['/agent/{publicKeyHash}/history'].get;
     const attestOp = openapiSpec.paths['/agent/{publicKeyHash}/attestations'].get;
 
-    expect(agentOp.security).toEqual([{ l402: [] }]);
-    expect(historyOp.security).toEqual([{ l402: [] }]);
-    expect(attestOp.security).toEqual([{ l402: [] }]);
+    expect(agentOp).not.toHaveProperty('security');
+    expect(verdictOp).not.toHaveProperty('security');
+    expect(historyOp).not.toHaveProperty('security');
+    expect(attestOp).not.toHaveProperty('security');
   });
 });

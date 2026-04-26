@@ -14,6 +14,7 @@ import { logger } from '../logger';
 import { ValidationError } from '../errors';
 import { formatZodError } from '../utils/zodError';
 import { isValidCategoryFormat, normalizeCategory } from '../utils/categoryValidation';
+import { isFreshRequest } from '../utils/freshFlag';
 import type { IntentService } from '../services/intentService';
 import { INTENT_LIMIT_MAX } from '../services/intentService';
 
@@ -34,6 +35,9 @@ const intentSchema = z.object({
   max_latency_ms: z.number().int().min(0).max(60_000).optional(),
   caller: z.string().min(1).max(200).optional(),
   limit: z.number().int().min(1).max(INTENT_LIMIT_MAX).optional(),
+  /** Mix A+D — opt-in synchronous probe of the top candidates. Paid path
+   *  (2 sats) wired in src/app.ts via the conditional paidGate. */
+  fresh: z.boolean().optional(),
 });
 
 export class IntentController {
@@ -45,6 +49,10 @@ export class IntentController {
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
       const { category, keywords, budget_sats, max_latency_ms, caller, limit } = parsed.data;
+      // Mix A+D — accept the flag from the body (zod) OR the query string
+      // (`?fresh=true`). The L402 paywall in src/app.ts uses the same helper,
+      // so the controller and middleware always agree on which path was paid.
+      const fresh = parsed.data.fresh === true || isFreshRequest(req);
 
       // Enum dynamique : la catégorie doit exister dans le pool trusted.
       // Le format regex est déjà validé par zod ; ici on refuse les valeurs
@@ -63,6 +71,7 @@ export class IntentController {
       const response = await this.intentService.resolveIntent(
         { category, keywords, budget_sats, max_latency_ms, caller },
         limit,
+        { fresh },
       );
 
       logger.info(
@@ -73,6 +82,7 @@ export class IntentController {
           keywords_count: keywords?.length ?? 0,
           budget_sats: budget_sats ?? null,
           max_latency_ms: max_latency_ms ?? null,
+          fresh,
           total_matched: response.meta.total_matched,
           returned: response.meta.returned,
           strictness: response.meta.strictness,

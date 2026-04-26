@@ -22,14 +22,18 @@ const writeRateLimit = rateLimit({
 
 const noopMiddleware: RequestHandler = (_req, _res, next) => next();
 
+// Pricing Mix A+D (2026-04-26): GET attestations is now free directory data —
+// reading public attestation history is a discovery operation. POST stays
+// behind apiKeyAuth (issuer write path).
 export function createAttestationRoutes(
   controller: AttestationController,
-  balanceAuth: RequestHandler = noopMiddleware,
-  paidGate: RequestHandler = noopMiddleware,
+  _balanceAuth: RequestHandler = noopMiddleware,
+  _paidGate: RequestHandler = noopMiddleware,
+  discoveryRateLimit: RequestHandler = noopMiddleware,
 ): Router {
   const router = Router();
 
-  router.get('/agent/:publicKeyHash/attestations', paidGate, balanceAuth, controller.getBySubject);
+  router.get('/agent/:publicKeyHash/attestations', discoveryRateLimit, controller.getBySubject);
   router.post('/attestations', writeRateLimit, apiKeyAuth, controller.create);
 
   return router;

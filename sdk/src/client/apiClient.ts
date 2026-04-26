@@ -27,6 +27,10 @@ export interface ResolveIntentInput {
   max_latency_ms?: number;
   caller?: string;
   limit?: number;
+  /** Mix A+D — when true, the SDK upgrades to the paid /intent path
+   *  (2 sats via L402) so the server can synchronously probe the top
+   *  candidates before returning. Default: false. */
+  fresh?: boolean;
 }
 
 export interface ReportInput {

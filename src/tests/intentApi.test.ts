@@ -289,6 +289,42 @@ describe('/api/intent integration', async () => {
       expect(res.body.meta.strictness).toBe('strict');
       expect(res.body.meta.warnings).toEqual([]);
     });
+
+    // Pricing Mix A+D — free /intent path. The default response must signal
+    // staleness explicitly (freshness_status per candidate) and advertise
+    // the paid upgrade in the meta block.
+    it('Mix A+D — free response: intent.fresh=false, meta.upgrade_path présent, advisory.freshness_status sur chaque candidat', async () => {
+      await seed(db, sha256('mxa-1'), 'https://mxa.example/1', { name: 'mxa-1', category: 'tools', priceSats: 5, safe: true });
+
+      const res = await request(app)
+        .post('/api/intent')
+        .send({ category: 'tools' });
+      expect(res.status).toBe(200);
+      expect(res.body.intent.fresh).toBe(false);
+      expect(res.body.meta.upgrade_path).toBeDefined();
+      expect(res.body.meta.upgrade_path.flag).toBe('fresh=true');
+      expect(res.body.meta.upgrade_path.cost_sats).toBe(2);
+      expect(typeof res.body.meta.upgrade_path.message).toBe('string');
+      const cand = res.body.candidates[0];
+      expect(cand.advisory.freshness_status).toBeDefined();
+      expect(['fresh', 'recent', 'stale', 'very_stale']).toContain(cand.advisory.freshness_status);
+    });
+
+    // Pricing Mix A+D — paid /intent path. fresh=true acknowledged, no
+    // upgrade_path (already upgraded), and intent.fresh echo flips to true.
+    // We do NOT assert that the synchronous probe ran — fetchSafeExternal
+    // will fail on the unreachable seed URL and the freshProbeService will
+    // upsert status=0; that's fine, the contract here is the response shape.
+    it('Mix A+D — fresh=true reconnu côté service: intent.fresh=true, pas de upgrade_path', async () => {
+      await seed(db, sha256('mxa-2'), 'https://127.0.0.1:1/unreachable', { name: 'mxa-2', category: 'tools', priceSats: 5, safe: true });
+
+      const res = await request(app)
+        .post('/api/intent')
+        .send({ category: 'tools', fresh: true });
+      expect(res.status).toBe(200);
+      expect(res.body.intent.fresh).toBe(true);
+      expect(res.body.meta.upgrade_path).toBeUndefined();
+    });
   });
 
   // Phase 7 — C11 expose operator_id per candidate (verified only), C12 émet

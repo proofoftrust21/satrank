@@ -102,6 +102,7 @@ import { openapiSpec } from './openapi';
 import { logger } from './logger';
 import { setFresh as cacheSetFresh, getStale as cacheGetStale } from './cache/memoryCache';
 import { TOP_SORT_AXES, TOP_WARMUP_LIMITS, CRITICAL_CACHE_TTL_MS } from './services/statsService';
+import { isFreshRequest } from './utils/freshFlag';
 import { DualWriteLogger } from './utils/dualWriteLogger';
 import { safeJsonForScript } from './utils/safeJsonForScript';
 
@@ -510,6 +511,10 @@ export function createApp() {
   const reportAuth = createReportAuth(pool);
 
   // L402 native gate — all paid endpoints go through createL402Native.
+  // Pricing Mix A+D (2026-04-26): /agent/:publicKeyHash and its sub-routes
+  // moved to free discovery, so they are no longer in the pricingMap.
+  // POST /intent here is the *fresh* path only — the conditional middleware
+  // below short-circuits paidGate when ?fresh=true is absent.
   const paidGate = createL402Native({
     secret: Buffer.from(config.L402_MACAROON_SECRET ?? '', 'hex'),
     lndInvoice: lndInvoiceService,
@@ -520,11 +525,8 @@ export function createApp() {
     pricingMap: {
       '/probe': 5,
       '/verdicts': 1,
-      '/agent/:publicKeyHash': 1,
-      '/agent/:publicKeyHash/verdict': 1,
-      '/agent/:publicKeyHash/history': 1,
-      '/agent/:publicKeyHash/attestations': 1,
       '/profile/:id': 1,
+      '/intent': 2,
     },
     operatorSecret: config.OPERATOR_BYPASS_SECRET,
   });
@@ -543,8 +545,6 @@ export function createApp() {
   });
   api.post('/probe', paidGate, probeLimits.perToken, probeLimits.global, balanceAuth, probeController.probe);
   api.use(createPingRoutes(pingController));                           // ping/:pubkey (free, own rate limit)
-  api.use(createAgentRoutes(agentController, balanceAuth, paidGate));  // agent/:hash, verdict, top, search, movers
-  api.use(createAttestationRoutes(attestationController, balanceAuth, paidGate));// attestations (GET paid, POST free)
   // Dedicated tight limiter on /api/version — the response is a thin build-info
   // document with commit hash + build time, so probing it at rate for
   // deploy-detection has no legitimate use. 60/min/IP keeps monitoring happy
@@ -575,8 +575,30 @@ export function createApp() {
   api.get('/services', discoveryRateLimit, serviceController.search);
   api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
-  // Phase 5 — /api/intent structuré (neutral discovery, same rate class as /services)
-  api.post('/intent', discoveryRateLimit, intentController.resolve);
+
+  // Pricing Mix A+D (2026-04-26) — agent + attestation reads moved to free
+  // discovery. createAgentRoutes still receives paidGate/balanceAuth because
+  // POST /verdicts (batch) stays paid; the GET /agent/* routes ignore them
+  // and use discoveryRateLimit instead.
+  api.use(createAgentRoutes(agentController, balanceAuth, paidGate, discoveryRateLimit));
+  api.use(createAttestationRoutes(attestationController, balanceAuth, paidGate, discoveryRateLimit));
+
+  // /api/intent — Mix A+D conditional gate. Default path = free directory
+  // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
+  // → paidGate + balanceAuth so the resolver can run a synchronous probe of
+  // the top-N candidates and guarantee last_probe_age_sec < freshness window.
+  // The route path is `/intent`; pricingMap['/intent'] = 2 sats engages only
+  // when the wrapper invokes paidGate (not on free calls).
+  const conditionalIntentPaidGate: import('express').RequestHandler = (req, res, next) => {
+    const wantsFresh = isFreshRequest(req);
+    if (!wantsFresh) return next();
+    paidGate(req, res, (err: unknown) => {
+      if (err) return next(err);
+      if (res.headersSent) return; // paidGate emitted 402/401/etc.
+      balanceAuth(req, res, next);
+    });
+  };
+  api.post('/intent', discoveryRateLimit, conditionalIntentPaidGate, intentController.resolve);
   api.get('/intent/categories', discoveryRateLimit, intentController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
   // Phase 7 — operator registration (NIP-98 gated, rate-limited avec discovery

@@ -3,8 +3,8 @@ export const openapiSpec = {
   openapi: '3.1.0',
   info: {
     title: 'SatRank API',
-    version: '1.1.0',
-    description: 'Trust score for autonomous agents on Bitcoin Lightning. The PageRank of the agentic economy.',
+    version: '1.2.0',
+    description: 'Trust score for autonomous agents on Bitcoin Lightning. The PageRank of the agentic economy.\n\nPricing Mix A+D (2026-04-26): agent + attestation reads moved to free discovery (10 req/min/IP). The paid surface is now: /probe, /verdicts (batch), /profile/:id, and /intent when ?fresh=true (paid: 2 sats, server runs a synchronous HTTP probe on the top candidates).',
     license: { name: 'AGPL-3.0' },
   },
   servers: [{ url: '/api' }],
@@ -13,8 +13,8 @@ export const openapiSpec = {
       get: {
         summary: 'Get agent score',
         operationId: 'getAgentScore',
+        description: 'Pricing Mix A+D (2026-04-26): free directory read, rate-limited at 10/min/IP. No L402 required.',
         tags: ['Agents'],
-        security: [{ l402: [] }],
         parameters: [{ $ref: '#/components/parameters/publicKeyHash' }],
         responses: {
           '200': {
@@ -27,9 +27,9 @@ export const openapiSpec = {
             } } },
           },
           '202': { $ref: '#/components/responses/AutoIndexing' },
-          '402': { $ref: '#/components/responses/PaymentRequired' },
           '404': { $ref: '#/components/responses/NotFound' },
           '400': { $ref: '#/components/responses/ValidationError' },
+          '429': { $ref: '#/components/responses/RateLimited' },
         },
       },
     },
@@ -37,9 +37,8 @@ export const openapiSpec = {
       get: {
         summary: 'Get agent verdict (SAFE / RISKY / UNKNOWN)',
         operationId: 'getAgentVerdict',
-        description: 'Binary trust decision optimized for < 200ms agent-to-agent evaluation. Returns SAFE, RISKY, or UNKNOWN with confidence, flags, risk profile, and optional personalized trust distance.',
+        description: 'Binary trust decision optimized for < 200ms agent-to-agent evaluation. Returns SAFE, RISKY, or UNKNOWN with confidence, flags, risk profile, and optional personalized trust distance.\n\nPricing Mix A+D (2026-04-26): free directory read, rate-limited at 10/min/IP. No L402 required.',
         tags: ['Agents'],
-        security: [{ l402: [] }],
         parameters: [
           { $ref: '#/components/parameters/publicKeyHash' },
           {
@@ -61,8 +60,8 @@ export const openapiSpec = {
             } } },
           },
           '202': { $ref: '#/components/responses/AutoIndexing' },
-          '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { $ref: '#/components/responses/ValidationError' },
+          '429': { $ref: '#/components/responses/RateLimited' },
         },
       },
     },
@@ -117,9 +116,8 @@ export const openapiSpec = {
       get: {
         summary: 'Get agent posterior history',
         operationId: 'getAgentHistory',
-        description: 'Returns the current Bayesian posterior. Posterior-history samples (data[]) land with the Commit 8 aggregate tables; the response shape is stable.',
+        description: 'Returns the current Bayesian posterior. Posterior-history samples (data[]) land with the Commit 8 aggregate tables; the response shape is stable.\n\nPricing Mix A+D (2026-04-26): free directory read, rate-limited at 10/min/IP. No L402 required.',
         tags: ['Agents'],
-        security: [{ l402: [] }],
         parameters: [
           { $ref: '#/components/parameters/publicKeyHash' },
           { $ref: '#/components/parameters/limit' },
@@ -140,8 +138,8 @@ export const openapiSpec = {
               },
             } } },
           },
-          '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { $ref: '#/components/responses/ValidationError' },
+          '429': { $ref: '#/components/responses/RateLimited' },
         },
       },
     },
@@ -149,8 +147,8 @@ export const openapiSpec = {
       get: {
         summary: 'Get attestations received by an agent',
         operationId: 'getAgentAttestations',
+        description: 'Pricing Mix A+D (2026-04-26): free directory read, rate-limited at 10/min/IP. No L402 required.',
         tags: ['Attestations'],
-        security: [{ l402: [] }],
         parameters: [
           { $ref: '#/components/parameters/publicKeyHash' },
           { $ref: '#/components/parameters/limit' },
@@ -170,9 +168,9 @@ export const openapiSpec = {
               },
             } } },
           },
-          '402': { $ref: '#/components/responses/PaymentRequired' },
           '404': { $ref: '#/components/responses/NotFound' },
           '400': { $ref: '#/components/responses/ValidationError' },
+          '429': { $ref: '#/components/responses/RateLimited' },
         },
       },
     },
@@ -508,8 +506,17 @@ export const openapiSpec = {
       post: {
         summary: 'Resolve a structured intent to ranked L402 candidates',
         operationId: 'resolveIntent',
-        description: 'Phase 5 discovery API. The agent provides a structured intent (category + optional keywords + budget + max_latency); SatRank returns up to 20 candidates ranked Bayesian-native (p_success DESC → ci95_low DESC → price_sats ASC) with advisory overlay and health snapshot. Free endpoint, neutral ordering (no paid listing). snake_case convention.\n\nCategory must be a known enum member (see GET /api/intent/categories). Unknown categories → 400 INVALID_CATEGORY. Malformed categories → 400 VALIDATION_ERROR.\n\nStrictness tiers (aligned with /api/services/best): strict (SAFE only) → relaxed (any non-RISKY, warning FALLBACK_RELAXED) → degraded (pool empty, warning NO_CANDIDATES). RISKY candidates are never returned.',
+        description: 'Discovery API. The agent provides a structured intent (category + optional keywords + budget + max_latency); SatRank returns up to 20 candidates ranked Bayesian-native (p_success DESC → ci95_low DESC → price_sats ASC) with advisory overlay and health snapshot. Neutral ordering (no paid listing). snake_case convention.\n\nPricing Mix A+D (2026-04-26): the default path is **free** (rate-limited at 10/min/IP) with explicit staleness disclaimer (per-candidate `advisory.freshness_status` + `meta.upgrade_path`). Pass `fresh=true` (query string `?fresh=true` or body `{ "fresh": true }`) to upgrade to the **paid** path (2 sats via L402): the server runs a synchronous HTTP probe on the top candidates and guarantees `last_probe_age_sec < 60s`.\n\nCategory must be a known enum member (see GET /api/intent/categories). Unknown categories → 400 INVALID_CATEGORY. Malformed categories → 400 VALIDATION_ERROR.\n\nStrictness tiers (aligned with /api/services/best): strict (SAFE only) → relaxed (any non-RISKY, warning FALLBACK_RELAXED) → degraded (pool empty, warning NO_CANDIDATES). RISKY candidates are never returned.',
         tags: ['Discovery'],
+        parameters: [
+          {
+            name: 'fresh',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['true'] },
+            description: 'Mix A+D — when set to the literal string "true", the request is treated as the paid fresh path (L402 challenge, 2 sats). The server force-probes the top candidates synchronously before returning. Equivalent to body `{ "fresh": true }`.',
+          },
+        ],
         requestBody: {
           required: true,
           content: { 'application/json': { schema: {
@@ -521,6 +528,7 @@ export const openapiSpec = {
               max_latency_ms: { type: 'integer', minimum: 0, maximum: 60_000, description: 'Upper bound on 7-day median HTTP latency. Endpoints with < 3 probes are excluded.' },
               caller: { type: 'string', minLength: 1, maxLength: 200, description: 'Free-form identifier for logging. Not stored.' },
               limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Max candidates returned. Default 5.' },
+              fresh: { type: 'boolean', description: 'Mix A+D — when true, paid path: synchronous probe of the top candidates before returning. Equivalent to query param `?fresh=true`. 2 sats via L402.' },
             },
           } } },
         },
@@ -535,6 +543,7 @@ export const openapiSpec = {
                   budget_sats: { type: ['integer', 'null'] },
                   max_latency_ms: { type: ['integer', 'null'] },
                   resolved_at: { type: 'integer', description: 'Unix timestamp (seconds) when the server resolved the intent.' },
+                  fresh: { type: 'boolean', description: 'Mix A+D — true when the paid fresh path was honoured (top candidates synchronously probed). false on free directory reads.' },
                 } },
                 candidates: { type: 'array', items: { type: 'object', properties: {
                   rank: { type: 'integer' },
@@ -546,10 +555,15 @@ export const openapiSpec = {
                   median_latency_ms: { type: ['integer', 'null'], description: 'SQL median over service_probes within 7 days (null if < 3 probes).' },
                   bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
                   advisory: { type: 'object', properties: {
-                    advisory_level: { type: 'string', enum: ['green', 'yellow', 'orange', 'red'] },
+                    advisory_level: { type: 'string', enum: ['green', 'yellow', 'orange', 'red', 'insufficient_freshness'] },
                     risk_score: { type: 'number', minimum: 0, maximum: 1 },
                     advisories: { type: 'array', items: { type: 'object' } },
                     recommendation: { type: 'string', enum: ['proceed', 'proceed_with_caution', 'consider_alternative', 'avoid'] },
+                    freshness_status: {
+                      type: 'string',
+                      enum: ['fresh', 'recent', 'stale', 'very_stale'],
+                      description: 'Mix A+D — explicit staleness bucket derived from `health.last_probe_age_sec`. fresh: <60s, recent: <1h, stale: <24h, very_stale: ≥24h or no probe on record.',
+                    },
                   } },
                   health: { type: 'object', properties: {
                     reachability: { type: ['number', 'null'], minimum: 0, maximum: 1 },
@@ -563,11 +577,22 @@ export const openapiSpec = {
                   returned: { type: 'integer' },
                   strictness: { type: 'string', enum: ['strict', 'relaxed', 'degraded'] },
                   warnings: { type: 'array', items: { type: 'string' }, description: 'e.g. FALLBACK_RELAXED, NO_CANDIDATES.' },
+                  upgrade_path: {
+                    type: 'object',
+                    description: 'Mix A+D — only present on free responses (fresh !== true). Tells the agent how to upgrade to a synchronously probed result.',
+                    properties: {
+                      flag: { type: 'string', enum: ['fresh=true'] },
+                      cost_sats: { type: 'integer', example: 2 },
+                      message: { type: 'string' },
+                    },
+                  },
                 } },
               },
             } } },
           },
+          '402': { $ref: '#/components/responses/PaymentRequired' },
           '400': { description: 'VALIDATION_ERROR (malformed body) or INVALID_CATEGORY (unknown category)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '429': { $ref: '#/components/responses/RateLimited' },
         },
       },
     },
@@ -1662,6 +1687,10 @@ export const openapiSpec = {
             schema: { type: 'integer', example: 15 },
           },
         },
+      },
+      RateLimited: {
+        description: 'Free discovery rate limit exceeded (10 req/min/IP). Slow down or upgrade to a paid path (e.g. POST /intent with fresh=true).',
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
       },
     },
   },

@@ -1,13 +1,19 @@
-// Phase 14D.3.0 etape 3 — tests integration du wiring l402Native sur les 7
-// routes paid (6 originales + /api/probe). Valide :
-//   - gate permissif : paidGate = noop (smoke test : les routes passent)
-//   - gate L402 actif : chaque route emet un 402 + challenge au premier hit
-//   - pricingMap : /probe = 5 sats, les 6 autres = 1 sat
-//   - deposit token : bypass macaroon (passe-plat)
-//   - paiement settled : 200 end-to-end
-//   - LND fails : 503 gracieux
+// Pricing Mix A+D (2026-04-26) — l402Native wiring on the paid surface.
+// Under Mix A+D the agent + attestation reads moved to free discovery; only
+// /probe, /verdicts and /profile/:id are still flat-paid. /intent is paid
+// only when ?fresh=true (covered separately by the conditional gate test).
+// This integration suite validates:
+//   - permissive gate: routes pass when paidGate = noop (smoke)
+//   - active L402 gate: each paid route emits a 402 + challenge on first hit
+//   - pricingMap honoured: /probe = 5 sats, /verdicts + /profile/:id = 1 sat
+//   - deposit token: bypass macaroon (passe-plat)
+//   - settled invoice: 200 end-to-end
+//   - LND down: 503 gracieux
 //
-// Mock : LndInvoiceService stubbed + pool mocke (pas de Postgres, pas de LND).
+// Free reads (GET /agent/*, GET /attestations) are intentionally NOT asserted
+// here — the matching free-path tests live in routesPricing.test.ts.
+//
+// Mock: LndInvoiceService stubbed + pool mocked (no Postgres, no LND).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import crypto from 'crypto';
@@ -26,13 +32,11 @@ import type { V2Controller } from '../controllers/v2Controller';
 
 const SECRET = Buffer.from('a'.repeat(64), 'hex');
 
+// Pricing Mix A+D — only routes the gate must charge for.
+// /agent/* and /attestations are NOT in this map (they moved to free).
 const PRICING_MAP = {
   '/probe': 5,
   '/verdicts': 1,
-  '/agent/:publicKeyHash': 1,
-  '/agent/:publicKeyHash/verdict': 1,
-  '/agent/:publicKeyHash/history': 1,
-  '/agent/:publicKeyHash/attestations': 1,
   '/profile/:id': 1,
 };
 
@@ -88,13 +92,17 @@ function buildApp(paidGate: RequestHandler, balanceAuth: RequestHandler = (_r, _
     profile: stubHandler(),
   });
 
+  // Mix A+D — discoveryRateLimit is the new gate for free reads. In tests
+  // we use a noop pass-through so the assertions focus on the paid surface.
+  const discoveryRateLimit: RequestHandler = (_req, _res, next) => next();
+
   const app = express();
   app.use(express.json());
   const api = express.Router();
   api.use(createV2Routes(v2Controller, balanceAuth, (_r, _s, n) => n(), undefined, paidGate));
   api.post('/probe', paidGate, balanceAuth, stubHandler());
-  api.use(createAgentRoutes(agentController, balanceAuth, paidGate));
-  api.use(createAttestationRoutes(attestationController, balanceAuth, paidGate));
+  api.use(createAgentRoutes(agentController, balanceAuth, paidGate, discoveryRateLimit));
+  api.use(createAttestationRoutes(attestationController, balanceAuth, paidGate, discoveryRateLimit));
   app.use('/api', api);
   return app;
 }
@@ -106,12 +114,11 @@ interface RouteDescriptor {
   label: string;
 }
 
+// Pricing Mix A+D — the surface that still goes through paidGate.
+// The 4 GET /agent/* assertions and GET /attestations were removed because
+// those routes moved to free discovery (see routesPricing.test.ts).
 const SEVEN_PAID_ROUTES: RouteDescriptor[] = [
   { method: 'post', path: '/api/verdicts', expectedPriceSats: 1, label: 'POST /api/verdicts' },
-  { method: 'get', path: '/api/agent/' + 'a'.repeat(64) + '/verdict', expectedPriceSats: 1, label: 'GET /api/agent/:hash/verdict' },
-  { method: 'get', path: '/api/agent/' + 'a'.repeat(64), expectedPriceSats: 1, label: 'GET /api/agent/:hash' },
-  { method: 'get', path: '/api/agent/' + 'a'.repeat(64) + '/history', expectedPriceSats: 1, label: 'GET /api/agent/:hash/history' },
-  { method: 'get', path: '/api/agent/' + 'a'.repeat(64) + '/attestations', expectedPriceSats: 1, label: 'GET /api/agent/:hash/attestations' },
   { method: 'get', path: '/api/profile/abc123', expectedPriceSats: 1, label: 'GET /api/profile/:id' },
   { method: 'post', path: '/api/probe', expectedPriceSats: 5, label: 'POST /api/probe' },
 ];
@@ -167,7 +174,7 @@ describe('l402Native wiring — 7 paid routes integration', () => {
   });
 
   describe('L402 gate actif — settled macaroon path', () => {
-    it('GET /api/agent/:hash with valid L402 Authorization + settled invoice -> 200', async () => {
+    it('GET /api/profile/:id with valid L402 Authorization + settled invoice -> 200', async () => {
       const preimage = 'c'.repeat(64);
       const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
       const payload: MacaroonPayload = {
@@ -175,7 +182,7 @@ describe('l402Native wiring — 7 paid routes integration', () => {
         ph: paymentHash,
         ca: Math.floor(Date.now() / 1000),
         ps: 1,
-        rt: '/api/agent/:hash',
+        rt: '/api/profile/:id',
         tt: 60,
       };
       const macaroon = encodeMacaroon(payload, SECRET);
@@ -193,7 +200,7 @@ describe('l402Native wiring — 7 paid routes integration', () => {
       const app = buildApp(paidGate);
 
       const res = await request(app)
-        .get('/api/agent/' + 'a'.repeat(64))
+        .get('/api/profile/abc123')
         .set('Authorization', `L402 ${macaroon}:${preimage}`);
 
       expect(res.status).toBe(200);
