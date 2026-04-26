@@ -253,6 +253,13 @@ export class DecideService {
     let serviceHealth: ServiceHealth | null = null;
     if (serviceUrl && this.serviceEndpointRepo) {
       serviceHealth = await this.checkServiceHealth(targetHash, serviceUrl, startMs);
+      // Axe 1 — mark the URL as surfaced so the tiered probe scheduler can
+      // promote it into the hot rotation. Best-effort.
+      try {
+        await this.serviceEndpointRepo.markIntentQuery([serviceUrl]);
+      } catch {
+        // Tiering will resync on the next crawl cycle.
+      }
     }
 
     // GO decision — under Bayesian semantics, SAFE is the only green light.

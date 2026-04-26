@@ -161,6 +161,20 @@ export class IntentService {
       this.formatCandidate(c, idx + 1),
     );
 
+    // Axe 1 — record that these URLs were just surfaced. Drives the
+    // hot/warm/cold tiering in serviceHealthCrawler. Best-effort: a
+    // failed UPDATE must not break the response.
+    if (trimmed.length > 0) {
+      try {
+        await this.deps.serviceEndpointRepo.markIntentQuery(
+          trimmed.map(c => c.svc.url),
+        );
+      } catch {
+        // Tiering will fall back to legacy single-tier on next crawl cycle —
+        // not worth surfacing to the caller.
+      }
+    }
+
     return {
       intent: {
         category: req.category,
