@@ -347,13 +347,9 @@ describe('Contract tests — responses match OpenAPI spec', async () => {
 });
 
 describe('Contract tests — L402 security markers in OpenAPI spec', () => {
-  // L402-gated endpoints must have security: [{ l402: [] }]
-  const l402Paths = [
-    '/agent/{publicKeyHash}',
-    '/agent/{publicKeyHash}/verdict',
-    '/agent/{publicKeyHash}/history',
-    '/agent/{publicKeyHash}/attestations',
-  ];
+  // Mix A+D (2026-04-26): individual /agent/* GET reads moved to free directory.
+  // The remaining L402-gated paths are limited to write/batch/paid surfaces.
+  const l402Paths: string[] = [];
 
   for (const path of l402Paths) {
     it(`${path} is marked as L402-gated in OpenAPI spec`, async () => {
@@ -366,6 +362,10 @@ describe('Contract tests — L402 security markers in OpenAPI spec', () => {
 
   // Free endpoints must NOT have security
   const freePaths = [
+    '/agent/{publicKeyHash}',
+    '/agent/{publicKeyHash}/verdict',
+    '/agent/{publicKeyHash}/history',
+    '/agent/{publicKeyHash}/attestations',
     '/agents/top',
     '/agents/search',
     '/health',
