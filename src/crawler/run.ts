@@ -820,7 +820,13 @@ async function main(): Promise<void> {
     const tierIntervals = {
       hot: 60 * 60 * 1000,
       warm: 6 * 60 * 60 * 1000,
-      cold: 24 * 60 * 60 * 1000,
+      // Vague 1 C.1.a: cold cadence shortened from 24h to 6h. With idle prod and
+      // zero /api/intent traffic the entire catalogue lives in cold tier; a 24h
+      // cycle made check_count climb too slowly to clear the active_count >= 3
+      // threshold, leaving every category at active_count=0 visibly. 6h is still
+      // 6x slower than warm and keeps the LND/HTTP load negligible (220 endpoints
+      // at 5/sec = ~45s per cycle).
+      cold: 6 * 60 * 60 * 1000,
     } as const;
 
     for (const tier of ['hot', 'warm', 'cold'] as const) {

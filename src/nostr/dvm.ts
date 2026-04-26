@@ -117,6 +117,9 @@ export class SatRankDvm {
       risk_profile: v.risk_profile,
       time_constant_days: v.time_constant_days,
       last_update: v.last_update,
+      // Vague 1 B: DVM consumers always get the canonical block; filtering on
+      // is_meaningful is the caller's responsibility.
+      is_meaningful: true,
     };
   }
 

@@ -20,6 +20,14 @@ export interface BayesianBlock {
   risk_profile: 'low' | 'medium' | 'high' | 'unknown';
   time_constant_days: number;
   last_update: number;
+  /**
+   * Vague 1 B (server 1.3.0, SDK 1.0.5) — true when the score aggregates
+   * enough recent evidence to drive a decision; false when the response is
+   * mostly the prior shining through (stale probe and/or thin data). On the
+   * /api/intent surface the threshold is freshness_status in {fresh, recent}
+   * AND n_obs >= 5. Optional for SDK back-compat against pre-1.3.0 servers.
+   */
+  is_meaningful?: boolean;
   sources?: {
     probe: unknown | null;
     report: unknown | null;

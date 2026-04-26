@@ -71,6 +71,13 @@ const FRESHNESS_RECENT_THRESHOLD_SEC = 60;
 const FRESHNESS_STALE_THRESHOLD_SEC = 60 * 60;
 const FRESHNESS_VERY_STALE_THRESHOLD_SEC = 24 * 60 * 60;
 
+/** Vague 1 B — minimum recent observations for `bayesian.is_meaningful` to
+ *  be true. Lower than UNKNOWN_MIN_N_OBS=10 because is_meaningful is a hint,
+ *  not a verdict; verdict already encodes the stricter threshold. We pick 5
+ *  so a candidate freshly observed twice in the hot tier (n_obs ~ 4-6 once
+ *  the operator/service prior is folded in) crosses the bar. */
+const IS_MEANINGFUL_MIN_N_OBS = 5;
+
 function freshnessStatusFromAge(ageSec: number | null): FreshnessStatus {
   if (ageSec == null) return 'very_stale';
   if (ageSec < FRESHNESS_RECENT_THRESHOLD_SEC) return 'fresh';
@@ -354,7 +361,18 @@ export class IntentService {
       service_name: c.svc.name,
       price_sats: c.svc.service_price_sats,
       median_latency_ms: c.medianLatencyMs,
-      bayesian: c.bayesian,
+      bayesian: {
+        ...c.bayesian,
+        // Vague 1 B: surface a non-breaking honesty flag. The score is
+        // meaningful only when the underlying probe is fresh AND there are
+        // enough recent observations to override the prior. Stale or thin
+        // posteriors stay visible (back-compat), but agents that read this
+        // flag know to either ignore the score or pay ?fresh=true.
+        is_meaningful:
+          (freshnessStatusFromAge(c.lastProbeAgeSec) === 'fresh' ||
+            freshnessStatusFromAge(c.lastProbeAgeSec) === 'recent') &&
+          c.bayesian.n_obs >= IS_MEANINGFUL_MIN_N_OBS,
+      },
       advisory: {
         advisory_level: advisoryReport.advisory_level,
         risk_score: advisoryReport.risk_score,
@@ -401,8 +419,26 @@ function applyStrictness(
   return { pool: [], strictness: 'degraded', warnings: ['NO_CANDIDATES'] };
 }
 
-/** Tri canonique : p_success DESC → ci95_low DESC → price_sats ASC. */
+/** Tri canonique (Vague 1 B):
+ *    1. is_meaningful=true devant is_meaningful=false (un score honnête bat
+ *       un score prior-dominé même si le second est numériquement plus haut)
+ *    2. p_success DESC
+ *    3. ci95_low DESC
+ *    4. price_sats ASC
+ *  is_meaningful est dérivé inline (freshness <1h ET n_obs ≥ IS_MEANINGFUL_MIN_N_OBS).
+ *  Le calcul dupliqué avec formatCandidate est intentionnel: garder le tri
+ *  pré-format pour ne pas avoir à matérialiser l'API shape avant le sort. */
 function compareCandidates(a: EnrichedCandidate, b: EnrichedCandidate): number {
+  const isMeaningful = (c: EnrichedCandidate): boolean => {
+    if (c.lastProbeAgeSec == null) return false;
+    if (c.lastProbeAgeSec >= FRESHNESS_STALE_THRESHOLD_SEC) return false;
+    return c.bayesian.n_obs >= IS_MEANINGFUL_MIN_N_OBS;
+  };
+  const aMean = isMeaningful(a);
+  const bMean = isMeaningful(b);
+  if (aMean !== bMean) {
+    return aMean ? -1 : 1;
+  }
   if (b.bayesian.p_success !== a.bayesian.p_success) {
     return b.bayesian.p_success - a.bayesian.p_success;
   }
@@ -464,5 +500,8 @@ function neutralBayesian(nowSec: number): BayesianScoreBlock {
     risk_profile: 'unknown',
     time_constant_days: 7,
     last_update: nowSec,
+    // Orphan endpoints have zero local evidence: by definition the score is
+    // not meaningful regardless of freshness.
+    is_meaningful: false,
   };
 }

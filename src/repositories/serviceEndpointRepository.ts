@@ -31,6 +31,30 @@ export interface ServiceEndpoint {
    *  /api/intent or /api/decide. NULL = never queried.
    *  Drives hot/warm/cold tiering in serviceHealthCrawler. */
   last_intent_query_at: number | null;
+  /** Vague 1 G.2 — upstream quality signals copied from the registry source
+   *  (currently 402index). Persisted at registry-crawl time and refreshed
+   *  on every subsequent ingestion. NULL when the registry did not expose a
+   *  field or the row predates schema v43. Drives the bayesian prior cascade
+   *  in bayesianScoringService.resolveHierarchicalPrior. */
+  upstream_health_status: string | null;
+  upstream_uptime_30d: number | null;
+  upstream_latency_p50_ms: number | null;
+  upstream_reliability_score: number | null;
+  upstream_last_checked: number | null;
+  upstream_source: string | null;
+  upstream_signals_updated_at: number | null;
+}
+
+/** Vague 1 G.2 — payload accepted by upsertUpstreamSignals. Mirrors the
+ *  402index API schema (subset). All fields nullable so partial signal sets
+ *  are persisted without dropping known data. */
+export interface UpstreamSignals {
+  health_status?: string | null;
+  uptime_30d?: number | null;
+  latency_p50_ms?: number | null;
+  reliability_score?: number | null;
+  last_checked?: number | null;
+  source?: string | null;
 }
 
 /** Axe 1 — probe tier classification.
@@ -230,6 +254,100 @@ export class ServiceEndpointRepository {
       'UPDATE service_endpoints SET name = $1, description = $2, category = $3, provider = $4 WHERE url = $5',
       [meta.name, meta.description, meta.category, meta.provider, url],
     );
+  }
+
+  /** Vague 1 G.2 — persist upstream registry quality signals. Idempotent:
+   *  every registry-crawl pass refreshes the columns. NULL fields in the
+   *  payload overwrite previous values on purpose so a regressed registry
+   *  entry is reflected. The caller (RegistryCrawler) passes the raw fields
+   *  it observed from 402index (or future sources). */
+  async upsertUpstreamSignals(url: string, signals: UpstreamSignals): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    await this.db.query(
+      `UPDATE service_endpoints
+         SET upstream_health_status = $1,
+             upstream_uptime_30d = $2,
+             upstream_latency_p50_ms = $3,
+             upstream_reliability_score = $4,
+             upstream_last_checked = $5,
+             upstream_source = $6,
+             upstream_signals_updated_at = $7
+       WHERE url = $8`,
+      [
+        signals.health_status ?? null,
+        signals.uptime_30d ?? null,
+        signals.latency_p50_ms ?? null,
+        signals.reliability_score ?? null,
+        signals.last_checked ?? null,
+        signals.source ?? '402index',
+        now,
+        url,
+      ],
+    );
+  }
+
+  /** Vague 1 G.2 — fetch upstream signals for a known endpoint, used by
+   *  bayesianScoringService.resolveHierarchicalPrior to seed the prior when
+   *  endpoint observations are insufficient. Returns null when the row is
+   *  unknown or has no upstream signal recorded. */
+  async findUpstreamSignals(url: string): Promise<UpstreamSignals | null> {
+    const { rows } = await this.db.query<{
+      upstream_health_status: string | null;
+      upstream_uptime_30d: number | null;
+      upstream_latency_p50_ms: number | null;
+      upstream_reliability_score: number | null;
+      upstream_last_checked: number | null;
+      upstream_source: string | null;
+    }>(
+      `SELECT upstream_health_status, upstream_uptime_30d, upstream_latency_p50_ms,
+              upstream_reliability_score, upstream_last_checked, upstream_source
+         FROM service_endpoints
+        WHERE url = $1`,
+      [url],
+    );
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    if (
+      r.upstream_health_status == null &&
+      r.upstream_uptime_30d == null &&
+      r.upstream_latency_p50_ms == null &&
+      r.upstream_reliability_score == null
+    ) {
+      return null;
+    }
+    return {
+      health_status: r.upstream_health_status,
+      uptime_30d: r.upstream_uptime_30d,
+      latency_p50_ms: r.upstream_latency_p50_ms,
+      reliability_score: r.upstream_reliability_score,
+      last_checked: r.upstream_last_checked,
+      source: r.upstream_source,
+    };
+  }
+
+  /** Vague 1 G.2 — same as findUpstreamSignals but keyed by url_hash, the
+   *  shape carried in the bayesian scoring path. The table only stores the
+   *  literal URL, so we reuse the existing in-process scan from
+   *  findByUrlHash to avoid adding a hash column for now. */
+  async findUpstreamSignalsByUrlHash(urlHash: string): Promise<UpstreamSignals | null> {
+    const ep = await this.findByUrlHash(urlHash);
+    if (!ep) return null;
+    if (
+      ep.upstream_health_status == null &&
+      ep.upstream_uptime_30d == null &&
+      ep.upstream_latency_p50_ms == null &&
+      ep.upstream_reliability_score == null
+    ) {
+      return null;
+    }
+    return {
+      health_status: ep.upstream_health_status,
+      uptime_30d: ep.upstream_uptime_30d,
+      latency_p50_ms: ep.upstream_latency_p50_ms,
+      reliability_score: ep.upstream_reliability_score,
+      last_checked: ep.upstream_last_checked,
+      source: ep.upstream_source,
+    };
   }
 
   async findServices(filters: ServiceSearchFilters): Promise<{ services: ServiceEndpoint[]; total: number }> {

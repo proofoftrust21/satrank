@@ -92,7 +92,7 @@ export interface BayesianVerdictResponse {
     threshold: number;
   };
   /** Source du prior (diagnostic : operator / service / category / flat). */
-  prior_source: 'operator' | 'service' | 'category' | 'flat';
+  prior_source: 'operator' | 'service' | 'category' | 'upstream' | 'flat';
   /** n_obs cumulé par fenêtre d'affichage — daily_buckets, toutes sources. */
   recent_activity: RecentActivity;
   /** Trend delta success_rate (low/medium/high/unknown) — Option B. */
@@ -210,11 +210,23 @@ export class BayesianVerdictService {
     // pour les futurs re-calculs sur des endpoints cousins.
     let categoryName: string | null = null;
     let categorySiblingHashes: string[] | null = null;
+    let upstreamSignals: { reliability_score?: number | null; uptime_30d?: number | null; health_status?: string | null } | null = null;
     if (query.serviceHash && this.serviceEndpointRepo) {
       categoryName = await this.serviceEndpointRepo.findCategoryByUrlHash(query.serviceHash);
       if (categoryName) {
         const siblings = await this.serviceEndpointRepo.listUrlHashesByCategory(categoryName);
         categorySiblingHashes = siblings.filter(h => h !== query.serviceHash);
+      }
+      // Vague 1 G.2: feed the upstream registry signals into the cascade so a
+      // newly ingested endpoint with reliability_score=95 starts above the
+      // flat prior even before it has accumulated local probe evidence.
+      const sig = await this.serviceEndpointRepo.findUpstreamSignalsByUrlHash(query.serviceHash);
+      if (sig) {
+        upstreamSignals = {
+          reliability_score: sig.reliability_score,
+          uptime_30d: sig.uptime_30d,
+          health_status: sig.health_status,
+        };
       }
     }
     const prior = await this.bayesian.resolveHierarchicalPrior({
@@ -222,6 +234,7 @@ export class BayesianVerdictService {
       serviceHash: query.serviceHash,
       categoryName,
       categorySiblingHashes,
+      upstreamSignals,
     });
     const recent_activity = await this.endpointBucketsRepo.recentActivity(query.targetHash, now);
     const riskProfileResult = await this.bayesian.computeRiskProfile(
