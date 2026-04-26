@@ -399,6 +399,9 @@ export function createApp() {
   // Static assets (CSS, JS, images, etc.)
   app.use(express.static(publicDir));
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: publicDir }));
+  // /docs : quickstart + API reference humain. Distinct de /api/docs (Swagger UI)
+  // qui sert l'exploration interactive de l'OpenAPI 3.1.
+  app.get('/docs', (_req, res) => res.sendFile('docs.html', { root: publicDir }));
 
   // Prometheus metrics endpoint — X-API-Key auth always required.
   // Phase 12B B6.2 : the historical localhost bypass was removed — IP-based

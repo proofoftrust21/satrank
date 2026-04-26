@@ -25,6 +25,7 @@ export type {
   CandidateAttempt,
   CandidateOutcome,
   FulfillErrorShape,
+  SelectionExplanation,
   SatRankOptions,
 } from './types';
 

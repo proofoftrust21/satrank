@@ -613,3 +613,79 @@ async def test_per_call_caller_overrides_ctor() -> None:
             intent={"category": "data"}, budget_sats=10, caller="agent-from-call"
         )
     assert captured["caller"] == "agent-from-call"
+
+
+# ---- selection_explanation (1.0.3) --------------------------------------
+
+@respx.mock
+async def test_selection_explanation_success_with_budget_alternative() -> None:
+    """On success, attaches chosen + alternatives with rejection reasons."""
+    cheap_url = "https://svc.test/cheap"      # rank 1, registry price > budget
+    winner_url = "https://svc.test/winner"    # rank 2, succeeds
+
+    respx.post("https://api.test/api/intent").mock(
+        return_value=httpx.Response(
+            200,
+            json=make_intent_payload(
+                [
+                    {"endpoint_url": cheap_url, "price_sats": 9999},
+                    {"endpoint_url": winner_url, "price_sats": None, "service_name": "win"},
+                ]
+            ),
+        )
+    )
+
+    def winner_handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("authorization"):
+            return httpx.Response(
+                200,
+                json={"ok": True},
+                headers={"content-type": "application/json"},
+            )
+        return httpx.Response(
+            402,
+            headers={"www-authenticate": 'L402 token="t", invoice="lnbc100n1ok"'},
+        )
+
+    respx.get(winner_url).mock(side_effect=winner_handler)
+
+    async with SatRank(api_base="https://api.test", wallet=StubWallet()) as sr:
+        res = await sr.fulfill(intent={"category": "data"}, budget_sats=100)
+
+    assert res["success"] is True
+    sel = res.get("selection_explanation")
+    assert sel is not None
+    assert sel["chosen_endpoint"] == winner_url
+    assert sel["chosen_score"] == 0.9
+    assert sel["candidates_evaluated"] == 2
+    assert len(sel["alternatives_considered"]) == 1
+    assert sel["alternatives_considered"][0]["endpoint"] == cheap_url
+    assert "budget" in sel["alternatives_considered"][0]["rejected_reason"]
+    assert "p_success" in sel["selection_strategy"]
+
+
+@respx.mock
+async def test_selection_explanation_total_failure_chosen_null() -> None:
+    """On total failure, chosen_* are null and all attempts appear as alternatives."""
+    down_url = "https://svc.test/down"
+
+    respx.post("https://api.test/api/intent").mock(
+        return_value=httpx.Response(
+            200,
+            json=make_intent_payload([{"endpoint_url": down_url}]),
+        )
+    )
+    respx.get(down_url).mock(return_value=httpx.Response(500, text="boom"))
+
+    async with SatRank(api_base="https://api.test", wallet=StubWallet()) as sr:
+        res = await sr.fulfill(intent={"category": "data"}, budget_sats=100)
+
+    assert res["success"] is False
+    sel = res.get("selection_explanation")
+    assert sel is not None
+    assert sel["chosen_endpoint"] is None
+    assert sel["chosen_reason"] is None
+    assert sel["chosen_score"] is None
+    assert len(sel["alternatives_considered"]) == 1
+    assert sel["alternatives_considered"][0]["endpoint"] == down_url
+    assert sel["candidates_evaluated"] == 1

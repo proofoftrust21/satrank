@@ -74,6 +74,7 @@ async function buildTestApp() {
   // Static files (for methodology test)
   app.use(express.static(path.join(__dirname, '..', '..', 'public')));
   app.get('/methodology', (_req, res) => res.sendFile('methodology.html', { root: path.join(__dirname, '..', '..', 'public') }));
+  app.get('/docs', (_req, res) => res.sendFile('docs.html', { root: path.join(__dirname, '..', '..', 'public') }));
 
   const { Router } = express;
   const api = Router();
@@ -373,6 +374,17 @@ describe('Integration — HTTP endpoints', async () => {
     const res = await request(app).get('/methodology');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
+  });
+
+  // --- Developer docs page ---
+
+  it('GET /docs returns the developer quickstart HTML', async () => {
+    const res = await request(app).get('/docs');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/html');
+    // Ancrage minimal — vérifie qu'on sert bien la page docs et pas methodology.
+    expect(res.text).toContain('Developer docs');
+    expect(res.text).toContain('@satrank/sdk');
   });
 
   // --- Request ID ---

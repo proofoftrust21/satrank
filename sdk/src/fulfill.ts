@@ -26,8 +26,87 @@ import type {
   FulfillRequest,
   FulfillResult,
   IntentCandidate,
+  SelectionExplanation,
   Wallet,
 } from './types';
+
+/** Constant policy string surfaced in selection_explanation.selection_strategy.
+ *  Exposed so two integrators reading the same payload reach the same
+ *  conclusion about how the SDK ranked endpoints. */
+export const SELECTION_STRATEGY =
+  'highest-ranked candidate by p_success (server-sorted), tried in rank order until one returns HTTP 2xx after L402 payment';
+
+/** Map a raw CandidateOutcome to a one-line, human-readable rationale.
+ *  Used for SelectionExplanation.alternatives_considered[].rejected_reason. */
+function outcomeToHumanReason(outcome: CandidateOutcome, error?: string): string {
+  switch (outcome) {
+    case 'paid_success':
+      return 'paid response returned 2xx';
+    case 'paid_failure':
+      return 'endpoint returned non-2xx after payment';
+    case 'pay_failed':
+      return error ? `wallet rejected the invoice (${error})` : 'wallet rejected the invoice';
+    case 'abort_budget':
+      return 'invoice price exceeds remaining budget';
+    case 'abort_timeout':
+      return 'wall-clock timeout reached before attempt';
+    case 'no_invoice':
+      return 'endpoint did not return a 402+BOLT11 challenge';
+    case 'network_error':
+      return error ? `network error before 402 (${error})` : 'network error before 402';
+    case 'skipped':
+      return 'skipped by retry_policy=none after a prior attempt';
+    default:
+      return outcome;
+  }
+}
+
+/** Build the SelectionExplanation block from the in-flight tried list, the
+ *  full candidate set returned by /api/intent, and the chosen index (or null
+ *  on failure). Pure helper, no side effects. */
+function buildSelectionExplanation(
+  candidates: IntentCandidate[],
+  tried: CandidateAttempt[],
+  chosenIndex: number | null,
+): SelectionExplanation {
+  const alternatives: SelectionExplanation['alternatives_considered'] = [];
+  for (let i = 0; i < tried.length; i++) {
+    if (i === chosenIndex) continue;
+    const attempt = tried[i];
+    const cand = candidates[i];
+    alternatives.push({
+      endpoint: attempt.url,
+      score: cand?.bayesian.p_success ?? 0,
+      rejected_reason: outcomeToHumanReason(attempt.outcome, attempt.error),
+    });
+  }
+
+  if (chosenIndex === null) {
+    return {
+      chosen_endpoint: null,
+      chosen_reason: null,
+      chosen_score: null,
+      alternatives_considered: alternatives,
+      candidates_evaluated: candidates.length,
+      selection_strategy: SELECTION_STRATEGY,
+    };
+  }
+
+  const chosenAttempt = tried[chosenIndex];
+  const chosenCandidate = candidates[chosenIndex];
+  const chosenReason =
+    chosenIndex === 0
+      ? 'top-ranked candidate by p_success returned 2xx after payment'
+      : `first candidate to succeed at rank ${chosenIndex + 1} after ${chosenIndex} prior rejection${chosenIndex === 1 ? '' : 's'}`;
+  return {
+    chosen_endpoint: chosenAttempt.url,
+    chosen_reason: chosenReason,
+    chosen_score: chosenCandidate?.bayesian.p_success ?? 0,
+    alternatives_considered: alternatives,
+    candidates_evaluated: candidates.length,
+    selection_strategy: SELECTION_STRATEGY,
+  };
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_FEE_SATS = 10;
@@ -160,6 +239,11 @@ export async function fulfillIntent(
           operator_pubkey: candidate.operator_pubkey,
         },
         candidates_tried: tried,
+        selection_explanation: buildSelectionExplanation(
+          intentResult.candidates,
+          tried,
+          tried.length - 1,
+        ),
       };
       result.report_submitted = await maybeAutoReport(ctx, opts, lastCtx);
       return result;
@@ -176,6 +260,11 @@ export async function fulfillIntent(
     spent,
     lastOutcome.toString().toUpperCase(),
     `All ${tried.length} candidates failed`,
+  );
+  result.selection_explanation = buildSelectionExplanation(
+    intentResult.candidates,
+    tried,
+    null,
   );
   result.report_submitted = await maybeAutoReport(ctx, opts, lastCtx);
   return result;

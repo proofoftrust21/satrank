@@ -217,16 +217,25 @@ export class ServiceEndpointRepository {
   }
 
   /** Résumé par catégorie pour /api/intent/categories : total + nombre
-   *  d'endpoints actifs (≥3 probes ET uptime ≥ 50%). L'écart entre les deux
-   *  signale aux agents quelles catégories sont saines vs. fossiles. */
+   *  d'endpoints actifs (≥3 probes ET uptime ≥ 50% ET probé dans les 7 derniers
+   *  jours). Sans le gate de fraîcheur, des fossiles avec un vieil historique
+   *  vert remontaient comme actifs ; on aligne le critère sur la fenêtre 7j
+   *  utilisée par le posterior bayésien. `last_checked_at` est stocké en
+   *  epoch seconds (BIGINT), donc on compare à un cutoff calculé côté TS.
+   *  L'écart total/active signale aux agents quelles catégories sont saines
+   *  vs. fossiles. */
   async findCategoriesWithActive(): Promise<Array<{ category: string; endpoint_count: number; active_count: number }>> {
+    const freshCutoff = Math.floor(Date.now() / 1000) - 7 * 86400;
     const { rows } = await this.db.query<{ category: string; endpoint_count: string; active_count: string }>(
       `
       SELECT
         category,
         COUNT(*)::text AS endpoint_count,
         SUM(CASE
-          WHEN check_count >= 3 AND (CAST(success_count AS DOUBLE PRECISION) / check_count) >= 0.5
+          WHEN check_count >= 3
+            AND (CAST(success_count AS DOUBLE PRECISION) / check_count) >= 0.5
+            AND last_checked_at IS NOT NULL
+            AND last_checked_at > $1
           THEN 1 ELSE 0
         END)::text AS active_count
       FROM service_endpoints
@@ -236,6 +245,7 @@ export class ServiceEndpointRepository {
       GROUP BY category
       ORDER BY endpoint_count DESC
       `,
+      [freshCutoff],
     );
     return rows.map((r) => ({
       category: r.category,

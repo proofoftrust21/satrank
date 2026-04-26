@@ -107,13 +107,13 @@
     </div>
   </section>
 
-  <!-- 2. FULFILL() ONE-LINER -->
+  <!-- 2. GET STARTED IN 30 SECONDS -->
   <section class="section section-demo">
     <div class="container">
       <div class="section-head">
-        <div class="section-kicker">fulfill()</div>
-        <h2 class="section-title">One call. Intent in, paid response out.</h2>
-        <p class="section-desc">The SDK resolves your intent against the live registry, picks the top-ranked endpoint inside your budget, handles the L402 handshake, pays the invoice with your wallet, and returns the service response. Fallbacks on failure. One line.</p>
+        <div class="section-kicker">Get started in 30 seconds</div>
+        <h2 class="section-title">Install. One call. Paid response.</h2>
+        <p class="section-desc">The SDK resolves your intent against the live registry, picks the top-ranked endpoint inside your budget, handles the L402 handshake, pays the invoice with your wallet, and returns the service response. Free fallback to the next candidate on failure.</p>
       </div>
 
       <div class="demo-split">
@@ -123,18 +123,28 @@
             <span class="code-file">agent.ts</span>
             <button class="code-copy" id="copy-sdk-ts" title="Copy">Copy</button>
           </div>
-<pre id="sdk-ts">import { SatRank } from '@satrank/sdk';
+<pre id="sdk-ts">// 1. npm install @satrank/sdk
+import { SatRank } from '@satrank/sdk';
+import { LndWallet } from '@satrank/sdk/wallet';
 
-const sr = new SatRank({ wallet: myLnWallet });
+const sr = new SatRank({
+  wallet: new LndWallet({
+    restEndpoint: 'https://127.0.0.1:8080',
+    macaroonHex: process.env.LND_MACAROON_HEX!,
+  }),
+});
 
+// 2. One call: discover, pay, fetch.
 const result = await sr.fulfill({
-  category: 'energy/intelligence',
+  intent: { category: 'data' },
   budget_sats: 50,
 });
 
-console.log(result.response);     // the paid API response
-console.log(result.endpoint_url); // which endpoint served it
-console.log(result.paid_sats);    // what it cost</pre>
+if (result.success) {
+  console.log(result.response_body);       // paid API payload
+  console.log(result.endpoint_used!.url);  // which endpoint served it
+  console.log(result.cost_sats);           // total sats spent (invoice + fees)
+}</pre>
         </div>
 
         <div class="code-card">
@@ -143,23 +153,33 @@ console.log(result.paid_sats);    // what it cost</pre>
             <span class="code-file">agent.py</span>
             <button class="code-copy" id="copy-sdk-py" title="Copy">Copy</button>
           </div>
-<pre id="sdk-py"># pip install satrank (coming soon)
+<pre id="sdk-py"># 1. pip install satrank
+import os
 from satrank import SatRank
+from satrank.wallet import LndWallet
 
-sr = SatRank(wallet=my_ln_wallet)
+sr = SatRank(
+    wallet=LndWallet(
+        rest_url="https://127.0.0.1:8080",
+        macaroon_hex=os.environ["LND_MACAROON_HEX"],
+        verify="/path/to/tls.cert",
+    ),
+)
 
-result = sr.fulfill(
-    category="energy/intelligence",
+# 2. One call: discover, pay, fetch.
+result = await sr.fulfill(
+    intent={"category": "data"},
     budget_sats=50,
 )
 
-print(result.response)      # the paid API response
-print(result.endpoint_url)  # which endpoint served it
-print(result.paid_sats)     # what it cost</pre>
+if result["success"]:
+    print(result["response_body"])         # paid API payload
+    print(result["endpoint_used"]["url"])  # which endpoint served it
+    print(result["cost_sats"])             # total sats spent (invoice + fees)</pre>
         </div>
       </div>
 
-      <p class="sdk-note">SDK published as <code>@satrank/sdk</code> on npm (TypeScript first-class, works with any LN wallet that can pay a BOLT11 invoice). Python SDK is a thin wrapper over the same REST API. See <a href="/api/docs">/api/docs</a> if you prefer raw HTTP.</p>
+      <p class="sdk-note">TypeScript SDK on <a href="https://www.npmjs.com/package/@satrank/sdk" rel="noopener noreferrer">npm</a> (zero deps, works with LND, NWC, LNURL). Python SDK on <a href="https://pypi.org/project/satrank/" rel="noopener noreferrer">PyPI</a> (single dep: httpx). Full reference at <a href="/docs">/docs</a>; raw HTTP/OpenAPI at <a href="/api/docs">/api/docs</a>.</p>
     </div>
   </section>
 

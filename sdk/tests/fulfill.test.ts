@@ -1103,3 +1103,99 @@ describe('SatRank.fulfill — failure surfaces', () => {
     expect(res.cost_sats).toBe(2);
   });
 });
+
+describe('SatRank.fulfill — selection_explanation (1.0.3)', () => {
+  it('on success, attaches chosen + alternatives with rejection reasons', async () => {
+    const cheapUrl = 'https://svc.test/cheap';      // rank 1, registry price > budget → abort_budget
+    const winnerUrl = 'https://svc.test/winner';    // rank 2, succeeds
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([
+                { endpoint_url: cheapUrl, price_sats: 9999 },
+                { endpoint_url: winnerUrl, price_sats: null, service_name: 'win' },
+              ]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === winnerUrl,
+        response: (_u, init) => {
+          const h = (init.headers ?? {}) as Record<string, string>;
+          if (!h.Authorization) {
+            return new Response('', {
+              status: 402,
+              headers: { 'WWW-Authenticate': 'L402 token="t", invoice="lnbc100n1ok"' },
+            });
+          }
+          return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+    });
+    expect(res.success).toBe(true);
+    expect(res.selection_explanation).toBeDefined();
+    const sel = res.selection_explanation!;
+    expect(sel.chosen_endpoint).toBe(winnerUrl);
+    expect(sel.chosen_score).toBe(0.9);
+    expect(sel.candidates_evaluated).toBe(2);
+    expect(sel.alternatives_considered).toHaveLength(1);
+    expect(sel.alternatives_considered[0].endpoint).toBe(cheapUrl);
+    expect(sel.alternatives_considered[0].rejected_reason).toContain('budget');
+    expect(sel.selection_strategy).toContain('p_success');
+  });
+
+  it('on total failure, chosen_* are null and all attempts appear as alternatives', async () => {
+    const downUrl = 'https://svc.test/down';
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: downUrl }]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u === downUrl,
+        response: () =>
+          new Response('boom', { status: 500 }),
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+    });
+    expect(res.success).toBe(false);
+    const sel = res.selection_explanation!;
+    expect(sel).toBeDefined();
+    expect(sel.chosen_endpoint).toBeNull();
+    expect(sel.chosen_reason).toBeNull();
+    expect(sel.chosen_score).toBeNull();
+    expect(sel.alternatives_considered).toHaveLength(1);
+    expect(sel.alternatives_considered[0].endpoint).toBe(downUrl);
+    expect(sel.candidates_evaluated).toBe(1);
+  });
+});

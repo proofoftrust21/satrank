@@ -188,6 +188,30 @@ class EndpointUsed(TypedDict):
     operator_pubkey: str
 
 
+class SelectionAlternative(TypedDict):
+    endpoint: str
+    score: float
+    rejected_reason: str
+
+
+class SelectionExplanation(TypedDict, total=False):
+    """Human-readable trace of fulfill()'s candidate selection (1.0.3+).
+
+    `chosen_*` fields are None when no candidate produced a paid_success;
+    `alternatives_considered` then enumerates every attempt with its rejection
+    reason. `selection_strategy` is a constant string documenting the SDK's
+    policy so two integrators reading the same payload reach the same
+    conclusion about how endpoints were ranked.
+    """
+
+    chosen_endpoint: str | None
+    chosen_reason: str | None
+    chosen_score: float | None
+    alternatives_considered: list[SelectionAlternative]
+    candidates_evaluated: int
+    selection_strategy: str
+
+
 class FulfillResult(TypedDict, total=False):
     success: bool
     response_body: Any
@@ -197,6 +221,7 @@ class FulfillResult(TypedDict, total=False):
     preimage: str
     endpoint_used: EndpointUsed
     candidates_tried: list[CandidateAttempt]
+    selection_explanation: SelectionExplanation
     report_submitted: bool
     error: FulfillErrorShape
 
