@@ -74,6 +74,10 @@ export class SatRank {
     max_latency_ms?: number;
     caller?: string;
     limit?: number;
+    /** Mix A+D — paid path (2 sats via L402). The server runs a synchronous
+     *  HTTP probe on the top candidates before returning so `health.last_probe_age_sec`
+     *  is < 60s and `advisory.freshness_status === 'fresh'`. Default: false. */
+    fresh?: boolean;
   }): Promise<IntentResponse> {
     const caller = input.caller ?? this.options.caller;
     return this.api.postIntent({ ...input, caller });

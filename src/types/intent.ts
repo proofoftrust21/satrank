@@ -29,6 +29,20 @@ export interface ResolvedIntent {
   budget_sats: number | null;
   max_latency_ms: number | null;
   resolved_at: number;
+  /** Mix A+D — true when ?fresh=true was honoured (paid path, top-N
+   *  synchronously probed). false on free directory reads. */
+  fresh: boolean;
+}
+
+/** Mix A+D — bucket exposing how stale the probe behind a candidate is.
+ *  Replaces "trust me, it's recent" with an explicit answer agents can act on. */
+export type FreshnessStatus = 'fresh' | 'recent' | 'stale' | 'very_stale';
+
+/** Mix A+D — advertised paid upgrade path, attached to free responses only. */
+export interface IntentUpgradePath {
+  flag: 'fresh=true';
+  cost_sats: number;
+  message: string;
 }
 
 export interface IntentHealthBlock {
@@ -47,6 +61,9 @@ export interface IntentAdvisoryBlock {
   risk_score: number;
   advisories: Advisory[];
   recommendation: Recommendation;
+  /** Mix A+D — explicit staleness bucket derived from `health.last_probe_age_sec`.
+   *  Lets agents short-circuit on `very_stale` without reading numeric ages. */
+  freshness_status: FreshnessStatus;
 }
 
 export interface IntentCandidate {
@@ -82,6 +99,10 @@ export interface IntentResponseMeta {
   strictness: IntentStrictness;
   /** Warnings globaux — ex. ['FALLBACK_RELAXED', 'NO_CANDIDATES']. */
   warnings: string[];
+  /** Mix A+D — only present on free responses (fresh !== true). Tells the
+   *  agent how to upgrade to a synchronously-probed result. Omitted on paid
+   *  fresh requests because the upgrade has already been applied. */
+  upgrade_path?: IntentUpgradePath;
 }
 
 export interface IntentResponse {
