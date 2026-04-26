@@ -419,8 +419,9 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
     <div class="container">
       <div class="section-head">
         <div class="section-kicker">Pricing</div>
-        <h2 class="section-title">Pay per call, or deposit for a burnt-in discount.</h2>
-        <p class="section-desc">Every paid request is gated by a Lightning invoice at the Express L402 middleware. The base rate is 1 sat per request with no setup. Agents that prefer to pre-buy a quota can deposit into one of five public tiers; the deposit tier determines the rate, and that rate is burnt into the macaroon at deposit time. No account, no API key, no monthly billing.</p>
+        <h2 class="section-title">Free directory. Paid freshness, paid batches.</h2>
+        <p class="section-desc">Discovery is free. <code>POST /api/intent</code>, <code>GET /api/agents/top</code>, and the per-agent reads (<code>/api/agent/:hash</code>, <code>/verdict</code>, <code>/history</code>, <code>/attestations</code>) are rate-limited to 10/min/IP and require no payment. Free intent responses ship with an explicit <code>advisory.freshness_status</code> per candidate (<code>fresh</code> / <code>recent</code> / <code>stale</code> / <code>very_stale</code>) so your agent can act on staleness without trusting an opaque score.</p>
+        <p class="section-desc">Pay only when you need a guarantee or amortise. <code>POST /api/intent?fresh=true</code> costs 2 sats and forces a synchronous HTTP probe on the top candidates so <code>last_probe_age_sec</code> is &lt; 60 s on every returned row. Batch verdicts, full profiles, and end-to-end L402 probes stay paid because they amortise round-trips or use SatRank's own LND. Per-call invoices are 1 sat by default; deposit one of five public tiers to burn a discounted rate into your macaroon.</p>
       </div>
 
       <div class="pricing-table-wrap">
@@ -460,8 +461,14 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <li>
           <span class="method method-post">POST</span>
           <span class="ep-path">/api/intent</span>
-          <span class="ep-desc">Describe a need, get ranked L402 candidates with Bayesian posterior</span>
+          <span class="ep-desc">Describe a need, get ranked L402 candidates with Bayesian posterior and per-candidate freshness_status</span>
           <span class="ep-cost ep-free">free · 10/min</span>
+        </li>
+        <li>
+          <span class="method method-post">POST</span>
+          <span class="ep-path">/api/intent?fresh=true</span>
+          <span class="ep-desc">Same shape as /api/intent. Server runs a synchronous HTTP probe on the top candidates: last_probe_age_sec &lt; 60 s, guaranteed</span>
+          <span class="ep-cost">2 sats</span>
         </li>
         <li>
           <span class="method method-get">GET</span>
@@ -484,8 +491,14 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <li>
           <span class="method method-get">GET</span>
           <span class="ep-path">/api/agent/:hash</span>
-          <span class="ep-desc">Full profile: score, 5-component decomposition, reports, survival</span>
-          <span class="ep-cost">1 req</span>
+          <span class="ep-desc">Score, advisory, and metadata for one agent. Free directory read</span>
+          <span class="ep-cost ep-free">free · 10/min</span>
+        </li>
+        <li>
+          <span class="method method-get">GET</span>
+          <span class="ep-path">/api/profile/:id</span>
+          <span class="ep-desc">Full profile: 5-component decomposition, reports, survival, evidence</span>
+          <span class="ep-cost">1 sat</span>
         </li>
         <li>
           <span class="method method-post">POST</span>
