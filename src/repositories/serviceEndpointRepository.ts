@@ -27,7 +27,26 @@ export interface ServiceEndpoint {
   category: string | null;
   provider: string | null;
   source: ServiceSource;
+  /** Axe 1 — epoch seconds, last time this endpoint was surfaced via
+   *  /api/intent or /api/decide. NULL = never queried.
+   *  Drives hot/warm/cold tiering in serviceHealthCrawler. */
+  last_intent_query_at: number | null;
 }
+
+/** Axe 1 — probe tier classification.
+ *  hot  : queried < 2h ago — needs sub-hourly freshness for live agents.
+ *  warm : queried < 24h ago — daily-active services, 6h freshness fits.
+ *  cold : queried >= 24h ago or never — long-tail/catalog scan, daily.
+ */
+export type ProbeTier = 'hot' | 'warm' | 'cold';
+
+const TIER_BOUNDARIES = {
+  HOT_INTENT_MAX_AGE_SEC: 2 * 3600,
+  WARM_INTENT_MAX_AGE_SEC: 24 * 3600,
+  HOT_PROBE_MAX_AGE_SEC: 1 * 3600,
+  WARM_PROBE_MAX_AGE_SEC: 6 * 3600,
+  COLD_PROBE_MAX_AGE_SEC: 24 * 3600,
+} as const;
 
 export interface ServiceMetadata {
   name: string | null;
@@ -136,6 +155,70 @@ export class ServiceEndpointRepository {
       [minCheckCount, cutoff, limit],
     );
     return rows;
+  }
+
+  /** Axe 1 — endpoints due for probing within a given tier.
+   *  Filters by recent intent activity AND staleness of the last HTTP probe.
+   *  Bootstrap-friendly: requires ≥1 historical check (not 3) so newly
+   *  registered endpoints can ramp into the rotation.
+   *
+   *  Tier definitions (tied to TIER_BOUNDARIES above):
+   *    hot  : last_intent_query_at within 2h, last_checked_at older than 1h
+   *    warm : last_intent_query_at in [2h, 24h], probed older than 6h
+   *    cold : last_intent_query_at older than 24h or never, probed older than 24h
+   */
+  async findStaleByTier(tier: ProbeTier, limit: number): Promise<ServiceEndpoint[]> {
+    const now = Math.floor(Date.now() / 1000);
+    let where: string;
+    const params: number[] = [];
+
+    if (tier === 'hot') {
+      const intentCutoff = now - TIER_BOUNDARIES.HOT_INTENT_MAX_AGE_SEC;
+      const probeCutoff = now - TIER_BOUNDARIES.HOT_PROBE_MAX_AGE_SEC;
+      where = `last_intent_query_at IS NOT NULL
+               AND last_intent_query_at >= $1
+               AND (last_checked_at IS NULL OR last_checked_at < $2)`;
+      params.push(intentCutoff, probeCutoff);
+    } else if (tier === 'warm') {
+      const intentMaxCutoff = now - TIER_BOUNDARIES.HOT_INTENT_MAX_AGE_SEC;
+      const intentMinCutoff = now - TIER_BOUNDARIES.WARM_INTENT_MAX_AGE_SEC;
+      const probeCutoff = now - TIER_BOUNDARIES.WARM_PROBE_MAX_AGE_SEC;
+      where = `last_intent_query_at IS NOT NULL
+               AND last_intent_query_at >= $1
+               AND last_intent_query_at < $2
+               AND (last_checked_at IS NULL OR last_checked_at < $3)`;
+      params.push(intentMinCutoff, intentMaxCutoff, probeCutoff);
+    } else {
+      const intentCutoff = now - TIER_BOUNDARIES.WARM_INTENT_MAX_AGE_SEC;
+      const probeCutoff = now - TIER_BOUNDARIES.COLD_PROBE_MAX_AGE_SEC;
+      where = `(last_intent_query_at IS NULL OR last_intent_query_at < $1)
+               AND (last_checked_at IS NULL OR last_checked_at < $2)`;
+      params.push(intentCutoff, probeCutoff);
+    }
+
+    params.push(limit);
+    const { rows } = await this.db.query<ServiceEndpoint>(
+      `
+      SELECT * FROM service_endpoints
+      WHERE check_count >= 1 AND ${where}
+      ORDER BY last_checked_at ASC NULLS FIRST
+      LIMIT $${params.length}
+      `,
+      params,
+    );
+    return rows;
+  }
+
+  /** Axe 1 — record that one or more endpoints were just surfaced to a caller.
+   *  Called from /api/intent (batch) and /api/decide (single URL).
+   *  No-op when `urls` is empty. */
+  async markIntentQuery(urls: string[]): Promise<void> {
+    if (urls.length === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    await this.db.query(
+      'UPDATE service_endpoints SET last_intent_query_at = $1 WHERE url = ANY($2::text[])',
+      [now, urls],
+    );
   }
 
   async updatePrice(url: string, priceSats: number): Promise<void> {

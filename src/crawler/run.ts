@@ -798,7 +798,14 @@ async function main(): Promise<void> {
       logger.warn('Probe cron timer NOT started — LND not configured');
     }
 
-    // Service health crawler — periodic HTTP checks on known endpoints (every 5 min)
+    // Service health crawler — Axe 1 tiered scheduling.
+    // Three independent timers, each scoped to one tier (hot/warm/cold).
+    // Cadence is tuned to match the freshness window each tier guarantees:
+    //   hot  → every 1h (last_intent_query < 2h, probe age < 1h)
+    //   warm → every 6h (last_intent_query < 24h, probe age < 6h)
+    //   cold → every 24h (last_intent_query >= 24h or never, probe age < 24h)
+    // A `running` flag per tier blocks overlapping cycles when a previous
+    // sweep takes longer than the interval (cold tier scans the largest pool).
     const { ServiceHealthCrawler } = await import('./serviceHealthCrawler');
     const { ServiceEndpointRepository } = await import('../repositories/serviceEndpointRepository');
     const serviceEndpointRepo = new ServiceEndpointRepository(pool);
@@ -809,15 +816,32 @@ async function main(): Promise<void> {
       dualWriteLogger,
       agentRepo,
     );
-    const timerServiceHealth = setInterval(async () => {
-      try {
-        await serviceHealthCrawler.run();
-      } catch (err: unknown) {
-        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Service health crawl error');
-      }
-    }, 300_000); // 5 minutes
-    timerServiceHealth.unref?.();
-    logger.info({ intervalMs: 300_000 }, 'Service health crawler timer started');
+
+    const tierIntervals = {
+      hot: 60 * 60 * 1000,
+      warm: 6 * 60 * 60 * 1000,
+      cold: 24 * 60 * 60 * 1000,
+    } as const;
+
+    for (const tier of ['hot', 'warm', 'cold'] as const) {
+      let running = false;
+      const timer = setInterval(async () => {
+        if (running) return;
+        running = true;
+        try {
+          await serviceHealthCrawler.runTier(tier);
+        } catch (err: unknown) {
+          logger.error(
+            { tier, error: err instanceof Error ? err.message : String(err) },
+            'Service health tier crawl error',
+          );
+        } finally {
+          running = false;
+        }
+      }, tierIntervals[tier]);
+      timer.unref?.();
+      logger.info({ tier, intervalMs: tierIntervals[tier] }, 'Service health tier timer started');
+    }
 
     // Registry crawler — discovers L402 endpoints from 402index.io (every 24h)
     const { RegistryCrawler } = await import('./registryCrawler');

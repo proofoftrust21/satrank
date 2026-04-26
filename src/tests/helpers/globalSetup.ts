@@ -3,10 +3,45 @@
 // Runs once before the entire test run (not per file). Ensures that a
 // template database exists with the consolidated schema + deposit_tiers seed
 // applied, so every test file's `setupTestPool()` just has to clone it.
+//
+// Axe 1 — also applies incremental migrations (v42+) found in
+// src/database/migrations so the template stays at HEAD without forcing
+// a manual drop on each schema bump.
 import { Pool } from 'pg';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TEMPLATE_DB } from './testDatabase';
+
+const MIGRATIONS_DIR = join(__dirname, '..', '..', 'database', 'migrations');
+
+async function applyPendingIncrementals(template: Pool): Promise<void> {
+  if (!existsSync(MIGRATIONS_DIR)) return;
+  const { rows: vRows } = await template.query<{ v: number | null }>(
+    'SELECT MAX(version)::int AS v FROM schema_version',
+  );
+  const current = vRows[0]?.v ?? 0;
+
+  const pending = readdirSync(MIGRATIONS_DIR)
+    .filter(f => /^v\d+_.+\.sql$/.test(f))
+    .map(file => {
+      const match = file.match(/^v(\d+)_/);
+      return { version: match ? Number(match[1]) : NaN, file };
+    })
+    .filter(m => Number.isFinite(m.version) && m.version > current)
+    .sort((a, b) => a.version - b.version);
+
+  for (const m of pending) {
+    const sql = readFileSync(join(MIGRATIONS_DIR, m.file), 'utf8');
+    await template.query('BEGIN');
+    try {
+      await template.query(sql);
+      await template.query('COMMIT');
+    } catch (err) {
+      await template.query('ROLLBACK');
+      throw err;
+    }
+  }
+}
 
 function adminUrl(): string {
   const base = process.env.DATABASE_URL ?? 'postgresql://satrank:satrank@localhost:5432/satrank';
@@ -67,6 +102,7 @@ export async function setup(): Promise<void> {
         throw err;
       }
     }
+    await applyPendingIncrementals(template);
   } finally {
     await template.end();
   }

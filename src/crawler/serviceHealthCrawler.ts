@@ -1,19 +1,38 @@
-// Periodic HTTP health checker for known service endpoints
-// Probes URLs in service_endpoints that have been seen >= 3 times
-// and haven't been checked in the last 30 minutes.
+// Periodic HTTP health checker for known service endpoints.
+//
+// Axe 1 — runs in 3 independent tiers driven by `last_intent_query_at`:
+//   hot  : queried < 2h ago,  re-probed if last check older than 1h
+//   warm : queried < 24h ago, re-probed if last check older than 6h
+//   cold : queried >= 24h or never, re-probed if last check older than 24h
+//
+// `run()` keeps the legacy "all stale" sweep for tests and ad-hoc invocations;
+// production scheduling calls `runTier(tier)` from three separate timers.
 import { logger } from '../logger';
 import { sha256 } from '../utils/crypto';
 import { fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 import { canonicalizeUrl, endpointHash } from '../utils/urlCanonical';
 import { windowBucket } from '../utils/dualWriteLogger';
 import type { AgentRepository } from '../repositories/agentRepository';
-import type { ServiceEndpoint, ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { ProbeTier, ServiceEndpoint, ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
 import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
 import type { Transaction } from '../types';
 
 const CHECK_RATE_MS = 200; // 5 checks/sec
 const FETCH_TIMEOUT_MS = 3000;
+
+const TIER_LIMITS: Record<ProbeTier, number> = {
+  hot: 200,
+  warm: 200,
+  cold: 500,
+};
+
+export interface ServiceHealthRunResult {
+  checked: number;
+  healthy: number;
+  down: number;
+  tier?: ProbeTier;
+}
 
 export class ServiceHealthCrawler {
   constructor(
@@ -24,12 +43,22 @@ export class ServiceHealthCrawler {
     private agentRepo?: AgentRepository,
   ) {}
 
-  async run(): Promise<{ checked: number; healthy: number; down: number }> {
-    const result = { checked: 0, healthy: 0, down: 0 };
-    const stale = await this.repo.findStale(3, 1800, 500); // >= 3 checks, > 30 min since last
+  /** Production entrypoint — probe a single tier. */
+  async runTier(tier: ProbeTier): Promise<ServiceHealthRunResult> {
+    const stale = await this.repo.findStaleByTier(tier, TIER_LIMITS[tier]);
+    return this.probeBatch(stale, tier);
+  }
 
+  /** Legacy single-sweep — kept for tests and one-off scripts. */
+  async run(): Promise<ServiceHealthRunResult> {
+    const stale = await this.repo.findStale(3, 1800, 500);
+    return this.probeBatch(stale);
+  }
+
+  private async probeBatch(stale: ServiceEndpoint[], tier?: ProbeTier): Promise<ServiceHealthRunResult> {
+    const result: ServiceHealthRunResult = { checked: 0, healthy: 0, down: 0, tier };
     if (stale.length === 0) return result;
-    logger.info({ candidates: stale.length }, 'Service health crawl starting');
+    logger.info({ tier, candidates: stale.length }, 'Service health crawl starting');
 
     for (const endpoint of stale) {
       let status = 0;
@@ -70,7 +99,7 @@ export class ServiceHealthCrawler {
       }
     }
 
-    logger.info(result, 'Service health crawl complete');
+    logger.info({ ...result }, 'Service health crawl complete');
     return result;
   }
 

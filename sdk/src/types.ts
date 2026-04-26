@@ -38,7 +38,7 @@ export interface BayesianBlock {
 }
 
 export interface AdvisoryBlock {
-  advisory_level: 'green' | 'yellow' | 'orange' | 'red';
+  advisory_level: 'green' | 'yellow' | 'orange' | 'red' | 'insufficient_freshness';
   risk_score: number;
   recommendation: 'proceed' | 'proceed_with_caution' | 'consider_alternative' | 'avoid';
   advisories: Array<{

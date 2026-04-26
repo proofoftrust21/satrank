@@ -1,8 +1,8 @@
 // Phase 4 — advisoryService is a pure function. Test the 4 factors, the
 // mapping risk_score → advisory_level, and the advisories payload shape.
 import { describe, it, expect } from 'vitest';
-import { computeAdvisoryReport } from '../services/advisoryService';
-import type { VerdictFlag } from '../types';
+import { applyFreshnessGate, computeAdvisoryReport } from '../services/advisoryService';
+import type { AdvisoryReport, VerdictFlag } from '../types';
 
 const neutralBayes = {
   p_success: 0.8,
@@ -245,5 +245,111 @@ describe('advisoryService — advisories payload', () => {
       expect(adv.signal_strength).toBeGreaterThanOrEqual(0);
       expect(adv.signal_strength).toBeLessThanOrEqual(1);
     }
+  });
+});
+
+// Axe 1 — freshness gate tests. The gate fires only when:
+//   - the caller supplies lastProbeAgeSec (undefined skips the gate)
+//   - the would-be advisory_level is 'green'
+//   - lastProbeAgeSec is null OR >= 3600 (1h, hot-tier cadence)
+const greenInputs = {
+  bayesian: { p_success: 0.85, ci95_low: 0.80, ci95_high: 0.90, n_obs: 50 },
+  flags: [] as VerdictFlag[],
+  reachability: 1,
+  delta7d: 0,
+};
+
+describe('advisoryService — freshness gate', () => {
+  it('keeps green when lastProbeAgeSec is undefined (gate disabled)', () => {
+    const r = computeAdvisoryReport(greenInputs);
+    expect(r.advisory_level).toBe('green');
+    expect(r.advisories.find(a => a.code === 'INSUFFICIENT_FRESHNESS')).toBeUndefined();
+  });
+
+  it('keeps green when probe is fresh (< 1h old)', () => {
+    const r = computeAdvisoryReport({ ...greenInputs, lastProbeAgeSec: 1200 });
+    expect(r.advisory_level).toBe('green');
+    expect(r.advisories.find(a => a.code === 'INSUFFICIENT_FRESHNESS')).toBeUndefined();
+  });
+
+  it('downgrades to insufficient_freshness when probe is exactly 1h old', () => {
+    const r = computeAdvisoryReport({ ...greenInputs, lastProbeAgeSec: 3600 });
+    expect(r.advisory_level).toBe('insufficient_freshness');
+    const fresh = r.advisories.find(a => a.code === 'INSUFFICIENT_FRESHNESS');
+    expect(fresh).toBeDefined();
+    expect(fresh?.level).toBe('warning');
+  });
+
+  it('downgrades to insufficient_freshness when no probe on record (null)', () => {
+    const r = computeAdvisoryReport({ ...greenInputs, lastProbeAgeSec: null });
+    expect(r.advisory_level).toBe('insufficient_freshness');
+    const fresh = r.advisories.find(a => a.code === 'INSUFFICIENT_FRESHNESS');
+    expect(fresh?.msg).toContain('No HTTP probe on record');
+  });
+
+  it('does NOT touch yellow/orange/red when probe is stale', () => {
+    // Build a yellow report (uncertainty) and confirm gate skips it.
+    const yellowSeed = computeAdvisoryReport({
+      bayesian: { p_success: 0.5, ci95_low: 0.25, ci95_high: 0.75, n_obs: 3 },
+      flags: [],
+      reachability: 0.7,
+      delta7d: 0,
+      lastProbeAgeSec: 86400,
+    });
+    expect(yellowSeed.advisory_level).not.toBe('green');
+    expect(yellowSeed.advisory_level).not.toBe('insufficient_freshness');
+  });
+
+  it('signal_strength scales with age, capped at 1.0 over 24h', () => {
+    const oneHour = computeAdvisoryReport({ ...greenInputs, lastProbeAgeSec: 3600 });
+    const fullDay = computeAdvisoryReport({ ...greenInputs, lastProbeAgeSec: 86400 });
+    const twoDays = computeAdvisoryReport({ ...greenInputs, lastProbeAgeSec: 172800 });
+    const oneStrength = oneHour.advisories.find(a => a.code === 'INSUFFICIENT_FRESHNESS')!.signal_strength;
+    const fullStrength = fullDay.advisories.find(a => a.code === 'INSUFFICIENT_FRESHNESS')!.signal_strength;
+    const twoStrength = twoDays.advisories.find(a => a.code === 'INSUFFICIENT_FRESHNESS')!.signal_strength;
+    expect(oneStrength).toBeLessThan(fullStrength);
+    expect(fullStrength).toBe(1);
+    expect(twoStrength).toBe(1);
+  });
+});
+
+describe('advisoryService — applyFreshnessGate helper', () => {
+  const greenReport: AdvisoryReport = {
+    advisory_level: 'green',
+    risk_score: 0.05,
+    advisories: [],
+  };
+
+  it('returns input unchanged when probeAge is undefined', () => {
+    const out = applyFreshnessGate(greenReport, undefined);
+    expect(out).toEqual(greenReport);
+  });
+
+  it('returns input unchanged when probeAge is fresh', () => {
+    const out = applyFreshnessGate(greenReport, 1200);
+    expect(out.advisory_level).toBe('green');
+  });
+
+  it('downgrades green to insufficient_freshness when stale', () => {
+    const out = applyFreshnessGate(greenReport, 7200);
+    expect(out.advisory_level).toBe('insufficient_freshness');
+    expect(out.advisories[0].code).toBe('INSUFFICIENT_FRESHNESS');
+  });
+
+  it('does not mutate the input report', () => {
+    const before = JSON.stringify(greenReport);
+    applyFreshnessGate(greenReport, 7200);
+    expect(JSON.stringify(greenReport)).toBe(before);
+  });
+
+  it('leaves non-green reports untouched even when stale', () => {
+    const orange: AdvisoryReport = {
+      advisory_level: 'orange',
+      risk_score: 0.45,
+      advisories: [],
+    };
+    const out = applyFreshnessGate(orange, 99999);
+    expect(out.advisory_level).toBe('orange');
+    expect(out.advisories).toHaveLength(0);
   });
 });
