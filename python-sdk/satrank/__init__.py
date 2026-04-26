@@ -1,4 +1,4 @@
-"""SatRank SDK — discover, score, and pay Lightning-native HTTP services.
+"""SatRank SDK: discover, score, and pay Lightning-native HTTP services.
 
 Mirrors the TypeScript @satrank/sdk 1.0 API:
 
@@ -43,7 +43,7 @@ from satrank.types import (
     Wallet,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.0.2"
 
 __all__ = [
     "SatRank",

@@ -1,4 +1,4 @@
-# Quickstart — Python
+# Quickstart: Python
 
 The `satrank` Python SDK mirrors `@satrank/sdk` 1-for-1: same method names,
 same result shape, same budget guarantee. Fully async via `asyncio` + `httpx`.
@@ -29,7 +29,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`SatRank` is an async context manager — it owns its `httpx.AsyncClient` and
+`SatRank` is an async context manager; it owns its `httpx.AsyncClient` and
 closes it on `__aexit__`. Pass `http_client=your_client` if you want to manage
 the HTTP pool yourself.
 
@@ -43,7 +43,7 @@ the HTTP pool yourself.
     "response_body": Any | None,
     "response_code": int | None,
     "response_latency_ms": int | None,
-    "cost_sats": int,                # always ≤ budget_sats
+    "cost_sats": int,                # always <= budget_sats
     "preimage": str | None,          # hex
     "endpoint_used": {"url": str, "service_name": str | None, "operator_pubkey": str} | None,
     "candidates_tried": list[{
@@ -113,16 +113,16 @@ See [wallet-drivers.md](./wallet-drivers.md).
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
-| `api_base` | `str` | — | Required. Usually `https://satrank.dev`. |
+| `api_base` | `str` | n/a | Required. Usually `https://satrank.dev`. |
 | `wallet` | `Wallet` | `None` | Required for `fulfill()`. |
 | `caller` | `str \| None` | `None` | Overridable per-call via `fulfill(..., caller=...)`. |
-| `deposit_token` | `str \| None` | `None` | `"L402 deposit:<preimage>"` — required to auto-report. |
+| `deposit_token` | `str \| None` | `None` | `"L402 deposit:<preimage>"` (required to auto-report). |
 | `http_client` | `httpx.AsyncClient \| None` | Owned internally | Pass yours to share a pool / inject transport. |
 | `request_timeout_ms` | `int` | `10_000` | Per-call API timeout. |
 
 ## Typing
 
-The package ships `py.typed` — `mypy --strict` passes through the SDK. Import
+The package ships `py.typed`; `mypy --strict` passes through the SDK. Import
 the type aliases directly:
 
 ```python
