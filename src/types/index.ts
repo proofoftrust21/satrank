@@ -466,7 +466,11 @@ export interface VerdictResponse extends BayesianScoreBlock {
 // Phase 4 — graduated advisory overlay. `advisory_level` sits alongside
 // `verdict` (Bayesian 4-class label) and adds a continuous risk perspective
 // so agent consumers can nuance proceed/abort decisions.
-export type AdvisoryLevel = 'green' | 'yellow' | 'orange' | 'red';
+/** Axe 1 — `insufficient_freshness` is a 5th level *less safe* than green
+ *  but more diagnostic than yellow: the posterior would be green, but the
+ *  underlying HTTP probe is staler than the hot-tier cadence (1h). The
+ *  signal is "we genuinely don't know if it still works." */
+export type AdvisoryLevel = 'green' | 'yellow' | 'orange' | 'red' | 'insufficient_freshness';
 
 export type AdvisoryCode =
   | 'CRITICAL_FLAG'
@@ -480,7 +484,11 @@ export type AdvisoryCode =
   /** Phase 7 C12 — la ressource (node ou endpoint) est rattachée à un operator
    *  dont le status ≠ 'verified' (pending ou rejected). Signalé pour éviter
    *  l'auto-trust via un rattachement non-prouvé. */
-  | 'OPERATOR_UNVERIFIED';
+  | 'OPERATOR_UNVERIFIED'
+  /** Axe 1 — last HTTP probe is older than the hot-tier cadence (1h). The
+   *  posterior could be optimistic because we haven't re-verified the
+   *  endpoint recently. Drives the `insufficient_freshness` advisory level. */
+  | 'INSUFFICIENT_FRESHNESS';
 
 export interface Advisory {
   code: AdvisoryCode;

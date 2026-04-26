@@ -31,6 +31,7 @@ const FEE_BUDGET_RATIO = 0.01; // 1%
 // Phase 4 P4 recommendation calibrator — extrait dans src/utils/recommendation.ts
 // en Phase 5 C2 pour partage avec intentService. Fonction pure identique.
 import { deriveRecommendation } from '../utils/recommendation';
+import { applyFreshnessGate } from './advisoryService';
 
 // P_path — quality of the Lightning path from caller to target.
 // Continuous 0-1 signal derived from the pathfinding result. Captures HOW WELL
@@ -289,9 +290,25 @@ export class DecideService {
 
     const latencyMs = Date.now() - startMs;
 
+    // Axe 1 — freshness gate. Only fires when the caller passed serviceUrl
+    // (= this is an endpoint-level decide, not a pure agent verdict).
+    // Downgrades a green level to `insufficient_freshness` when the HTTP
+    // probe behind that endpoint is older than the hot-tier cadence.
+    const httpProbeAgeSec = serviceHealth?.lastCheckedAt != null
+      ? Math.max(0, Math.floor(Date.now() / 1000) - serviceHealth.lastCheckedAt)
+      : (serviceUrl ? null : undefined);
+    const gatedAdvisory = applyFreshnessGate(
+      {
+        advisory_level: verdictResult.advisory_level,
+        risk_score: verdictResult.risk_score,
+        advisories: verdictResult.advisories,
+      },
+      httpProbeAgeSec,
+    );
+
     const recommendation = deriveRecommendation({
       verdict: verdictResult.verdict,
-      advisoryLevel: verdictResult.advisory_level,
+      advisoryLevel: gatedAdvisory.advisory_level,
       hasCritical,
       serviceDown,
       ci95Low: verdictResult.ci95_low,
@@ -327,9 +344,9 @@ export class DecideService {
       lastProbeAgeMs,
       serviceHealth,
       latencyMs,
-      advisory_level: verdictResult.advisory_level,
-      risk_score: verdictResult.risk_score,
-      advisories: verdictResult.advisories,
+      advisory_level: gatedAdvisory.advisory_level,
+      risk_score: gatedAdvisory.risk_score,
+      advisories: gatedAdvisory.advisories,
       recommendation,
     };
   }

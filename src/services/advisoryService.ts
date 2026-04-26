@@ -35,6 +35,10 @@ const W_REACHABILITY = 0.25;
 const W_DECLINE = 0.20;
 const W_UNCERTAINTY = 0.15;
 
+/** Axe 1 — freshness gate. Aligned with the hot-tier probe cadence so a
+ *  green level is backed by a probe within the last hot-cycle window. */
+const FRESHNESS_THRESHOLD_SEC = 60 * 60;
+
 /** Palier thresholds — bumping these shifts the entire population across levels. */
 const LEVEL_THRESHOLDS = { yellow: 0.15, orange: 0.35, red: 0.60 } as const;
 
@@ -70,6 +74,11 @@ export interface AdvisoryInput {
    *  OPERATOR_UNVERIFIED quand présent ET status ≠ 'verified'.
    *  Missing/null → pas de rattachement operator, aucun advisory. */
   operatorLookup?: OperatorResourceLookup | null;
+  /** Axe 1 — age in seconds since the last successful HTTP probe.
+   *  Only callers that own the probe pipeline (/api/intent, /api/decide)
+   *  populate this; verdict/nostr callers leave it undefined and skip the
+   *  freshness gate. `null` is treated as "never probed" → stale. */
+  lastProbeAgeSec?: number | null;
 }
 
 /** Continuous critical-flags factor — 1.0 when *any* critical flag fires.
@@ -182,18 +191,81 @@ export function computeAdvisoryReport(input: AdvisoryInput): AdvisoryReport {
     + W_UNCERTAINTY  * uncertain;
 
   const riskScoreClamped = Math.max(0, Math.min(1, riskScore));
+  const baseLevel = riskScoreToLevel(riskScoreClamped);
+
+  const advisories = buildAdvisories(
+    flags,
+    input.reachability,
+    input.delta7d,
+    input.bayesian.ci95_low,
+    input.bayesian.ci95_high,
+    input.operatorLookup,
+  );
+
+  // Axe 1 — freshness gate. Only fires for callers that supplied the probe
+  // age (intent / decide). When the would-be level is `green` but the last
+  // probe is older than the hot-tier cadence, downgrade to
+  // `insufficient_freshness` and emit the advisory. Other levels keep their
+  // verdict — a yellow/orange/red endpoint is already flagged.
+  let advisoryLevel: AdvisoryLevel = baseLevel;
+  if (input.lastProbeAgeSec !== undefined) {
+    const stale = input.lastProbeAgeSec === null || input.lastProbeAgeSec >= FRESHNESS_THRESHOLD_SEC;
+    if (stale && baseLevel === 'green') {
+      advisoryLevel = 'insufficient_freshness';
+      const ageSec = input.lastProbeAgeSec ?? Number.POSITIVE_INFINITY;
+      const strength = Number.isFinite(ageSec)
+        ? Math.min(1, ageSec / (24 * 3600))
+        : 1;
+      advisories.push(
+        warning(
+          'INSUFFICIENT_FRESHNESS',
+          input.lastProbeAgeSec === null
+            ? 'No HTTP probe on record — verdict cannot be confirmed'
+            : `Last HTTP probe ${Math.round(ageSec / 60)} min ago — older than hot-tier cadence`,
+          strength,
+          { last_probe_age_sec: input.lastProbeAgeSec },
+        ),
+      );
+    }
+  }
 
   return {
-    advisory_level: riskScoreToLevel(riskScoreClamped),
+    advisory_level: advisoryLevel,
     risk_score: round3(riskScoreClamped),
-    advisories: buildAdvisories(
-      flags,
-      input.reachability,
-      input.delta7d,
-      input.bayesian.ci95_low,
-      input.bayesian.ci95_high,
-      input.operatorLookup,
-    ),
+    advisories,
+  };
+}
+
+/** Axe 1 — apply the same freshness gate to an already-computed report.
+ *  Used by call sites that don't own the full advisory pipeline (decide
+ *  reuses the verdict service's report rather than recomputing).
+ *  Returns a new report; never mutates input. */
+export function applyFreshnessGate(
+  report: AdvisoryReport,
+  lastProbeAgeSec: number | null | undefined,
+): AdvisoryReport {
+  if (lastProbeAgeSec === undefined) return report;
+  const stale = lastProbeAgeSec === null || lastProbeAgeSec >= FRESHNESS_THRESHOLD_SEC;
+  if (!stale || report.advisory_level !== 'green') return report;
+
+  const ageSec = lastProbeAgeSec ?? Number.POSITIVE_INFINITY;
+  const strength = Number.isFinite(ageSec)
+    ? Math.min(1, ageSec / (24 * 3600))
+    : 1;
+  return {
+    ...report,
+    advisory_level: 'insufficient_freshness',
+    advisories: [
+      ...report.advisories,
+      warning(
+        'INSUFFICIENT_FRESHNESS',
+        lastProbeAgeSec === null
+          ? 'No HTTP probe on record — verdict cannot be confirmed'
+          : `Last HTTP probe ${Math.round(ageSec / 60)} min ago — older than hot-tier cadence`,
+        strength,
+        { last_probe_age_sec: lastProbeAgeSec },
+      ),
+    ],
   };
 }
 

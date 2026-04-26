@@ -242,6 +242,7 @@ export class IntentService {
       reachability: c.reachability ?? undefined,
       delta7d: c.delta7d,
       operatorLookup: c.operatorLookup,
+      lastProbeAgeSec: c.lastProbeAgeSec,
     });
 
     const hasCritical = CRITICAL_FLAGS.some(f => c.flags.includes(f));
