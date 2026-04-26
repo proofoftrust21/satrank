@@ -341,6 +341,9 @@ export class DecideService {
       risk_profile: verdictResult.risk_profile,
       time_constant_days: verdictResult.time_constant_days,
       last_update: verdictResult.last_update,
+      // Vague 1 B: paid /decide callers see the raw block; they paid for the
+      // measurement and can interpret thin data themselves.
+      is_meaningful: verdictResult.is_meaningful ?? true,
       flags: verdictResult.flags,
       pathfinding,
       riskProfile: verdictResult.riskProfile,

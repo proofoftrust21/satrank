@@ -177,6 +177,11 @@ export class VerdictService {
       recent_activity: bayes.recent_activity,
       risk_profile: bayes.risk_profile,
       time_constant_days: bayes.time_constant_days,
+      // Vague 1 B: /verdict callers see the canonical block; they get the
+      // explicit verdict next to it. We default to true here because verdict
+      // already encodes thin-data (INSUFFICIENT) and the surface filters live
+      // in intentService.formatCandidate.
+      is_meaningful: true,
       last_update: bayes.last_update,
       reason,
       flags,
@@ -347,6 +352,9 @@ function buildMissingAgentResponse(callerPubkey: string | undefined): VerdictRes
     ci95_low: 0,
     ci95_high: 1,
     n_obs: 0,
+    // Missing-agent path has zero local evidence: posterior is the prior, not
+    // a measurement. Always not meaningful.
+    is_meaningful: false,
     sources: { probe: null, report: null, paid: null },
     convergence: { converged: false, sources_above_threshold: [], threshold: 0.8 },
     recent_activity: { last_24h: 0, last_7d: 0, last_30d: 0 },

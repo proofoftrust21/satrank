@@ -49,6 +49,10 @@ export class EndpointController {
         risk_profile: v.risk_profile,
         time_constant_days: v.time_constant_days,
         last_update: v.last_update,
+        // Vague 1 B: endpoint-detail callers are deep enough to see the raw
+        // posterior even on thin data, so we mark is_meaningful true here.
+        // Surface filters (intentService) use a stricter threshold.
+        is_meaningful: true,
       };
 
       const svc = await this.serviceEndpointRepo.findByUrlHash(urlHash);

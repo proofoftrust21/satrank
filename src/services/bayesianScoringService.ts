@@ -58,6 +58,42 @@ import {
   type BayesianSource,
 } from '../config/bayesianConfig';
 
+/** Vague 1 G.2 — translate a 402index-style upstream signal into a Beta prior.
+ *  We deliberately keep the effective pseudo-observation mass modest (n_obs
+ *  ~ 4..8) so a handful of local probes overrides the upstream verdict. The
+ *  health_status === 'down' branch overrides any score because an explicitly
+ *  flagged-down service should not start above the flat prior even if its
+ *  long-term reliability_score is high.
+ *
+ *  Returns null when no usable signal is present (no reliability_score,
+ *  uptime_30d, nor health_status). The cascade then falls through to the
+ *  flat prior. */
+function priorFromUpstreamSignals(
+  signals: { reliability_score?: number | null; uptime_30d?: number | null; health_status?: string | null },
+): { alpha: number; beta: number; source: 'upstream' } | null {
+  if (signals.health_status === 'down') {
+    return { alpha: DEFAULT_PRIOR_ALPHA + 0.5, beta: DEFAULT_PRIOR_BETA + 6.5, source: 'upstream' };
+  }
+  if (typeof signals.reliability_score === 'number') {
+    const score = signals.reliability_score;
+    if (score >= 95) return { alpha: 8, beta: 1.5, source: 'upstream' };
+    if (score >= 70) return { alpha: 6, beta: 3, source: 'upstream' };
+    if (score >= 50) return { alpha: 4, beta: 4, source: 'upstream' };
+    return { alpha: 2, beta: 6, source: 'upstream' };
+  }
+  if (typeof signals.uptime_30d === 'number') {
+    const u = Math.max(0, Math.min(1, signals.uptime_30d));
+    const successPseudo = u * 7;
+    const failPseudo = (1 - u) * 7;
+    return {
+      alpha: DEFAULT_PRIOR_ALPHA + successPseudo,
+      beta: DEFAULT_PRIOR_BETA + failPseudo,
+      source: 'upstream',
+    };
+  }
+  return null;
+}
+
 /** Somme les 3 sources d'un `readAllSourcesDecayed(id)` en un unique posterior :
  *  chaque source contribue `(α − α₀, β − β₀)` d'évidence excédentaire, et on
  *  rajoute une seule fois le prior flat. `nObsEffective` est la somme des
@@ -94,13 +130,24 @@ export interface PriorContext {
    *  dépend du catalogue `service_endpoints` qui n'est pas un domaine du
    *  moteur de scoring. */
   categorySiblingHashes?: string[] | null;
+  /** Vague 1 G.2 — upstream quality signals copied from the registry source
+   *  (currently 402index). Used as a non-flat prior when the local cascade
+   *  (operator/service/category) has too little evidence. Each level above
+   *  still wins when its evidence excess crosses PRIOR_MIN_EFFECTIVE_OBS. */
+  upstreamSignals?: UpstreamPriorSignals | null;
+}
+
+export interface UpstreamPriorSignals {
+  reliability_score?: number | null;
+  uptime_30d?: number | null;
+  health_status?: string | null;
 }
 
 export interface ResolvedPrior {
   alpha: number;
   beta: number;
   /** Nom de la couche d'où le prior a été hérité. Diagnostic/logs. */
-  source: 'operator' | 'service' | 'category' | 'flat';
+  source: 'operator' | 'service' | 'category' | 'upstream' | 'flat';
 }
 
 /** Tier de confiance du reporter pour un agent_report — pondère l'observation.
@@ -268,6 +315,19 @@ export class BayesianScoringService {
           beta: DEFAULT_PRIOR_BETA + excessBeta,
           source: 'category',
         };
+      }
+    }
+
+    // Niveau 3.5 (Vague 1 G.2) : upstream quality signal from the registry
+    // source (402index). Used unconditionally when supplied — it is not
+    // gated by PRIOR_MIN_EFFECTIVE_OBS because it represents a curated
+    // external assessment rather than a SatRank-observed history. The
+    // pseudo-observation count is intentionally modest (effective n_obs in
+    // [4, 8]) so a few real local probes can override the upstream view.
+    if (ctx.upstreamSignals) {
+      const upstreamPrior = priorFromUpstreamSignals(ctx.upstreamSignals);
+      if (upstreamPrior !== null) {
+        return upstreamPrior;
       }
     }
 

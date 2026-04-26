@@ -69,6 +69,12 @@ class BayesianBlock(TypedDict, total=False):
     risk_profile: Literal["low", "medium", "high", "unknown"]
     time_constant_days: int
     last_update: int
+    # Vague 1 B (server 1.3.0, SDK 1.0.5) -- true when the score aggregates
+    # enough recent evidence to drive a decision; false when the response is
+    # mostly the prior shining through (stale probe and/or thin data). On
+    # /api/intent the threshold is freshness_status in {fresh, recent} AND
+    # n_obs >= 5. Optional for back-compat against pre-1.3.0 servers.
+    is_meaningful: bool
     sources: BayesianSources
     convergence: BayesianConvergence
     recent_activity: BayesianRecentActivity

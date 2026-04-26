@@ -104,6 +104,10 @@ export class AgentService {
       risk_profile: v.risk_profile,
       time_constant_days: v.time_constant_days,
       last_update: v.last_update,
+      // Vague 1 B: default to true at agent-level. The intent-level wrapper
+      // (intentService.formatCandidate) downgrades to false when freshness
+      // is insufficient or the local evidence is too thin.
+      is_meaningful: true,
     };
   }
 

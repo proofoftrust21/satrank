@@ -55,7 +55,7 @@ interface ScoreEvent {
   ci95High: number;
   nObs: number;
   converged: boolean;
-  priorSource: 'operator' | 'service' | 'category' | 'flat';
+  priorSource: 'operator' | 'service' | 'category' | 'upstream' | 'flat';
   /** τ=7j exposé pour diagnostic — remplace l'ancien champ `window`. */
   tauDays: number;
   reachable: boolean;

@@ -23,6 +23,30 @@ interface IndexService {
   description?: string;
   category?: string;
   provider?: string;
+  /** Vague 1 G.2 - upstream quality signals exposed by 402index. SatRank used
+   *  to ignore them and re-derive everything from its own probes; we now copy
+   *  them into service_endpoints.upstream_* and feed them into the bayesian
+   *  prior cascade so newly ingested rows enter the catalogue with a
+   *  meaningful prior instead of a flat Beta(1.5, 1.5). */
+  health_status?: string;
+  probe_status?: string;
+  uptime_30d?: number;
+  latency_p50_ms?: number;
+  reliability_score?: number;
+  last_checked?: string;
+  registered_at?: string;
+  price_sats?: number;
+}
+
+/** Vague 1 G.2 - parse a 402index ISO timestamp ("2026-04-26 18:13:16" or
+ *  "2026-04-26T18:13:16Z") into epoch seconds. Returns null on parse failure
+ *  so the caller can persist an explicit NULL rather than a NaN. */
+function parseIso(ts: string | undefined): number | null {
+  if (!ts) return null;
+  // 402index returns a space-separated UTC timestamp, browsers expect the T.
+  const normalised = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
+  const ms = Date.parse(normalised);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
 /** Ingest silencieux côté crawler : valeurs invalides rejetées avec un warn
@@ -96,6 +120,16 @@ export class RegistryCrawler {
             const existing = await this.serviceEndpointRepo.findByUrl(svc.url);
             if (existing) {
               await this.serviceEndpointRepo.updateMetadata(svc.url, meta);
+              // Vague 1 G.2: refresh upstream signals on every pass so a
+              // changed reliability_score from 402index propagates fast.
+              await this.serviceEndpointRepo.upsertUpstreamSignals(svc.url, {
+                health_status: svc.health_status ?? null,
+                uptime_30d: svc.uptime_30d ?? null,
+                latency_p50_ms: svc.latency_p50_ms ?? null,
+                reliability_score: svc.reliability_score ?? null,
+                last_checked: parseIso(svc.last_checked),
+                source: '402index',
+              });
               result.updated++;
               // Re-probe only if price is still null — avoid needless GET on healthy, priced endpoints
               if (existing.service_price_sats === null) {
@@ -107,12 +141,32 @@ export class RegistryCrawler {
               continue;
             }
 
-            // New URL — discover the backing LN node, then upsert, then price
+            // New URL: discover the backing LN node, then upsert with the
+            // confirmed bootstrap probe status (Vague 1 G.1). discoverNodeFromUrl
+            // only returns a non-null result when the server actually responded
+            // with HTTP 402 plus a decodable BOLT11, so persisting status=402 +
+            // measured latencyMs replaces the legacy placeholder (0, 0) that
+            // made every fresh row look "unreachable" until cold-tier had run.
             const discovered = await this.discoverNodeFromUrl(svc.url);
             if (discovered?.agentHash) {
               result.discovered++;
-              await this.serviceEndpointRepo.upsert(discovered.agentHash, svc.url, 0, 0, '402index');
+              await this.serviceEndpointRepo.upsert(
+                discovered.agentHash,
+                svc.url,
+                402,
+                discovered.latencyMs,
+                '402index',
+              );
               await this.serviceEndpointRepo.updateMetadata(svc.url, meta);
+              // Vague 1 G.2: persist upstream quality signals from 402index.
+              await this.serviceEndpointRepo.upsertUpstreamSignals(svc.url, {
+                health_status: svc.health_status ?? null,
+                uptime_30d: svc.uptime_30d ?? null,
+                latency_p50_ms: svc.latency_p50_ms ?? null,
+                reliability_score: svc.reliability_score ?? null,
+                last_checked: parseIso(svc.last_checked),
+                source: '402index',
+              });
               if (discovered.priceSats && discovered.priceSats > 0) {
                 await this.serviceEndpointRepo.updatePrice(svc.url, discovered.priceSats);
               }
@@ -163,7 +217,16 @@ export class RegistryCrawler {
     if (!isSafeUrl(serviceUrl)) return null;
     const discovered = await this.discoverNodeFromUrl(serviceUrl);
     if (!discovered?.agentHash) return null;
-    await this.serviceEndpointRepo.upsert(discovered.agentHash, serviceUrl, 0, 0, 'self_registered');
+    // Vague 1 G.1: persist confirmed 402 + measured latency at ingestion, same
+    // semantics as the registry crawl path above. Self-submitted endpoints no
+    // longer enter the catalogue as never-probed placeholders.
+    await this.serviceEndpointRepo.upsert(
+      discovered.agentHash,
+      serviceUrl,
+      402,
+      discovered.latencyMs,
+      'self_registered',
+    );
     if (discovered.priceSats && discovered.priceSats > 0) {
       await this.serviceEndpointRepo.updatePrice(serviceUrl, discovered.priceSats);
     }
@@ -191,8 +254,11 @@ export class RegistryCrawler {
 
   /** GET the service URL, expect a 402 with WWW-Authenticate header containing a BOLT11 invoice.
    *  Decode the invoice to extract the payee node pubkey and price in sats.
-   *  Returns { agentHash: SHA256(pubkey), priceSats: num_satoshis | null } or null. */
-  private async discoverNodeFromUrl(serviceUrl: string): Promise<{ agentHash: string; priceSats: number | null } | null> {
+   *  Returns { agentHash, priceSats, latencyMs } or null. The latencyMs is the wall
+   *  time of the discovery fetch and is reused as a bootstrap probe latency at upsert
+   *  time so newly ingested rows enter the catalogue with confirmed status (Vague 1 G.1). */
+  private async discoverNodeFromUrl(serviceUrl: string): Promise<{ agentHash: string; priceSats: number | null; latencyMs: number } | null> {
+    const start = Date.now();
     try {
       await this.hostLimiter.wait(serviceUrl);
       // SSRF hardening: fetchSafeExternal does connect-time DNS validation so a
@@ -203,10 +269,11 @@ export class RegistryCrawler {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
       });
+      const latencyMs = Date.now() - start;
 
       if (resp.status >= 500 && resp.status < 600) {
-        // 5xx on a URL 402index has indexed is a provider-side failure — track
-        // it so an outage like the 2026-04-22 plebtv one surfaces in the logs.
+        // 5xx on a URL 402index has indexed is a provider-side failure: track it
+        // so an outage like the 2026-04-22 plebtv one surfaces in the logs.
         this.healthTracker.recordFailure(serviceUrl, 'http_5xx_after_retry');
         return null;
       }
@@ -246,7 +313,7 @@ export class RegistryCrawler {
             const agentHash = sha256(decoded.destination);
             const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
             this.healthTracker.recordSuccess(serviceUrl);
-            return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null };
+            return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null, latencyMs };
           }
           this.healthTracker.recordFailure(serviceUrl, 'decode_failed');
         } catch (decodeErr: unknown) {

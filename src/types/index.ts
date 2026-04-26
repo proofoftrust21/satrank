@@ -386,6 +386,17 @@ export interface BayesianScoreBlock {
   time_constant_days: number;
   /** Unix seconds de la dernière ingestion connue — 0 si aucune observation. */
   last_update: number;
+  /** Vague 1 B — true when the posterior aggregates enough recent evidence
+   *  to drive an agent decision, false when it is mostly the prior shining
+   *  through (insufficient probes and/or stale data). When false, callers
+   *  should treat p_success / ci95_* as a prior-dominated estimate, not a
+   *  measurement, and prefer paying ?fresh=true for a synchronous probe.
+   *
+   *  Computation lives in intentService.formatCandidate so it can combine
+   *  freshness_status with n_obs; downstream services (verdict, decide)
+   *  default to true for backwards compatibility when they have no
+   *  freshness_status to consult. Non-breaking: the field is additive. */
+  is_meaningful: boolean;
 }
 
 export type VerdictFlag =

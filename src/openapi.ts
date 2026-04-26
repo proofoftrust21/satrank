@@ -3,7 +3,7 @@ export const openapiSpec = {
   openapi: '3.1.0',
   info: {
     title: 'SatRank API',
-    version: '1.2.0',
+    version: '1.3.0',
     description: 'Trust score for autonomous agents on Bitcoin Lightning. The PageRank of the agentic economy.\n\nPricing Mix A+D (2026-04-26): agent + attestation reads moved to free discovery (10 req/min/IP). The paid surface is now: /probe, /verdicts (batch), /profile/:id, and /intent when ?fresh=true (paid: 2 sats, server runs a synchronous HTTP probe on the top candidates).',
     license: { name: 'AGPL-3.0' },
   },
@@ -1044,8 +1044,8 @@ export const openapiSpec = {
       },
       BayesianScoreBlock: {
         type: 'object',
-        description: 'Canonical Bayesian posterior block shared across all public endpoints (verdict, intent, profile, service, endpoint). Streaming exponential decay with time constant τ=7 days. The legacy `window` field was removed and replaced by `time_constant_days`, `recent_activity`, `risk_profile`, and `last_update`.',
-        required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile'],
+        description: 'Canonical Bayesian posterior block shared across all public endpoints (verdict, intent, profile, service, endpoint). Streaming exponential decay with time constant τ=7 days. The legacy `window` field was removed and replaced by `time_constant_days`, `recent_activity`, `risk_profile`, and `last_update`. As of OpenAPI 1.3.0 / SDK 1.0.5 the additive `is_meaningful` flag indicates whether the posterior aggregates enough recent evidence to drive a decision (true) or is mostly the prior shining through (false).',
+        required: ['p_success', 'ci95_low', 'ci95_high', 'n_obs', 'verdict', 'time_constant_days', 'last_update', 'sources', 'convergence', 'recent_activity', 'risk_profile', 'is_meaningful'],
         properties: {
           p_success: { type: 'number', minimum: 0, maximum: 1, description: 'Beta-Binomial posterior mean (streaming, decay τ=7 days).' },
           ci95_low:  { type: 'number', minimum: 0, maximum: 1, description: 'Lower bound of the 95% credible interval.' },
@@ -1054,6 +1054,7 @@ export const openapiSpec = {
           verdict: { type: 'string', enum: ['SAFE', 'UNKNOWN', 'RISKY', 'INSUFFICIENT'], description: 'Priority: INSUFFICIENT > RISKY > UNKNOWN > SAFE.' },
           time_constant_days: { type: 'number', description: 'Exposed time constant τ (exponential decay, days). Currently 7.' },
           last_update: { type: 'number', description: 'Unix seconds of the most recent ingestion, taken as the max over the three sources. 0 when no observation has been recorded.' },
+          is_meaningful: { type: 'boolean', description: 'Vague 1 B (OpenAPI 1.3.0). True when the score aggregates enough recent evidence to drive a decision; false when the response is mostly the prior shining through (stale probe and/or thin data). On the /api/intent surface the threshold is freshness_status in {fresh, recent} AND n_obs >= 5. On detail surfaces (/agent/:hash, /verdict, /decide) the field defaults to true so the raw posterior is always exposed; clients filtering for high-confidence picks should rely on /api/intent or pay ?fresh=true.' },
           sources: {
             type: 'object',
             required: ['probe', 'report', 'paid'],
