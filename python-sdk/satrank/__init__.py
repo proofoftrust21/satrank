@@ -40,10 +40,12 @@ from satrank.types import (
     IntentResponseMeta,
     ResolvedIntent,
     SatRankOptions,
+    SelectionAlternative,
+    SelectionExplanation,
     Wallet,
 )
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 __all__ = [
     "SatRank",
@@ -72,6 +74,8 @@ __all__ = [
     "ResolvedIntent",
     "SatRankError",
     "SatRankOptions",
+    "SelectionAlternative",
+    "SelectionExplanation",
     "ServiceUnavailableError",
     "TimeoutError",
     "UnauthorizedError",

@@ -31,12 +31,113 @@ from satrank.types import (
     FulfillOptions,
     FulfillResult,
     IntentCandidate,
+    SelectionAlternative,
+    SelectionExplanation,
     Wallet,
 )
 
 DEFAULT_TIMEOUT_MS = 30_000
 DEFAULT_MAX_FEE_SATS = 10
 DEFAULT_LIMIT = 5
+
+# Constant policy string surfaced in selection_explanation.selection_strategy
+# (1.0.3+). Mirrors TS SELECTION_STRATEGY so two integrators reading the same
+# payload reach the same conclusion about how the SDK ranked endpoints.
+SELECTION_STRATEGY = (
+    "highest-ranked candidate by p_success (server-sorted), tried in rank "
+    "order until one returns HTTP 2xx after L402 payment"
+)
+
+
+def _outcome_to_human_reason(
+    outcome: CandidateOutcome, error: str | None = None
+) -> str:
+    """Map CandidateOutcome to a one-line, human-readable rationale."""
+    if outcome == "paid_success":
+        return "paid response returned 2xx"
+    if outcome == "paid_failure":
+        return "endpoint returned non-2xx after payment"
+    if outcome == "pay_failed":
+        return (
+            f"wallet rejected the invoice ({error})"
+            if error
+            else "wallet rejected the invoice"
+        )
+    if outcome == "abort_budget":
+        return "invoice price exceeds remaining budget"
+    if outcome == "abort_timeout":
+        return "wall-clock timeout reached before attempt"
+    if outcome == "no_invoice":
+        return "endpoint did not return a 402+BOLT11 challenge"
+    if outcome == "network_error":
+        return (
+            f"network error before 402 ({error})"
+            if error
+            else "network error before 402"
+        )
+    if outcome == "skipped":
+        return "skipped by retry_policy=none after a prior attempt"
+    return outcome
+
+
+def _build_selection_explanation(
+    candidates: list[IntentCandidate],
+    tried: list[CandidateAttempt],
+    chosen_index: int | None,
+) -> SelectionExplanation:
+    """Build SelectionExplanation from candidates list, tried attempts, and
+    the chosen index (None on total failure). Pure helper, no side effects."""
+    alternatives: list[SelectionAlternative] = []
+    for i, attempt in enumerate(tried):
+        if i == chosen_index:
+            continue
+        cand = candidates[i] if i < len(candidates) else None
+        score = float(cand["bayesian"].get("p_success", 0.0)) if cand else 0.0
+        alternatives.append(
+            {
+                "endpoint": attempt["url"],
+                "score": score,
+                "rejected_reason": _outcome_to_human_reason(
+                    attempt["outcome"], attempt.get("error")
+                ),
+            }
+        )
+
+    if chosen_index is None:
+        return {
+            "chosen_endpoint": None,
+            "chosen_reason": None,
+            "chosen_score": None,
+            "alternatives_considered": alternatives,
+            "candidates_evaluated": len(candidates),
+            "selection_strategy": SELECTION_STRATEGY,
+        }
+
+    chosen_attempt = tried[chosen_index]
+    chosen_candidate = (
+        candidates[chosen_index] if chosen_index < len(candidates) else None
+    )
+    chosen_score = (
+        float(chosen_candidate["bayesian"].get("p_success", 0.0))
+        if chosen_candidate
+        else 0.0
+    )
+    if chosen_index == 0:
+        chosen_reason = "top-ranked candidate by p_success returned 2xx after payment"
+    else:
+        plural = "" if chosen_index == 1 else "s"
+        chosen_reason = (
+            f"first candidate to succeed at rank {chosen_index + 1} after "
+            f"{chosen_index} prior rejection{plural}"
+        )
+    return {
+        "chosen_endpoint": chosen_attempt["url"],
+        "chosen_reason": chosen_reason,
+        "chosen_score": chosen_score,
+        "alternatives_considered": alternatives,
+        "candidates_evaluated": len(candidates),
+        "selection_strategy": SELECTION_STRATEGY,
+    }
 
 
 _L402_RE = re.compile(r"^(?:L402|LSAT)\s+(.+)$", re.IGNORECASE)
@@ -222,6 +323,9 @@ async def fulfill_intent(
                     "operator_pubkey": candidate["operator_pubkey"],
                 },
                 "candidates_tried": tried,
+                "selection_explanation": _build_selection_explanation(
+                    candidates, tried, len(tried) - 1
+                ),
             }
             result["report_submitted"] = await _maybe_auto_report(
                 api=api,
@@ -237,6 +341,9 @@ async def fulfill_intent(
     last_outcome: str = tried[-1]["outcome"] if tried else "NO_CANDIDATES"
     result = _failure(
         tried, spent, last_outcome.upper(), f"All {len(tried)} candidates failed"
+    )
+    result["selection_explanation"] = _build_selection_explanation(
+        candidates, tried, None
     )
     result["report_submitted"] = await _maybe_auto_report(
         api=api,

@@ -172,6 +172,26 @@ export interface FulfillErrorShape {
   message: string;
 }
 
+/** Human-readable trace of fulfill()'s candidate selection. The agent already
+ *  has `candidates_tried` for the raw outcome list; this block makes the
+ *  ranking and rejection rationale legible without parsing enums. The
+ *  `selection_strategy` constant documents the SDK's policy so two integrators
+ *  reading the same payload reach the same conclusion. `chosen_*` fields are
+ *  null when no candidate produced a paid_success — `alternatives_considered`
+ *  then enumerates every attempt with its rejection reason. */
+export interface SelectionExplanation {
+  chosen_endpoint: string | null;
+  chosen_reason: string | null;
+  chosen_score: number | null;
+  alternatives_considered: Array<{
+    endpoint: string;
+    score: number;
+    rejected_reason: string;
+  }>;
+  candidates_evaluated: number;
+  selection_strategy: string;
+}
+
 export interface FulfillResult {
   success: boolean;
   response_body?: unknown;
@@ -186,6 +206,9 @@ export interface FulfillResult {
     operator_pubkey: string;
   };
   candidates_tried: CandidateAttempt[];
+  /** Optional. Present whenever fulfill() actually evaluated at least one
+   *  candidate (i.e. the intent resolution returned a non-empty list). */
+  selection_explanation?: SelectionExplanation;
   report_submitted?: boolean;
   error?: FulfillErrorShape;
 }
