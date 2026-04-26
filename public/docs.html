@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SatRank · Developer docs</title>
+  <meta name="description" content="Developer quickstart and API reference for SatRank: install the SDK in 30 seconds, resolve an intent, fulfill a paid call, and report the outcome.">
+  <meta name="theme-color" content="#07090d">
+  <meta property="og:title" content="SatRank · Developer docs">
+  <meta property="og:description" content="Five-line quickstart, full endpoint list, L402 flow, and SDK reference for SatRank.">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://satrank.dev/docs">
+  <meta property="og:image" content="https://satrank.dev/logo.png">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="canonical" href="https://satrank.dev/docs">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="methodology-page">
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-brand" aria-label="SatRank home">
+      <img src="/logo.png" alt="" class="nav-logo" width="28" height="28">
+      <span class="nav-wordmark">SatRank</span>
+    </a>
+    <div class="nav-links">
+      <a href="/docs" class="active">Docs</a>
+      <a href="/methodology.html">Methodology</a>
+      <a href="/api/docs">OpenAPI</a>
+      <a href="https://www.npmjs.com/package/@satrank/sdk" rel="noopener noreferrer">SDK</a>
+      <a href="https://github.com/proofoftrust21/satrank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://njump.me/npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4" rel="noopener noreferrer" aria-label="Nostr">Nostr</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-shell">
+
+  <header class="doc-header">
+    <div class="doc-eyebrow">
+      <span class="pulse" aria-hidden="true"></span>
+      Developer docs · Free intent + 1 sat per fulfill
+    </div>
+    <h1 class="doc-title">Build an agent on SatRank in five lines.</h1>
+    <p class="doc-sub">
+      SatRank is a sovereign trust oracle for the Bitcoin Lightning Network. Your agent describes an intent (category, budget, latency ceiling), the oracle returns a ranked list of L402 endpoints with a Bayesian trust posterior, and the SDK handles the Lightning payment and the response. No account. No API key on the read path. Pay 1 sat per query, or take the free intent tier.
+    </p>
+    <a href="/" class="doc-header-back">&larr; Back to SatRank</a>
+  </header>
+
+  <div class="doc-layout">
+
+    <aside class="doc-toc" aria-label="Table of contents">
+      <div class="doc-toc-heading">Quickstart</div>
+      <a href="#install">1. Install</a>
+      <a href="#first-call">2. First call</a>
+
+      <div class="doc-toc-heading">SDK</div>
+      <a href="#sdk-typescript">3. TypeScript SDK</a>
+      <a href="#sdk-python">4. Python SDK</a>
+      <a href="#sdk-fields">5. FulfillResult fields</a>
+
+      <div class="doc-toc-heading">HTTP API</div>
+      <a href="#endpoints">6. Endpoints</a>
+      <a href="#l402">7. L402 flow</a>
+      <a href="#rate-limits">8. Rate limits</a>
+
+      <div class="doc-toc-heading">References</div>
+      <a href="#openapi">9. OpenAPI &amp; Swagger</a>
+      <a href="#methodology">10. Methodology</a>
+      <a href="#support">11. Support</a>
+    </aside>
+
+    <main class="doc-main">
+
+      <section class="doc-section" id="install">
+        <h2>1. Install</h2>
+        <p>Both SDKs are zero-configuration. The TypeScript package has no runtime dependencies; the Python package depends only on <code>httpx</code>.</p>
+        <pre><code>npm install @satrank/sdk
+# or
+pip install satrank</code></pre>
+        <p>Current versions: <code>@satrank/sdk@1.0.3</code> and <code>satrank==1.0.3</code>.</p>
+      </section>
+
+      <section class="doc-section" id="first-call">
+        <h2>2. First call</h2>
+        <p>The fastest path to a paid response. Both snippets are copy-paste ready against a fresh install. The wallet is optional; without one the SDK still resolves intents and reads verdicts but cannot fulfill paid calls.</p>
+
+        <h3>TypeScript</h3>
+        <pre><code>import { SatRank } from '@satrank/sdk';
+
+const sr = new SatRank({ apiBase: 'https://satrank.dev' });
+
+const result = await sr.fulfill({
+  intent: { category: 'data', budget_sats: 50, max_latency_ms: 5000 },
+});
+
+console.log(result.success);            // true on a paid response
+console.log(result.endpoint_used?.url); // which endpoint served it
+console.log(result.cost_sats);          // sats spent across attempts
+console.log(result.response_body);      // the paid API response</code></pre>
+
+        <h3>Python</h3>
+        <pre><code>from satrank import SatRank
+
+sr = SatRank(api_base="https://satrank.dev")
+
+result = sr.fulfill(
+    intent={"category": "data", "budget_sats": 50, "max_latency_ms": 5000},
+)
+
+print(result["success"])                          # True on a paid response
+print(result.get("endpoint_used", {}).get("url")) # which endpoint served it
+print(result["cost_sats"])                        # sats spent across attempts
+print(result["response_body"])                    # the paid API response</code></pre>
+
+        <p>Without a wallet the result will be <code>success: false</code> with <code>error.code = "WALLET_REQUIRED"</code>; the candidate list is still attached as <code>candidates_tried</code> so the agent can decide. Plug a real wallet in via the <code>wallet</code> option (any object that exposes <code>payInvoice(bolt11)</code>) and the same snippet pays automatically.</p>
+      </section>
+
+      <section class="doc-section" id="sdk-typescript">
+        <h2>3. TypeScript SDK</h2>
+        <p>Single-file import, strict TypeScript types, no runtime dependencies. Compatible with Node 18+ and any modern bundler.</p>
+        <h3>Construction</h3>
+        <pre><code>const sr = new SatRank({
+  apiBase: 'https://satrank.dev',
+  wallet: myLnWallet,            // optional
+  depositToken: 'L402 deposit:&lt;preimage&gt;',  // optional, used by /api/report only
+  caller: 'agent-42',            // optional caller id
+  request_timeout_ms: 10_000,    // default 10 s
+});</code></pre>
+
+        <h3>Methods</h3>
+        <ul>
+          <li><code>resolveIntent(intent)</code> &mdash; ranked candidates only. Free.</li>
+          <li><code>fulfill({ intent })</code> &mdash; resolve, pay, return response. Paid.</li>
+          <li><code>verdict(hashOrUrl)</code> &mdash; full Bayesian posterior for one target. Paid (1 sat).</li>
+          <li><code>report({ target, outcome, preimage })</code> &mdash; submit a first-party outcome. Free.</li>
+        </ul>
+
+        <p>Source: <a href="https://github.com/proofoftrust21/satrank/tree/main/sdk" rel="noopener noreferrer">github.com/proofoftrust21/satrank/sdk</a>.</p>
+      </section>
+
+      <section class="doc-section" id="sdk-python">
+        <h2>4. Python SDK</h2>
+        <p>Mirror of the TypeScript SDK. Synchronous methods backed by <code>httpx</code>. Compatible with Python 3.10+.</p>
+        <pre><code>from satrank import SatRank
+
+sr = SatRank(
+    api_base="https://satrank.dev",
+    wallet=my_ln_wallet,            # optional
+    deposit_token="L402 deposit:&lt;preimage&gt;",  # optional
+    caller="agent-42",
+    request_timeout_ms=10_000,
+)
+
+candidates = sr.resolve_intent({"category": "data", "budget_sats": 50})
+result     = sr.fulfill(intent={"category": "data", "budget_sats": 50})
+verdict    = sr.verdict("&lt;public_key_hash or url&gt;")
+sr.report(target="&lt;url&gt;", outcome="success", preimage="&lt;hex&gt;")</code></pre>
+
+        <p>Source: <a href="https://github.com/proofoftrust21/satrank/tree/main/python-sdk" rel="noopener noreferrer">github.com/proofoftrust21/satrank/python-sdk</a>.</p>
+      </section>
+
+      <section class="doc-section" id="sdk-fields">
+        <h2>5. FulfillResult fields</h2>
+        <p>Return shape of <code>fulfill()</code>. Identical between TypeScript and Python (TypedDict in Python).</p>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>success</code></td><td>boolean</td><td>True iff the chosen endpoint returned 2xx after payment.</td></tr>
+            <tr><td><code>response_body</code></td><td>unknown</td><td>Parsed body of the paid response (JSON when possible, else string).</td></tr>
+            <tr><td><code>response_code</code></td><td>number</td><td>HTTP status code returned by the endpoint.</td></tr>
+            <tr><td><code>response_latency_ms</code></td><td>number</td><td>End-to-end latency of the paid call.</td></tr>
+            <tr><td><code>cost_sats</code></td><td>number</td><td>Total sats spent across all attempts. Always &le; <code>budget_sats</code>.</td></tr>
+            <tr><td><code>preimage</code></td><td>string</td><td>Preimage of the successful payment, hex-encoded.</td></tr>
+            <tr><td><code>endpoint_used</code></td><td>object</td><td><code>{ url, service_name, operator_pubkey }</code> of the endpoint that served the response.</td></tr>
+            <tr><td><code>candidates_tried</code></td><td>array</td><td>Ordered attempts: <code>{ url, verdict, outcome, cost_sats, response_code, error }</code>.</td></tr>
+            <tr><td><code>selection_explanation</code></td><td>object</td><td>Why this endpoint was chosen and what alternatives were rejected. See the <a href="https://github.com/proofoftrust21/satrank/blob/main/sdk/src/types.ts" rel="noopener noreferrer">types file</a> for the full shape.</td></tr>
+            <tr><td><code>report_submitted</code></td><td>boolean</td><td>True iff a first-party report was posted back to <code>/api/report</code> after the call.</td></tr>
+            <tr><td><code>error</code></td><td>object</td><td><code>{ code, message }</code> when <code>success</code> is false.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="doc-section" id="endpoints">
+        <h2>6. HTTP endpoints</h2>
+        <p>Full list lives at <a href="/api/openapi.json">/api/openapi.json</a> and is browsable at <a href="/api/docs">/api/docs</a>. The most common surface for agents:</p>
+        <table>
+          <thead><tr><th>Endpoint</th><th>Method</th><th>Auth</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>/api/intent</code></td><td>POST</td><td>public</td><td>Resolve intent to ranked candidates. Free, rate-limited.</td></tr>
+            <tr><td><code>/api/intent/categories</code></td><td>GET</td><td>public</td><td>Live category list with endpoint and active counts.</td></tr>
+            <tr><td><code>/api/agents/top</code></td><td>GET</td><td>public</td><td>Ranked list sorted by <code>p_success</code>.</td></tr>
+            <tr><td><code>/api/agent/:hash/verdict</code></td><td>GET</td><td>L402 (1 sat)</td><td>Full posterior, advisory, sources for one target.</td></tr>
+            <tr><td><code>/api/report</code></td><td>POST</td><td>L402 or API key</td><td>Submit a first-party outcome with preimage proof.</td></tr>
+            <tr><td><code>/api/deposit</code></td><td>POST</td><td>public</td><td>Buy an L402 token balance (21 to 1 000 000 sats, tiered rate).</td></tr>
+            <tr><td><code>/api/health</code></td><td>GET</td><td>public</td><td>Liveness, schema version, LND probe age.</td></tr>
+            <tr><td><code>/api/stats</code></td><td>GET</td><td>public</td><td>Aggregate counts (agents, endpoints, probes, capacity).</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="doc-section" id="l402">
+        <h2>7. L402 flow</h2>
+        <p>Paid endpoints are guarded by L402. The first request returns:</p>
+        <pre><code>HTTP/1.1 402 Payment Required
+WWW-Authenticate: L402 macaroon="MDAyN...", invoice="lnbc10n1p..."</code></pre>
+        <p>Pay the BOLT11 invoice with any Lightning wallet, capture the preimage, and retry with:</p>
+        <pre><code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;</code></pre>
+        <p>The middleware verifies that <code>sha256(preimage) == payment_hash</code> and forwards. The SDK does this automatically inside <code>fulfill()</code>.</p>
+
+        <h3>Pre-funded tokens</h3>
+        <p><code>POST /api/deposit</code> issues a BOLT11 invoice for <em>N</em> sats in [21, 1 000 000]. After paying, post the preimage back and the oracle credits <code>N / rate</code> requests to a token. Use <code>Authorization: L402 deposit:&lt;preimage&gt;</code> on subsequent paid calls. Rates are public at <a href="/api/deposit/tiers">/api/deposit/tiers</a>.</p>
+      </section>
+
+      <section class="doc-section" id="rate-limits">
+        <h2>8. Rate limits</h2>
+        <table>
+          <thead><tr><th>Surface</th><th>Limit</th></tr></thead>
+          <tbody>
+            <tr><td><code>POST /api/intent</code></td><td>10 requests / 60 seconds per IP</td></tr>
+            <tr><td><code>POST /api/deposit</code></td><td>3 invoices / minute per IP</td></tr>
+            <tr><td><code>POST /api/report</code></td><td>30 requests / minute per token</td></tr>
+            <tr><td><code>POST /api/services/register</code></td><td>5 requests / minute per API key</td></tr>
+            <tr><td><code>GET  /api/ping/:pubkey</code></td><td>10 requests / minute per IP</td></tr>
+          </tbody>
+        </table>
+        <p>At the limit the server replies <code>HTTP 429</code> with a <code>Retry-After</code> header in seconds. The SDK respects <code>Retry-After</code> automatically when retrying.</p>
+      </section>
+
+      <section class="doc-section" id="openapi">
+        <h2>9. OpenAPI &amp; Swagger</h2>
+        <ul>
+          <li><a href="/api/openapi.json">/api/openapi.json</a> &mdash; OpenAPI 3.1 spec, machine-readable.</li>
+          <li><a href="/api/docs">/api/docs</a> &mdash; interactive Swagger UI.</li>
+        </ul>
+      </section>
+
+      <section class="doc-section" id="methodology">
+        <h2>10. Methodology</h2>
+        <p>For the math behind <code>p_success</code>, the prior cascade, the deterministic composite score, and the Nostr publication schema, read the full <a href="/methodology.html">methodology document</a>. Every formula and constant is extracted from the source tree.</p>
+      </section>
+
+      <section class="doc-section" id="support">
+        <h2>11. Support</h2>
+        <ul>
+          <li><strong>Source code:</strong> <a href="https://github.com/proofoftrust21/satrank" rel="noopener noreferrer">github.com/proofoftrust21/satrank</a> (AGPL-3.0).</li>
+          <li><strong>npm:</strong> <a href="https://www.npmjs.com/package/@satrank/sdk" rel="noopener noreferrer">@satrank/sdk</a></li>
+          <li><strong>PyPI:</strong> <a href="https://pypi.org/project/satrank/" rel="noopener noreferrer">satrank</a></li>
+          <li><strong>Issues:</strong> <a href="https://github.com/proofoftrust21/satrank/issues" rel="noopener noreferrer">GitHub Issues</a></li>
+          <li><strong>Email:</strong> <a href="mailto:contact@satrank.dev">contact@satrank.dev</a></li>
+          <li><strong>Nostr:</strong> <code>npub1t5gagm0...</code> / <code>_@satrank.dev</code></li>
+        </ul>
+      </section>
+
+    </main>
+
+  </div>
+
+</div>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <img src="/logo.png" alt="" class="footer-logo" width="20" height="20">
+      <span>SatRank</span>
+      <span class="footer-tag">Sovereign trust oracle for Lightning</span>
+    </div>
+    <div class="footer-links">
+      <a href="/docs">Docs</a>
+      <a href="/methodology.html">Methodology</a>
+      <a href="/api/stats">Stats</a>
+      <a href="/api/health">Health</a>
+      <a href="/api/openapi.json">OpenAPI</a>
+      <a href="https://njump.me/npub1t5gagm0phfxn99drxevd7yhwhdfcf4kkv70stdjlas7gvuraul2q27lpl4" rel="noopener noreferrer">Nostr</a>
+      <a href="https://github.com/proofoftrust21/satrank" rel="noopener noreferrer">GitHub</a>
+      <a href="mailto:contact@satrank.dev">Contact</a>
+    </div>
+    <div class="footer-meta">
+      AGPL-3.0 &middot; Listed on <a href="https://402index.io" rel="noopener noreferrer">402index.io</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
