@@ -258,6 +258,7 @@ export function createApp() {
     serviceEndpointRepo,
     agentRepo,
     agentService,
+    bayesianVerdictService,
     trendService,
     probeRepo,
     operatorService,
@@ -575,6 +576,11 @@ export function createApp() {
   api.get('/services', discoveryRateLimit, serviceController.search);
   api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
+  // Phase 5 — alias under the /services namespace. Sim 3 agents instinctively
+  // hit /api/services/:hash with the endpoint_hash returned by /api/intent
+  // and got 404; the canonical route is /api/endpoint/:url_hash, but exposing
+  // both makes the discovery flow forgiving without a doc lookup.
+  api.get('/services/:url_hash', discoveryRateLimit, endpointController.show);
 
   // Pricing Mix A+D (2026-04-26) — agent + attestation reads moved to free
   // discovery. createAgentRoutes still receives paidGate/balanceAuth because

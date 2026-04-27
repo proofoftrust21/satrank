@@ -785,6 +785,7 @@ async function main(): Promise<void> {
       config.TRANSACTIONS_DUAL_WRITE_MODE,
       dualWriteLogger,
       agentRepo,
+      bayesianScoringServiceMain,
     );
 
     const tierIntervals = {

@@ -88,6 +88,7 @@ function buildApp(db: Pool, withOperators = false): { app: express.Express; oper
     serviceEndpointRepo: serviceRepo,
     agentRepo,
     agentService,
+    bayesianVerdictService: bayesianVerdict,
     trendService,
     probeRepo,
     ...(operatorService ? { operatorService } : {}),
@@ -116,7 +117,17 @@ async function seed(db: Pool, hash: string, url: string, opts: {
     name: opts.name, description: null, category: opts.category, provider: null,
   });
   await serviceRepo.updatePrice(url, opts.priceSats);
-  if (opts.safe) await seedSafeBayesianObservations(db, hash, { now: NOW });
+  if (opts.safe) {
+    // Phase 5 — /api/intent now reads per-endpoint posteriors keyed by
+    // endpointHash(url). Seed both the operator hash (legacy) and the
+    // URL hash (new) so existing assertions on strictness='strict' keep
+    // passing without rewriting every test fixture.
+    const { endpointHash } = await import('../utils/urlCanonical');
+    await seedSafeBayesianObservations(db, hash, {
+      now: NOW,
+      endpointHashOverride: endpointHash(url),
+    });
+  }
 }
 
 describe('/api/intent integration', async () => {

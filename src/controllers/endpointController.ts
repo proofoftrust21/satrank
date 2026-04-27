@@ -26,7 +26,11 @@ export class EndpointController {
     private bayesianVerdict: BayesianVerdictService,
     private serviceEndpointRepo: ServiceEndpointRepository,
     private agentRepo: AgentRepository,
-    private operatorService: OperatorService,
+    /** Phase 5 — made optional so tests + Phase 5 follow-ups can construct
+     *  the controller without wiring the full operator graph. When absent,
+     *  operator_id is reported as null (the same behavior C11 enforces when
+     *  the operator is not yet verified). */
+    private operatorService?: OperatorService,
   ) {}
 
   show = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -86,7 +90,9 @@ export class EndpointController {
       // Phase 7 — C11 : operator_id exposé seulement quand status='verified'
       // (zero auto-trust). C12 : overlay advisory qui émet OPERATOR_UNVERIFIED
       // quand un operator est rattaché mais pas encore (ou plus) 2/3.
-      const operatorLookup = await this.operatorService.resolveOperatorForEndpoint(urlHash);
+      const operatorLookup = this.operatorService
+        ? await this.operatorService.resolveOperatorForEndpoint(urlHash)
+        : null;
       const operator_id = operatorLookup?.status === 'verified' ? operatorLookup.operatorId : null;
 
       const advisory = computeAdvisoryReport({

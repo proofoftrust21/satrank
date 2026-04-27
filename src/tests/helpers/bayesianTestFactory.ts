@@ -85,11 +85,20 @@ export function createBayesianVerdictService(db: Queryable): BayesianVerdictServ
 export async function seedSafeBayesianObservations(
   db: Queryable,
   targetHash: string,
-  options: { now?: number; nProbe?: number; nReport?: number } = {},
+  options: {
+    now?: number;
+    nProbe?: number;
+    nReport?: number;
+    /** Phase 5 — when set, the streaming writes target this hash instead of
+     *  `targetHash`. Use to seed per-endpoint posteriors (URL-keyed) while
+     *  keeping the legacy operator-keyed agent/transactions seeding. */
+    endpointHashOverride?: string;
+  } = {},
 ): Promise<void> {
   const now = options.now ?? Math.floor(Date.now() / 1000);
   const nProbe = options.nProbe ?? 30;
   const nReport = options.nReport ?? 30;
+  const streamingHash = options.endpointHashOverride ?? targetHash;
 
   const callerHash = sha256(`bayes-caller-${targetHash.slice(0, 8)}`);
   await db.query(
@@ -123,7 +132,7 @@ export async function seedSafeBayesianObservations(
       success: true,
       timestamp: now - i * 60,
       source: 'probe',
-      endpointHash: targetHash,
+      endpointHash: streamingHash,
     });
   }
   for (let i = 0; i < nReport; i++) {
@@ -132,7 +141,7 @@ export async function seedSafeBayesianObservations(
       timestamp: now - i * 60,
       source: 'report',
       tier: 'nip98',
-      endpointHash: targetHash,
+      endpointHash: streamingHash,
     });
   }
 }

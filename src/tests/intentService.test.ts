@@ -81,7 +81,15 @@ async function seedEndpoint(db: Pool, serviceRepo: ServiceEndpointRepository, ag
   }
 
   if (f.seedSafe) {
-    await seedSafeBayesianObservations(db, f.hash, { now: NOW });
+    // Phase 5 — /api/intent now reads per-endpoint posteriors (keyed by
+    // endpointHash(svc.url)), not the operator hash. The legacy seed
+    // populated agent_hash; we now also seed the endpoint URL hash so
+    // tests that flagged seedSafe still observe a SAFE posterior in /api/intent.
+    const { endpointHash } = await import('../utils/urlCanonical');
+    await seedSafeBayesianObservations(db, f.hash, {
+      now: NOW,
+      endpointHashOverride: endpointHash(f.url),
+    });
   }
 }
 
@@ -99,6 +107,7 @@ function buildService(db: Pool): IntentService {
     serviceEndpointRepo: serviceRepo,
     agentRepo,
     agentService,
+    bayesianVerdictService: bayesianVerdict,
     trendService,
     probeRepo,
     now: () => NOW,
@@ -306,13 +315,16 @@ describe('IntentService', async () => {
       expect(res.intent.resolved_at).toBe(NOW);
     });
 
-    it('max_latency_ms filtre via median_latency_ms : table vide → tout rejeté', async () => {
-      // service_probes est vide en test → medianHttpLatency7d retourne null.
-      // Avec max_latency_ms set, tout candidat sans médiane est exclu.
+    it('max_latency_ms filtre via median_latency_ms : pas de probe ET pas de last_latency_ms → rejeté', async () => {
+      // Phase 5 — medianHttpLatency7d falls back to service_endpoints.last_latency_ms
+      // when service_probes is empty. To keep this test exercising the "no
+      // signal at all → reject" contract, we seed the endpoint then null out
+      // last_latency_ms so the fallback also returns null.
       await seedEndpoint(db, serviceRepo, agentRepo, {
         hash: sha256('no-probes'), url: 'https://no.example/x', priceSats: 3,
         name: 'no-probes', category: 'data', seedSafe: true,
       });
+      await db.query('UPDATE service_endpoints SET last_latency_ms = NULL WHERE url = $1', ['https://no.example/x']);
       const svc = buildService(db);
       const withFilter = await await svc.resolveIntent({ category: 'data', max_latency_ms: 500 }, 5);
       expect(withFilter.candidates).toEqual([]);
