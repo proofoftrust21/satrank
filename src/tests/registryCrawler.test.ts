@@ -334,6 +334,185 @@ describe('RegistryCrawler', async () => {
     expect(acceptObserved).toBe('application/json, */*;q=0.5');
   });
 
+  // Vague 3 Phase 2.7 — x402 protocol detection + invalid_l402 sub-bucketing.
+
+  it('x402: 402 response with payment-required header is bucketed as protocol_x402, not invalid_l402', async () => {
+    const url = 'https://x402-host.example.com/api/data';
+    global.fetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(
+          JSON.stringify({ services: [{ url, protocol: 'L402', name: 'x402-mislabel' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (urlStr === url) {
+        const headers = new Headers();
+        // x402 servers respond 402 with `payment-required:` (base64 JSON) and
+        // no WWW-Authenticate. Real example: api.myceliasignal.com.
+        headers.set('payment-required', 'eyJ4NDAyVmVyc2lvbiI6Mn0=');
+        headers.set('content-type', 'application/json');
+        return new Response('{}', { status: 402, headers });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    const decodeBolt11 = async () => ({ destination: '02' + 'a'.repeat(64) });
+    const crawler = new RegistryCrawler(repo, decodeBolt11);
+    const result = await crawler.run();
+    expect(result.preCapSkipped.protocol_x402).toBe(1);
+    expect(result.preCapSkipped.invalid_l402).toBe(0);
+    expect(result.preCapSkipped.invalid_l402_no_bolt11).toBe(0);
+    expect(result.discovered).toBe(0);
+    expect(await repo.findByUrl(url)).toBeUndefined();
+  });
+
+  it('invalid_l402_no_bolt11: 402 with WWW-Authenticate but no invoice= field', async () => {
+    const url = 'https://no-invoice.example.com/api';
+    global.fetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(
+          JSON.stringify({ services: [{ url, protocol: 'L402', name: 'no-bolt11' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (urlStr === url) {
+        const headers = new Headers();
+        headers.set('www-authenticate', 'L402 macaroon="abcd", realm="paywall"');
+        return new Response('', { status: 402, headers });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    const crawler = new RegistryCrawler(repo, async () => ({ destination: '02' + 'b'.repeat(64) }));
+    const result = await crawler.run();
+    expect(result.preCapSkipped.invalid_l402_no_bolt11).toBe(1);
+    expect(result.preCapSkipped.invalid_l402).toBe(1);
+    expect(result.preCapSkipped.invalid_l402_decode_failed).toBe(0);
+    expect(result.preCapSkipped.protocol_x402).toBe(0);
+  });
+
+  it('invalid_l402_no_decoder: BOLT11 found but decoder is undefined', async () => {
+    const url = 'https://no-decoder.example.com/api';
+    global.fetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(
+          JSON.stringify({ services: [{ url, protocol: 'L402', name: 'no-decoder' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (urlStr === url) {
+        const headers = new Headers();
+        headers.set('www-authenticate', 'L402 macaroon="x", invoice="lnbc10n1pfakenodecoder"');
+        return new Response('', { status: 402, headers });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    // No decodeBolt11 passed → 'no_decoder' branch.
+    const crawler = new RegistryCrawler(repo);
+    const result = await crawler.run();
+    expect(result.preCapSkipped.invalid_l402_no_decoder).toBe(1);
+    expect(result.preCapSkipped.invalid_l402).toBe(1);
+    expect(result.preCapSkipped.invalid_l402_no_bolt11).toBe(0);
+  });
+
+  it('invalid_l402_decode_failed: decoder returns null destination', async () => {
+    const url = 'https://decode-fail.example.com/api';
+    global.fetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(
+          JSON.stringify({ services: [{ url, protocol: 'L402', name: 'decode-fail' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (urlStr === url) {
+        const headers = new Headers();
+        headers.set('www-authenticate', 'L402 macaroon="x", invoice="lnbc10n1pfakedecodefail"');
+        return new Response('', { status: 402, headers });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    // Decoder returns null → 'decode_failed' branch.
+    const decodeBolt11 = async () => null;
+    const crawler = new RegistryCrawler(repo, decodeBolt11);
+    const result = await crawler.run();
+    expect(result.preCapSkipped.invalid_l402_decode_failed).toBe(1);
+    expect(result.preCapSkipped.invalid_l402).toBe(1);
+  });
+
+  it('invalid_l402_invoice_malformed: decoder throws bech32-charset error', async () => {
+    const url = 'https://malformed.example.com/api';
+    global.fetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(
+          JSON.stringify({ services: [{ url, protocol: 'L402', name: 'malformed' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (urlStr === url) {
+        const headers = new Headers();
+        headers.set('www-authenticate', 'L402 macaroon="x", invoice="lnbcgarbageinvoice"');
+        return new Response('', { status: 402, headers });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    const decodeBolt11 = async () => {
+      throw new Error('checksum failed: invalid character not part of charset');
+    };
+    const crawler = new RegistryCrawler(repo, decodeBolt11);
+    const result = await crawler.run();
+    expect(result.preCapSkipped.invalid_l402_invoice_malformed).toBe(1);
+    expect(result.preCapSkipped.invalid_l402).toBe(1);
+  });
+
+  it('invalid_l402 sub-buckets sum to the aggregate count', async () => {
+    // Build a synthetic 402index page with 4 endpoints exhibiting each sub-bucket.
+    const services = [
+      { url: 'https://no-bolt.example/a', protocol: 'L402', name: 'a' },
+      { url: 'https://no-decoder.example/b', protocol: 'L402', name: 'b' },
+      { url: 'https://decode-null.example/c', protocol: 'L402', name: 'c' },
+      { url: 'https://malformed.example/d', protocol: 'L402', name: 'd' },
+    ];
+    global.fetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(JSON.stringify({ services }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      const h = new Headers();
+      if (urlStr.includes('no-bolt.example')) {
+        h.set('www-authenticate', 'L402 macaroon="x", realm="paywall"');
+      } else {
+        h.set('www-authenticate', 'L402 macaroon="x", invoice="lnbc10n1pfakeforsumtest"');
+      }
+      return new Response('', { status: 402, headers: h });
+    }) as typeof fetch;
+    // Decoder dispatches per URL: no-decoder host gets undefined decoder via a
+    // separate crawler instance below; here we model decode_null + malformed.
+    let firstCallSeen = false;
+    const decodeBolt11 = async (_invoice: string) => {
+      // First decode call → null (decode_failed); second → throw malformed.
+      if (!firstCallSeen) {
+        firstCallSeen = true;
+        return null;
+      }
+      throw new Error('failed converting data: invalid character not part of charset');
+    };
+    // Skip the no_decoder URL by removing it from the synthetic page so the
+    // assertion doesn't depend on the order in which 402index serves them.
+    services.splice(1, 1);
+    const crawler = new RegistryCrawler(repo, decodeBolt11);
+    const result = await crawler.run();
+    const sumSubBuckets =
+      result.preCapSkipped.invalid_l402_no_bolt11 +
+      result.preCapSkipped.invalid_l402_decode_failed +
+      result.preCapSkipped.invalid_l402_invoice_malformed +
+      result.preCapSkipped.invalid_l402_no_decoder;
+    expect(sumSubBuckets).toBe(result.preCapSkipped.invalid_l402);
+    expect(result.preCapSkipped.invalid_l402).toBeGreaterThanOrEqual(2);
+  });
+
   it('absolute host cap: pre-existing host count blocks new ingestion', async () => {
     // Pre-seed 2 URLs on the host so existingByHost = 2 at the start of run.
     const host = 'overcapped.example.com';

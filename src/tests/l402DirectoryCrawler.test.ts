@@ -301,6 +301,7 @@ describe('L402DirectoryCrawler', async () => {
       r.preCapSkipped.not_402 +
       r.preCapSkipped.fossil_404 +
       r.preCapSkipped.invalid_l402 +
+      r.preCapSkipped.protocol_x402 +
       r.preCapSkipped.other;
 
     expect(r.discovered + r.mergedExisting + r.alreadyAttributed + r.capped + r.absoluteCapped + skippedSum).toBe(
