@@ -97,21 +97,20 @@ const PAGE_SIZE = 100;
 const PER_HOST_GAP_MS = 500;
 const FETCH_TIMEOUT_MS = 5000;
 
-/** Vague 3 phase 2 - cap on NEW ingestions per host per cycle.
- *
- *  Without this, ingesting llm402.ai (444 endpoints discovered today by the
- *  POST fallback) in a single cycle would push the catalog from 33% top-host
- *  concentration (grid.ptsolutions, 74/220) to 57% (llm402, 444 of ~755).
- *  That spike would be a regression on a property the team cares about, and
- *  it would land before any operator outreach has had time to bring in
- *  diversity from /api/services/register.
- *
- *  We cap NEW URLs to 50 per host per cycle. Updates to URLs already in the
- *  catalogue (metadata refresh, upstream signals refresh) are not capped.
- *  At the default cron interval of 24h, llm402.ai's 444 endpoints get
- *  ingested over ~9 days, smoothing the concentration ramp. Operators can
- *  trigger more cycles manually if a faster ramp is needed. */
-const HOST_INGESTION_CAP_PER_CYCLE = 50;
+/** Vague 3 phase 2 - cap on NEW ingestions per host per cycle. Vague 3 Phase
+ *  2.6 makes both knobs env-overridable so an operator can speed up or slow
+ *  down the ramp without redeploying. The defaults match the audit
+ *  reasoning: 50/cycle smooths the llm402 ramp over ~9 days; 100 total
+ *  prevents llm402 from ever exceeding 100 of the catalog regardless of
+ *  cycle count, capping concentration permanently. */
+const HOST_INGESTION_CAP_PER_CYCLE = parseInt(process.env.HOST_INGESTION_CAP_PER_CYCLE || '50', 10);
+const ABSOLUTE_HOST_CAP_TOTAL = parseInt(process.env.ABSOLUTE_HOST_CAP_TOTAL || '100', 10);
+/** Vague 3 Phase 2.6 - 404 streak length before flagging an endpoint
+ *  deprecated. Three cycles default = at least one full cold tier rotation
+ *  plus a buffer, so a transient route renaming on the provider does not
+ *  immediately retire the row. Auto-reversible: a non-404 response resets
+ *  the streak and clears the deprecated flag. */
+const DEPRECATED_404_THRESHOLD = parseInt(process.env.DEPRECATED_404_THRESHOLD || '3', 10);
 
 // Minimal BOLT11 payee extraction without external dependency.
 // The payee pubkey is the last 264 bits (33 bytes) before the signature
@@ -122,6 +121,31 @@ const HOST_INGESTION_CAP_PER_CYCLE = 50;
 // For now, we use a regex on the raw invoice (bech32) -- this is fragile
 // but works for the initial version. Production should use bolt11 npm pkg.
 
+/** Vague 3 Phase 2.6 - structured breakdown of why endpoints were skipped
+ *  before the cap evaluation. Surfaced in the "Registry crawl complete" log
+ *  to make the funnel observable in prod without re-running a manual audit. */
+export interface PreCapSkipped {
+  not_l402: number;
+  unsafe_url: number;
+  no_response: number;
+  method_405_both: number;
+  not_acceptable_406: number;
+  not_402: number;
+  fossil_404: number;
+  invalid_l402: number;
+  other: number;
+}
+
+/** Vague 3 Phase 2.6 - last outcome of discoverNodeFromUrl, exposed to the
+ *  caller via a class member so the run() loop can attribute non-success
+ *  outcomes to the right pre_cap_skipped bucket without changing the return
+ *  shape that other call sites (registerSelfSubmitted, tests) rely on. */
+interface DiscoveryOutcome {
+  finalStatus: number;
+  methodUsed: 'GET' | 'POST';
+  reason: string;
+}
+
 export class RegistryCrawler {
   private readonly hostLimiter = new HostRateLimiter(PER_HOST_GAP_MS);
   private readonly healthTracker: ProviderHealthTracker;
@@ -129,6 +153,12 @@ export class RegistryCrawler {
    *  HOST_INGESTION_CAP_PER_CYCLE for production. Tests use a small value to
    *  avoid burning the per-host rate limiter (500ms × N) on synthetic hosts. */
   private readonly hostIngestionCapPerCycle: number;
+  private readonly absoluteHostCapTotal: number;
+  /** Vague 3 Phase 2.6 - tracked across the full lifetime of one
+   *  discoverNodeFromUrl call so the run() loop can categorise non-success
+   *  outcomes for the pre_cap_skipped breakdown and the 404 deprecation
+   *  logic. Reset at the top of every call. */
+  private lastDiscoveryOutcome: DiscoveryOutcome | null = null;
 
   constructor(
     private serviceEndpointRepo: ServiceEndpointRepository,
@@ -136,19 +166,78 @@ export class RegistryCrawler {
     private preimagePoolRepo?: PreimagePoolRepository,
     healthTracker?: ProviderHealthTracker,
     hostIngestionCapPerCycle: number = HOST_INGESTION_CAP_PER_CYCLE,
+    absoluteHostCapTotal: number = ABSOLUTE_HOST_CAP_TOTAL,
   ) {
     this.healthTracker = healthTracker ?? new ProviderHealthTracker();
     this.hostIngestionCapPerCycle = hostIngestionCapPerCycle;
+    this.absoluteHostCapTotal = absoluteHostCapTotal;
   }
 
-  async run(): Promise<{ discovered: number; updated: number; errors: number; capped: number }> {
-    const result = { discovered: 0, updated: 0, errors: 0, capped: 0 };
+  async run(): Promise<{
+    discovered: number;
+    updated: number;
+    errors: number;
+    capped: number;
+    absoluteCapped: number;
+    deprecatedFlagged: number;
+    deprecatedCleared: number;
+    preCapSkipped: PreCapSkipped;
+  }> {
+    const result = {
+      discovered: 0,
+      updated: 0,
+      errors: 0,
+      capped: 0,
+      absoluteCapped: 0,
+      deprecatedFlagged: 0,
+      deprecatedCleared: 0,
+      preCapSkipped: {
+        not_l402: 0,
+        unsafe_url: 0,
+        no_response: 0,
+        method_405_both: 0,
+        not_acceptable_406: 0,
+        not_402: 0,
+        fossil_404: 0,
+        invalid_l402: 0,
+        other: 0,
+      } as PreCapSkipped,
+    };
     let offset = 0;
     let hasMore = true;
     // Vague 3 phase 2 - per-host cap on NEW ingestions for this cycle. The
     // counter spans the entire run (all paginated pages) so the cap is a
     // global per-cycle budget, not a per-page budget.
     const newIngestionsByHost = new Map<string, number>();
+    const absoluteCappedHosts = new Set<string>();
+    // Vague 3 Phase 2.6 - existing per-host counts to enforce
+    // ABSOLUTE_HOST_CAP_TOTAL. Built once at the top of the run and
+    // incremented in-memory as we ingest, so we never re-query during the
+    // hot loop.
+    const existingByHost = await this.serviceEndpointRepo.countActiveByHost();
+
+    /** Vague 3 Phase 2.6 - bucket a non-success outcome from
+     *  discoverNodeFromUrl into the pre_cap_skipped breakdown. */
+    const bucketLastOutcome = (): void => {
+      const o = this.lastDiscoveryOutcome;
+      if (!o) return;
+      switch (o.reason) {
+        case 'method_405_both': result.preCapSkipped.method_405_both++; break;
+        case 'not_acceptable_406': result.preCapSkipped.not_acceptable_406++; break;
+        case 'fossil_404': result.preCapSkipped.fossil_404++; break;
+        case 'not_402': result.preCapSkipped.not_402++; break;
+        case 'invalid_l402_no_bolt11':
+        case 'invoice_malformed':
+        case 'decode_failed':
+        case 'no_decoder':
+          result.preCapSkipped.invalid_l402++; break;
+        case 'http_5xx':
+        case 'network_error':
+        case 'ssrf_blocked':
+          result.preCapSkipped.no_response++; break;
+        default: result.preCapSkipped.other++; break;
+      }
+    };
 
     while (hasMore) {
       try {
@@ -159,8 +248,8 @@ export class RegistryCrawler {
         }
 
         for (const svc of services) {
-          if (svc.protocol !== 'L402') continue;
-          if (!isSafeUrl(svc.url)) continue;
+          if (svc.protocol !== 'L402') { result.preCapSkipped.not_l402++; continue; }
+          if (!isSafeUrl(svc.url)) { result.preCapSkipped.unsafe_url++; continue; }
           try {
             const meta = {
               name: svc.name?.trim() || null,
@@ -191,14 +280,43 @@ export class RegistryCrawler {
                 if (probe?.priceSats && probe.priceSats > 0) {
                   await this.serviceEndpointRepo.updatePrice(svc.url, probe.priceSats);
                 }
+                // Vague 3 Phase 2.6 — 404 fossile tracking on existing rows.
+                // Only existing endpoints get this treatment; new URLs that
+                // 404 on first contact are simply skipped (not yet in DB).
+                const outcome = this.lastDiscoveryOutcome;
+                if (outcome?.reason === 'fossil_404') {
+                  const after = await this.serviceEndpointRepo.record404(svc.url, DEPRECATED_404_THRESHOLD);
+                  if (after.deprecated && !existing.deprecated) {
+                    result.deprecatedFlagged++;
+                    logger.info({ url: svc.url, consecutive404: after.count, threshold: DEPRECATED_404_THRESHOLD }, 'Registry: endpoint flagged deprecated (404 streak)');
+                  }
+                } else if (outcome?.reason === 'success' && existing.consecutive_404_count > 0) {
+                  await this.serviceEndpointRepo.clear404Streak(svc.url);
+                  if (existing.deprecated) {
+                    result.deprecatedCleared++;
+                    logger.info({ url: svc.url }, 'Registry: deprecated cleared (endpoint recovered)');
+                  }
+                }
               }
+              continue;
+            }
+
+            // Vague 3 Phase 2.6 - absolute host cap (lifetime). Prevents llm402
+            // from ever exceeding ABSOLUTE_HOST_CAP_TOTAL endpoints in the
+            // catalogue, regardless of how many cycles run. Checked before the
+            // per-cycle cap so a host already at lifetime cap never enters
+            // discoverNodeFromUrl this cycle either.
+            const host = hostnameOf(svc.url);
+            const lifetimeCount = existingByHost.get(host) ?? 0;
+            if (lifetimeCount >= this.absoluteHostCapTotal) {
+              result.absoluteCapped++;
+              absoluteCappedHosts.add(host);
               continue;
             }
 
             // Vague 3 phase 2 - apply per-host cap to NEW ingestions only.
             // Updates above are unconditional so signal refresh keeps working
             // for all hosts, even those over the cap.
-            const host = hostnameOf(svc.url);
             const usedThisCycle = newIngestionsByHost.get(host) ?? 0;
             if (usedThisCycle >= this.hostIngestionCapPerCycle) {
               result.capped++;
@@ -215,6 +333,7 @@ export class RegistryCrawler {
             if (discovered?.agentHash) {
               result.discovered++;
               newIngestionsByHost.set(host, usedThisCycle + 1);
+              existingByHost.set(host, lifetimeCount + 1);
               await this.serviceEndpointRepo.upsert(
                 discovered.agentHash,
                 svc.url,
@@ -235,6 +354,10 @@ export class RegistryCrawler {
               if (discovered.priceSats && discovered.priceSats > 0) {
                 await this.serviceEndpointRepo.updatePrice(svc.url, discovered.priceSats);
               }
+            } else {
+              // Vague 3 Phase 2.6 - attribute the silent miss to the right
+              // bucket so the cycle log breaks down where endpoints went.
+              bucketLastOutcome();
             }
           } catch (err: unknown) {
             result.errors++;
@@ -247,7 +370,7 @@ export class RegistryCrawler {
         offset += services.length;
         if (services.length < PAGE_SIZE) hasMore = false;
 
-        logger.info({ offset, discovered: result.discovered, updated: result.updated, capped: result.capped }, 'Registry crawl progress');
+        logger.info({ offset, discovered: result.discovered, updated: result.updated, capped: result.capped, absoluteCapped: result.absoluteCapped }, 'Registry crawl progress');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error({ offset, error: msg }, 'Registry crawl page fetch failed');
@@ -261,7 +384,14 @@ export class RegistryCrawler {
     const cappedHosts = Array.from(newIngestionsByHost.entries())
       .filter(([, c]) => c >= this.hostIngestionCapPerCycle)
       .map(([h, c]) => ({ host: h, ingested: c }));
-    logger.info({ ...result, hostCapPerCycle: this.hostIngestionCapPerCycle, cappedHosts }, 'Registry crawl complete');
+    logger.info({
+      ...result,
+      hostCapPerCycle: this.hostIngestionCapPerCycle,
+      absoluteHostCapTotal: this.absoluteHostCapTotal,
+      deprecatedThreshold: DEPRECATED_404_THRESHOLD,
+      cappedHosts,
+      absoluteCappedHosts: Array.from(absoluteCappedHosts),
+    }, 'Registry crawl complete');
     return result;
   }
 
@@ -330,17 +460,20 @@ export class RegistryCrawler {
    *  the catalogue with confirmed status (Vague 1 G.1).
    *
    *  Vague 3 phase 2: the `method` argument carries the http_method 402index
-   *  advertises for the endpoint. When 'POST' we send POST directly with an
-   *  empty JSON body. When 'GET' we send GET first and retry with POST on a
-   *  405 response, because the upstream may omit http_method for legacy
-   *  entries — losing 444 llm402.ai endpoints to silent rejection in the
-   *  pre-Vague-3 crawler. POST retries always carry Content-Type:
-   *  application/json + body '{}' so endpoints that validate Content-Length>0
-   *  don't reject the probe at the WAF. */
+   *  advertises for the endpoint.
+   *
+   *  Vague 3 Phase 2.6: symmetric 405 fallback (GET→POST or POST→GET) — the
+   *  upstream registry sometimes mis-advertises the method (maximumsats lists
+   *  POST but server expects GET). Plus an Accept header that prefers JSON
+   *  but accepts anything (sats4ai's strict Content negotiation responds 406
+   *  to */ /* alone). The outcome is exposed via `lastDiscoveryOutcome` so
+   *  the run() loop can attribute null returns to the right pre_cap_skipped
+   *  bucket and trigger 404 fossile flagging. */
   private async discoverNodeFromUrl(
     serviceUrl: string,
     method: 'GET' | 'POST' = 'GET',
   ): Promise<{ agentHash: string; priceSats: number | null; latencyMs: number } | null> {
+    this.lastDiscoveryOutcome = null;
     const start = Date.now();
     try {
       await this.hostLimiter.wait(serviceUrl);
@@ -350,40 +483,68 @@ export class RegistryCrawler {
       const buildInit = (m: 'GET' | 'POST'): RequestInit => ({
         method: m,
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: m === 'POST'
-          ? { 'User-Agent': 'SatRank-RegistryCrawler/1.0', 'Content-Type': 'application/json' }
-          : { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
+        headers: {
+          'User-Agent': 'SatRank-RegistryCrawler/1.0',
+          // Vague 3 Phase 2.6 — Accept JSON but accept anything as fallback so
+          // strict content-negotiation servers (sats4ai responds 406 to */* alone)
+          // don't 406-reject the probe.
+          'Accept': 'application/json, */*;q=0.5',
+          ...(m === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+        },
         ...(m === 'POST' ? { body: '{}' } : {}),
       });
 
       let resp = await fetchSafeExternal(serviceUrl, buildInit(method));
       let methodUsed: 'GET' | 'POST' = method;
-      // Vague 3 phase 2: GET-first POST-fallback. If the upstream registry did
-      // not advertise POST and the endpoint replies 405 Method Not Allowed,
-      // try POST once with an empty JSON body. llm402.ai is the canonical case.
-      if (resp.status === 405 && method === 'GET') {
-        logger.debug({ url: serviceUrl }, 'Registry: GET returned 405, retrying with POST');
-        resp = await fetchSafeExternal(serviceUrl, buildInit('POST'));
-        methodUsed = 'POST';
+      // Vague 3 Phase 2.6: symmetric 405 fallback. If the first call returned
+      // 405 Method Not Allowed (regardless of which method we tried), retry
+      // with the opposite. Covers both llm402.ai (advertised GET, needs POST)
+      // and maximumsats (advertised POST, needs GET).
+      if (resp.status === 405) {
+        const altMethod: 'GET' | 'POST' = method === 'GET' ? 'POST' : 'GET';
+        logger.info({ url: serviceUrl, initialMethod: method, fallbackMethod: altMethod }, 'discoverNodeFromUrl: 405 fallback');
+        resp = await fetchSafeExternal(serviceUrl, buildInit(altMethod));
+        methodUsed = altMethod;
       }
       const latencyMs = Date.now() - start;
 
+      if (resp.status === 405) {
+        // Both methods returned 405 — endpoint accepts neither, skip.
+        this.lastDiscoveryOutcome = { finalStatus: 405, methodUsed, reason: 'method_405_both' };
+        logger.info({ url: serviceUrl, methodUsed }, 'discoverNodeFromUrl: 405 on both methods');
+        return null;
+      }
+      if (resp.status === 406) {
+        this.lastDiscoveryOutcome = { finalStatus: 406, methodUsed, reason: 'not_acceptable_406' };
+        logger.info({ url: serviceUrl, methodUsed }, 'discoverNodeFromUrl: 406 not acceptable');
+        return null;
+      }
+      if (resp.status === 404) {
+        this.lastDiscoveryOutcome = { finalStatus: 404, methodUsed, reason: 'fossil_404' };
+        logger.info({ url: serviceUrl, methodUsed }, 'discoverNodeFromUrl: 404 (potential fossil)');
+        return null;
+      }
       if (resp.status >= 500 && resp.status < 600) {
         // 5xx on a URL 402index has indexed is a provider-side failure: track it
         // so an outage like the 2026-04-22 plebtv one surfaces in the logs.
         this.healthTracker.recordFailure(serviceUrl, 'http_5xx_after_retry');
-        logger.debug({ url: serviceUrl, methodUsed, status: resp.status }, 'Registry: discoverNodeFromUrl 5xx');
+        this.lastDiscoveryOutcome = { finalStatus: resp.status, methodUsed, reason: 'http_5xx' };
+        logger.info({ url: serviceUrl, methodUsed, status: resp.status }, 'discoverNodeFromUrl: 5xx');
         return null;
       }
       if (resp.status !== 402) {
-        logger.debug({ url: serviceUrl, methodUsed, status: resp.status }, 'Registry: discoverNodeFromUrl non-402 response');
+        this.lastDiscoveryOutcome = { finalStatus: resp.status, methodUsed, reason: 'not_402' };
+        logger.info({ url: serviceUrl, methodUsed, status: resp.status }, 'discoverNodeFromUrl: non-402');
         return null; // not an L402 endpoint (legit non-L402)
       }
 
       const wwwAuth = resp.headers.get('www-authenticate') ?? '';
       // Extract invoice from: L402 macaroon="...", invoice="lnbc..."
       const invoiceMatch = wwwAuth.match(/invoice="(lnbc[a-z0-9]+)"/i);
-      if (!invoiceMatch) return null;
+      if (!invoiceMatch) {
+        this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'invalid_l402_no_bolt11' };
+        return null;
+      }
 
       const invoice = invoiceMatch[1];
 
@@ -414,24 +575,31 @@ export class RegistryCrawler {
             const agentHash = sha256(decoded.destination);
             const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
             this.healthTracker.recordSuccess(serviceUrl);
+            this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'success' };
             return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null, latencyMs };
           }
           this.healthTracker.recordFailure(serviceUrl, 'decode_failed');
+          this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'decode_failed' };
         } catch (decodeErr: unknown) {
           const msg = decodeErr instanceof Error ? decodeErr.message : String(decodeErr);
           const kind = /invalid index|checksum failed|failed converting data|invalid character not part of charset/i.test(msg)
             ? 'invoice_malformed'
             : 'decode_failed';
           this.healthTracker.recordFailure(serviceUrl, kind);
+          this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: kind };
         }
+      } else {
+        this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'no_decoder' };
       }
 
       return null;
     } catch (err: unknown) {
       if (err instanceof SsrfBlockedError) {
         logger.debug({ url: serviceUrl, reason: err.message }, 'Registry: discoverNodeFromUrl blocked by SSRF guard');
+        this.lastDiscoveryOutcome = { finalStatus: 0, methodUsed: method, reason: 'ssrf_blocked' };
       } else {
         this.healthTracker.recordFailure(serviceUrl, 'network_error');
+        this.lastDiscoveryOutcome = { finalStatus: 0, methodUsed: method, reason: 'network_error' };
       }
       return null;
     }

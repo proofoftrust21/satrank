@@ -55,7 +55,7 @@ const NETWORK_STATS_CACHE_KEY = 'stats:network';
 const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 
 // Must match the latest migration version in migrations.ts (or in src/database/migrations/)
-const EXPECTED_SCHEMA_VERSION = 43;
+const EXPECTED_SCHEMA_VERSION = 44;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that

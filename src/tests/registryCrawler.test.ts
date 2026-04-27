@@ -263,4 +263,115 @@ describe('RegistryCrawler', async () => {
     const after = await repo.findByUrl(url);
     expect(after!.service_price_sats).toBe(50);
   });
+
+  // Vague 3 Phase 2.6 — symmetric POST→GET 405 fallback + Accept header +
+  // absolute host cap + 404 deprecation streak.
+
+  it('POST→GET symmetric fallback: 402index advertises POST but server expects GET', async () => {
+    const url = 'https://maxsats-like.example.com/api/run';
+    const pubkey = '02' + 'a'.repeat(64);
+    const methodSequence: string[] = [];
+    global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(JSON.stringify({
+          services: [{ url, protocol: 'L402', name: 'maxsats-like', description: null, category: null, provider: null, http_method: 'POST' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (urlStr === url) {
+        const method = (init?.method ?? 'GET').toUpperCase();
+        methodSequence.push(method);
+        if (method === 'POST') {
+          // Server says use GET, mimicking maximumsats.com
+          return new Response('', { status: 405, headers: { 'Allow': 'GET, HEAD, OPTIONS' } });
+        }
+        const headers = new Headers();
+        headers.set('www-authenticate', `L402 macaroon="fake", invoice="lnbc20n1pfakemaxsatslike"`);
+        return new Response('', { status: 402, headers });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    const decodeBolt11 = async () => ({ destination: pubkey, num_satoshis: '20' });
+    const crawler = new RegistryCrawler(repo, decodeBolt11);
+    await crawler.run();
+    expect(methodSequence).toEqual(['POST', 'GET']); // symmetric fallback fired
+    const entry = await repo.findByUrl(url);
+    expect(entry).toBeDefined();
+    expect(entry!.last_http_status).toBe(402);
+  });
+
+  it('Accept header is sent on every probe (preferring JSON, accepting */* fallback)', async () => {
+    const url = 'https://strict-accept.example.com/api/check';
+    const pubkey = '02' + 'b'.repeat(64);
+    let acceptObserved = '';
+    global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(JSON.stringify({
+          services: [{ url, protocol: 'L402', name: 'strict', description: null, category: null, provider: null, http_method: 'GET' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (urlStr === url) {
+        const headers = init?.headers;
+        if (headers && typeof headers === 'object' && !Array.isArray(headers) && 'Accept' in (headers as Record<string, string>)) {
+          acceptObserved = (headers as Record<string, string>).Accept;
+        } else if (headers && Array.isArray(headers)) {
+          // Headers as tuples
+          const found = (headers as [string, string][]).find(([k]) => k.toLowerCase() === 'accept');
+          if (found) acceptObserved = found[1];
+        } else if (headers instanceof Headers) {
+          acceptObserved = headers.get('accept') ?? '';
+        }
+        const respHeaders = new Headers();
+        respHeaders.set('www-authenticate', `L402 macaroon="fake", invoice="lnbc20n1pfakeacceptcheck"`);
+        return new Response('', { status: 402, headers: respHeaders });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    const decodeBolt11 = async () => ({ destination: pubkey, num_satoshis: '20' });
+    const crawler = new RegistryCrawler(repo, decodeBolt11);
+    await crawler.run();
+    expect(acceptObserved).toBe('application/json, */*;q=0.5');
+  });
+
+  it('absolute host cap: pre-existing host count blocks new ingestion', async () => {
+    // Pre-seed 2 URLs on the host so existingByHost = 2 at the start of run.
+    const host = 'overcapped.example.com';
+    const pre1 = `https://${host}/old1`;
+    const pre2 = `https://${host}/old2`;
+    const pubkey = '02' + 'c'.repeat(64);
+    await repo.upsert(sha256(pubkey), pre1, 402, 100, '402index');
+    await repo.upsert(sha256(pubkey), pre2, 402, 100, '402index');
+
+    // 402index advertises 3 NEW URLs on the same host. With absoluteCap=2,
+    // none of the 3 should be ingested because the host is already at lifetime cap.
+    const newUrls = Array.from({ length: 3 }, (_, i) => ({
+      url: `https://${host}/new-${i}`,
+      protocol: 'L402',
+      name: 'over',
+      description: null,
+      category: null,
+      provider: null,
+      http_method: 'GET',
+    }));
+    global.fetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        return new Response(JSON.stringify({ services: newUrls }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      // If the cap is honoured, no /new-N URL is ever requested.
+      const headers = new Headers();
+      headers.set('www-authenticate', `L402 macaroon="fake", invoice="lnbc10n1pfakeshouldnotrun"`);
+      return new Response('', { status: 402, headers });
+    }) as typeof fetch;
+    const decodeBolt11 = async () => ({ destination: pubkey, num_satoshis: '10' });
+    const crawler = new RegistryCrawler(repo, decodeBolt11, undefined, undefined, 50, 2);
+    const result = await crawler.run();
+    expect(result.discovered).toBe(0);
+    expect(result.absoluteCapped).toBe(3);
+    // None of the new URLs landed in DB.
+    for (const s of newUrls) {
+      expect(await repo.findByUrl(s.url)).toBeUndefined();
+    }
+  });
 });

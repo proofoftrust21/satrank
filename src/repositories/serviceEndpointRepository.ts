@@ -43,6 +43,14 @@ export interface ServiceEndpoint {
   upstream_last_checked: number | null;
   upstream_source: string | null;
   upstream_signals_updated_at: number | null;
+  /** Vague 3 Phase 2.6 — set to true after consecutive_404_count crosses
+   *  DEPRECATED_404_THRESHOLD, or any other deprecation reason. Excluded from
+   *  the discovery surfaces (/api/intent, /api/intent/categories, /api/services)
+   *  but kept in the DB so the row can come back to life automatically when the
+   *  upstream provider responds non-404 again. */
+  deprecated: boolean;
+  deprecated_reason: string | null;
+  consecutive_404_count: number;
 }
 
 /** Vague 1 G.2 — payload accepted by upsertUpstreamSignals. Mirrors the
@@ -224,13 +232,69 @@ export class ServiceEndpointRepository {
     const { rows } = await this.db.query<ServiceEndpoint>(
       `
       SELECT * FROM service_endpoints
-      WHERE check_count >= 1 AND ${where}
+      WHERE check_count >= 1 AND deprecated = FALSE AND ${where}
       ORDER BY last_checked_at ASC NULLS FIRST
       LIMIT $${params.length}
       `,
       params,
     );
     return rows;
+  }
+
+  /** Vague 3 Phase 2.6 — counts of endpoints per host. Used by registryCrawler
+   *  to enforce ABSOLUTE_HOST_CAP_TOTAL: a single host (e.g. llm402.ai) cannot
+   *  exceed N endpoints in the catalogue, regardless of how many cycles run.
+   *  Returns only NON-deprecated rows so a host that was capped, then had
+   *  fossiles deprecated, can recover ingestion budget. */
+  async countActiveByHost(): Promise<Map<string, number>> {
+    const { rows } = await this.db.query<{ host: string; ct: string }>(
+      `SELECT
+         SUBSTRING(url FROM 'https?://([^/:?]+)') AS host,
+         COUNT(*)::text AS ct
+       FROM service_endpoints
+       WHERE deprecated = FALSE
+       GROUP BY host`,
+    );
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      if (r.host) m.set(r.host, Number(r.ct));
+    }
+    return m;
+  }
+
+  /** Vague 3 Phase 2.6 — bump consecutive_404_count and flag deprecated when
+   *  the threshold is reached. Returns the updated row so the caller can log
+   *  the transition. */
+  async record404(url: string, threshold: number): Promise<{ count: number; deprecated: boolean }> {
+    const { rows } = await this.db.query<{ consecutive_404_count: number; deprecated: boolean }>(
+      `UPDATE service_endpoints
+         SET consecutive_404_count = consecutive_404_count + 1,
+             deprecated = (consecutive_404_count + 1 >= $2),
+             deprecated_reason = CASE
+               WHEN consecutive_404_count + 1 >= $2 THEN '404_persistent'
+               ELSE deprecated_reason
+             END
+       WHERE url = $1
+       RETURNING consecutive_404_count, deprecated`,
+      [url, threshold],
+    );
+    if (rows.length === 0) return { count: 0, deprecated: false };
+    return { count: rows[0].consecutive_404_count, deprecated: rows[0].deprecated };
+  }
+
+  /** Vague 3 Phase 2.6 — reset the 404 streak and clear deprecated when the
+   *  endpoint comes back online. Reversible by design: a provider recovering
+   *  from a misconfigured route auto-rejoins the catalog at the next probe. */
+  async clear404Streak(url: string): Promise<void> {
+    await this.db.query(
+      `UPDATE service_endpoints
+         SET consecutive_404_count = 0,
+             deprecated = CASE WHEN deprecated_reason = '404_persistent' THEN FALSE ELSE deprecated END,
+             deprecated_reason = CASE WHEN deprecated_reason = '404_persistent' THEN NULL ELSE deprecated_reason END
+       WHERE url = $1
+         AND consecutive_404_count > 0`,
+      [url],
+    );
   }
 
   /** Axe 1 — record that one or more endpoints were just surfaced to a caller.
@@ -364,7 +428,8 @@ export class ServiceEndpointRepository {
 
   async findServices(filters: ServiceSearchFilters): Promise<{ services: ServiceEndpoint[]; total: number }> {
     // Only trusted sources appear in discovery — ad_hoc URLs may have wrong URL→agent bindings
-    const conditions: string[] = ["se.agent_hash IS NOT NULL", "se.source IN ('402index', 'self_registered')"];
+    // Vague 3 Phase 2.6 — also filter out deprecated rows (e.g. 404-persistent fossiles)
+    const conditions: string[] = ["se.agent_hash IS NOT NULL", "se.source IN ('402index', 'self_registered')", "se.deprecated = FALSE"];
     const params: unknown[] = [];
     let idx = 1;
 
@@ -455,6 +520,7 @@ export class ServiceEndpointRepository {
       WHERE category IS NOT NULL
         AND agent_hash IS NOT NULL
         AND source IN ('402index', 'self_registered')
+        AND deprecated = FALSE
       GROUP BY category
       ORDER BY endpoint_count DESC
       `,
