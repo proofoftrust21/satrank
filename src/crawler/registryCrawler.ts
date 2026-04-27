@@ -36,6 +36,13 @@ interface IndexService {
   last_checked?: string;
   registered_at?: string;
   price_sats?: number;
+  /** Vague 3 phase 2 - HTTP method the endpoint expects. 402index exposes this
+   *  per-entry (540 GET / 584 POST observed 2026-04-27). Drives our GET-first
+   *  POST-fallback strategy in discoverNodeFromUrl: when 402index says POST,
+   *  we POST directly; when it says GET (or omits the field), we GET and
+   *  retry with POST on a 405 response. Without this, the entire 444-endpoint
+   *  llm402.ai catalog is silently rejected because GET returns 405 there. */
+  http_method?: string;
 }
 
 /** Vague 1 G.2 - parse a 402index ISO timestamp ("2026-04-26 18:13:16" or
@@ -47,6 +54,26 @@ function parseIso(ts: string | undefined): number | null {
   const normalised = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
   const ms = Date.parse(normalised);
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+/** Vague 3 phase 2 - normalise the HTTP method advertised by the upstream
+ *  registry. Defaults to 'GET' when missing or unrecognised; we still try POST
+ *  as a fallback inside discoverNodeFromUrl, so an upstream that omits the
+ *  field (e.g. a 2nd source added later that does not surface http_method)
+ *  is not silently rejected. */
+function normaliseHttpMethod(raw: string | undefined): 'GET' | 'POST' {
+  return (raw ?? '').toUpperCase() === 'POST' ? 'POST' : 'GET';
+}
+
+/** Vague 3 phase 2 - extract a hostname for the per-host ingestion cap.
+ *  Returns the empty string for malformed URLs, which puts them in a single
+ *  bucket — they will share one cap budget rather than each consuming one. */
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
 }
 
 /** Ingest silencieux côté crawler : valeurs invalides rejetées avec un warn
@@ -70,6 +97,22 @@ const PAGE_SIZE = 100;
 const PER_HOST_GAP_MS = 500;
 const FETCH_TIMEOUT_MS = 5000;
 
+/** Vague 3 phase 2 - cap on NEW ingestions per host per cycle.
+ *
+ *  Without this, ingesting llm402.ai (444 endpoints discovered today by the
+ *  POST fallback) in a single cycle would push the catalog from 33% top-host
+ *  concentration (grid.ptsolutions, 74/220) to 57% (llm402, 444 of ~755).
+ *  That spike would be a regression on a property the team cares about, and
+ *  it would land before any operator outreach has had time to bring in
+ *  diversity from /api/services/register.
+ *
+ *  We cap NEW URLs to 50 per host per cycle. Updates to URLs already in the
+ *  catalogue (metadata refresh, upstream signals refresh) are not capped.
+ *  At the default cron interval of 24h, llm402.ai's 444 endpoints get
+ *  ingested over ~9 days, smoothing the concentration ramp. Operators can
+ *  trigger more cycles manually if a faster ramp is needed. */
+const HOST_INGESTION_CAP_PER_CYCLE = 50;
+
 // Minimal BOLT11 payee extraction without external dependency.
 // The payee pubkey is the last 264 bits (33 bytes) before the signature
 // in a BOLT11 invoice, but parsing is complex. Instead, we extract it
@@ -82,20 +125,30 @@ const FETCH_TIMEOUT_MS = 5000;
 export class RegistryCrawler {
   private readonly hostLimiter = new HostRateLimiter(PER_HOST_GAP_MS);
   private readonly healthTracker: ProviderHealthTracker;
+  /** Vague 3 phase 2 - configurable per-host cap. Defaults to
+   *  HOST_INGESTION_CAP_PER_CYCLE for production. Tests use a small value to
+   *  avoid burning the per-host rate limiter (500ms × N) on synthetic hosts. */
+  private readonly hostIngestionCapPerCycle: number;
 
   constructor(
     private serviceEndpointRepo: ServiceEndpointRepository,
     private decodeBolt11?: (invoice: string) => Promise<{ destination: string; num_satoshis?: string } | null>,
     private preimagePoolRepo?: PreimagePoolRepository,
     healthTracker?: ProviderHealthTracker,
+    hostIngestionCapPerCycle: number = HOST_INGESTION_CAP_PER_CYCLE,
   ) {
     this.healthTracker = healthTracker ?? new ProviderHealthTracker();
+    this.hostIngestionCapPerCycle = hostIngestionCapPerCycle;
   }
 
-  async run(): Promise<{ discovered: number; updated: number; errors: number }> {
-    const result = { discovered: 0, updated: 0, errors: 0 };
+  async run(): Promise<{ discovered: number; updated: number; errors: number; capped: number }> {
+    const result = { discovered: 0, updated: 0, errors: 0, capped: 0 };
     let offset = 0;
     let hasMore = true;
+    // Vague 3 phase 2 - per-host cap on NEW ingestions for this cycle. The
+    // counter spans the entire run (all paginated pages) so the cap is a
+    // global per-cycle budget, not a per-page budget.
+    const newIngestionsByHost = new Map<string, number>();
 
     while (hasMore) {
       try {
@@ -115,6 +168,7 @@ export class RegistryCrawler {
               category: sanitizeCrawledCategory(svc.category, svc.url),
               provider: svc.provider?.trim() || null,
             };
+            const httpMethod = normaliseHttpMethod(svc.http_method);
 
             // Update metadata for URLs already in the registry (even without decoder)
             const existing = await this.serviceEndpointRepo.findByUrl(svc.url);
@@ -133,11 +187,21 @@ export class RegistryCrawler {
               result.updated++;
               // Re-probe only if price is still null — avoid needless GET on healthy, priced endpoints
               if (existing.service_price_sats === null) {
-                const probe = await this.discoverNodeFromUrl(svc.url);
+                const probe = await this.discoverNodeFromUrl(svc.url, httpMethod);
                 if (probe?.priceSats && probe.priceSats > 0) {
                   await this.serviceEndpointRepo.updatePrice(svc.url, probe.priceSats);
                 }
               }
+              continue;
+            }
+
+            // Vague 3 phase 2 - apply per-host cap to NEW ingestions only.
+            // Updates above are unconditional so signal refresh keeps working
+            // for all hosts, even those over the cap.
+            const host = hostnameOf(svc.url);
+            const usedThisCycle = newIngestionsByHost.get(host) ?? 0;
+            if (usedThisCycle >= this.hostIngestionCapPerCycle) {
+              result.capped++;
               continue;
             }
 
@@ -147,9 +211,10 @@ export class RegistryCrawler {
             // with HTTP 402 plus a decodable BOLT11, so persisting status=402 +
             // measured latencyMs replaces the legacy placeholder (0, 0) that
             // made every fresh row look "unreachable" until cold-tier had run.
-            const discovered = await this.discoverNodeFromUrl(svc.url);
+            const discovered = await this.discoverNodeFromUrl(svc.url, httpMethod);
             if (discovered?.agentHash) {
               result.discovered++;
+              newIngestionsByHost.set(host, usedThisCycle + 1);
               await this.serviceEndpointRepo.upsert(
                 discovered.agentHash,
                 svc.url,
@@ -182,7 +247,7 @@ export class RegistryCrawler {
         offset += services.length;
         if (services.length < PAGE_SIZE) hasMore = false;
 
-        logger.info({ offset, discovered: result.discovered, updated: result.updated }, 'Registry crawl progress');
+        logger.info({ offset, discovered: result.discovered, updated: result.updated, capped: result.capped }, 'Registry crawl progress');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error({ offset, error: msg }, 'Registry crawl page fetch failed');
@@ -191,7 +256,12 @@ export class RegistryCrawler {
       }
     }
 
-    logger.info(result, 'Registry crawl complete');
+    // Surface which hosts actually got capped this cycle, ordered by hits, so
+    // operators can spot concentration drift early.
+    const cappedHosts = Array.from(newIngestionsByHost.entries())
+      .filter(([, c]) => c >= this.hostIngestionCapPerCycle)
+      .map(([h, c]) => ({ host: h, ingested: c }));
+    logger.info({ ...result, hostCapPerCycle: this.hostIngestionCapPerCycle, cappedHosts }, 'Registry crawl complete');
     return result;
   }
 
@@ -252,32 +322,63 @@ export class RegistryCrawler {
     return { agentHash: discovered.agentHash, priceSats: ep?.service_price_sats ?? null, fieldsUpdated: updated };
   }
 
-  /** GET the service URL, expect a 402 with WWW-Authenticate header containing a BOLT11 invoice.
-   *  Decode the invoice to extract the payee node pubkey and price in sats.
-   *  Returns { agentHash, priceSats, latencyMs } or null. The latencyMs is the wall
-   *  time of the discovery fetch and is reused as a bootstrap probe latency at upsert
-   *  time so newly ingested rows enter the catalogue with confirmed status (Vague 1 G.1). */
-  private async discoverNodeFromUrl(serviceUrl: string): Promise<{ agentHash: string; priceSats: number | null; latencyMs: number } | null> {
+  /** GET (or POST) the service URL, expect a 402 with WWW-Authenticate header
+   *  containing a BOLT11 invoice. Decode the invoice to extract the payee node
+   *  pubkey and price in sats. Returns { agentHash, priceSats, latencyMs } or
+   *  null. The latencyMs is the wall time of the discovery fetch and is reused
+   *  as a bootstrap probe latency at upsert time so newly ingested rows enter
+   *  the catalogue with confirmed status (Vague 1 G.1).
+   *
+   *  Vague 3 phase 2: the `method` argument carries the http_method 402index
+   *  advertises for the endpoint. When 'POST' we send POST directly with an
+   *  empty JSON body. When 'GET' we send GET first and retry with POST on a
+   *  405 response, because the upstream may omit http_method for legacy
+   *  entries — losing 444 llm402.ai endpoints to silent rejection in the
+   *  pre-Vague-3 crawler. POST retries always carry Content-Type:
+   *  application/json + body '{}' so endpoints that validate Content-Length>0
+   *  don't reject the probe at the WAF. */
+  private async discoverNodeFromUrl(
+    serviceUrl: string,
+    method: 'GET' | 'POST' = 'GET',
+  ): Promise<{ agentHash: string; priceSats: number | null; latencyMs: number } | null> {
     const start = Date.now();
     try {
       await this.hostLimiter.wait(serviceUrl);
       // SSRF hardening: fetchSafeExternal does connect-time DNS validation so a
       // user-controlled URL that rebinds to a private IP is rejected before
       // the socket opens. redirect: 'manual' is the default (no follow).
-      const resp = await fetchSafeExternal(serviceUrl, {
-        method: 'GET',
+      const buildInit = (m: 'GET' | 'POST'): RequestInit => ({
+        method: m,
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
+        headers: m === 'POST'
+          ? { 'User-Agent': 'SatRank-RegistryCrawler/1.0', 'Content-Type': 'application/json' }
+          : { 'User-Agent': 'SatRank-RegistryCrawler/1.0' },
+        ...(m === 'POST' ? { body: '{}' } : {}),
       });
+
+      let resp = await fetchSafeExternal(serviceUrl, buildInit(method));
+      let methodUsed: 'GET' | 'POST' = method;
+      // Vague 3 phase 2: GET-first POST-fallback. If the upstream registry did
+      // not advertise POST and the endpoint replies 405 Method Not Allowed,
+      // try POST once with an empty JSON body. llm402.ai is the canonical case.
+      if (resp.status === 405 && method === 'GET') {
+        logger.debug({ url: serviceUrl }, 'Registry: GET returned 405, retrying with POST');
+        resp = await fetchSafeExternal(serviceUrl, buildInit('POST'));
+        methodUsed = 'POST';
+      }
       const latencyMs = Date.now() - start;
 
       if (resp.status >= 500 && resp.status < 600) {
         // 5xx on a URL 402index has indexed is a provider-side failure: track it
         // so an outage like the 2026-04-22 plebtv one surfaces in the logs.
         this.healthTracker.recordFailure(serviceUrl, 'http_5xx_after_retry');
+        logger.debug({ url: serviceUrl, methodUsed, status: resp.status }, 'Registry: discoverNodeFromUrl 5xx');
         return null;
       }
-      if (resp.status !== 402) return null; // not an L402 endpoint (legit non-L402)
+      if (resp.status !== 402) {
+        logger.debug({ url: serviceUrl, methodUsed, status: resp.status }, 'Registry: discoverNodeFromUrl non-402 response');
+        return null; // not an L402 endpoint (legit non-L402)
+      }
 
       const wwwAuth = resp.headers.get('www-authenticate') ?? '';
       // Extract invoice from: L402 macaroon="...", invoice="lnbc..."
