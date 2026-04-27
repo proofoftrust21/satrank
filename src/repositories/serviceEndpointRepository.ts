@@ -4,12 +4,24 @@ import { endpointHash } from '../utils/urlCanonical';
 
 type Queryable = Pool | PoolClient;
 
-export type ServiceSource = '402index' | 'self_registered' | 'ad_hoc';
+export type ServiceSource = '402index' | 'l402directory' | 'self_registered' | 'ad_hoc';
 
 /** Sources trusted enough to influence the 3D ranking composite.
  *  ad_hoc entries (observed from /api/decide serviceUrl) stay in DB for later
- *  validation but are filtered out of ranking and discovery queries. */
-export const TRUSTED_SOURCES: ServiceSource[] = ['402index', 'self_registered'];
+ *  validation but are filtered out of ranking and discovery queries.
+ *  Vague 3 Phase 3: l402directory joins as a curated secondary source. */
+export const TRUSTED_SOURCES: ServiceSource[] = ['402index', 'l402directory', 'self_registered'];
+
+/** Vague 3 Phase 3 — trust ranking for the legacy `source` column when an
+ *  endpoint accumulates multiple sources. Higher rank wins, so a row reaches
+ *  the catalogue first via l402directory and later confirmed by 402index
+ *  upgrades to source='402index' but keeps both attributions in `sources[]`. */
+const SOURCE_TRUST_RANK: Record<ServiceSource, number> = {
+  '402index': 4,
+  'l402directory': 3,
+  'self_registered': 2,
+  'ad_hoc': 1,
+};
 
 export interface ServiceEndpoint {
   id: number;
@@ -51,6 +63,15 @@ export interface ServiceEndpoint {
   deprecated: boolean;
   deprecated_reason: string | null;
   consecutive_404_count: number;
+  /** Vague 3 Phase 3 — every source that has attested this endpoint, deduped.
+   *  The legacy scalar `source` carries the highest-trust attribution; `sources`
+   *  is the full set, used by /api/health to surface diversification and by the
+   *  l402DirectoryCrawler to skip re-probes when a URL is already known.
+   *  Values are free-form strings but practical members today are
+   *  '402index' | 'l402directory' | 'self_registered' | 'ad_hoc'. */
+  sources: string[];
+  consumption_type: string | null;
+  provider_contact: string | null;
 }
 
 /** Vague 1 G.2 — payload accepted by upsertUpstreamSignals. Mirrors the
@@ -105,12 +126,14 @@ export class ServiceEndpointRepository {
   async upsert(agentHash: string | null, url: string, httpStatus: number, latencyMs: number, source: ServiceSource = 'ad_hoc'): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const isSuccess = (httpStatus >= 200 && httpStatus < 400) || httpStatus === 402;
-    // Upsert with source trust hierarchy: on conflict, keep the highest-trust source
-    // (402index > self_registered > ad_hoc). Never downgrade.
+    // Trust hierarchy resolved client-side via SOURCE_TRUST_RANK so the SQL
+    // doesn't have to special-case every new value. Vague 3 Phase 3 expanded
+    // this from 3 → 4 sources.
+    const incomingRank = SOURCE_TRUST_RANK[source];
     await this.db.query(
       `
-      INSERT INTO service_endpoints (agent_hash, url, last_http_status, last_latency_ms, last_checked_at, check_count, success_count, created_at, source)
-      VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8)
+      INSERT INTO service_endpoints (agent_hash, url, last_http_status, last_latency_ms, last_checked_at, check_count, success_count, created_at, source, sources)
+      VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, ARRAY[$8::text])
       ON CONFLICT (url) DO UPDATE SET
         agent_hash = COALESCE(EXCLUDED.agent_hash, service_endpoints.agent_hash),
         last_http_status = EXCLUDED.last_http_status,
@@ -118,14 +141,91 @@ export class ServiceEndpointRepository {
         last_checked_at = EXCLUDED.last_checked_at,
         check_count = service_endpoints.check_count + 1,
         success_count = service_endpoints.success_count + EXCLUDED.success_count,
-        source = CASE
-          WHEN service_endpoints.source = '402index' OR EXCLUDED.source = '402index' THEN '402index'
-          WHEN service_endpoints.source = 'self_registered' OR EXCLUDED.source = 'self_registered' THEN 'self_registered'
-          ELSE 'ad_hoc'
-        END
+        source = CASE WHEN $9 > COALESCE((
+          CASE service_endpoints.source
+            WHEN '402index' THEN 4
+            WHEN 'l402directory' THEN 3
+            WHEN 'self_registered' THEN 2
+            WHEN 'ad_hoc' THEN 1
+            ELSE 0
+          END
+        ), 0) THEN EXCLUDED.source ELSE service_endpoints.source END,
+        sources = (
+          SELECT ARRAY(SELECT DISTINCT unnest(service_endpoints.sources || EXCLUDED.sources))
+        )
       `,
-      [agentHash, url, httpStatus, latencyMs, now, isSuccess ? 1 : 0, now, source],
+      [agentHash, url, httpStatus, latencyMs, now, isSuccess ? 1 : 0, now, source, incomingRank],
     );
+  }
+
+  /** Vague 3 Phase 3 — append a source attribution to an already-known URL
+   *  without touching the probe counters. Used by the l402DirectoryCrawler
+   *  when a candidate URL is already in the catalogue via 402index: we only
+   *  want to record that l402.directory also lists it, not increment the
+   *  health counters as if a probe just happened. Optionally fills in
+   *  consumption_type / provider_contact if currently NULL — never overwrites
+   *  existing data so 402index attribution wins on conflicting metadata.
+   *
+   *  Returns:
+   *    found = true if the URL existed in service_endpoints
+   *    added = true if the source was newly appended (false if already present) */
+  async attachSource(
+    url: string,
+    source: ServiceSource,
+    fillIfNull?: { consumption_type?: string | null; provider_contact?: string | null },
+  ): Promise<{ found: boolean; added: boolean }> {
+    const incomingRank = SOURCE_TRUST_RANK[source];
+    // CTE captures previous sources so RETURNING can answer "was the source
+    // already there?" — the post-UPDATE row always contains the new source,
+    // so we must read pre-update state through the CTE.
+    const { rows } = await this.db.query<{ already_present: boolean }>(
+      `
+      WITH before AS (
+        SELECT url, sources AS prev_sources FROM service_endpoints WHERE url = $1
+      ),
+      upd AS (
+        UPDATE service_endpoints
+        SET
+          sources = (
+            SELECT ARRAY(SELECT DISTINCT unnest(sources || ARRAY[$2::text]))
+          ),
+          source = CASE WHEN $3 > COALESCE((
+            CASE source
+              WHEN '402index' THEN 4
+              WHEN 'l402directory' THEN 3
+              WHEN 'self_registered' THEN 2
+              WHEN 'ad_hoc' THEN 1
+              ELSE 0
+            END
+          ), 0) THEN $2 ELSE source END,
+          consumption_type = COALESCE(consumption_type, $4),
+          provider_contact = COALESCE(provider_contact, $5)
+        WHERE url = $1
+        RETURNING url
+      )
+      SELECT (prev_sources @> ARRAY[$2::text]) AS already_present
+      FROM before
+      `,
+      [url, source, incomingRank, fillIfNull?.consumption_type ?? null, fillIfNull?.provider_contact ?? null],
+    );
+    if (rows.length === 0) return { found: false, added: false };
+    return { found: true, added: !rows[0].already_present };
+  }
+
+  /** Vague 3 Phase 3 — distribution of (multi-)source attribution. Used by
+   *  /api/health and the post-deploy verification check to confirm dedup is
+   *  working: when l402directory ingestion completes, the count of
+   *  ['402index','l402directory'] must equal the cross-source overlap
+   *  computed from the upstream catalogues. */
+  async countBySources(): Promise<Array<{ sources: string[]; count: number }>> {
+    const { rows } = await this.db.query<{ sources: string[]; c: string }>(
+      `SELECT sources, COUNT(*)::text AS c
+       FROM service_endpoints
+       WHERE deprecated = FALSE
+       GROUP BY sources
+       ORDER BY 2 DESC`,
+    );
+    return rows.map((r) => ({ sources: r.sources, count: Number(r.c) }));
   }
 
   /** Distribution of entries per source — used by /api/health for observability. */
@@ -133,7 +233,7 @@ export class ServiceEndpointRepository {
     const { rows } = await this.db.query<{ source: ServiceSource; c: string }>(
       'SELECT source, COUNT(*)::text as c FROM service_endpoints GROUP BY source',
     );
-    const out: Record<ServiceSource, number> = { '402index': 0, 'self_registered': 0, 'ad_hoc': 0 };
+    const out: Record<ServiceSource, number> = { '402index': 0, 'l402directory': 0, 'self_registered': 0, 'ad_hoc': 0 };
     for (const r of rows) out[r.source] = Number(r.c);
     return out;
   }

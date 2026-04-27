@@ -848,6 +848,33 @@ async function main(): Promise<void> {
     timerRegistry.unref?.();
     logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'Registry crawler timer started');
 
+    // Vague 3 Phase 3 — l402.directory secondary catalogue source. Smaller
+    // (8 services / 42 endpoints today) but verified via .well-known and
+    // exposes consumption_type + provider_contact signals 402index lacks.
+    // Reuses RegistryCrawler.probeUrl so the BOLT11→agent_hash discovery
+    // primitive stays single-sourced. Same 24h cadence and unref() pattern
+    // as the registry crawler.
+    const { L402DirectoryCrawler } = await import('./l402DirectoryCrawler');
+    const l402DirectoryCrawler = new L402DirectoryCrawler(serviceEndpointRepo, registryCrawler);
+
+    (async () => {
+      try {
+        await l402DirectoryCrawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial l402.directory crawl error');
+      }
+    })();
+
+    const timerL402Directory = setInterval(async () => {
+      try {
+        await l402DirectoryCrawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'l402.directory crawl error');
+      }
+    }, config.CRAWL_INTERVAL_REGISTRY_MS);
+    timerL402Directory.unref?.();
+    logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'L402Directory crawler timer started');
+
     // Retention cleanup — sweep old rows from time-series tables
     // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
     // before the first crawl so we start with a trimmed dataset.
