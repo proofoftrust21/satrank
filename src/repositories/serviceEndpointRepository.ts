@@ -397,6 +397,24 @@ export class ServiceEndpointRepository {
     );
   }
 
+  /** Phase 5.6 — bump `last_checked_at` for an endpoint that was just probed.
+   *  serviceHealthCrawler.probeBatch already does this via `upsert(...)`, but
+   *  ad-hoc tools (the accelerateProbeSweep script, future operator-driven
+   *  probes, etc.) write streaming posteriors without touching the
+   *  service_endpoints row. Without this method, `intentService.formatCandidate`
+   *  computes `lastProbeAgeSec` from a stale `last_checked_at`, the freshness
+   *  gate fails, and `is_meaningful=false` even when n_obs is high.
+   *
+   *  Idempotent and tiny — a single column UPDATE. The clock argument lets
+   *  tests pin the value; defaults to "now" in production. */
+  async markProbed(url: string, nowSec?: number): Promise<void> {
+    const ts = nowSec ?? Math.floor(Date.now() / 1000);
+    await this.db.query(
+      'UPDATE service_endpoints SET last_checked_at = $1 WHERE url = $2',
+      [ts, url],
+    );
+  }
+
   /** Axe 1 — record that one or more endpoints were just surfaced to a caller.
    *  Called from /api/intent (batch) and /api/decide (single URL).
    *  No-op when `urls` is empty. */
@@ -563,24 +581,46 @@ export class ServiceEndpointRepository {
     // Explicit whitelist for ORDER BY column — defense in depth so a future
     // refactor that widens `filters.sort`'s type can't accidentally route user
     // input into the SQL string. Unknown values fall back to the default.
+    //
+    // Phase 5.6 — `p_success` was a no-op alias for `activity` because the
+    // intentService re-sorted in JS after enrichment. That worked when
+    // MAX_POOL_SCAN was big enough to pull everything in any category, but
+    // it left other consumers (services search, controllers that don't
+    // re-sort) ranking by raw `check_count` instead of the actual Bayesian
+    // score. We now LEFT JOIN endpoint_streaming_posteriors and rank by
+    // posterior_alpha / (posterior_alpha + posterior_beta), with deterministic
+    // tiebreakers on observation count, upstream reliability, and freshness.
+    // Endpoints with no streaming row (rare post-Phase-5 backfill) sort last
+    // because their computed p_success defaults to 0 via COALESCE.
     const SORT_SQL: Record<string, string> = {
       price: 'se.service_price_sats ASC',
       uptime: '(CAST(se.success_count AS DOUBLE PRECISION) / GREATEST(se.check_count, 1)) DESC',
       activity: 'se.check_count DESC',
-      // `p_success` at the SQL layer is a no-op fallback to activity; the
-      // controller re-sorts in JS with the per-row Bayesian posterior.
-      p_success: 'se.check_count DESC',
+      p_success: `
+        COALESCE(esp.posterior_alpha / NULLIF(esp.posterior_alpha + esp.posterior_beta, 0), 0) DESC,
+        COALESCE(esp.total_ingestions, 0) DESC,
+        COALESCE(se.upstream_reliability_score, 0) DESC,
+        COALESCE(se.last_checked_at, 0) DESC
+      `,
     };
     const sortKey = typeof filters.sort === 'string' && Object.prototype.hasOwnProperty.call(SORT_SQL, filters.sort)
       ? filters.sort
       : 'activity';
     const sortCol = SORT_SQL[sortKey];
+    // Only attach the streaming posteriors LEFT JOIN when the sort actually
+    // needs it. The other axes (price/uptime/activity) read service_endpoints
+    // alone and don't need the join, so we keep their plan unchanged.
+    const joinSql = sortKey === 'p_success'
+      ? `LEFT JOIN endpoint_streaming_posteriors esp
+           ON esp.url_hash = encode(digest(se.url, 'sha256'), 'hex')
+           AND esp.source = 'probe'`
+      : '';
 
     const limit = Math.min(filters.limit ?? 20, 100);
     const offset = filters.offset ?? 0;
 
     const { rows } = await this.db.query<ServiceEndpoint>(
-      `SELECT se.* FROM service_endpoints se ${where} ORDER BY ${sortCol} LIMIT $${idx} OFFSET $${idx + 1}`,
+      `SELECT se.* FROM service_endpoints se ${joinSql} ${where} ORDER BY ${sortCol} LIMIT $${idx} OFFSET $${idx + 1}`,
       [...params, limit, offset],
     );
 

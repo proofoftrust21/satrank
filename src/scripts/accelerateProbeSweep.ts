@@ -35,6 +35,7 @@
 // Run via:
 //   docker exec satrank-api node /app/dist/scripts/accelerateProbeSweep.js
 import { getPool, closePools } from '../database/connection';
+import { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
@@ -179,6 +180,7 @@ async function probeChallenge(url: string, method: 'GET' | 'POST'): Promise<Prob
 async function sweepOneHost(
   hostUrls: EndpointRow[],
   scoring: BayesianScoringService,
+  endpointRepo: ServiceEndpointRepository,
   summary: SweepSummary,
   deadline: number,
 ): Promise<void> {
@@ -209,6 +211,9 @@ async function sweepOneHost(
               operatorId: ep.agentHash,
               nodePubkey: ep.agentHash,
             });
+            // Phase 5.6 — also bump last_checked_at so the freshness gate in
+            // intentService.formatCandidate passes for these endpoints.
+            await endpointRepo.markProbed(ep.url);
           }
           break;
         case 'failure':
@@ -224,6 +229,7 @@ async function sweepOneHost(
               operatorId: ep.agentHash,
               nodePubkey: ep.agentHash,
             });
+            await endpointRepo.markProbed(ep.url);
           }
           break;
         case 'non_conforming':
@@ -279,6 +285,7 @@ async function main(): Promise<void> {
   const pool = getPool();
   try {
     logger.info('Phase 5.5 accelerateProbeSweep — starting');
+    const endpointRepo = new ServiceEndpointRepository(pool);
     const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(pool);
     const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(pool);
     const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(pool);
@@ -335,7 +342,7 @@ async function main(): Promise<void> {
     // Parallel across hosts, serial within a host.
     await Promise.all(
       Array.from(byHost.values()).map((hostUrls) =>
-        sweepOneHost(hostUrls, scoring, summary, deadline),
+        sweepOneHost(hostUrls, scoring, endpointRepo, summary, deadline),
       ),
     );
 

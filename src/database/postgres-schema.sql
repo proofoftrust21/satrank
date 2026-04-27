@@ -1,5 +1,9 @@
 -- Phase 12B — Postgres 16 consolidated schema (port of SQLite v41)
 -- Runs idempotently as a single bootstrap. Version 41 is recorded in schema_version.
+
+-- Phase 5.6 — pgcrypto for digest() used in the Bayesian-driven ORDER BY
+-- in findServices. Idempotent CREATE EXTENSION; no-op when already present.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 --
 -- Conversions from SQLite:
 --   INTEGER PRIMARY KEY AUTOINCREMENT → BIGINT GENERATED ALWAYS AS IDENTITY
