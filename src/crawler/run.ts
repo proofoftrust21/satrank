@@ -737,47 +737,17 @@ async function main(): Promise<void> {
     // Run an initial stale sweep so the DB reflects fossils before the first crawl fires
     await runStaleSweep(agentRepo);
 
-    // Retention cleanup — sweep old rows from time-series tables
-    // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
-    // before the first crawl so we start with a trimmed dataset.
-    try {
-      await runRetentionCleanup(pool);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ error: msg }, 'Initial retention cleanup failed');
-    }
-
-    // Initial full crawl — Nostr publish happens inside, right after bulk scoring
-    await runFullCrawl(
-      lndGraphCrawlerInstance, mempoolCrawlerInstance,
-      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService,
-      bayesianVerdictServiceMain, snapshotRepo,
-      nostrPublishFn,
-    );
-
-    // Post-crawl sweep: any agent not touched during the graph crawl whose last_seen is > 90d
-    // will now be flagged. Agents that were seen had their stale reset to 0 by the crawler updates.
-    await runStaleSweep(agentRepo);
-
-    // Per-source timers. Chaque callback est async + try/catch pour respecter
-    // la discipline Phase 12B (aucun unhandled rejection depuis setInterval).
-    const timerLnd = setInterval(async () => {
-      try {
-        await crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance);
-        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
-      } catch (err: unknown) {
-        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LND graph crawl error');
-      }
-    }, intervals.lndGraph);
-
-    const timerLnplus = setInterval(async () => {
-      try {
-        await crawlLnplus(lnplusCrawlerInstance);
-        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
-      } catch (err: unknown) {
-        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error');
-      }
-    }, intervals.lnplus);
+    // ====================================================================
+    // Vague 2 E.1 — arm the *non-LND-graph* timers BEFORE the long-running
+    // initial full crawl. The probe cron, the service health tier timers
+    // and the registry crawler do not depend on the LND graph nor on the
+    // initial bulk scoring; running them up front means a fresh boot does
+    // not have to wait ~100 min (Nostr publish marathon inside runFullCrawl)
+    // before the catalogue starts updating. The LND graph + LN+ timers
+    // stay below because their callback shares the bulkScoreAll path with
+    // runFullCrawl and ordering them after preserves the historical
+    // "first crawl drives the first ranking" invariant.
+    // ====================================================================
 
     let timerProbe: ReturnType<typeof setInterval> | null = null;
     if (probeCrawlerInstance) {
@@ -803,7 +773,7 @@ async function main(): Promise<void> {
     // Cadence is tuned to match the freshness window each tier guarantees:
     //   hot  → every 1h (last_intent_query < 2h, probe age < 1h)
     //   warm → every 6h (last_intent_query < 24h, probe age < 6h)
-    //   cold → every 24h (last_intent_query >= 24h or never, probe age < 24h)
+    //   cold → every 6h  (Vague 1 C.1.a, was 24h)
     // A `running` flag per tier blocks overlapping cycles when a previous
     // sweep takes longer than the interval (cold tier scans the largest pool).
     const { ServiceHealthCrawler } = await import('./serviceHealthCrawler');
@@ -877,6 +847,48 @@ async function main(): Promise<void> {
     }, config.CRAWL_INTERVAL_REGISTRY_MS);
     timerRegistry.unref?.();
     logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'Registry crawler timer started');
+
+    // Retention cleanup — sweep old rows from time-series tables
+    // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
+    // before the first crawl so we start with a trimmed dataset.
+    try {
+      await runRetentionCleanup(pool);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ error: msg }, 'Initial retention cleanup failed');
+    }
+
+    // Initial full crawl — Nostr publish happens inside, right after bulk scoring
+    await runFullCrawl(
+      lndGraphCrawlerInstance, mempoolCrawlerInstance,
+      lnplusCrawlerInstance, probeCrawlerInstance, probeRepo, agentRepo, scoringService,
+      bayesianVerdictServiceMain, snapshotRepo,
+      nostrPublishFn,
+    );
+
+    // Post-crawl sweep: any agent not touched during the graph crawl whose last_seen is > 90d
+    // will now be flagged. Agents that were seen had their stale reset to 0 by the crawler updates.
+    await runStaleSweep(agentRepo);
+
+    // LND graph + LN+ timers stay AFTER runFullCrawl because their callback
+    // re-runs bulkScoreAll, which would race with the initial scoring above.
+    const timerLnd = setInterval(async () => {
+      try {
+        await crawlLightning(lndGraphCrawlerInstance, mempoolCrawlerInstance);
+        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LND graph crawl error');
+      }
+    }, intervals.lndGraph);
+
+    const timerLnplus = setInterval(async () => {
+      try {
+        await crawlLnplus(lnplusCrawlerInstance);
+        await bulkScoreAll(agentRepo, scoringService, bayesianVerdictServiceMain, snapshotRepo);
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'LN+ crawl error');
+      }
+    }, intervals.lnplus);
 
 
 

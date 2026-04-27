@@ -260,9 +260,21 @@ export class ServiceEndpointRepository {
    *  every registry-crawl pass refreshes the columns. NULL fields in the
    *  payload overwrite previous values on purpose so a regressed registry
    *  entry is reflected. The caller (RegistryCrawler) passes the raw fields
-   *  it observed from 402index (or future sources). */
+   *  it observed from 402index (or future sources).
+   *
+   *  Vague 2 fix: 402index returns latency_p50_ms and reliability_score as
+   *  floats (e.g. "88.8"), but the columns upstream_latency_p50_ms and
+   *  upstream_reliability_score are INTEGER. Round at the boundary instead
+   *  of widening the schema, because both values are conceptually integer
+   *  metrics (latency in whole milliseconds, reliability on a 0..100 scale)
+   *  and the upstream's decimal precision is noise we do not preserve.
+   *  Without this cast the v43 registry crawl logged 20 errors of the form
+   *  "invalid input syntax for type integer: \"88.8\"" and silently dropped
+   *  20/220 rows from upstream coverage. */
   async upsertUpstreamSignals(url: string, signals: UpstreamSignals): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
+    const toInt = (n: number | null | undefined): number | null =>
+      typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : null;
     await this.db.query(
       `UPDATE service_endpoints
          SET upstream_health_status = $1,
@@ -276,8 +288,8 @@ export class ServiceEndpointRepository {
       [
         signals.health_status ?? null,
         signals.uptime_30d ?? null,
-        signals.latency_p50_ms ?? null,
-        signals.reliability_score ?? null,
+        toInt(signals.latency_p50_ms),
+        toInt(signals.reliability_score),
         signals.last_checked ?? null,
         signals.source ?? '402index',
         now,
