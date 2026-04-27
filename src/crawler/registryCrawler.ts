@@ -139,11 +139,21 @@ export interface PreCapSkipped {
 /** Vague 3 Phase 2.6 - last outcome of discoverNodeFromUrl, exposed to the
  *  caller via a class member so the run() loop can attribute non-success
  *  outcomes to the right pre_cap_skipped bucket without changing the return
- *  shape that other call sites (registerSelfSubmitted, tests) rely on. */
-interface DiscoveryOutcome {
+ *  shape that other call sites (registerSelfSubmitted, tests) rely on.
+ *  Vague 3 Phase 3: exported so the l402DirectoryCrawler can re-use the
+ *  same primitive without copying the discovery logic. */
+export interface DiscoveryOutcome {
   finalStatus: number;
   methodUsed: 'GET' | 'POST';
   reason: string;
+}
+
+/** Vague 3 Phase 3 — public-facing return shape for `RegistryCrawler.probeUrl`.
+ *  Bundles discovery result and outcome so the l402DirectoryCrawler can
+ *  bucket non-success cases identically to the registry crawl funnel. */
+export interface ProbeResult {
+  result: { agentHash: string; priceSats: number | null; latencyMs: number } | null;
+  outcome: DiscoveryOutcome | null;
 }
 
 export class RegistryCrawler {
@@ -450,6 +460,15 @@ export class RegistryCrawler {
     }
     const ep = await this.serviceEndpointRepo.findByUrl(serviceUrl);
     return { agentHash: discovered.agentHash, priceSats: ep?.service_price_sats ?? null, fieldsUpdated: updated };
+  }
+
+  /** Vague 3 Phase 3 — public wrapper around `discoverNodeFromUrl` that
+   *  returns the outcome alongside the result so external crawlers
+   *  (l402DirectoryCrawler) can bucket non-success cases without re-implementing
+   *  the discovery probe. */
+  async probeUrl(url: string, method: 'GET' | 'POST' = 'GET'): Promise<ProbeResult> {
+    const result = await this.discoverNodeFromUrl(url, method);
+    return { result, outcome: this.lastDiscoveryOutcome };
   }
 
   /** GET (or POST) the service URL, expect a 402 with WWW-Authenticate header

@@ -81,11 +81,12 @@ Requirements: Node `>=18.0.0`, Python `>=3.10`. Both SDKs are thin wrappers over
 
 The SatRank catalog of L402 endpoints is sourced from publicly available registries in the L402 ecosystem.
 
-- **[402index.io](https://402index.io)** — primary source (~100% of the current catalog). Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.
+- **[402index.io](https://402index.io)** — primary source (~95% of the current catalog). Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.
+- **[l402.directory](https://l402.directory)** — curated supplementary source with `.well-known/l402-directory-verify.txt` claim verification. Smaller catalog (~20 paid endpoints today) but contributes signals 402index does not surface: `consumption.type` (browser / api_response / stream / download), `provider.contact`, and per-service `.well-known` attestation. Cross-listed entries accumulate both attributions in `service_endpoints.sources[]`.
 
 Operator self-submissions are accepted via `POST /api/services/register` with NIP-98 authentication and a one-time L402 listing fee. Submitted endpoints are labeled `source=self_registered` in the database and are validated by the same registry crawler before they enter the ranking pool. Self-submissions can only fill empty metadata fields; trusted-source data (name, category, description) is never overwritten.
 
-Roadmap: adding [l402.directory](https://l402.directory) as a curated supplementary source with `.well-known` claim verification, and announcing `/api/services/register` publicly so operators can register without going through any third-party registry.
+Roadmap: announcing `/api/services/register` publicly so operators can register without going through any third-party registry.
 
 SatRank is fully open source under AGPL-3.0. The scoring methodology is deterministic and auditable: anyone can fork the engine and reproduce the rankings independently.
 

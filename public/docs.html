@@ -253,10 +253,11 @@ WWW-Authenticate: L402 macaroon="MDAyN...", invoice="lnbc10n1p..."</code></pre>
         <h2>11. Data sources</h2>
         <p>The SatRank catalog of L402 endpoints is sourced from publicly available registries in the L402 ecosystem.</p>
         <ul>
-          <li><strong><a href="https://402index.io" rel="noopener noreferrer">402index.io</a></strong> &mdash; primary source (~100% of the current catalog). Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.</li>
+          <li><strong><a href="https://402index.io" rel="noopener noreferrer">402index.io</a></strong> &mdash; primary source (~95% of the current catalog). Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.</li>
+          <li><strong><a href="https://l402.directory" rel="noopener noreferrer">l402.directory</a></strong> &mdash; curated supplementary source with <code>.well-known/l402-directory-verify.txt</code> claim verification. Smaller catalog (~20 paid endpoints) but contributes signals 402index does not surface: <code>consumption.type</code> (browser / api_response / stream / download), <code>provider.contact</code>, and per-service <code>.well-known</code> attestation. Cross-listed entries accumulate both attributions in <code>service_endpoints.sources[]</code>.</li>
         </ul>
         <p>Operator self-submissions are accepted via <code>POST /api/services/register</code> with NIP-98 authentication and a one-time L402 listing fee. Submitted endpoints are labeled <code>source=self_registered</code> in the database and validated by the same registry crawler before they enter the ranking pool. Self-submissions can only fill empty metadata fields; trusted-source data (name, category, description) is never overwritten.</p>
-        <p>Roadmap: adding <a href="https://l402.directory" rel="noopener noreferrer">l402.directory</a> as a curated supplementary source with <code>.well-known</code> claim verification, and announcing <code>/api/services/register</code> publicly so operators can register without going through any third-party registry.</p>
+        <p>Roadmap: announcing <code>/api/services/register</code> publicly so operators can register without going through any third-party registry.</p>
         <p>SatRank is fully open source under <a href="https://github.com/proofoftrust21/satrank/blob/main/LICENSE" rel="noopener noreferrer">AGPL-3.0</a>. The scoring methodology is deterministic and auditable: anyone can fork the engine and reproduce the rankings independently.</p>
       </section>
 
