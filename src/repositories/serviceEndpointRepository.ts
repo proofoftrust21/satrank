@@ -639,7 +639,15 @@ export class ServiceEndpointRepository {
    *  Postgres n'expose pas toujours MEDIAN natif (percentile_cont fonctionne
    *  aussi) ; on extrait tous les points triés puis on prend celui du milieu
    *  côté TS pour garder la sémantique identique au code SQLite. Fenêtre 7j
-   *  en secondes, cohérente avec τ du bayésien et la reachability. */
+   *  en secondes, cohérente avec τ du bayésien et la reachability.
+   *
+   *  Phase 5 — fallback to `service_endpoints.last_latency_ms` when
+   *  `service_probes` has no data (Sim 3 surfaced this: median was null on
+   *  every /api/intent candidate because service_probes is unused in
+   *  production despite the data existing on `service_endpoints` itself).
+   *  Using the most recent observed latency as a single-sample proxy is
+   *  honest: callers see a number, downstream code that conditioned on
+   *  null still gets a falsy when the endpoint has never been probed. */
   async medianHttpLatency7d(url: string, minSample = 3): Promise<number | null> {
     const cutoff = Math.floor(Date.now() / 1000) - 7 * 86400;
     const { rows } = await this.db.query<{ latency: number }>(
@@ -653,7 +661,14 @@ export class ServiceEndpointRepository {
       `,
       [url, cutoff],
     );
-    if (rows.length < minSample) return null;
+    if (rows.length < minSample) {
+      const { rows: fallback } = await this.db.query<{ last_latency_ms: number | null }>(
+        'SELECT last_latency_ms FROM service_endpoints WHERE url = $1',
+        [url],
+      );
+      const single = fallback[0]?.last_latency_ms ?? null;
+      return single != null && single > 0 ? single : null;
+    }
     const mid = Math.floor(rows.length / 2);
     return rows.length % 2 === 1
       ? rows[mid].latency

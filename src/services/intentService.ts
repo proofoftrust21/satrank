@@ -21,6 +21,7 @@ import type {
   ServiceEndpointRepository,
 } from '../repositories/serviceEndpointRepository';
 import type { AgentService } from './agentService';
+import type { BayesianVerdictService } from './bayesianVerdictService';
 import type { TrendService } from './trendService';
 import type { OperatorResourceLookup, OperatorService } from './operatorService';
 import type { BayesianScoreBlock, Verdict, VerdictFlag } from '../types';
@@ -100,6 +101,12 @@ export interface IntentServiceDeps {
   serviceEndpointRepo: ServiceEndpointRepository;
   agentRepo: AgentRepository;
   agentService: AgentService;
+  /** Phase 5 — read per-endpoint Bayesian posteriors instead of the
+   *  operator-keyed block agentService.toBayesianBlock returns. The verdict
+   *  service walks the prior cascade (endpoint → service → operator → upstream)
+   *  so when a freshly registered endpoint has no observations yet, the
+   *  caller still gets a reasonable prior with `is_meaningful=false`. */
+  bayesianVerdictService: BayesianVerdictService;
   trendService: TrendService;
   probeRepo?: ProbeRepository;
   /** Phase 7 — optional. Quand fourni, chaque candidat expose operator_id
@@ -268,14 +275,28 @@ export class IntentService {
         strictness,
         warnings,
         ...(fresh ? {} : { upgrade_path: INTENT_FRESH_UPGRADE_PATH }),
+        ranking_explanation: INTENT_RANKING_EXPLANATION,
       },
     };
   }
 
   private async enrich(svc: ServiceEndpoint): Promise<EnrichedCandidate> {
     const agent = svc.agent_hash ? await this.deps.agentRepo.findByHash(svc.agent_hash) : null;
+    // Phase 5 — per-endpoint Bayesian read.
+    //
+    // Pre-Phase-5 the call resolved through agentService.toBayesianBlock(agent_hash),
+    // which keys the streaming posteriors by sha256(operator_pubkey). Every endpoint
+    // hosted by the same operator therefore returned identical p_success / n_obs / ci95,
+    // collapsing the ranking signal (Sim 3 root cause: 8 of 9 agents flagged it).
+    //
+    // The verdict service is keyed by an opaque target hash, so we now pass the
+    // endpoint-canonicalized URL hash. The hierarchical-prior cascade
+    // (endpoint → service → operator → upstream) stays exactly as designed:
+    // endpoints with their own observations surface a real per-row posterior
+    // with `is_meaningful=true`; endpoints without yet-accumulated probe data
+    // fall back to the operator/category/upstream prior with `is_meaningful=false`.
     const bayesian = svc.agent_hash
-      ? await this.deps.agentService.toBayesianBlock(svc.agent_hash)
+      ? await this.toEndpointBayesianBlock(svc)
       : neutralBayesian(this.now());
 
     const delta = svc.agent_hash
@@ -323,6 +344,37 @@ export class IntentService {
     };
   }
 
+  /** Phase 5 — read the Bayesian block keyed by the endpoint URL hash, not
+   *  the operator hash. The verdict service walks its own prior cascade so
+   *  endpoints with no per-URL observations still get a sensible block
+   *  (with is_meaningful=false). The serviceHash and operatorId arguments
+   *  feed the cascade overlay (category siblings + upstream signals) — they
+   *  do not influence the verdict itself when per-endpoint evidence exists. */
+  private async toEndpointBayesianBlock(svc: ServiceEndpoint): Promise<BayesianScoreBlock> {
+    const urlHash = endpointHash(svc.url);
+    const v = await this.deps.bayesianVerdictService.buildVerdict({
+      targetHash: urlHash,
+      serviceHash: urlHash,
+      operatorId: svc.agent_hash ?? undefined,
+    });
+    return {
+      p_success: v.p_success,
+      ci95_low: v.ci95_low,
+      ci95_high: v.ci95_high,
+      n_obs: v.n_obs,
+      verdict: v.verdict,
+      sources: v.sources,
+      convergence: v.convergence,
+      recent_activity: v.recent_activity,
+      risk_profile: v.risk_profile,
+      time_constant_days: v.time_constant_days,
+      last_update: v.last_update,
+      // Default to true; intentService.formatCandidate downgrades to false
+      // when freshness is insufficient or local evidence is too thin.
+      is_meaningful: true,
+    };
+  }
+
   private formatCandidate(c: EnrichedCandidate, rank: number): IntentCandidate {
     const advisoryReport = computeAdvisoryReport({
       bayesian: {
@@ -352,6 +404,16 @@ export class IntentService {
     const operator_id =
       c.operatorLookup?.status === 'verified' ? c.operatorLookup.operatorId : null;
 
+    // Phase 5 — surface multi-source attribution + l402.directory-only
+    // signals only when present. Omit the field entirely when null/empty so
+    // single-source rows have a leaner shape (avoids "sources":["402index"]
+    // appearing on every candidate, which is information-free noise).
+    const sources = c.svc.sources && c.svc.sources.length > 1
+      ? c.svc.sources
+      : undefined;
+    const consumption_type = c.svc.consumption_type ?? undefined;
+    const provider_contact = c.svc.provider_contact ?? undefined;
+
     return {
       rank,
       endpoint_url: c.svc.url,
@@ -361,6 +423,9 @@ export class IntentService {
       service_name: c.svc.name,
       price_sats: c.svc.service_price_sats,
       median_latency_ms: c.medianLatencyMs,
+      ...(sources !== undefined ? { sources } : {}),
+      ...(consumption_type !== undefined ? { consumption_type } : {}),
+      ...(provider_contact !== undefined ? { provider_contact } : {}),
       bayesian: {
         ...c.bayesian,
         // Vague 1 B: surface a non-breaking honesty flag. The score is
@@ -428,6 +493,19 @@ function applyStrictness(
  *  is_meaningful est dérivé inline (freshness <1h ET n_obs ≥ IS_MEANINGFUL_MIN_N_OBS).
  *  Le calcul dupliqué avec formatCandidate est intentionnel: garder le tri
  *  pré-format pour ne pas avoir à matérialiser l'API shape avant le sort. */
+
+/** Phase 5 — surfaced in IntentResponse.meta.ranking_explanation so agents
+ *  don't have to read the source to understand why two candidates with
+ *  identical posteriors got the order they did. Mirrors the comparator
+ *  below — keep them in sync. */
+const INTENT_RANKING_EXPLANATION: { primary: string; tiebreakers: string[] } = {
+  primary: 'is_meaningful=true ranks above is_meaningful=false; an honest score beats a prior-dominated one even when numerically lower',
+  tiebreakers: [
+    'p_success DESC',
+    'ci95_low DESC (tighter lower bound wins on equal mean)',
+    'price_sats ASC (cheapest wins on equal posterior)',
+  ],
+};
 function compareCandidates(a: EnrichedCandidate, b: EnrichedCandidate): number {
   const isMeaningful = (c: EnrichedCandidate): boolean => {
     if (c.lastProbeAgeSec == null) return false;

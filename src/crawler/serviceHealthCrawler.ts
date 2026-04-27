@@ -17,6 +17,7 @@ import type { ProbeTier, ServiceEndpoint, ServiceEndpointRepository } from '../r
 import type { DualWriteMode, TransactionRepository } from '../repositories/transactionRepository';
 import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
 import type { Transaction } from '../types';
+import type { BayesianScoringService } from '../services/bayesianScoringService';
 
 const CHECK_RATE_MS = 200; // 5 checks/sec
 const FETCH_TIMEOUT_MS = 3000;
@@ -41,6 +42,12 @@ export class ServiceHealthCrawler {
     private dualWriteMode: DualWriteMode = 'off',
     private dualWriteLogger?: DualWriteLogger,
     private agentRepo?: AgentRepository,
+    /** Phase 5 — when wired, every probe outcome is written into the
+     *  endpoint-keyed streaming posterior so /api/intent can surface a real
+     *  per-URL Bayesian block instead of falling through to the operator
+     *  prior. Optional so test harnesses that don't care about scoring can
+     *  still construct the crawler with the legacy 5-arg form. */
+    private bayesianService?: BayesianScoringService,
   ) {}
 
   /** Production entrypoint — probe a single tier. */
@@ -92,6 +99,10 @@ export class ServiceHealthCrawler {
       else result.down++;
 
       await this.dualWriteProbeTx(endpoint, healthy);
+      // Phase 5 — feed the per-endpoint streaming posterior so /api/intent's
+      // Bayesian block discriminates per URL, not per operator. Skipped when
+      // bayesianService isn't wired (test harnesses that don't care about scoring).
+      await this.ingestProbeStreaming(endpoint, healthy);
 
       result.checked++;
       if (result.checked < stale.length) {
@@ -101,6 +112,41 @@ export class ServiceHealthCrawler {
 
     logger.info({ ...result }, 'Service health crawl complete');
     return result;
+  }
+
+  /** Phase 5 — endpoint-keyed streaming posterior write. probeCrawler.ts
+   *  feeds operator-keyed posteriors via LN keysend probes; this is the
+   *  parallel write for HTTP probes. Without it, /api/intent's Bayesian
+   *  read keyed by `endpointHash(url)` falls through to the prior cascade
+   *  on every endpoint, defeating per-URL discrimination (Sim 3 root cause).
+   *
+   *  Idempotency: streaming_posteriors are additive on (target_hash, source);
+   *  duplicate writes from overlapping cron ticks are tolerated by the
+   *  τ=7d decay applied at read time.
+   *
+   *  Skipped when bayesianService isn't injected (test contexts) or when the
+   *  endpoint has no operator hash (synthesized probe rows can't satisfy
+   *  the operator FK in the daily_buckets table). */
+  private async ingestProbeStreaming(endpoint: ServiceEndpoint, success: boolean): Promise<void> {
+    if (!this.bayesianService) return;
+    if (!endpoint.agent_hash) return;
+    try {
+      const urlHash = endpointHash(endpoint.url);
+      await this.bayesianService.ingestStreaming({
+        success,
+        timestamp: Math.floor(Date.now() / 1000),
+        source: 'probe',
+        endpointHash: urlHash,
+        serviceHash: urlHash,
+        operatorId: endpoint.agent_hash,
+        nodePubkey: endpoint.agent_hash,
+      });
+    } catch (err) {
+      logger.warn(
+        { url: endpoint.url, error: err instanceof Error ? err.message : String(err) },
+        'Probe streaming ingest failed — endpoint posterior unchanged',
+      );
+    }
   }
 
   /** Compose a synthetic probe-tx row and dispatch through insertWithDualWrite

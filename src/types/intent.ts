@@ -79,8 +79,25 @@ export interface IntentCandidate {
   service_name: string | null;
   /** Prix extrait du BOLT11 — null si inconnu. */
   price_sats: number | null;
-  /** Médiane SQL sur service_probes 7j, null si < 3 probes. */
+  /** Médiane SQL sur service_probes 7j, null si < 3 probes.
+   *  Phase 5 — falls back to `service_endpoints.last_latency_ms` (single
+   *  most-recent observation) when service_probes has no data. */
   median_latency_ms: number | null;
+  /** Phase 5 — multi-source attribution exposed to consumers. Field is
+   *  omitted when the row has no source attribution beyond the legacy scalar
+   *  `source` column; populated when Phase 3's `service_endpoints.sources[]`
+   *  contains more than one source. Lets an agent see at a glance whether a
+   *  candidate is cross-listed (e.g. ['402index','l402directory']) vs
+   *  single-sourced. */
+  sources?: string[];
+  /** Phase 5 — l402.directory's `consumption.type` signal (browser /
+   *  api_response / stream / download). Indicates how the response is meant
+   *  to be consumed — relevant for agents that can only render certain
+   *  response shapes. Omitted when null. */
+  consumption_type?: string;
+  /** Phase 5 — l402.directory's `provider.contact` (operator handle for
+   *  support escalation). Omitted when null. */
+  provider_contact?: string;
 
   bayesian: BayesianScoreBlock;
   advisory: IntentAdvisoryBlock;
@@ -103,6 +120,14 @@ export interface IntentResponseMeta {
    *  agent how to upgrade to a synchronously-probed result. Omitted on paid
    *  fresh requests because the upgrade has already been applied. */
   upgrade_path?: IntentUpgradePath;
+  /** Phase 5 — Sim 3 agents asked how rank order is broken when several
+   *  candidates score the same. This documents the deterministic ladder
+   *  applied in `sortAndApplyStrictness`. Stable across requests (no
+   *  randomness). */
+  ranking_explanation: {
+    primary: string;
+    tiebreakers: string[];
+  };
 }
 
 export interface IntentResponse {
