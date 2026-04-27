@@ -35,7 +35,6 @@
 // Run via:
 //   docker exec satrank-api node /app/dist/scripts/accelerateProbeSweep.js
 import { getPool, closePools } from '../database/connection';
-import { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import {
   EndpointStreamingPosteriorRepository,
   ServiceStreamingPosteriorRepository,
@@ -92,15 +91,20 @@ interface SweepSummary {
 }
 
 async function listEndpointsNeedingProbes(
-  endpointRepo: ServiceEndpointRepository,
+  pool: import('pg').Pool,
   streamingRepo: EndpointStreamingPosteriorRepository,
 ): Promise<EndpointRow[]> {
-  // Pull every active endpoint, then look up its URL-keyed streaming row.
-  // The full catalogue is ~345 rows so the round-trips are negligible.
-  const { services } = await endpointRepo.findServices({ limit: 1000, offset: 0 });
+  // Direct query on service_endpoints — bypasses the 100-row clamp baked
+  // into ServiceEndpointRepository.findServices. The full catalogue is ~345
+  // rows so the round-trips are negligible.
+  const { rows } = await pool.query<{ url: string; agent_hash: string | null }>(
+    `SELECT url, agent_hash FROM service_endpoints
+       WHERE deprecated = FALSE
+         AND agent_hash IS NOT NULL
+         AND source IN ('402index', 'l402directory', 'self_registered')`,
+  );
   const out: EndpointRow[] = [];
-  for (const svc of services) {
-    if (svc.deprecated) continue;
+  for (const svc of rows) {
     const decayed = await streamingRepo.readAllSourcesDecayed(
       endpointHash(svc.url),
       Math.floor(Date.now() / 1000),
@@ -275,7 +279,6 @@ async function main(): Promise<void> {
   const pool = getPool();
   try {
     logger.info('Phase 5.5 accelerateProbeSweep — starting');
-    const endpointRepo = new ServiceEndpointRepository(pool);
     const endpointStreamingRepo = new EndpointStreamingPosteriorRepository(pool);
     const serviceStreamingRepo = new ServiceStreamingPosteriorRepository(pool);
     const operatorStreamingRepo = new OperatorStreamingPosteriorRepository(pool);
@@ -299,7 +302,7 @@ async function main(): Promise<void> {
       routeBucketsRepo,
     );
 
-    const endpoints = await listEndpointsNeedingProbes(endpointRepo, endpointStreamingRepo);
+    const endpoints = await listEndpointsNeedingProbes(pool, endpointStreamingRepo);
     const byHost = new Map<string, EndpointRow[]>();
     for (const ep of endpoints) {
       const h = hostnameOf(ep.url);
