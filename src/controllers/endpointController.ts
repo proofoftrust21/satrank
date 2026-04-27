@@ -60,6 +60,13 @@ export class EndpointController {
       };
 
       const svc = await this.serviceEndpointRepo.findByUrlHash(urlHash);
+      // Phase 5.7 — surface Phase 3 multi-source attribution + l402.directory
+      // signals on the endpoint detail route. Without this, /api/endpoint/:hash
+      // and /api/services/:hash returned strictly less info than /api/intent
+      // for the same row (Sim 4 a04 + a06 noted this gap).
+      const sources = svc?.sources && svc.sources.length > 1 ? svc.sources : undefined;
+      const consumption_type = svc?.consumption_type ?? undefined;
+      const provider_contact = svc?.provider_contact ?? undefined;
       const metadata = svc ? {
         url: svc.url,
         name: svc.name,
@@ -68,16 +75,29 @@ export class EndpointController {
         provider: svc.provider,
         priceSats: svc.service_price_sats,
         source: svc.source,
+        ...(sources !== undefined ? { sources } : {}),
+        ...(consumption_type !== undefined ? { consumption_type } : {}),
+        ...(provider_contact !== undefined ? { provider_contact } : {}),
       } : null;
+
+      const now = Math.floor(Date.now() / 1000);
+      const medianLatencyMs = svc
+        ? await this.serviceEndpointRepo.medianHttpLatency7d(svc.url)
+        : null;
+      const lastProbeAgeSec = svc?.last_checked_at != null
+        ? Math.max(0, now - svc.last_checked_at)
+        : null;
 
       const http = svc ? {
         status: svc.last_http_status,
         latencyMs: svc.last_latency_ms,
+        medianLatencyMs,
         uptimeRatio: svc.check_count >= 3
           ? Math.round((svc.success_count / svc.check_count) * 1000) / 1000
           : null,
         checkCount: svc.check_count,
         lastCheckedAt: svc.last_checked_at,
+        lastProbeAgeSec,
       } : null;
 
       const node = svc && svc.agent_hash

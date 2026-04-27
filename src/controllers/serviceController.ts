@@ -1,10 +1,12 @@
 // Service discovery controller — browse and search L402 services
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
+import type { ServiceEndpoint, ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { AgentService } from '../services/agentService';
+import type { BayesianVerdictService } from '../services/bayesianVerdictService';
 import type { BayesianScoreBlock } from '../types';
+import { endpointHash } from '../utils/urlCanonical';
 import { formatZodError } from '../utils/zodError';
 import { ValidationError } from '../errors';
 
@@ -26,13 +28,50 @@ export class ServiceController {
     private serviceEndpointRepo: ServiceEndpointRepository,
     private agentRepo: AgentRepository,
     private agentService: AgentService,
+    /** Phase 5.7 — required for the per-endpoint Bayesian read. Optional in
+     *  the type position so existing test harnesses that don't wire the
+     *  verdict service still construct the controller; runtime falls back to
+     *  the legacy operator-keyed agentService.toBayesianBlock when null. */
+    private bayesianVerdictService?: BayesianVerdictService,
   ) {}
 
-  /** Canonical Bayesian block for a service's agent; `null` when no agent is
-   *  linked. Centralised so `search` and `best` share identical semantics. */
-  private async bayesianFor(agentHash: string | null): Promise<BayesianScoreBlock | null> {
-    if (!agentHash) return null;
-    return this.agentService.toBayesianBlock(agentHash);
+  /** Phase 5.7 — per-endpoint Bayesian block. Pre-Phase-5.7 `bayesianFor`
+   *  read the operator-keyed posterior via agentService.toBayesianBlock,
+   *  collapsing every endpoint of one operator into the same numbers
+   *  (Sim 4 a02 + a09 verified the resulting bug on /api/services and
+   *  /api/services/best). The fix mirrors intentService.toEndpointBayesianBlock:
+   *  read the streaming posterior keyed by sha256(canonical url), with the
+   *  hierarchical-prior cascade providing the operator/category fallback
+   *  when local evidence is thin (in which case `is_meaningful=false`). */
+  private async bayesianFor(svc: ServiceEndpoint): Promise<BayesianScoreBlock | null> {
+    if (!svc.agent_hash) return null;
+    if (!this.bayesianVerdictService) {
+      // Test fallback — tests that don't wire the verdict service get the
+      // legacy block. Production always injects bayesianVerdictService.
+      return this.agentService.toBayesianBlock(svc.agent_hash);
+    }
+    const urlHash = endpointHash(svc.url);
+    const v = await this.bayesianVerdictService.buildVerdict({
+      targetHash: urlHash,
+      serviceHash: urlHash,
+      operatorId: svc.agent_hash ?? undefined,
+    });
+    return {
+      p_success: v.p_success,
+      ci95_low: v.ci95_low,
+      ci95_high: v.ci95_high,
+      n_obs: v.n_obs,
+      verdict: v.verdict,
+      sources: v.sources,
+      convergence: v.convergence,
+      recent_activity: v.recent_activity,
+      risk_profile: v.risk_profile,
+      time_constant_days: v.time_constant_days,
+      last_update: v.last_update,
+      // Default to true; downstream callers (or per-row checks) can downgrade
+      // when freshness or n_obs are insufficient.
+      is_meaningful: true,
+    };
   }
 
   search = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -51,12 +90,25 @@ export class ServiceController {
       });
 
       // Enrich with SatRank node data
+      const now = Math.floor(Date.now() / 1000);
       const enriched = await Promise.all(services.map(async svc => {
         const agent = svc.agent_hash ? await this.agentRepo.findByHash(svc.agent_hash) : null;
-        const bayesian = await this.bayesianFor(svc.agent_hash ?? null);
+        const bayesian = await this.bayesianFor(svc);
         const uptimeRatio = svc.check_count >= 3
           ? Math.round((svc.success_count / svc.check_count) * 1000) / 1000
           : null;
+        const medianLatencyMs = await this.serviceEndpointRepo.medianHttpLatency7d(svc.url);
+        const lastProbeAgeSec = svc.last_checked_at != null
+          ? Math.max(0, now - svc.last_checked_at)
+          : null;
+
+        // Phase 5.7 — surface Phase 3 multi-source attribution + l402.directory
+        // signals, matching what /api/intent already exposes per candidate.
+        // Single-source rows omit `sources` for clean payloads (informational
+        // noise otherwise). Null consumption_type/provider_contact omitted.
+        const sources = svc.sources && svc.sources.length > 1 ? svc.sources : undefined;
+        const consumption_type = svc.consumption_type ?? undefined;
+        const provider_contact = svc.provider_contact ?? undefined;
 
         return {
           name: svc.name,
@@ -70,7 +122,12 @@ export class ServiceController {
             : null,
           uptimeRatio,
           latencyMs: svc.last_latency_ms,
+          medianLatencyMs,
           lastCheckedAt: svc.last_checked_at,
+          lastProbeAgeSec,
+          ...(sources !== undefined ? { sources } : {}),
+          ...(consumption_type !== undefined ? { consumption_type } : {}),
+          ...(provider_contact !== undefined ? { provider_contact } : {}),
           node: agent ? {
             publicKeyHash: agent.public_key_hash,
             alias: agent.alias,
@@ -145,7 +202,7 @@ export class ServiceController {
       const minUptime = parsed.data.minUptime ?? 0;
       const enrichedPreFilter = await Promise.all(services.map(async svc => {
         const agent = svc.agent_hash ? await this.agentRepo.findByHash(svc.agent_hash) : null;
-        const bayesian = await this.bayesianFor(svc.agent_hash ?? null);
+        const bayesian = await this.bayesianFor(svc);
         const uptimeRatio = svc.check_count >= 3 ? svc.success_count / svc.check_count : 0;
         const price = svc.service_price_sats ?? 0;
         const httpHealth = svc.last_http_status !== null && svc.last_http_status > 0

@@ -253,7 +253,7 @@ export function createApp() {
     dualWriteMode: config.TRANSACTIONS_DUAL_WRITE_MODE,
     dualWriteLogger,
   });
-  const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService);
+  const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService, bayesianVerdictService);
   const intentService = new IntentService({
     serviceEndpointRepo,
     agentRepo,
