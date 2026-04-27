@@ -123,7 +123,16 @@ const DEPRECATED_404_THRESHOLD = parseInt(process.env.DEPRECATED_404_THRESHOLD |
 
 /** Vague 3 Phase 2.6 - structured breakdown of why endpoints were skipped
  *  before the cap evaluation. Surfaced in the "Registry crawl complete" log
- *  to make the funnel observable in prod without re-running a manual audit. */
+ *  to make the funnel observable in prod without re-running a manual audit.
+ *
+ *  Vague 3 Phase 2.7:
+ *  - `protocol_x402` separates competing x402 (EVM/USDC) endpoints from
+ *    L402 failures so we can see how much of the upstream catalogue is
+ *    cross-listed with x402 (a meaningful share of "v2_tlv" entries on
+ *    402index respond with `payment-required:` not `WWW-Authenticate:`).
+ *  - `invalid_l402` is broken out into 4 sub-buckets so the next leverage
+ *    point becomes visible: a missing BOLT11 in the header is a different
+ *    fix from an LND decode failure. */
 export interface PreCapSkipped {
   not_l402: number;
   unsafe_url: number;
@@ -132,7 +141,19 @@ export interface PreCapSkipped {
   not_acceptable_406: number;
   not_402: number;
   fossil_404: number;
+  /** Aggregate count, kept for backwards compatibility with prod dashboards. */
   invalid_l402: number;
+  /** Vague 3 Phase 2.7 — sub-buckets of `invalid_l402` to expose where the
+   *  L402 parsing actually fails. The four sum to `invalid_l402`. */
+  invalid_l402_no_bolt11: number;
+  invalid_l402_decode_failed: number;
+  invalid_l402_invoice_malformed: number;
+  invalid_l402_no_decoder: number;
+  /** Vague 3 Phase 2.7 — endpoint speaks the competing x402 protocol
+   *  (Coinbase USDC on EVM via `payment-required:` header). Not a SatRank
+   *  failure; correctly rejected as out-of-scope. Surfacing the count makes
+   *  cross-protocol dilution of 402index visible. */
+  protocol_x402: number;
   other: number;
 }
 
@@ -210,6 +231,11 @@ export class RegistryCrawler {
         not_402: 0,
         fossil_404: 0,
         invalid_l402: 0,
+        invalid_l402_no_bolt11: 0,
+        invalid_l402_decode_failed: 0,
+        invalid_l402_invoice_malformed: 0,
+        invalid_l402_no_decoder: 0,
+        protocol_x402: 0,
         other: 0,
       } as PreCapSkipped,
     };
@@ -227,7 +253,12 @@ export class RegistryCrawler {
     const existingByHost = await this.serviceEndpointRepo.countActiveByHost();
 
     /** Vague 3 Phase 2.6 - bucket a non-success outcome from
-     *  discoverNodeFromUrl into the pre_cap_skipped breakdown. */
+     *  discoverNodeFromUrl into the pre_cap_skipped breakdown.
+     *
+     *  Vague 3 Phase 2.7: invalid_l402 sub-buckets so a parser fix vs. a
+     *  decoder fix can be told apart from the funnel log alone, and a
+     *  dedicated `protocol_x402` bucket so 402index entries that turn out
+     *  to be x402 (USDC/EVM) are not lumped with "real" L402 failures. */
     const bucketLastOutcome = (): void => {
       const o = this.lastDiscoveryOutcome;
       if (!o) return;
@@ -236,11 +267,23 @@ export class RegistryCrawler {
         case 'not_acceptable_406': result.preCapSkipped.not_acceptable_406++; break;
         case 'fossil_404': result.preCapSkipped.fossil_404++; break;
         case 'not_402': result.preCapSkipped.not_402++; break;
+        case 'protocol_x402': result.preCapSkipped.protocol_x402++; break;
         case 'invalid_l402_no_bolt11':
+          result.preCapSkipped.invalid_l402++;
+          result.preCapSkipped.invalid_l402_no_bolt11++;
+          break;
         case 'invoice_malformed':
+          result.preCapSkipped.invalid_l402++;
+          result.preCapSkipped.invalid_l402_invoice_malformed++;
+          break;
         case 'decode_failed':
+          result.preCapSkipped.invalid_l402++;
+          result.preCapSkipped.invalid_l402_decode_failed++;
+          break;
         case 'no_decoder':
-          result.preCapSkipped.invalid_l402++; break;
+          result.preCapSkipped.invalid_l402++;
+          result.preCapSkipped.invalid_l402_no_decoder++;
+          break;
         case 'http_5xx':
         case 'network_error':
         case 'ssrf_blocked':
@@ -557,11 +600,33 @@ export class RegistryCrawler {
         return null; // not an L402 endpoint (legit non-L402)
       }
 
+      // Vague 3 Phase 2.7 — x402 protocol detection. A meaningful share of
+      // 402index entries flagged `l402_format=v2_tlv` (notably llm402.ai's
+      // 500+ entries plus api.myceliasignal.com, x402.robtex.com, etc.) are
+      // actually x402 (Coinbase USDC on EVM) responding with a `payment-required:`
+      // header instead of `WWW-Authenticate: L402 ...`. They cannot be ingested
+      // as Lightning endpoints — there is no BOLT11 — so we honestly bucket
+      // them rather than letting them dilute `invalid_l402`. The header presence
+      // is unambiguous: x402 servers always set it and L402 servers never do.
+      if (resp.headers.has('payment-required')) {
+        this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'protocol_x402' };
+        logger.info({ url: serviceUrl, methodUsed }, 'discoverNodeFromUrl: x402 protocol (USDC/EVM, not Lightning)');
+        return null;
+      }
+
       const wwwAuth = resp.headers.get('www-authenticate') ?? '';
       // Extract invoice from: L402 macaroon="...", invoice="lnbc..."
       const invoiceMatch = wwwAuth.match(/invoice="(lnbc[a-z0-9]+)"/i);
       if (!invoiceMatch) {
+        // Vague 3 Phase 2.7 — log this so future investigations can see what
+        // the WWW-Authenticate actually looks like when parsing fails. Truncate
+        // the header to keep the log line bounded; full content stays on the
+        // wire (curl reproduces).
         this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'invalid_l402_no_bolt11' };
+        logger.info(
+          { url: serviceUrl, methodUsed, wwwAuthSample: wwwAuth.slice(0, 200) },
+          'discoverNodeFromUrl: 402 with no decodable BOLT11 in WWW-Authenticate',
+        );
         return null;
       }
 

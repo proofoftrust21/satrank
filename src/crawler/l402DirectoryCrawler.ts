@@ -76,6 +76,9 @@ export interface L402DirectoryPreCapSkipped {
   not_402: number;
   fossil_404: number;
   invalid_l402: number;
+  /** Vague 3 Phase 2.7 — l402.directory may list x402 endpoints (it currently
+   *  does not, but the schema is symmetric with the registry crawler funnel). */
+  protocol_x402: number;
   other: number;
 }
 
@@ -159,6 +162,7 @@ export class L402DirectoryCrawler {
         not_402: 0,
         fossil_404: 0,
         invalid_l402: 0,
+        protocol_x402: 0,
         other: 0,
       },
       cappedHosts: [],
@@ -287,6 +291,7 @@ export class L402DirectoryCrawler {
               case 'not_acceptable_406': result.preCapSkipped.not_acceptable_406++; break;
               case 'fossil_404': result.preCapSkipped.fossil_404++; break;
               case 'not_402': result.preCapSkipped.not_402++; break;
+              case 'protocol_x402': result.preCapSkipped.protocol_x402++; break;
               case 'invalid_l402_no_bolt11':
               case 'decode_failed':
               case 'invoice_malformed':
