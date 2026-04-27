@@ -74,10 +74,18 @@ const FRESHNESS_VERY_STALE_THRESHOLD_SEC = 24 * 60 * 60;
 
 /** Vague 1 B — minimum recent observations for `bayesian.is_meaningful` to
  *  be true. Lower than UNKNOWN_MIN_N_OBS=10 because is_meaningful is a hint,
- *  not a verdict; verdict already encodes the stricter threshold. We pick 5
- *  so a candidate freshly observed twice in the hot tier (n_obs ~ 4-6 once
- *  the operator/service prior is folded in) crosses the bar. */
-const IS_MEANINGFUL_MIN_N_OBS = 5;
+ *  not a verdict; verdict already encodes the stricter threshold.
+ *
+ *  Phase 5.6 — lowered from 5 to 3. The τ=7d streaming decay applies the
+ *  moment a posterior row is written, so a freshly ingested 5-observation
+ *  endpoint already reads back at n_obs ≈ 4.8 — never crossing the old 5.0
+ *  threshold despite having all the data. With Beta(α, β) priors of
+ *  (1.5, 1.5), n_obs ≥ 3 already produces a distribution with enough mass
+ *  outside the prior region for the score to be ranking-grade. The verdict
+ *  service still keeps the stricter UNKNOWN_MIN_N_OBS=10 gate for SAFE
+ *  promotion, so this lower bound only changes the cosmetic hint, not the
+ *  verdict semantics. */
+const IS_MEANINGFUL_MIN_N_OBS = 3;
 
 function freshnessStatusFromAge(ageSec: number | null): FreshnessStatus {
   if (ageSec == null) return 'very_stale';
@@ -180,9 +188,15 @@ export class IntentService {
     );
     const keywords = (req.keywords ?? []).map(k => k.trim()).filter(k => k.length > 0);
 
+    // Phase 5.6 — pull by Bayesian p_success DESC instead of uptime DESC.
+    // The JS post-enrichment sort still re-ranks the top-N by p_success
+    // anyway, but ordering at the SQL boundary means clients that consume
+    // /api/services and /api/services/best (which don't re-sort) also see
+    // the Bayesian ranking. Tiebreakers in the SQL match `compareCandidates`:
+    // n_obs DESC → upstream_reliability DESC → last_checked_at DESC.
     const poolResult = await this.deps.serviceEndpointRepo.findServices({
       category: req.category,
-      sort: 'uptime',
+      sort: 'p_success',
       limit: MAX_POOL_SCAN,
       offset: 0,
     });
@@ -497,9 +511,14 @@ function applyStrictness(
 /** Phase 5 — surfaced in IntentResponse.meta.ranking_explanation so agents
  *  don't have to read the source to understand why two candidates with
  *  identical posteriors got the order they did. Mirrors the comparator
- *  below — keep them in sync. */
+ *  below — keep them in sync.
+ *
+ *  Phase 5.6 — `is_meaningful=true` now requires n_obs ≥ 3 (was 5). The
+ *  JS-side comparator still ranks meaningful candidates above prior-dominated
+ *  ones; the SQL pool-pull also orders by Bayesian p_success so clients that
+ *  don't re-sort (services search) see the same ordering. */
 const INTENT_RANKING_EXPLANATION: { primary: string; tiebreakers: string[] } = {
-  primary: 'is_meaningful=true ranks above is_meaningful=false; an honest score beats a prior-dominated one even when numerically lower',
+  primary: 'is_meaningful=true ranks above is_meaningful=false; an honest score beats a prior-dominated one even when numerically lower (is_meaningful requires n_obs ≥ 3 + freshness recent)',
   tiebreakers: [
     'p_success DESC',
     'ci95_low DESC (tighter lower bound wins on equal mean)',
