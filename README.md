@@ -77,6 +77,18 @@ Requirements: Node `>=18.0.0`, Python `>=3.10`. Both SDKs are thin wrappers over
 
 **Preimage closes the loop.** The same 32-byte preimage that unlocks an L402 response is the proof that the payment settled. SatRank accepts it as a first-class report input, weighted higher than self-reported outcomes. No account, no tracking, no login.
 
+## Data sources
+
+The SatRank catalog of L402 endpoints is sourced from publicly available registries in the L402 ecosystem.
+
+- **[402index.io](https://402index.io)** — primary source (~100% of the current catalog). Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.
+
+Operator self-submissions are accepted via `POST /api/services/register` with NIP-98 authentication and a one-time L402 listing fee. Submitted endpoints are labeled `source=self_registered` in the database and are validated by the same registry crawler before they enter the ranking pool. Self-submissions can only fill empty metadata fields; trusted-source data (name, category, description) is never overwritten.
+
+Roadmap: adding [l402.directory](https://l402.directory) as a curated supplementary source with `.well-known` claim verification, and announcing `/api/services/register` publicly so operators can register without going through any third-party registry.
+
+SatRank is fully open source under AGPL-3.0. The scoring methodology is deterministic and auditable: anyone can fork the engine and reproduce the rankings independently.
+
 ## Pricing
 
 SatRank has a free tier and five paid deposit tiers. The base rate is 1 sat per paid request with no setup. Agents that pre-buy a quota deposit into one of the tiers below, and the per-request rate is locked into the L402 macaroon at deposit time.
