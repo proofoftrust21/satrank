@@ -309,8 +309,10 @@ export class PaidProbeRunner {
       };
     }
 
-    // Step 2b — self-pay guard.
-    if (payeeNodeKey === opts.selfPubkey) {
+    // Step 2b — self-pay guard. Security M5 — lowercase compare puisque
+    // BOLT11 hex est case-insensitive et un attacker pourrait submit
+    // une casse différente pour bypass le guard.
+    if (payeeNodeKey?.toLowerCase() === opts.selfPubkey?.toLowerCase()) {
       return {
         endpoint_url: url,
         payment: 'skipped_self_pay',
@@ -429,9 +431,29 @@ export class PaidProbeRunner {
   }
 }
 
+/** Security C3 — cap response body à 64KB. Un endpoint compromis qui
+ *  retournerait un body géant épuiserait la mémoire du paid probe runner.
+ *  64KB suffit largement pour les heuristics body quality (Phase 5.13)
+ *  qui ne lisent que les premiers bytes de toute façon. */
+const PROBE_BODY_MAX_BYTES = 64 * 1024;
+
 async function safeText(resp: Response): Promise<string> {
   try {
-    return await resp.text();
+    const reader = resp.body?.getReader();
+    if (!reader) return '';
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > PROBE_BODY_MAX_BYTES) {
+        try { await reader.cancel(); } catch { /* swallow */ }
+        break;
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString('utf-8');
   } catch {
     return '';
   }

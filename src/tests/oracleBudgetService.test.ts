@@ -102,4 +102,35 @@ describe('OracleBudgetService (Phase 6.4)', () => {
     expect(snap.revenue_sats).toBe(9);
     expect(snap.n_revenue_events).toBe(4);
   });
+
+  it('Security H1 — same payment_hash logged 2× → only first inserted (anti-double-revenue)', async () => {
+    const paymentHash = 'a'.repeat(64);
+    await service.logRevenue('fresh_query', 2, { route: '/intent' }, paymentHash);
+    // 2e call avec le même payment_hash → ON CONFLICT DO NOTHING.
+    await service.logRevenue('fresh_query', 2, { route: '/intent' }, paymentHash);
+    await service.logRevenue('fresh_query', 2, { route: '/intent' }, paymentHash);
+    const snap = await service.getBudget();
+    expect(snap.revenue_sats).toBe(2); // un seul log
+    expect(snap.n_revenue_events).toBe(1);
+  });
+
+  it('Security H1 — different payment_hashes both logged (pas de over-dedup)', async () => {
+    await service.logRevenue('fresh_query', 2, undefined, 'a'.repeat(64));
+    await service.logRevenue('fresh_query', 2, undefined, 'b'.repeat(64));
+    const snap = await service.getBudget();
+    expect(snap.revenue_sats).toBe(4);
+    expect(snap.n_revenue_events).toBe(2);
+  });
+
+  it('Security H1 — revenue sans payment_hash et spending pas affectés par le dedup', async () => {
+    // Anonymous revenue (donations futurs) — pas de dedup possible.
+    await service.logRevenue('donation', 100);
+    await service.logRevenue('donation', 100);
+    // Spending — index partial filtre type='revenue' donc spending free.
+    await service.logSpending('paid_probe', 50);
+    await service.logSpending('paid_probe', 50);
+    const snap = await service.getBudget();
+    expect(snap.revenue_sats).toBe(200);
+    expect(snap.spending_sats).toBe(100);
+  });
 });

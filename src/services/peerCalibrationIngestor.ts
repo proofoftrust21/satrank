@@ -45,6 +45,13 @@ export interface IngestResult {
 
 const ANNOUNCEMENT_D_TAG = 'satrank-calibration';
 
+/** Security L4 — clamp un nombre en int32 sécurisé. Rejette NaN / Infinity
+ *  → fallback min. */
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
 export class PeerCalibrationIngestor {
   private readonly now: () => number;
 
@@ -90,8 +97,10 @@ export class PeerCalibrationIngestor {
       delta_mean: parseNullable(tagMap.get('delta_mean')),
       delta_median: parseNullable(tagMap.get('delta_median')),
       delta_p95: parseNullable(tagMap.get('delta_p95')),
-      n_endpoints: Math.max(0, Number(tagMap.get('n_endpoints') ?? '0') | 0),
-      n_outcomes: Math.max(0, Number(tagMap.get('n_outcomes') ?? '0') | 0),
+      // Security L4 — `| 0` truncate à int32 et wrap les grands nombres
+      // en négatifs (ex. "2147483649" | 0 === -2147483647). Clamp explicite.
+      n_endpoints: clampInt(Number(tagMap.get('n_endpoints') ?? '0'), 0, 1_000_000),
+      n_outcomes: clampInt(Number(tagMap.get('n_outcomes') ?? '0'), 0, 10_000_000),
       observed_at: this.now(),
     });
 

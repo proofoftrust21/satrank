@@ -551,10 +551,16 @@ export function createApp() {
         '/profile/:id': 'profile_query',
       };
       const source = sourceMap[route] ?? 'other';
-      await oracleBudgetService.logRevenue(source, priceSats, {
-        route,
-        payment_hash: paymentHash.slice(0, 32),
-      });
+      // Security H1 — payment_hash passé en dédup-key explicite : INSERT
+      // ON CONFLICT DO NOTHING empêche le double-revenue si 2 requêtes
+      // first-use simultanées passent par le callback avant que
+      // token_balance auto-crée le row.
+      await oracleBudgetService.logRevenue(
+        source,
+        priceSats,
+        { route },
+        paymentHash,
+      );
     },
   });
 

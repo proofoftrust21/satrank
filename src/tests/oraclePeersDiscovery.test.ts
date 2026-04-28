@@ -121,6 +121,69 @@ describe('OraclePeersDiscovery (Phase 7.1)', () => {
     expect(result.reason).toBe('malformed_oracle_pubkey');
   });
 
+  it('Security H3 — onboarding_url javascript: protocol → null (anti-XSS)', async () => {
+    const result = await discovery.ingestAnnouncement(makeAnnouncement({
+      tags: [
+        ['d', 'satrank-oracle-announcement'],
+        ['oracle_pubkey', 'a'.repeat(64)],
+        ['catalogue_size', '345'],
+        ['onboarding_url', 'javascript:alert(1)'],
+      ],
+    }));
+    expect(result.outcome).toBe('persisted');
+    const peer = await peerRepo.findByPubkey('a'.repeat(64));
+    expect(peer!.onboarding_url).toBeNull(); // strippé par le validator
+  });
+
+  it('Security H3 — onboarding_url http: protocol → null (force https)', async () => {
+    await discovery.ingestAnnouncement(makeAnnouncement({
+      tags: [
+        ['d', 'satrank-oracle-announcement'],
+        ['oracle_pubkey', 'a'.repeat(64)],
+        ['onboarding_url', 'http://insecure.example/onboard'],
+      ],
+    }));
+    const peer = await peerRepo.findByPubkey('a'.repeat(64));
+    expect(peer!.onboarding_url).toBeNull();
+  });
+
+  it('Security H3 — onboarding_url https://valid → persisted', async () => {
+    await discovery.ingestAnnouncement(makeAnnouncement({
+      tags: [
+        ['d', 'satrank-oracle-announcement'],
+        ['oracle_pubkey', 'a'.repeat(64)],
+        ['onboarding_url', 'https://safe.example/onboard'],
+      ],
+    }));
+    const peer = await peerRepo.findByPubkey('a'.repeat(64));
+    expect(peer!.onboarding_url).toBe('https://safe.example/onboard');
+  });
+
+  it('Security H6 — catalogue_size > 1M clamped (Postgres int overflow protection)', async () => {
+    await discovery.ingestAnnouncement(makeAnnouncement({
+      tags: [
+        ['d', 'satrank-oracle-announcement'],
+        ['oracle_pubkey', 'a'.repeat(64)],
+        ['catalogue_size', '99999999999'], // huge value
+      ],
+    }));
+    const peer = await peerRepo.findByPubkey('a'.repeat(64));
+    expect(peer!.catalogue_size).toBe(1_000_000); // clamped
+  });
+
+  it('Security M1 — contact > 200 chars truncated', async () => {
+    const longContact = 'x'.repeat(500);
+    await discovery.ingestAnnouncement(makeAnnouncement({
+      tags: [
+        ['d', 'satrank-oracle-announcement'],
+        ['oracle_pubkey', 'a'.repeat(64)],
+        ['contact', longContact],
+      ],
+    }));
+    const peer = await peerRepo.findByPubkey('a'.repeat(64));
+    expect(peer!.contact!.length).toBe(200);
+  });
+
   it('rejects when signature verify fails', async () => {
     const sigFailDiscovery = new OraclePeersDiscovery({
       peerRepo,

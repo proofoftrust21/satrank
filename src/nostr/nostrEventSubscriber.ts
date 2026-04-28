@@ -11,6 +11,14 @@ import { logger } from '../logger';
 const CONNECT_TIMEOUT_MS = 10_000;
 const MANUAL_RECONNECT_BACKOFF_MS: number[] = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+// Security M3 — hard cap dedup Map size pour empêcher OOM sous burst
+// volumique (10k events/sec saturent le pruning TTL avant prune).
+// 50k × ~150 bytes ≈ 7.5 MB max, acceptable.
+const DEDUP_MAX_ENTRIES = 50_000;
+// Security C3 — hard cap event size avant dispatch. Au-delà = adversarial.
+// 64KB matche la limite typique des relais Nostr (NIP-01 recommande
+// 64-256KB max). Tout event au-dessus est silently dropped.
+const MAX_EVENT_BYTES = 64 * 1024;
 
 export interface NostrEventLike {
   id: string;
@@ -166,13 +174,34 @@ export class NostrEventSubscriber {
   }
 
   private handleEvent(event: NostrEventLike, arrivedVia: string): void {
+    // Security C3 — hard cap event size avant dispatch.
+    const eventSize =
+      (event.id?.length ?? 0) +
+      (event.pubkey?.length ?? 0) +
+      (event.sig?.length ?? 0) +
+      (event.content?.length ?? 0) +
+      (event.tags?.reduce((acc, t) => acc + t.reduce((a, s) => a + (s?.length ?? 0), 0), 0) ?? 0);
+    if (eventSize > MAX_EVENT_BYTES) {
+      logger.warn(
+        { label: this.label, eventId: event.id?.slice(0, 12), size: eventSize, max: MAX_EVENT_BYTES },
+        'NostrEventSubscriber dropped oversized event',
+      );
+      return;
+    }
     // Dedup : même event délivré par plusieurs relais → traité 1 fois.
     const now = Date.now();
     if (this.seen.has(event.id)) return;
     this.seen.set(event.id, now);
-    // Prune
+    // Prune par TTL
     for (const [id, ts] of this.seen) {
       if (now - ts > DEDUP_WINDOW_MS) this.seen.delete(id);
+    }
+    // Security M3 — hard cap entries (defense-in-depth contre burst).
+    // Si on est au-dessus du cap après TTL prune, drop FIFO les plus anciens.
+    while (this.seen.size > DEDUP_MAX_ENTRIES) {
+      const oldest = this.seen.keys().next().value;
+      if (oldest === undefined) break;
+      this.seen.delete(oldest);
     }
     this.onEvent(event, arrivedVia).catch((err) => {
       logger.warn(

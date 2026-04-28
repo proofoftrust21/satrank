@@ -76,14 +76,42 @@ export class OraclePeersDiscovery {
       return { outcome: 'rejected', reason: 'signature_invalid' };
     }
 
-    // Extract optional fields.
-    const lndPubkey = event.tags.find((t) => t[0] === 'lnd_pubkey')?.[1] ?? null;
+    // Extract optional fields. Security H3+H6+M1 — sanitize toutes les
+    // valeurs d'attacker-controlled tag avant persistence.
+    const lndPubkeyRaw = event.tags.find((t) => t[0] === 'lnd_pubkey')?.[1];
+    const lndPubkey = lndPubkeyRaw && /^(02|03)[a-f0-9]{64}$/.test(lndPubkeyRaw) ? lndPubkeyRaw : null;
     const catalogueSizeRaw = event.tags.find((t) => t[0] === 'catalogue_size')?.[1];
-    const catalogueSize = catalogueSizeRaw ? parseInt(catalogueSizeRaw, 10) : 0;
-    const calibrationEventId = event.tags.find((t) => t[0] === 'calibration_event_id')?.[1] ?? null;
-    const lastAssertionEventId = event.tags.find((t) => t[0] === 'last_assertion_event_id')?.[1] ?? null;
-    const contact = event.tags.find((t) => t[0] === 'contact')?.[1] ?? null;
-    const onboardingUrl = event.tags.find((t) => t[0] === 'onboarding_url')?.[1] ?? null;
+    const catalogueSizeParsed = catalogueSizeRaw ? parseInt(catalogueSizeRaw, 10) : 0;
+    // Security H6 — clamp à int32 [0, 1M] pour empêcher Postgres integer
+    // overflow ET pour éviter l'inflation déraisonnable (1M endpoints =
+    // déjà 3× 402index aujourd'hui).
+    const catalogueSize = Number.isFinite(catalogueSizeParsed)
+      ? Math.max(0, Math.min(catalogueSizeParsed, 1_000_000))
+      : 0;
+    const calibrationEventIdRaw = event.tags.find((t) => t[0] === 'calibration_event_id')?.[1];
+    const calibrationEventId = calibrationEventIdRaw && /^[a-f0-9]{64}$/.test(calibrationEventIdRaw)
+      ? calibrationEventIdRaw : null;
+    const lastAssertionEventIdRaw = event.tags.find((t) => t[0] === 'last_assertion_event_id')?.[1];
+    const lastAssertionEventId = lastAssertionEventIdRaw && /^[a-f0-9]{64}$/.test(lastAssertionEventIdRaw)
+      ? lastAssertionEventIdRaw : null;
+    // Security M1 — contact max 200 chars (free-text, tronque silencieusement
+    // pour éviter du data poisoning sur des payloads géants).
+    const contactRaw = event.tags.find((t) => t[0] === 'contact')?.[1];
+    const contact = contactRaw ? contactRaw.slice(0, 200) : null;
+    // Security H3 — onboarding_url DOIT être https:// valide. Une URL
+    // javascript: ou data: ou http:// hostile devient null.
+    const onboardingUrlRaw = event.tags.find((t) => t[0] === 'onboarding_url')?.[1];
+    const onboardingUrl = (() => {
+      if (!onboardingUrlRaw) return null;
+      try {
+        const u = new URL(onboardingUrlRaw);
+        return u.protocol === 'https:' && onboardingUrlRaw.length <= 500
+          ? u.toString()
+          : null;
+      } catch {
+        return null;
+      }
+    })();
 
     const nowSec = this.now();
     // Pour le first_seen : si le peer existe déjà, on garde l'ancien

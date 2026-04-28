@@ -13,28 +13,42 @@ import {
 } from '../utils/sybilWeighting';
 
 describe('countLeadingZeroBits', () => {
+  // Security C2 — strict 64-char enforcement. Tous les inputs sont des
+  // event ids Nostr valides (sha256 = 32 bytes = 64 hex chars).
   it('returns 0 for hex starting with 8 (1000)', () => {
-    expect(countLeadingZeroBits('800000')).toBe(0);
+    expect(countLeadingZeroBits('8' + 'f'.repeat(63))).toBe(0);
   });
 
   it('returns 1 for hex starting with 4 (0100)', () => {
-    expect(countLeadingZeroBits('400000')).toBe(1);
+    expect(countLeadingZeroBits('4' + 'f'.repeat(63))).toBe(1);
   });
 
   it('returns 4 for hex starting with 08 (0000 1000)', () => {
-    expect(countLeadingZeroBits('080000')).toBe(4);
+    expect(countLeadingZeroBits('08' + 'f'.repeat(62))).toBe(4);
   });
 
   it('returns 8 for hex starting with 008', () => {
-    expect(countLeadingZeroBits('008000')).toBe(8);
+    expect(countLeadingZeroBits('008' + 'f'.repeat(61))).toBe(8);
   });
 
   it('returns 28 for 7 leading zero hex chars + 8', () => {
-    expect(countLeadingZeroBits('00000008abc')).toBe(28);
+    expect(countLeadingZeroBits('00000008' + 'f'.repeat(56))).toBe(28);
   });
 
   it('returns 0 on non-hex input', () => {
     expect(countLeadingZeroBits('xyz')).toBe(0);
+  });
+
+  it('Security C2 — returns 0 on short hex input (anti-PoW-bypass)', () => {
+    // Un short input avec leading zeros NE compte PAS comme PoW. Doit
+    // return 0 même si '0000' a 16 leading zero bits sémantiquement.
+    expect(countLeadingZeroBits('0000')).toBe(0);
+    expect(countLeadingZeroBits('00000000')).toBe(0);
+    expect(countLeadingZeroBits('0'.repeat(63))).toBe(0); // 1 char short
+  });
+
+  it('Security C2 — returns 0 on > 64 chars (defensive)', () => {
+    expect(countLeadingZeroBits('0'.repeat(65))).toBe(0);
   });
 });
 
@@ -141,6 +155,19 @@ describe('computeSybilWeight', () => {
     });
     expect(result.preimage_verified).toBe(false);
     expect(result.preimage_factor).toBe(PREIMAGE_FACTOR_NONE);
+  });
+
+  it('Security C2 — short event id forces pow_factor=1.0 (anti-bypass)', () => {
+    // Avant C2 : '0000' avait 16 leading zero bits → pow_factor 1.5.
+    // Après C2 : countLeadingZeroBits enforce 64-char → 0 bits.
+    const result = computeSybilWeight({
+      event_id: '0000',
+      identity_first_seen_sec: NOW,
+      now_sec: NOW,
+    });
+    expect(result.verified_pow_bits).toBe(0);
+    expect(result.pow_factor).toBe(1.0);
+    expect(result.effective_weight).toBe(BASE_WEIGHT);
   });
 
   it('max weight ≈ 2.4 with all 3 boosts', () => {

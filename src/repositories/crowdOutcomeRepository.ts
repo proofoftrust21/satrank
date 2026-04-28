@@ -85,7 +85,13 @@ export class CrowdOutcomeRepository {
   /** Phase 9.0 — reports en attente de consolidation. Filtre :
    *    observed_at <= cutoffObservedAt (anti-spam delay)
    *    consolidated_at IS NULL (pas encore matérialisé)
-   *    effective_weight >= minWeight (rejette les très-faibles, default 0.3 = base) */
+   *    effective_weight >= minWeight (rejette les très-faibles, default 0.3)
+   *
+   *  Security H2 — `FOR UPDATE SKIP LOCKED` empêche 2 cron concurrents
+   *  de lire les mêmes rows pending et de double-écrire dans
+   *  endpoint_stage_posteriors avant que markConsolidated isole. Le caller
+   *  doit invoquer cette query dans une transaction commit qui englobe
+   *  observe + markConsolidated, sinon le lock est releasé immédiatement. */
   async findPendingConsolidation(
     cutoffObservedAt: number,
     minWeight: number,
@@ -102,7 +108,8 @@ export class CrowdOutcomeRepository {
           AND observed_at <= $1::bigint
           AND effective_weight >= $2::double precision
         ORDER BY observed_at ASC
-        LIMIT $3::int`,
+        LIMIT $3::int
+        FOR UPDATE SKIP LOCKED`,
       [cutoffObservedAt, minWeight, limit],
     );
     return rows;

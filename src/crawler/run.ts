@@ -966,8 +966,7 @@ async function main(): Promise<void> {
         // endpoint_stage_posteriors avec le weight effectif.
         const { CrowdConsolidationCron } = await import('../services/crowdConsolidationCron');
         const consolidationCron = new CrowdConsolidationCron({
-          crowdRepo,
-          stagePosteriorsRepo: stagePosteriorsForCrowd,
+          pool,
         });
         const runConsolidation = (): void => {
           consolidationCron

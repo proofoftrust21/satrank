@@ -187,6 +187,29 @@ const configSchema = z.object({
     .string()
     .regex(/^[a-f0-9]{64}$/, 'OPERATOR_BYPASS_SECRET must be 32-byte hex (64 chars)')
     .optional(),
+  // Security C1+H1 — Phase 6.0/6.1 MCP intent + DVM intent-resolve fetch
+  // /api/intent côté SATRANK_API_BASE. Default = prod publique. Validated
+  // here (https://) pour empêcher SSRF (file://, http://internal-IP, etc.).
+  // Localhost autorisé pour les tests et les operators qui font tourner
+  // leur propre instance bilatéralement.
+  SATRANK_API_BASE: z
+    .string()
+    .url()
+    .refine(
+      (s) => {
+        try {
+          const u = new URL(s);
+          return (
+            u.protocol === 'https:' ||
+            (u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1'))
+          );
+        } catch {
+          return false;
+        }
+      },
+      { message: 'SATRANK_API_BASE must be https:// or http://localhost' },
+    )
+    .default('https://satrank.dev'),
 });
 
 const parsed = configSchema.safeParse(process.env);

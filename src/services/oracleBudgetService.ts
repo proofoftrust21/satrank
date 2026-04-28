@@ -30,6 +30,13 @@ export interface RevenueEvent {
   amount_sats: number;
   observed_at?: number; // default = now
   metadata?: Record<string, unknown>;
+  /** Security H1 — quand fourni sur un revenue event, l'INSERT est dedup
+   *  via une UNIQUE partial index (oracle_revenue_log_payment_hash_unique).
+   *  Une 2e tentative avec le même payment_hash → ON CONFLICT DO NOTHING.
+   *  Empêche le double-logging sur race entre 2 first-use HTTP requests
+   *  qui passent par onPaidCallSettled avant que token_balance auto-create
+   *  finisse. Default null → comportement legacy non-deduppé. */
+  payment_hash?: string | null;
 }
 
 export interface BudgetWindow {
@@ -52,27 +59,47 @@ export interface BudgetSnapshot {
 export class OracleBudgetService {
   constructor(private readonly db: Queryable) {}
 
-  /** Logger un événement revenue ou spending. Pas de transaction explicite
-   *  — un single INSERT, l'unicité est garantie par la sequence id. */
+  /** Logger un événement revenue ou spending. Security H1 — dedup partial
+   *  unique index sur payment_hash empêche double revenue logging quand
+   *  le même first-use payment_hash arrive 2× via race onPaidCallSettled. */
   async log(event: RevenueEvent): Promise<void> {
     const observedAt = event.observed_at ?? Math.floor(Date.now() / 1000);
+    // Security H1 — `ON CONFLICT DO NOTHING` (sans target) déclenche sur
+    // n'importe quel unique conflict. L'index partial
+    // idx_oracle_revenue_log_payment_hash_unique couvre seulement
+    // type='revenue' AND payment_hash IS NOT NULL : effet → dedup
+    // automatique pour les revenues paid, libre pour spending et donations.
     await this.db.query(
-      `INSERT INTO oracle_revenue_log (type, source, amount_sats, observed_at, metadata)
-       VALUES ($1::text, $2::text, $3::bigint, $4::bigint, $5::jsonb)`,
+      `INSERT INTO oracle_revenue_log (type, source, amount_sats, observed_at, metadata, payment_hash)
+       VALUES ($1::text, $2::text, $3::bigint, $4::bigint, $5::jsonb, $6)
+       ON CONFLICT DO NOTHING`,
       [
         event.type,
         event.source,
         event.amount_sats,
         observedAt,
         event.metadata ? JSON.stringify(event.metadata) : null,
+        event.payment_hash ?? null,
       ],
     );
   }
 
-  /** Convenience pour logger une revenue (montant positif assumé). */
-  async logRevenue(source: RevenueSource, amountSats: number, metadata?: Record<string, unknown>): Promise<void> {
+  /** Convenience pour logger une revenue (montant positif assumé).
+   *  paymentHash optional → dedup activé quand fourni (anti-race H1). */
+  async logRevenue(
+    source: RevenueSource,
+    amountSats: number,
+    metadata?: Record<string, unknown>,
+    paymentHash?: string,
+  ): Promise<void> {
     if (amountSats <= 0) return; // no-op pour les calls free
-    await this.log({ type: 'revenue', source, amount_sats: amountSats, metadata });
+    await this.log({
+      type: 'revenue',
+      source,
+      amount_sats: amountSats,
+      metadata,
+      payment_hash: paymentHash ?? null,
+    });
   }
 
   /** Convenience pour logger une spending (montant positif). */

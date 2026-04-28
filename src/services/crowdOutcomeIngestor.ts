@@ -79,8 +79,11 @@ export class CrowdOutcomeIngestor {
     if (!this.deps.verifyEvent(event)) {
       return { outcome: 'rejected', reason: 'signature_invalid' };
     }
-    const endpointHashTag = event.tags.find((t) => t[0] === 'endpoint_url_hash');
-    if (!endpointHashTag || !/^[a-f0-9]{64}$/.test(endpointHashTag[1] ?? '')) {
+    const endpointHashTagRaw = event.tags.find((t) => t[0] === 'endpoint_url_hash')?.[1];
+    // Security M4 — normalize lowercase pour empêcher des duplicates rows
+    // sur des hex en mixed/upper case (sha256 standard est lowercase).
+    const endpointUrlHash = endpointHashTagRaw?.toLowerCase();
+    if (!endpointUrlHash || !/^[a-f0-9]{64}$/.test(endpointUrlHash)) {
       return { outcome: 'rejected', reason: 'missing_or_malformed_endpoint_url_hash' };
     }
     const outcomeTag = event.tags.find((t) => t[0] === 'outcome');
@@ -90,15 +93,25 @@ export class CrowdOutcomeIngestor {
     }
     const mapped = OUTCOME_MAP[outcomeValue];
 
-    // Tags optional pour les boosts.
-    const trustAssertionTag = event.tags.find((t) => t[0] === 'e');
-    const trustAssertionEventId = trustAssertionTag?.[1] ?? null;
+    // Tags optional pour les boosts. Security H5/M3 — strict validation
+    // + bounded ints sur tous les tags optionnels pour empêcher Postgres
+    // overflow / data poisoning.
+    const trustAssertionTagRaw = event.tags.find((t) => t[0] === 'e')?.[1];
+    const trustAssertionEventId = trustAssertionTagRaw && /^[a-f0-9]{64}$/.test(trustAssertionTagRaw)
+      ? trustAssertionTagRaw : null;
     const declaredPowTag = event.tags.find((t) => t[0] === 'pow');
-    const declaredPow = declaredPowTag ? parseInt(declaredPowTag[1], 10) : undefined;
+    const declaredPowParsed = declaredPowTag ? parseInt(declaredPowTag[1] ?? '', 10) : NaN;
+    const declaredPow = Number.isFinite(declaredPowParsed)
+      ? Math.max(0, Math.min(declaredPowParsed, 256))
+      : undefined;
     const preimageTag = event.tags.find((t) => t[0] === 'preimage');
     const paymentHashTag = event.tags.find((t) => t[0] === 'payment_hash');
     const latencyTag = event.tags.find((t) => t[0] === 'latency_ms');
-    const latencyMs = latencyTag ? parseInt(latencyTag[1], 10) : null;
+    const latencyParsed = latencyTag ? parseInt(latencyTag[1] ?? '', 10) : NaN;
+    // Security H5 — clamp [0, 300_000ms = 5 min] — au-delà = absurd ou adversarial.
+    const latencyMs = Number.isFinite(latencyParsed)
+      ? Math.max(0, Math.min(latencyParsed, 300_000))
+      : null;
 
     const nowSec = this.now();
     // Observe identity (UPSERT) → récupère first_seen.
@@ -120,7 +133,7 @@ export class CrowdOutcomeIngestor {
     const inserted = await this.deps.crowdRepo.insertIfNew({
       event_id: event.id,
       agent_pubkey: event.pubkey,
-      endpoint_url_hash: endpointHashTag[1],
+      endpoint_url_hash: endpointUrlHash,
       trust_assertion_event_id: trustAssertionEventId,
       outcome: outcomeValue,
       stage: mapped.stage,
@@ -166,7 +179,7 @@ export class CrowdOutcomeIngestor {
       {
         eventId: event.id.slice(0, 12),
         agent: event.pubkey.slice(0, 12),
-        endpoint: endpointHashTag[1].slice(0, 16),
+        endpoint: endpointUrlHash.slice(0, 16),
         outcome: outcomeValue,
         weight: weightResult.effective_weight.toFixed(3),
         verified_pow_bits: weightResult.verified_pow_bits,

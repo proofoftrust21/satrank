@@ -49,9 +49,50 @@ import { logger } from '../logger';
 import { sha256 } from '../utils/crypto';
 
 // Phase 6.0 — base URL de l'API SatRank vers laquelle le MCP `intent` tool
-// proxie. Default : prod publique. Surchargeable pour les opérateurs qui
-// font tourner leur propre instance.
-const SATRANK_API_BASE = process.env.SATRANK_API_BASE ?? 'https://satrank.dev';
+// proxie. Security C1+H1 — validation centrale dans config.ts (https-only
+// sauf localhost) empêche SSRF via file:// / http://internal.
+const SATRANK_API_BASE = config.SATRANK_API_BASE;
+// Security C3 — cap réponses HTTP à 1 MB pour empêcher memory exhaustion
+// si l'instance pointée par SATRANK_API_BASE retourne un body géant.
+const MAX_INTENT_RESPONSE_BYTES = 1024 * 1024;
+const INTENT_FETCH_TIMEOUT_MS = 8000;
+
+/** Security C3 + L2 — fetch avec hard cap byte size + timeout. Stream le
+ *  body et abort dès qu'on dépasse maxBytes. */
+async function fetchWithCap(
+  url: string,
+  init: RequestInit,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ status: number; ok: boolean; body: string; truncated: boolean }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal });
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      return { status: resp.status, ok: resp.ok, body: '', truncated: false };
+    }
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let truncated = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) {
+        truncated = true;
+        try { await reader.cancel(); } catch { /* swallow */ }
+        break;
+      }
+      chunks.push(value);
+    }
+    const body = Buffer.concat(chunks).toString('utf-8');
+    return { status: resp.status, ok: resp.ok, body, truncated };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Zod validation schemas for MCP args (same rules as HTTP controllers)
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)');
@@ -666,22 +707,30 @@ async function main() {
           if (parsed.data.optimize) url.searchParams.set('optimize', parsed.data.optimize);
           if (parsed.data.limit) url.searchParams.set('limit', String(parsed.data.limit));
           try {
-            const resp = await fetch(url.toString(), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'User-Agent': 'SatRank-MCP/1.0' },
-              body: JSON.stringify({
-                category: parsed.data.category,
-                keywords: parsed.data.keywords,
-                budget_sats: parsed.data.budget_sats,
-                max_latency_ms: parsed.data.max_latency_ms,
-                caller: parsed.data.caller,
-              }),
-            });
-            const body = await resp.text();
+            // Security C3 — fetchWithCap : timeout 8s + body cap 1MB.
+            const resp = await fetchWithCap(
+              url.toString(),
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'User-Agent': 'SatRank-MCP/1.0' },
+                body: JSON.stringify({
+                  category: parsed.data.category,
+                  keywords: parsed.data.keywords,
+                  budget_sats: parsed.data.budget_sats,
+                  max_latency_ms: parsed.data.max_latency_ms,
+                  caller: parsed.data.caller,
+                }),
+              },
+              MAX_INTENT_RESPONSE_BYTES,
+              INTENT_FETCH_TIMEOUT_MS,
+            );
             if (!resp.ok) {
-              return { content: [{ type: 'text', text: JSON.stringify({ error: 'intent_failed', status: resp.status, body }, null, 2) }], isError: true };
+              return { content: [{ type: 'text', text: JSON.stringify({ error: 'intent_failed', status: resp.status, body: resp.body, truncated: resp.truncated }, null, 2) }], isError: true };
             }
-            return { content: [{ type: 'text', text: body }] };
+            if (resp.truncated) {
+              return { content: [{ type: 'text', text: JSON.stringify({ error: 'response_too_large', max_bytes: MAX_INTENT_RESPONSE_BYTES }, null, 2) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: resp.body }] };
           } catch (err) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: 'network_error', detail: err instanceof Error ? err.message : String(err) }, null, 2) }], isError: true };
           }

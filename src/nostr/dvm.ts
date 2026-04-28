@@ -562,14 +562,29 @@ export class SatRankDvm {
    *  même config que le MCP intent tool, pour qu'un opérateur puisse
    *  fédérer DVM + MCP sur la même instance. */
   private async processIntentResolve(intentJson: string): Promise<unknown> {
+    // Security C3 — cap intent input à 16KB (un body /api/intent réaliste
+    // est ~1KB). Au-delà = adversarial, on rejette avant le JSON.parse.
+    if (intentJson.length > 16 * 1024) {
+      return { error: 'intent_input_too_large' };
+    }
     let parsedIntent: unknown;
     try {
       parsedIntent = JSON.parse(intentJson);
     } catch {
       return { error: 'invalid_intent_json' };
     }
-    const apiBase = process.env.SATRANK_API_BASE ?? 'https://satrank.dev';
+    // Security C1+H1 — config.SATRANK_API_BASE est validé au boot
+    // (https-only sauf localhost). On lit via dynamic import pour éviter
+    // le coupling au module config dans un fichier qui s'instancie tôt.
+    const { config } = await import('../config');
+    const apiBase = config.SATRANK_API_BASE;
     const url = new URL('/api/intent', apiBase).toString();
+    // Security C3 — cap response body + timeout pour empêcher memory
+    // exhaustion si l'instance pointée retourne un body géant.
+    const MAX_BYTES = 1024 * 1024;
+    const TIMEOUT_MS = 8000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       const resp = await fetch(url, {
         method: 'POST',
@@ -578,8 +593,30 @@ export class SatRankDvm {
           'User-Agent': 'SatRank-DVM-Intent/1.0',
         },
         body: JSON.stringify(parsedIntent),
+        signal: controller.signal,
       });
-      const text = await resp.text();
+      const reader = resp.body?.getReader();
+      if (!reader) {
+        return { error: 'intent_api_failed', status: resp.status, body: '' };
+      }
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      let truncated = false;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > MAX_BYTES) {
+          truncated = true;
+          try { await reader.cancel(); } catch { /* swallow */ }
+          break;
+        }
+        chunks.push(value);
+      }
+      const text = Buffer.concat(chunks).toString('utf-8');
+      if (truncated) {
+        return { error: 'intent_api_response_too_large', max_bytes: MAX_BYTES };
+      }
       if (!resp.ok) {
         return { error: 'intent_api_failed', status: resp.status, body: text };
       }
@@ -593,6 +630,8 @@ export class SatRankDvm {
         error: 'intent_api_unreachable',
         detail: err instanceof Error ? err.message : String(err),
       };
+    } finally {
+      clearTimeout(timer);
     }
   }
 

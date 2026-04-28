@@ -53,9 +53,14 @@ export interface SybilWeightResult {
 
 /** Compte les leading zero bits dans un hex 32-byte event id. Un event id
  *  avec N leading zero bits = NIP-13 PoW de N bits. Matche l'algorithme
- *  utilisé dans src/nostr/pow.ts (zapMiner). */
+ *  utilisé dans src/nostr/pow.ts (zapMiner).
+ *
+ *  Security C2 — enforce strict 64-char length. Une id plus courte
+ *  permettrait de claim des bits inflated (ex. "0000" = 16 bits avec
+ *  pow_factor=1.5 sans aucun PoW réel). Nostr event ids sont toujours
+ *  sha256 = 32 bytes = 64 hex chars. */
 export function countLeadingZeroBits(hexId: string): number {
-  if (!/^[a-f0-9]+$/i.test(hexId)) return 0;
+  if (!/^[a-f0-9]{64}$/i.test(hexId)) return 0;
   let count = 0;
   for (let i = 0; i < hexId.length; i++) {
     const nibble = parseInt(hexId[i], 16);

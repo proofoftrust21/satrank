@@ -30,8 +30,7 @@ describe('CrowdConsolidationCron (Phase 9.0)', () => {
     crowdRepo = new CrowdOutcomeRepository(pool);
     stagesRepo = new EndpointStagePosteriorsRepository(pool);
     cron = new CrowdConsolidationCron({
-      crowdRepo,
-      stagePosteriorsRepo: stagesRepo,
+      pool,
       now: () => NOW,
     });
     await truncateAll(pool);
