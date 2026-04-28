@@ -294,6 +294,24 @@ export class ServiceEndpointRepository {
     return rows;
   }
 
+  /** Phase 6.2 — endpoints actifs trusted (non-deprecated, source dans
+   *  TRUSTED_SOURCES). Utilisé par TrustAssertionPublisher pour itérer
+   *  le catalogue à publier en kind 30782. Tri par last_checked_at DESC
+   *  pour prioritiser les endpoints récemment probés (= meilleur signal). */
+  async listActiveTrustedEndpoints(limit: number): Promise<ServiceEndpoint[]> {
+    const { rows } = await this.db.query<ServiceEndpoint>(
+      `
+      SELECT * FROM service_endpoints
+      WHERE NOT deprecated
+        AND source = ANY($1::text[])
+      ORDER BY last_checked_at DESC NULLS LAST
+      LIMIT $2
+      `,
+      [TRUSTED_SOURCES, limit],
+    );
+    return rows;
+  }
+
   async findStale(minCheckCount: number, maxAgeSec: number, limit: number): Promise<ServiceEndpoint[]> {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
     const { rows } = await this.db.query<ServiceEndpoint>(

@@ -85,6 +85,7 @@ import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createL402Native } from './middleware/l402Native';
 import { OracleBudgetService } from './services/oracleBudgetService';
+import { TrustAssertionRepository } from './repositories/trustAssertionRepository';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
@@ -647,6 +648,59 @@ export function createApp() {
     try {
       const snapshot = await oracleBudgetService.getBudgetMultiWindow();
       res.json({ data: snapshot });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Phase 6.3 — /api/oracle/assertion/:url_hash : metadata de la kind 30782
+  // trust assertion publiée par l'oracle pour un endpoint donné. Permet
+  // aux operators de retrouver l'event_id à embarquer dans leur BOLT12
+  // offer (TLV custom) et aux agents de fetch directement depuis les
+  // relays sans passer par /api/intent.
+  //
+  // Hint BOLT12 TLV : convention proposée
+  //   type 65537 → event_id (32 bytes raw, hex on the wire)
+  //   type 65538 → oracle_pubkey (32 bytes raw)
+  // Le BOLT12 builder côté operator (FewSats, Alby toolkit, etc.) lit ces
+  // valeurs et les ajoute aux TLV custom. Pas de standard IETF —
+  // proposition à valider avec les écosystèmes.
+  const trustAssertionRepoApi = new TrustAssertionRepository(pool);
+  api.get('/oracle/assertion/:url_hash', discoveryRateLimit, async (req, res, next) => {
+    try {
+      const urlHash = String(req.params.url_hash);
+      if (!/^[a-f0-9]{64}$/.test(urlHash)) {
+        return res.status(400).json({ error: { code: 'INVALID_URL_HASH', message: 'url_hash must be a 64-char hex SHA256' } });
+      }
+      const record = await trustAssertionRepoApi.findByUrlHash(urlHash);
+      if (!record) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No trust assertion published yet for this endpoint. Wait for the next cron tick (≤ 7 days) or check that the endpoint has meaningful stage posteriors.' } });
+      }
+      const nowSec = Math.floor(Date.now() / 1000);
+      const expiresInSec = record.valid_until - nowSec;
+      res.json({
+        data: {
+          endpoint_url_hash: record.endpoint_url_hash,
+          kind: 30782,
+          event_id: record.event_id,
+          oracle_pubkey: record.oracle_pubkey,
+          valid_until: record.valid_until,
+          expires_in_sec: expiresInSec,
+          expired: expiresInSec < 0,
+          p_e2e: record.p_e2e,
+          meaningful_stages_count: record.meaningful_stages_count,
+          calibration_proof_event_id: record.calibration_proof_event_id,
+          published_at: record.published_at,
+          relays: record.relays,
+          bolt12_tlv_hint: {
+            note: 'Proposed convention for embedding the trust assertion in a BOLT12 offer. Type IDs not yet IETF-standardized — operators should track future BLIPs.',
+            type_event_id: 65537,
+            type_oracle_pubkey: 65538,
+            event_id_hex: record.event_id,
+            oracle_pubkey_hex: record.oracle_pubkey,
+          },
+        },
+      });
     } catch (err) {
       next(err);
     }

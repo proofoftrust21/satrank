@@ -783,6 +783,58 @@ async function main(): Promise<void> {
           { initialDelayMs: calibInitialDelay, intervalMs: calibIntervalMs },
           'Phase 5.15 — Calibration cron scheduled (kind 30783 weekly)',
         );
+
+        // Phase 6.2 — kind 30782 trust assertions cron. Pour chaque endpoint
+        // avec stage_posteriors meaningful, publish un event NIP-33
+        // addressable replaceable. Permet aux agents Nostr-natifs +
+        // verify_assertion (Phase 6.0) de composer offline.
+        const { TrustAssertionPublisher } = await import('../services/trustAssertionPublisher');
+        const { TrustAssertionRepository } = await import('../repositories/trustAssertionRepository');
+        const { EndpointStagePosteriorsRepository: StageRepoCtor } = await import('../repositories/endpointStagePosteriorsRepository');
+        const trustRepo = new TrustAssertionRepository(pool);
+        const stagePosteriorsRepoForTrust = new StageRepoCtor(pool);
+        const trustPublisher = new TrustAssertionPublisher({
+          serviceEndpointRepo: serviceEndpointRepoMulti,
+          stagePosteriorsRepo: stagePosteriorsRepoForTrust,
+          calibrationRepo: calibRepo,
+          trustAssertionRepo: trustRepo,
+          publisher: multiKindPublisher,
+          oraclePubkey,
+          relays: multiKindRelays,
+        });
+        const runTrustAssertions = (): void => {
+          trustPublisher
+            .publishCycle()
+            .then((res) => {
+              logger.info(
+                {
+                  published: res.outcomes.published,
+                  skipped_recent: res.outcomes.skipped_recent,
+                  skipped_no_meaningful: res.outcomes.skipped_no_meaningful,
+                  publish_failed: res.outcomes.publish_failed,
+                  duration_sec: res.cycle_finished_at - res.cycle_started_at,
+                },
+                'Trust assertion cron tick complete (kind 30782)',
+              );
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Trust assertion cron error');
+            });
+        };
+        // Initial fire 90 min après boot (après calibration), puis weekly.
+        const trustInitialDelay = 90 * 60 * 1000;
+        const trustIntervalMs = 7 * 24 * 60 * 60 * 1000;
+        const trustInitialTimer = setTimeout(() => {
+          runTrustAssertions();
+          const recurrent = setInterval(runTrustAssertions, trustIntervalMs);
+          recurrent.unref?.();
+        }, trustInitialDelay);
+        trustInitialTimer.unref?.();
+        logger.info(
+          { initialDelayMs: trustInitialDelay, intervalMs: trustIntervalMs },
+          'Phase 6.2 — Trust assertion cron scheduled (kind 30782 weekly)',
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : '';
