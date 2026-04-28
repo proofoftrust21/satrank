@@ -60,7 +60,8 @@ const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 // Phase 6.4 : v51 (oracle_revenue_log).
 // Phase 6.2 : v52 (trust_assertions_published).
 // Phase 7.0/7.1 : v53 (oracle_announcements_published + oracle_peers).
-const EXPECTED_SCHEMA_VERSION = 53;
+// Phase 8.1 : v54 (crowd_outcome_reports + nostr_identity_first_seen).
+const EXPECTED_SCHEMA_VERSION = 54;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that

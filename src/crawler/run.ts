@@ -891,6 +891,75 @@ async function main(): Promise<void> {
           { initialDelayMs: announceInitialDelay, intervalMs: announceIntervalMs },
           'Phase 7.0 — Oracle announcement cron scheduled (kind 30784 daily)',
         );
+
+        // Phase 8.0 — subscribe permanent kind 30784. Ingère les
+        // announcements d'autres oracles SatRank-compatible. Self-bootstrap :
+        // notre propre announcement (republished 24h) revient sur la
+        // subscription et nous-mêmes apparaissons dans oracle_peers.
+        const { OraclePeerRepository } = await import('../repositories/oracleFederationRepository');
+        const { OraclePeersDiscovery } = await import('../services/oraclePeersDiscovery');
+        const { NostrEventSubscriber } = await import('../nostr/nostrEventSubscriber');
+        // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath
+        const { verifyEvent: verifyEventFn } = await import('nostr-tools/pure');
+        const oraclePeerRepo = new OraclePeerRepository(pool);
+        const peersDiscovery = new OraclePeersDiscovery({
+          peerRepo: oraclePeerRepo,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+        });
+        const peersSubscriber = new NostrEventSubscriber({
+          label: 'oracle-peers',
+          relays: multiKindRelays,
+          filters: [{ kinds: [30784], '#d': ['satrank-oracle-announcement'] }],
+          onEvent: async (event) => {
+            const result = await peersDiscovery.ingestAnnouncement(event);
+            if (result.outcome === 'rejected') {
+              logger.warn(
+                { reason: result.reason, eventId: event.id.slice(0, 12), pubkey: event.pubkey.slice(0, 12) },
+                'oracle-peers subscription rejected announcement',
+              );
+            }
+          },
+        });
+        peersSubscriber.start().catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Failed to start oracle-peers subscriber');
+        });
+        logger.info('Phase 8.0 — Oracle peers subscriber started (kind 30784 permanent)');
+
+        // Phase 8.2 — subscribe permanent kind 7402 (crowd outcome reports).
+        // Ingest les outcomes publiés par n'importe quel agent Nostr,
+        // pondère via Sybil resistance (PoW + identity-age + preimage-proof),
+        // persist dans crowd_outcome_reports.
+        const { CrowdOutcomeRepository, NostrIdentityRepository } = await import('../repositories/crowdOutcomeRepository');
+        const { CrowdOutcomeIngestor, KIND_CROWD_OUTCOME } = await import('../services/crowdOutcomeIngestor');
+        const crowdRepo = new CrowdOutcomeRepository(pool);
+        const identityRepo = new NostrIdentityRepository(pool);
+        const stagePosteriorsForCrowd = new StageRepoCtor(pool);
+        const crowdIngestor = new CrowdOutcomeIngestor({
+          crowdRepo,
+          identityRepo,
+          stagePosteriorsRepo: stagePosteriorsForCrowd,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+        });
+        const crowdSubscriber = new NostrEventSubscriber({
+          label: 'crowd-outcomes',
+          relays: multiKindRelays,
+          filters: [{ kinds: [KIND_CROWD_OUTCOME] }],
+          onEvent: async (event) => {
+            const result = await crowdIngestor.ingest(event);
+            if (result.outcome === 'rejected') {
+              logger.debug(
+                { reason: result.reason, eventId: event.id.slice(0, 12), pubkey: event.pubkey.slice(0, 12) },
+                'crowd-outcomes subscription rejected report',
+              );
+            }
+          },
+        });
+        crowdSubscriber.start().catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Failed to start crowd-outcomes subscriber');
+        });
+        logger.info('Phase 8.2 — Crowd outcomes subscriber started (kind 7402 permanent)');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : '';
