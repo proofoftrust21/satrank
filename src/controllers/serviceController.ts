@@ -13,12 +13,16 @@ import { ValidationError } from '../errors';
 // Bayesian sort/filter semantics (Phase 3): replace composite 0-100 score
 // with posterior p_success ∈ [0,1]. `minPSuccess` replaces `minScore`; `sort`
 // axis `p_success` replaces `score`. Legacy query params return 400.
+// Phase 5.8 — `sort` axes extended with `latency`, `reliability`, `cost`
+// so /api/services mirrors the /api/intent `optimize=` parameter. Default
+// remains `p_success` for back-compat. The legacy `price` alias keeps
+// working (same target column).
 const serviceSearchSchema = z.object({
   q: z.string().max(100).optional(),
   category: z.string().max(50).optional(),
   minPSuccess: z.coerce.number().min(0).max(1).optional(),
   minUptime: z.coerce.number().min(0).max(1).optional(),
-  sort: z.enum(['p_success', 'price', 'uptime']).optional(),
+  sort: z.enum(['p_success', 'price', 'uptime', 'latency', 'reliability', 'cost']).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
@@ -109,6 +113,11 @@ export class ServiceController {
         const sources = svc.sources && svc.sources.length > 1 ? svc.sources : undefined;
         const consumption_type = svc.consumption_type ?? undefined;
         const provider_contact = svc.provider_contact ?? undefined;
+        // Phase 5.8 — upstream 402index signals (reliability_score has 24
+        // distinct values stddev 19.5; uptime_30d 17 distinct stddev 0.3 —
+        // strategic-review.md). Feed the new `optimize=` parameter axes.
+        const reliability_score = svc.upstream_reliability_score ?? undefined;
+        const uptime_30d = svc.upstream_uptime_30d ?? undefined;
 
         return {
           name: svc.name,
@@ -128,6 +137,8 @@ export class ServiceController {
           ...(sources !== undefined ? { sources } : {}),
           ...(consumption_type !== undefined ? { consumption_type } : {}),
           ...(provider_contact !== undefined ? { provider_contact } : {}),
+          ...(reliability_score !== undefined ? { reliability_score } : {}),
+          ...(uptime_30d !== undefined ? { uptime_30d } : {}),
           node: agent ? {
             publicKeyHash: agent.public_key_hash,
             alias: agent.alias,
@@ -291,6 +302,10 @@ export class ServiceController {
         const ageSec = lastCheckedAt !== null ? nowSec - lastCheckedAt : null;
         const stale = ageSec === null || ageSec > STALE_HEALTH_AGE_SEC;
         if (stale) warnings.push('STALE_HEALTH');
+        // Phase 5.8 — also surface upstream signals on /services/best picks
+        // so agents see what fed the chosen ranking dimension.
+        const reliability_score = e.svc.upstream_reliability_score ?? undefined;
+        const uptime_30d = e.svc.upstream_uptime_30d ?? undefined;
         return {
           name: e.svc.name,
           category: e.svc.category,
@@ -301,6 +316,8 @@ export class ServiceController {
           httpHealth: e.httpHealth,
           lastHealthCheckedAt: lastCheckedAt,
           stale,
+          ...(reliability_score !== undefined ? { reliability_score } : {}),
+          ...(uptime_30d !== undefined ? { uptime_30d } : {}),
           node: e.agent ? {
             publicKeyHash: e.agent.public_key_hash,
             alias: e.agent.alias,

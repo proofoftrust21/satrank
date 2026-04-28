@@ -19,7 +19,19 @@ export interface IntentRequest {
   max_latency_ms?: number;
   /** Libre, tracé dans les logs (pas en DB). */
   caller?: string;
+  /** Phase 5.8 — explicit optimization axis. Default `p_success` preserves
+   *  the Bayesian probabilistic oracle as the canonical ranking. Agents
+   *  with concrete priorities pick a different axis: a trading bot wants
+   *  `latency`, a batch processor wants `reliability`, a budget-strict
+   *  agent wants `cost`. The empirical case for exposing these as a
+   *  switchable parameter (rather than a hand-tuned composite) is in
+   *  /tmp/satrank-investigation-second-opinion/strategic-review.md. */
+  optimize?: IntentOptimizeAxis;
 }
+
+/** Phase 5.8 — supported optimize axes. The default of `p_success` keeps
+ *  pre-Phase-5.8 behavior identical for callers that don't pass the field. */
+export type IntentOptimizeAxis = 'p_success' | 'latency' | 'reliability' | 'cost';
 
 /** Rendu minimal de l'intention, rejoué dans la réponse pour que l'agent
  *  puisse vérifier ce que le serveur a effectivement résolu. */
@@ -32,6 +44,9 @@ export interface ResolvedIntent {
   /** Mix A+D — true when ?fresh=true was honoured (paid path, top-N
    *  synchronously probed). false on free directory reads. */
   fresh: boolean;
+  /** Phase 5.8 — echo the optimization axis the server actually applied.
+   *  Always present; defaults to 'p_success' when the request omitted it. */
+  optimize: IntentOptimizeAxis;
 }
 
 /** Mix A+D — bucket exposing how stale the probe behind a candidate is.
@@ -83,6 +98,13 @@ export interface IntentCandidate {
    *  Phase 5 — falls back to `service_endpoints.last_latency_ms` (single
    *  most-recent observation) when service_probes has no data. */
   median_latency_ms: number | null;
+  /** Phase 5.8 — upstream signals from 402index, surfaced for the new
+   *  `optimize=` parameter. The strategic review verified these signals
+   *  carry real per-endpoint variance (reliability_score has 24 distinct
+   *  values, stddev 19.5; uptime_30d 17 distinct, stddev 0.3) yet were
+   *  invisible to consumers. Omitted when null. */
+  reliability_score?: number;
+  uptime_30d?: number;
   /** Phase 5 — multi-source attribution exposed to consumers. Field is
    *  omitted when the row has no source attribution beyond the legacy scalar
    *  `source` column; populated when Phase 3's `service_endpoints.sources[]`
