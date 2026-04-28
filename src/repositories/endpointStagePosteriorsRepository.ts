@@ -109,6 +109,11 @@ export interface StageObservation {
   stage: Stage;
   success: boolean;
   weight?: number; // default 1
+  /** Phase 5.15 — label textuel optionnel ('valid', 'pay_ok', 'delivery_4xx',
+   *  'quality_low', etc.) loggé dans endpoint_stage_outcomes_log pour le
+   *  calibration debug. Pas utilisé par le streaming posterior, juste pour
+   *  l'audit. */
+  outcome_label?: string;
 }
 
 export class EndpointStagePosteriorsRepository {
@@ -159,6 +164,19 @@ export class EndpointStagePosteriorsRepository {
          last_updated = $7::bigint`,
       [urlHash, obs.stage, DEFAULT_PRIOR_ALPHA, DEFAULT_PRIOR_BETA, dAlpha, dBeta, t, TAU_SECONDS],
     );
+
+    // Phase 5.15 — log per-observation pour la calibration cron. Stage 1
+    // (challenge) reste sur endpoint_streaming_posteriors source='probe' et
+    // n'est PAS double-loggé ici. Seuls les stages 2-5 (qui sont la cible
+    // directe de la calibration) sont loggés.
+    if (obs.stage >= 2) {
+      await this.db.query(
+        `INSERT INTO endpoint_stage_outcomes_log
+           (endpoint_url_hash, stage, success, weight, outcome_label, observed_at)
+         VALUES ($1::text, $2::smallint, $3::boolean, $4::double precision, $5, $6::bigint)`,
+        [urlHash, obs.stage, obs.success, w, obs.outcome_label ?? null, t],
+      );
+    }
   }
 
   /** Phase 5.14 — lecture des 5 stages d'un endpoint, posteriors décroissés

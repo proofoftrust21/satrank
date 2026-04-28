@@ -725,6 +725,64 @@ async function main(): Promise<void> {
           },
           'Nostr multi-kind scheduler started',
         );
+
+        // Phase 5.15 — calibration moat. Cron weekly qui calcule
+        // |p_predicted - p_observed| sur la fenêtre 7d et publie un
+        // kind 30783 signé. Réutilise le multiKindPublisher (déjà connecté
+        // aux 3 relais SatRank avec NOSTR_PRIVATE_KEY).
+        const { CalibrationRepository } = await import('../repositories/calibrationRepository');
+        const { CalibrationService } = await import('../services/calibrationService');
+        const { CalibrationPublisher } = await import('../services/calibrationPublisher');
+        // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath
+        const { getPublicKey } = await import('nostr-tools/pure');
+        const { hexToBytes } = await import('@noble/hashes/utils');
+        const oraclePubkey = getPublicKey(hexToBytes(config.NOSTR_PRIVATE_KEY)) as string;
+        const calibRepo = new CalibrationRepository(pool);
+        const calibService = new CalibrationService(calibRepo);
+        const calibPublisher = new CalibrationPublisher({
+          service: calibService,
+          repo: calibRepo,
+          publisher: multiKindPublisher,
+          oraclePubkey,
+        });
+        const runCalibration = (): void => {
+          calibPublisher
+            .publishCycle()
+            .then((res) => {
+              if (res === null) {
+                logger.info('Calibration cron: skipped (recent run exists)');
+                return;
+              }
+              logger.info(
+                {
+                  eventId: res.eventId?.slice(0, 12),
+                  n_endpoints: res.result.n_endpoints,
+                  n_outcomes: res.result.n_outcomes,
+                  delta_mean: res.result.delta_mean,
+                  delta_p95: res.result.delta_p95,
+                },
+                'Calibration cron tick complete (kind 30783 published)',
+              );
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Calibration cron error');
+            });
+        };
+        // Initial firing après 1h (le boot a besoin de stabilité avant de
+        // cogner le DB pour scanner le log).
+        const calibInitialDelay = 60 * 60 * 1000;
+        const calibIntervalMs = 7 * 24 * 60 * 60 * 1000; // weekly
+        const initialTimer = setTimeout(() => {
+          runCalibration();
+          const recurrent = setInterval(runCalibration, calibIntervalMs);
+          recurrent.unref?.();
+        }, calibInitialDelay);
+        initialTimer.unref?.();
+        logger.info(
+          { initialDelayMs: calibInitialDelay, intervalMs: calibIntervalMs },
+          'Phase 5.15 — Calibration cron scheduled (kind 30783 weekly)',
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : '';
