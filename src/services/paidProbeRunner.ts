@@ -35,7 +35,9 @@ import {
   EndpointStagePosteriorsRepository,
   STAGE_PAYMENT,
   STAGE_DELIVERY,
+  STAGE_QUALITY,
 } from '../repositories/endpointStagePosteriorsRepository';
+import { evaluateBodyQuality } from '../utils/bodyQualityHeuristics';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
 
 const PAY_TIMEOUT_DEFAULT_SEC = 20;
@@ -62,10 +64,20 @@ export type DeliveryOutcome =
   | 'delivery_other'
   | 'delivery_skipped'; // payment failed → no delivery to test
 
+export type QualityOutcome =
+  | 'quality_ok'
+  | 'quality_low'
+  | 'quality_skipped'; // delivery failed → no body to evaluate
+
 export interface PaidProbeResult {
   endpoint_url: string;
   payment: PaidProbeOutcome;
   delivery: DeliveryOutcome;
+  /** Phase 5.13 — Stage 5b body heuristics. quality_skipped quand
+   *  delivery != delivery_ok (rien à évaluer). */
+  quality: QualityOutcome;
+  /** Score qualité 0-5 (cf. bodyQualityHeuristics). 0 quand skipped. */
+  quality_score: number;
   sats_spent: number;
   /** Détail textuel ; jamais exposé via API publique. */
   detail?: string;
@@ -92,6 +104,7 @@ export interface PaidProbeCycleSummary {
   totalSpent: number;
   outcomes: Record<PaidProbeOutcome, number>;
   deliveryOutcomes: Record<DeliveryOutcome, number>;
+  qualityOutcomes: Record<QualityOutcome, number>;
 }
 
 export interface PaidProbeRunnerDeps {
@@ -136,6 +149,11 @@ export class PaidProbeRunner {
         delivery_other: 0,
         delivery_skipped: 0,
       },
+      qualityOutcomes: {
+        quality_ok: 0,
+        quality_low: 0,
+        quality_skipped: 0,
+      },
     };
     const limit = opts.maxProbesPerCycle ?? opts.endpoint_urls.length;
     const urls = opts.endpoint_urls.slice(0, limit);
@@ -147,11 +165,14 @@ export class PaidProbeRunner {
           endpoint_url: url,
           payment: 'skipped_no_lnd',
           delivery: 'delivery_skipped',
+          quality: 'quality_skipped',
+          quality_score: 0,
           sats_spent: 0,
         };
         summary.results.push(result);
         summary.outcomes.skipped_no_lnd += 1;
         summary.deliveryOutcomes.delivery_skipped += 1;
+        summary.qualityOutcomes.quality_skipped += 1;
       }
       return summary;
     }
@@ -162,6 +183,7 @@ export class PaidProbeRunner {
       summary.totalSpent += result.sats_spent;
       summary.outcomes[result.payment] += 1;
       summary.deliveryOutcomes[result.delivery] += 1;
+      summary.qualityOutcomes[result.quality] += 1;
 
       // Persister stage 3 (payment) — succès quand pay_ok, sinon échec.
       // skipped_* ne contribue PAS au stage 3 (l'endpoint n'a pas eu sa
@@ -195,6 +217,20 @@ export class PaidProbeRunner {
           this.now(),
         );
       }
+
+      // Persister stage 5 (quality, 5b heuristics) — seulement quand on a
+      // un body évalué (quality != skipped).
+      if (result.quality !== 'quality_skipped') {
+        await this.deps.stagesRepo.observe(
+          {
+            endpoint_url: url,
+            stage: STAGE_QUALITY,
+            success: result.quality === 'quality_ok',
+            weight: 2,
+          },
+          this.now(),
+        );
+      }
     }
 
     return summary;
@@ -221,6 +257,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'probe_no_response',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0,
         detail: err instanceof Error ? err.message : String(err),
       };
@@ -231,6 +269,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'probe_not_402',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0,
         detail: `status=${firstResp.status}`,
       };
@@ -243,6 +283,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'skipped_no_invoice',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0,
         detail: 'no L402 challenge in response',
       };
@@ -260,6 +302,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'skipped_invoice_decode_failed',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0,
         detail: err instanceof InvalidBolt11Error ? err.message : String(err),
       };
@@ -271,6 +315,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'skipped_self_pay',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0,
         detail: 'destination is satrank own LND',
       };
@@ -282,6 +328,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'skipped_over_cap',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0,
         detail: `amount=${amountSats} > cap=${opts.maxPerProbeSats}`,
       };
@@ -291,6 +339,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'skipped_total_cap',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0,
         detail: `spent=${spentSoFar} + ${amountSats} > total=${opts.totalBudgetSats}`,
       };
@@ -309,6 +359,8 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: isRouting ? 'pay_routing_failed' : 'pay_other_failure',
         delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: 0, // paiement n'a pas settled
         detail,
       };
@@ -331,12 +383,15 @@ export class PaidProbeRunner {
         endpoint_url: url,
         payment: 'pay_ok',
         delivery: 'delivery_other',
+        quality: 'quality_skipped',
+        quality_score: 0,
         sats_spent: amountSats,
         detail: 'recall fetch failed',
       };
     }
 
     const status = recallResp.status;
+    const contentType = recallResp.headers.get('content-type');
     const body = await safeText(recallResp);
     const bodySize = body.length;
 
@@ -351,12 +406,25 @@ export class PaidProbeRunner {
       delivery = 'delivery_other';
     }
 
+    // Phase 5.13 — Stage 5b body quality heuristics. Évalué uniquement
+    // quand delivery est OK (sinon le body est probablement une page
+    // d'erreur ou vide, déjà classé failure côté delivery).
+    let quality: QualityOutcome = 'quality_skipped';
+    let qualityScore = 0;
+    if (delivery === 'delivery_ok') {
+      const evaluated = evaluateBodyQuality({ body, contentType, status });
+      qualityScore = evaluated.score;
+      quality = evaluated.passed ? 'quality_ok' : 'quality_low';
+    }
+
     return {
       endpoint_url: url,
       payment: 'pay_ok',
       delivery,
+      quality,
+      quality_score: qualityScore,
       sats_spent: amountSats,
-      detail: `recall_status=${status} body_size=${bodySize}`,
+      detail: `recall_status=${status} body_size=${bodySize} quality_score=${qualityScore}`,
     };
   }
 }

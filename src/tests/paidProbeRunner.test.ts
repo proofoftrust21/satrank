@@ -8,6 +8,7 @@ import {
   EndpointStagePosteriorsRepository,
   STAGE_PAYMENT,
   STAGE_DELIVERY,
+  STAGE_QUALITY,
 } from '../repositories/endpointStagePosteriorsRepository';
 import { PaidProbeRunner } from '../services/paidProbeRunner';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
@@ -309,6 +310,82 @@ describe('PaidProbeRunner', () => {
     const stages = await stagesRepo.findAllStages(url);
     expect(stages.get(STAGE_PAYMENT)!.alpha).toBeGreaterThan(stages.get(STAGE_PAYMENT)!.beta);
     expect(stages.get(STAGE_DELIVERY)!.beta).toBeGreaterThan(stages.get(STAGE_DELIVERY)!.alpha);
+  });
+
+  it('Phase 5.13 — delivery_ok with high-quality body → quality_ok stage 5 success', async () => {
+    const url = 'https://high-quality.test/api';
+    const invoice = makeMainnetInvoice(5);
+    const fetchMock = ((u: string, init?: RequestInit) => {
+      const hasAuth = !!((init?.headers as Record<string, string> | undefined)?.['Authorization']);
+      if (!hasAuth) {
+        return Promise.resolve(new Response('', {
+          status: 402,
+          headers: { 'WWW-Authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }));
+      }
+      return Promise.resolve(new Response(
+        JSON.stringify({
+          symbol: 'BTC',
+          price: 42500,
+          currency: 'USD',
+          timestamp: 1700000000,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ));
+    }) as typeof fetch;
+    const runner = new PaidProbeRunner({
+      stagesRepo,
+      lndClient: fakeLnd({ payOk: true }),
+      fetchImpl: fetchMock,
+    });
+    const summary = await runner.runOnce({
+      endpoint_urls: [url],
+      maxPerProbeSats: 10,
+      totalBudgetSats: 100,
+      selfPubkey: SELF_PUBKEY,
+    });
+    expect(summary.qualityOutcomes.quality_ok).toBe(1);
+    const stages = await stagesRepo.findAllStages(url);
+    expect(stages.get(STAGE_QUALITY)?.alpha).toBeGreaterThan(stages.get(STAGE_QUALITY)!.beta);
+  });
+
+  it('Phase 5.13 — delivery_ok with low-quality body ("ok") → quality_low stage 5 failure', async () => {
+    const url = 'https://low-quality.test/api';
+    const invoice = makeMainnetInvoice(5);
+    const fetchMock = ((u: string, init?: RequestInit) => {
+      const hasAuth = !!((init?.headers as Record<string, string> | undefined)?.['Authorization']);
+      if (!hasAuth) {
+        return Promise.resolve(new Response('', {
+          status: 402,
+          headers: { 'WWW-Authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }));
+      }
+      // "ok" passe le >= 10 chars threshold delivery_ok mais échoue quality.
+      // Pour vraiment hit delivery_ok il faut >= 10 chars. Mettons un body
+      // trivial qui passe delivery mais échoue quality.
+      return Promise.resolve(new Response(
+        '{"error":"insufficient quota"}',
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ));
+    }) as typeof fetch;
+    const runner = new PaidProbeRunner({
+      stagesRepo,
+      lndClient: fakeLnd({ payOk: true }),
+      fetchImpl: fetchMock,
+    });
+    const summary = await runner.runOnce({
+      endpoint_urls: [url],
+      maxPerProbeSats: 10,
+      totalBudgetSats: 100,
+      selfPubkey: SELF_PUBKEY,
+    });
+    expect(summary.deliveryOutcomes.delivery_ok).toBe(1);
+    expect(summary.qualityOutcomes.quality_low).toBe(1);
+    const stages = await stagesRepo.findAllStages(url);
+    // Stage 4 (delivery) success — HTTP 2xx body >= 10
+    expect(stages.get(STAGE_DELIVERY)!.alpha).toBeGreaterThan(stages.get(STAGE_DELIVERY)!.beta);
+    // Stage 5 (quality) failure — body contains "insufficient" + "quota exceeded" patterns
+    expect(stages.get(STAGE_QUALITY)!.beta).toBeGreaterThan(stages.get(STAGE_QUALITY)!.alpha);
   });
 
   it('maxProbesPerCycle limits the work even when more URLs are passed', async () => {
