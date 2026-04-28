@@ -9,13 +9,22 @@
 
 ## What it is
 
-SatRank is a sovereign trust oracle for the Lightning Network. Autonomous agents pay Lightning-native HTTP services every day, and most of the graph they have to navigate is noise: a large share of public Lightning nodes never route a payment, and L402 endpoints ship without SLAs, without catalogs, without reputation. SatRank measures the part of the graph that actually settles and publishes a Bayesian posterior per node.
+SatRank is a sovereign, federated trust oracle for the Lightning Network. Autonomous agents pay Lightning-native HTTP services every day, and most of the graph they have to navigate is noise: a large share of public Lightning nodes never route a payment, and L402 endpoints ship without SLAs.
 
-The product exposes `POST /api/intent`: it takes a natural-language intent and returns the top-ranked L402 candidates, each with its full Bayesian posterior. Settlement happens client-side. The SDK helper `sr.fulfill(intent, budget)` calls `/api/intent`, selects a candidate from the ranked list, and performs the L402 payment flow directly against the provider's endpoint. SatRank never custodies sats and never sees the preimage. The resulting payment proof stays in your wallet.
+SatRank decomposes the L402 contract into **five conditional stages** — challenge → invoice validity → payment fulfillment → data delivery → data quality — and maintains an independent Bayesian posterior per stage per endpoint. The end-to-end probability is the chain-rule product over stages with sufficient observations. Agents see both the per-stage breakdown (which step is likely to fail) and the composite (will the request succeed end-to-end).
 
-Every score is a posterior, not a composite number. For each node the API returns `p_success`, `ci95_low`, `ci95_high`, `n_obs`, and `time_constant_days`. Uncertainty is first-class. Every QueryRoutes probe, every preimage-verified report, and every fulfilled intent updates the same α, β cycle.
+On top of the posteriors, SatRank publishes a **weekly signed calibration history** on Nostr (kind 30783) — the rolling delta between predicted and observed success rates. Any agent or peer oracle can verify the oracle's accuracy across time. A competitor that announces a similar oracle in 2027 cannot retroactively produce that history. The provenance is the moat.
 
-SatRank runs the full stack: a Bitcoin full node (no Neutrino, no third-party gossip), its own LND, its own Nostr identity, its own probe fleet, its own relay-publishing pipeline.
+The federation primitives ship with the oracle. Any operator can run a SatRank-compatible instance, publish a kind 30784 announcement, and have agents aggregate the network through weighted Bayesian model averaging. SatRank itself is one of N+1 instances; agents pick their own trust filters via `aggregateOracles()` in the SDK.
+
+Three agent-native protocols in parallel:
+- **HTTP REST** — the canonical API at `https://satrank.dev/api/*`
+- **MCP server** — `intent` + `verify_assertion` tools for Claude Code, ChatGPT, Cursor, Alby Agent Toolkit
+- **Nostr DVM** (NIP-90 kind 5900/6900) — sovereign agents who never touch HTTP
+
+The product exposes `POST /api/intent`: it takes a natural-language intent and returns the top-ranked L402 candidates, each with its full Bayesian posterior + 5-stage decomposition + http_method. Settlement happens client-side. The SDK helper `sr.fulfill(intent, budget)` calls `/api/intent`, selects a candidate, and performs the L402 payment flow directly against the provider's endpoint. SatRank never custodies sats and never sees the preimage.
+
+SatRank runs the full stack: a Bitcoin full node (no Neutrino, no third-party gossip), its own LND, its own Nostr identity, its own probe fleet, its own relay-publishing pipeline. The economic supportability is publicly verifiable at `GET /api/oracle/budget` (revenue / spending / coverage_ratio).
 
 ## Quick start
 
@@ -69,11 +78,19 @@ Requirements: Node `>=18.0.0`, Python `>=3.10`. Both SDKs are thin wrappers over
 
 ## Core concepts
 
-**Intent then fulfill.** Agents post a natural-language intent and receive a ranked shortlist of L402 endpoints. They choose one and settle through the L402 paywall. The two-step shape separates discovery from payment: an agent can re-rank, cache, or batch candidates before committing sats.
+**Intent then fulfill.** Agents post a natural-language intent and receive a ranked shortlist of L402 endpoints with `http_method` + 5-stage `stage_posteriors` + composite `p_e2e`. They choose one and settle through the L402 paywall. The two-step shape separates discovery from payment: an agent can re-rank, cache, or batch candidates before committing sats.
 
-**Posterior, not a magic number.** Every score is a Beta-distributed posterior. `p_success = 0.87` with `ci95 = [0.81, 0.92]` is a different signal than `p_success = 0.87` with `ci95 = [0.40, 0.99]`. The API returns both, along with `n_obs` (observation count) and `time_constant_days` (decay). Composite 0 to 100 numbers are deprecated and no longer exposed.
+**Posterior, not a magic number.** Every score is a Beta-distributed posterior. `p_success = 0.87` with `ci95 = [0.81, 0.92]` is a different signal than `p_success = 0.87` with `ci95 = [0.40, 0.99]`. The API returns both, along with `n_obs`, `is_meaningful`, and the per-stage breakdown.
 
-**Deterministic, auditable scoring.** The scoring function is code, not a judgment call. It is published under AGPL-3.0 and the Bayesian derivation is documented in the [methodology](https://satrank.dev/methodology). No featured listing, no paid placement, no boost.
+**End-to-end calibrated.** The 5-stage L402 contract is measured per endpoint: challenge (free probe), invoice (free decode), payment (paid via SatRank's LND), delivery (HTTP recall), quality (heuristic / schema). Composed `p_e2e = ∏ p_i` over meaningful stages.
+
+**Honestly calibrated history.** A weekly cron publishes the delta between predicted and observed success rates as a kind 30783 Nostr event signed by the oracle. Anyone can audit the oracle's accuracy across time without trusting a self-claim. The provenance moat compounds week after week.
+
+**Federated, not centralized.** SatRank is one SatRank-compatible oracle among N+1. Other operators can run their own (see [`docs/OPERATOR_QUICKSTART.md`](./docs/OPERATOR_QUICKSTART.md)) and the federation grows. Agents discover peers via kind 30784 announcements + `GET /api/oracle/peers` + SDK `aggregateOracles()`.
+
+**Web of trust via crowd outcomes.** Any agent who has paid for an L402 endpoint can publish a kind 7402 outcome event. SatRank ingests them with Sybil-resistant weighting (NIP-13 PoW + Nostr identity age + preimage proof) and consolidates them into the per-stage posteriors after a 1h anti-spam delay. The trust signal grows with the agent network.
+
+**Deterministic, auditable scoring.** The scoring function is code, not a judgment call. AGPL-3.0, derivation in the [methodology](https://satrank.dev/methodology). No featured listing, no paid placement.
 
 **Preimage closes the loop.** The same 32-byte preimage that unlocks an L402 response is the proof that the payment settled. SatRank accepts it as a first-class report input, weighted higher than self-reported outcomes. No account, no tracking, no login.
 
@@ -113,15 +130,23 @@ All endpoints are versionless and live under `https://satrank.dev`. Full referen
 | Method | Endpoint | Purpose | Cost |
 |---|---|---|---|
 | GET | `/api/intent/categories` | Enumerate the category taxonomy used by intent resolution | free |
-| POST | `/api/intent` | Resolve a natural-language intent, return ranked L402 candidates with posterior | free, 10 req / 60 s / IP |
+| POST | `/api/intent` | Resolve a natural-language intent, return ranked L402 candidates with posterior + 5-stage stage_posteriors + http_method | free, 10 req / 60 s / IP |
+| POST | `/api/intent?fresh=true` | Same shape but server runs a synchronous probe on top candidates (last_probe_age_sec < 60 s) | 2 sats |
 | GET | `/api/agents/top` | Leaderboard: rank, alias, pubkey hash, posterior | free |
 | GET | `/api/services` | Browse the L402 service registry by keyword, category, uptime | free |
-| GET | `/api/agent/:hash` | Full node profile: posterior, components, reports, survival | 1 req |
-| POST | `/api/report` | Submit a paid-call outcome; preimage-verified reports carry extra weight | free |
+| GET | `/api/agent/:hash` | Agent score, advisory, metadata. Free directory read | free |
+| GET | `/api/profile/:id` | Full agent profile: 5-component LN-graph decomposition, reports, survival, evidence | 1 sat |
+| POST | `/api/verdicts` | Batch verdict for up to 100 hashes | 1 sat |
+| POST | `/api/probe` | End-to-end L402 probe via SatRank's LND with full telemetry | 5 sats |
+| POST | `/api/report` | Submit a paid-call outcome; preimage-verified reports carry 2× weight | free |
 | POST | `/api/deposit` | Buy a rate-locked L402 quota in one of five public tiers | free (invoice phase) |
 | GET | `/api/deposit/tiers` | Public deposit tier schedule | free |
 | GET | `/api/stats` | Network counters: nodes, channels, probes, services | free |
 | GET | `/api/health` | Liveness: database, LND, bitcoind, Nostr relay status | free |
+| GET | `/api/oracle/budget` | **NEW** Self-funding loop snapshot (lifetime + 30d + 7d revenue / spending / coverage_ratio) | free |
+| GET | `/api/oracle/peers` | **NEW** SatRank-compatible oracles discovered via kind 30784 announcements | free |
+| GET | `/api/oracle/peers/:pubkey/calibrations` | **NEW** Calibration history (kind 30783) of a specific peer — cross-oracle meta-confidence | free |
+| GET | `/api/oracle/assertion/:url_hash` | **NEW** Trust assertion metadata (kind 30782) + BOLT12 TLV embedding hint for an endpoint | free |
 
 Payment is gated by L402. A free-tier caller gets 21 requests on the first auto-issued macaroon (1 sat per request). A deposit caller gets the requests their tier grants, at the rate their tier locked in.
 
@@ -142,16 +167,19 @@ Event kinds:
 | 10040 | NIP-85 self-declaration |
 | 20900 | Verdict flash: ephemeral broadcast on each verdict transition |
 | 30382 | Node endorsement: posterior, verdict, component signals per node |
-| 30383 | Service endpoint: URL, price, category, operator pubkey |
-| 30384 | Operator profile: NIP-05, verified identity, badge |
-| 30385 | Report: outcome, preimage-verified flag, reporter tier |
-| 5900 / 6900 | NIP-90 DVM: on-demand score as a Nostr job |
+| 30383 | Service endpoint endorsement: URL, price, category, operator pubkey |
+| 30384 | Service profile: NIP-05, verified identity, badge |
+| **30782** | **Trust assertion** (NIP-33 addressable, weekly): per-endpoint 5-stage posterior + p_e2e + valid_until + calibration_proof. Transferable / offline-verifiable |
+| **30783** | **Calibration history** (NIP-33 addressable, weekly): delta_mean / delta_p95 between predicted and observed. The provenance moat |
+| **30784** | **Oracle announcement** (NIP-33 addressable, daily): oracle_pubkey, lnd_pubkey, catalogue_size, capabilities. Federation discovery |
+| **7402** | **Crowd outcome reports** (regular): published by independent agents, Sybil-weighted ingestion (PoW + identity age + preimage proof) |
+| 5900 / 6900 | NIP-90 DVM: `j: trust-check` (legacy) and `j: intent-resolve` (sovereign agent flow) |
 
-If satrank.dev goes offline, the last 30 days of published scores remain verifiable on the relays above via events signed by the SatRank npub. Full protocol detail: [methodology § Nostr distribution](https://satrank.dev/methodology#nostr-distribution).
+If satrank.dev goes offline, the last weeks of signed calibration history + trust assertions remain verifiable on the relays above via events signed by the SatRank npub — and other SatRank-compatible oracles in the federation continue serving the network. Full protocol detail: [methodology § Federation](https://satrank.dev/methodology#federation).
 
-## Run your own SatRank
+## Run your own SatRank-compatible oracle
 
-The code is [AGPL-3.0](./LICENSE). Fork it, run your own bitcoind, run your own LND, publish under your own Nostr identity. The deployment guide, including infra layout, Postgres schema, and service boundaries, lives in [DEPLOY.md](./DEPLOY.md).
+The code is [AGPL-3.0](./LICENSE). Fork it, run your own bitcoind, run your own LND, publish under your own Nostr identity, and join the federation. The complete operator bootstrap is documented in [`docs/OPERATOR_QUICKSTART.md`](./docs/OPERATOR_QUICKSTART.md): hardware tiers (~€12/month minimum on Hetzner), Postgres + LND macaroon setup, Nostr identity generation, environment variables, federation timeline (Day 0 → Day 30+ when you appear in other oracles' aggregations), and economic break-even analysis.
 
 Local development:
 

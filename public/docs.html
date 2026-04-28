@@ -204,8 +204,16 @@ sr.report(target="&lt;url&gt;", outcome="success", preimage="&lt;hex&gt;")</code
             <tr><td><code>/api/deposit</code></td><td>POST</td><td>public</td><td>Buy an L402 token balance (21 to 1 000 000 sats, tiered rate).</td></tr>
             <tr><td><code>/api/health</code></td><td>GET</td><td>public</td><td>Liveness, schema version, LND probe age.</td></tr>
             <tr><td><code>/api/stats</code></td><td>GET</td><td>public</td><td>Aggregate counts (agents, endpoints, probes, capacity).</td></tr>
+            <tr><td><code>/api/oracle/budget</code></td><td>GET</td><td>public</td><td>Self-funding loop: lifetime + 30d + 7d revenue / spending / coverage_ratio. Phase 6.4 transparency moat.</td></tr>
+            <tr><td><code>/api/oracle/peers</code></td><td>GET</td><td>public</td><td>SatRank-compatible oracles discovered via kind 30784 announcements. Federation entry point. Phase 7.1.</td></tr>
+            <tr><td><code>/api/oracle/peers/:pubkey/calibrations</code></td><td>GET</td><td>public</td><td>Calibration history (kind 30783 events) of a specific peer. Cross-oracle meta-confidence. Phase 9.1.</td></tr>
+            <tr><td><code>/api/oracle/assertion/:url_hash</code></td><td>GET</td><td>public</td><td>Trust assertion metadata + BOLT12 TLV embedding hint for an endpoint. Phase 6.3.</td></tr>
           </tbody>
         </table>
+
+        <p style="margin-top: 16px; font-size: 14px; color: var(--muted);">
+          Beyond REST, agents can query the oracle via <strong>MCP server</strong> (Claude / ChatGPT / Cursor — tools <code>intent</code> + <code>verify_assertion</code>) or <strong>Nostr DVM</strong> (kind 5900 / 6900 — sovereign agents, never touch HTTP). See the Methodology page <a href="/methodology.html#federation">section 12</a> for the full federation surface.
+        </p>
       </section>
 
       <section class="doc-section" id="l402">

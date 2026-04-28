@@ -71,6 +71,9 @@
       <div class="doc-toc-heading">Integrity</div>
       <a href="#neutrality">10. Mechanical neutrality</a>
       <a href="#limitations">11. Known limitations</a>
+
+      <div class="doc-toc-heading">Federation</div>
+      <a href="#federation">12. Federation, calibration, web of trust</a>
     </aside>
 
     <main class="doc-main">
@@ -80,11 +83,15 @@
         <h2>1. Overview</h2>
 
         <p>
-          SatRank is a trust oracle for the Bitcoin Lightning Network. It measures every reachable node, crawls every L402 service endpoint it can discover, and combines three independent observation streams into a Bayesian posterior over the event <em>"a request to this target will succeed."</em> Agents query the oracle with a typed intent (category, budget, latency ceiling), and receive a ranked shortlist of endpoints with the posterior, a confidence interval, recent-activity counts, and a risk profile.
+          SatRank is a trust oracle for the Bitcoin Lightning Network. It measures every reachable node, crawls every L402 service endpoint it can discover, and decomposes the L402 contract into five conditional stages — <em>challenge → invoice validity → payment fulfillment → data delivery → data quality</em>. For each (endpoint, stage) pair the oracle maintains an independent Beta posterior; agents see both the per-stage probabilities and their multiplicative chain-rule composition <code>p_e2e = ∏ p_i</code> over stages with sufficient observations.
         </p>
 
         <p>
-          The oracle is run from a single full Bitcoin node with its own LND, which is the primary source of truth: the LND graph feeds node discovery, <code>queryRoutes</code> probes feed reachability, and the same daemon holds the macaroon that decodes BOLT11 invoices exposed by L402 services. No third-party API sits on the critical path of a score.
+          On top of the posteriors, SatRank publishes a <strong>weekly signed calibration history</strong> on Nostr (kind 30783): the delta between predicted and observed success rates on a rolling 7-day window. Any agent or peer oracle can verify the oracle's accuracy across time without trusting a self-claim. That same Nostr surface carries transferable per-endpoint trust assertions (kind 30782, NIP-33 addressable replaceable), oracle-discovery announcements (kind 30784), and crowd outcome reports from independent agents (kind 7402, Sybil-weighted).
+        </p>
+
+        <p>
+          The oracle is sovereign and federated. It runs from a single full Bitcoin node with its own LND — no third-party API sits on the critical path. It is also one of N+1 SatRank-compatible instances: any operator can spin up an independent oracle, publish kind 30784 announcements, and have agents aggregate the network through weighted Bayesian model averaging. Agents query via three parallel surfaces: HTTP REST, Model Context Protocol (Claude / ChatGPT / Cursor agents), or NIP-90 Data Vending Machines (sovereign Nostr-only flow).
         </p>
 
         <h3>What this document is</h3>
@@ -243,6 +250,28 @@ ci95_high = BetaInvCDF(0.975; α, β)</code></pre>
         <h3>3.6 Verdict overlay</h3>
         <p>
           The API-level verdict composition in <code>verdictService.ts</code> additionally escalates <code>bayes.verdict</code> to at least <code>RISKY</code> when evidence-based flags <code>fraud_reported</code> or <code>negative_reputation</code> are present. Evidence of harm dominates posterior uncertainty.
+        </p>
+
+        <h3>3.7 Five-stage L402 contract decomposition</h3>
+        <p>
+          The legacy posterior described above (sections 3.1-3.6) measures whether the L402 challenge cycle returns a 2xx response. To measure the full agent-relevant contract, SatRank decomposes each request into five conditional stages and maintains an independent Beta posterior per stage in <code>endpoint_stage_posteriors</code>:
+        </p>
+        <table>
+          <thead><tr><th>Stage</th><th>Event measured</th><th>Cost / source</th></tr></thead>
+          <tbody>
+            <tr><td><strong>1 — challenge</strong></td><td>Endpoint responds HTTP 402 with parseable <code>WWW-Authenticate</code></td><td>0 sat — <code>serviceHealthCrawler</code> (probe)</td></tr>
+            <tr><td><strong>2 — invoice</strong></td><td>BOLT11 decodes, payee routable, amount coherent, not expired</td><td>0 sat — <code>invoiceValidityService</code> (local decode)</td></tr>
+            <tr><td><strong>3 — payment</strong></td><td>Invoice settles, preimage returned, fee bounded</td><td>~5 sat — <code>paidProbeRunner</code> (LND payinvoice)</td></tr>
+            <tr><td><strong>4 — delivery</strong></td><td>Recall HTTP 2xx, body non-empty, content-type coherent</td><td>0 sat side-effect of stage 3</td></tr>
+            <tr><td><strong>5 — quality</strong></td><td>Body schema-valid (5a) OR heuristic-valid (5b) OR crowd-validated (5c)</td><td>0 sat side-effect + crowd kind 7402</td></tr>
+          </tbody>
+        </table>
+        <p>
+          Each stage carries its own <code>(α, β)</code> with default prior <code>Beta(1.5, 1.5)</code> and τ=7-day exponential decay-at-read, identical to the legacy posterior. The composed end-to-end probability follows the chain rule:
+        </p>
+        <pre><code>p_e2e = ∏ᵢ pᵢ    over stages i where n_obs_effective_i ≥ IS_MEANINGFUL_MIN_N_OBS (= 3)</code></pre>
+        <p>
+          Stages with insufficient observations are <strong>excluded</strong> from the product rather than filled with the 0.5 prior, so an endpoint with sound stages 1+2 but no Stage 3 data yet is not unfairly penalized. The API exposes both the per-stage breakdown and the composite as <code>candidate.stage_posteriors.{stages, p_e2e, meaningful_stages, measured_stages}</code> alongside legacy <code>bayesian.p_success</code>.
         </p>
       </section>
 
@@ -626,6 +655,11 @@ Relays (DEFAULT_NOSTR_RELAYS, src/nostr/relays.ts):
             <tr><td><code>30383</code></td><td>addressable</td><td>URL hash</td><td>Endorsement for an L402 endpoint.</td></tr>
             <tr><td><code>30384</code></td><td>addressable</td><td>service hash</td><td>Endorsement for a logical service (group of endpoints).</td></tr>
             <tr><td><code>20900</code></td><td>ephemeral</td><td><em>none</em></td><td>Verdict flash: signals a verdict transition. Broadcast-only, not persisted.</td></tr>
+            <tr><td><code>30782</code></td><td>addressable</td><td>endpoint URL hash</td><td><strong>Trust assertion</strong>: 5-stage L402 contract posterior + p_e2e + valid_until + calibration_proof. Transferable offline-verifiable assertion (composes between agents without re-querying SatRank).</td></tr>
+            <tr><td><code>30783</code></td><td>addressable</td><td><code>satrank-calibration</code></td><td><strong>Calibration history</strong> (the moat): weekly delta_mean / delta_median / delta_p95 between predicted and observed success rates. Top 20 per-endpoint deltas embedded in content. Provenance for the oracle's accuracy.</td></tr>
+            <tr><td><code>30784</code></td><td>addressable</td><td><code>satrank-oracle-announcement</code></td><td><strong>Federation discovery</strong>: oracle_pubkey, lnd_pubkey, catalogue_size, calibration_event_id pointer, capabilities. Cron 24h. Lets agents and other oracles discover the federation.</td></tr>
+            <tr><td><code>7402</code></td><td>regular</td><td><em>none</em></td><td><strong>Crowd outcome reports</strong>: published by independent agents after consuming an L402 endpoint. Tags carry endpoint_url_hash, outcome enum, optional preimage + payment_hash, optional NIP-13 PoW. Sybil-weighted ingestion (Section 9 below).</td></tr>
+            <tr><td><code>5900 → 6900</code></td><td>NIP-90 DVM</td><td><em>n/a</em></td><td>Data Vending Machine: <code>j: trust-check</code> (legacy node trust query) and <code>j: intent-resolve</code> (sovereign agent flow — agent publishes intent JSON, oracle replies kind 6900 with intent response).</td></tr>
           </tbody>
         </table>
 
@@ -814,6 +848,79 @@ Relays (DEFAULT_NOSTR_RELAYS, src/nostr/relays.ts):
         <h3>11.7 Anti-claim</h3>
         <p>
           What SatRank does NOT claim to do. It is not a KYC system. It is not a legal attestation of the operator's identity or good standing. It is not a guarantee of service quality, only a probabilistic estimate given observed behavior. An agent making high-value or legally sensitive decisions should use SatRank as one signal among several, not the only signal. No warranty, express or implied. See LICENSE (AGPL-3.0) section 15.
+        </p>
+      </section>
+
+      <!-- 12. FEDERATION + CALIBRATION + CROWD -->
+      <section class="doc-section" id="federation">
+        <h2>12. Federation, calibration history, web of trust</h2>
+
+        <p>
+          A single trust oracle is a single point of failure and a single point of capture. SatRank's architecture treats the oracle as <em>one of N+1 SatRank-compatible instances</em> federated through Nostr. Three primitives compose this layer.
+        </p>
+
+        <h3>12.1 Calibration history (kind 30783) — the moat</h3>
+        <p>
+          A weekly cron computes, for each (endpoint, stage) with at least 10 outcomes in the rolling 7-day window:
+        </p>
+        <pre><code>p_predicted = posterior reconstructed at window_start (decay-aware)
+p_observed  = success_rate over outcomes_in_window
+delta       = |p_predicted - p_observed|</code></pre>
+        <p>
+          The aggregate (<code>delta_mean</code>, <code>delta_median</code>, <code>delta_p95</code>, <code>n_endpoints</code>, <code>n_outcomes</code>) is published as a Nostr kind 30783 event signed by the oracle's identity key. The top 20 per-endpoint deltas are embedded in the event content for full audit. Implementation: <code>src/services/calibrationService.ts</code> + <code>calibrationPublisher.ts</code>.
+        </p>
+        <p>
+          A competitor that announces a similar oracle in 2027 cannot retroactively produce the historical calibration events: each event carries a timestamp + Schnorr signature. The provenance is the moat.
+        </p>
+
+        <h3>12.2 Transferable trust assertions (kind 30782)</h3>
+        <p>
+          For each endpoint with ≥ 1 meaningful stage, the oracle publishes a NIP-33 addressable replaceable kind 30782 trust assertion (cron weekly). The event tags carry <code>p_e2e</code>, <code>http_method</code>, <code>valid_until</code>, and a <code>calibration_proof</code> tag pointing at the latest kind 30783 event id. The content is the JSON canonical of all 5 stages.
+        </p>
+        <p>
+          Composability: an agent that has fetched a trust assertion can pass the raw event to a sub-agent. The sub-agent verifies the Schnorr signature offline, checks <code>valid_until &gt; now</code>, optionally verifies the <code>calibration_proof</code> oracle's track record, then trusts the assertion without round-tripping to SatRank. Implementation: <code>src/services/trustAssertionPublisher.ts</code>.
+        </p>
+
+        <h3>12.3 Federation discovery (kind 30784)</h3>
+        <p>
+          Each SatRank-compatible oracle publishes a kind 30784 announcement every 24 hours: <code>oracle_pubkey</code>, <code>lnd_pubkey</code> (sovereign LN identity), <code>catalogue_size</code>, <code>calibration_event_id</code>, <code>capabilities</code>. SatRank itself subscribes permanently to the same filter on its relays, ingests every kind 30784 (with self-attestation pubkey check), and persists to <code>oracle_peers</code>. Self-bootstrap: the oracle observes its own announcement and appears in its own <code>/api/oracle/peers</code>.
+        </p>
+        <p>
+          The SDK exposes <code>aggregateOracles({ baseUrl, maxStaleSec, minCatalogueSize, requireCalibration })</code> for agents who want to query N oracles in parallel and combine results client-side. Trust filtering is sovereign — the agent picks its own thresholds, not SatRank.
+        </p>
+
+        <h3>12.4 Crowd outcome reports (kind 7402) — Sybil-resistant ingestion</h3>
+        <p>
+          After paying for an L402 endpoint, an agent can publish a kind 7402 event signed by its Nostr identity. The tags carry the endpoint URL hash, the outcome enum (<code>delivered</code>, <code>delivery_4xx</code>, <code>delivery_5xx</code>, <code>timeout</code>, <code>pay_failed</code>), and optionally <code>preimage</code> + <code>payment_hash</code> + <code>pow</code> + <code>latency_ms</code>.
+        </p>
+        <p>
+          SatRank ingests the event with a Sybil-resistant weighting:
+        </p>
+        <pre><code>weight = base × pow_factor × identity_age_factor × preimage_factor
+
+base                  = 0.3
+pow_factor            = min(2.0, 1.0 + verified_NIP13_bits / 32)
+identity_age_factor   = min(2.0, 1.0 + days_since_first_seen / 30)
+preimage_factor       = 2.0  if sha256(preimage) == payment_hash else 1.0
+
+weight ≤ 2.4 (≈ paid probe weight 2.0 in the legacy posterior)</code></pre>
+        <p>
+          Each report is persisted to <code>crowd_outcome_reports</code> with the full weight breakdown (audit + replay). After a <strong>1-hour anti-spam delay</strong>, a consolidation cron pushes the report into <code>endpoint_stage_posteriors</code> via <code>FOR UPDATE SKIP LOCKED</code> + transaction (anti double-write race). The oracle's posterior grows with the agent network, not just with its own paid probes. Implementation: <code>src/services/crowdOutcomeIngestor.ts</code> + <code>crowdConsolidationCron.ts</code>.
+        </p>
+
+        <h3>12.5 Cross-oracle calibration ingestion</h3>
+        <p>
+          SatRank also subscribes permanently to kind 30783 events from <em>other</em> oracles. Each peer calibration is persisted to <code>peer_calibration_observations</code> and exposed via <code>GET /api/oracle/peers/:pubkey/calibrations</code>. An agent aggregating multiple oracles can compare their published calibrations side by side and weight oracles by their accuracy track record (the <code>1 / delta_mean</code> Bayesian model averaging coefficient).
+        </p>
+
+        <h3>12.6 Self-funding loop</h3>
+        <p>
+          The economic supportability of the oracle is publicly verifiable. Every paid call (<code>/api/intent?fresh=true</code>, <code>/api/probe</code>, <code>/api/verdicts</code>, <code>/api/profile/:id</code>) is logged on the revenue side; every paid probe is logged on the spending side. <code>GET /api/oracle/budget</code> exposes lifetime + 30d + 7d snapshots with <code>coverage_ratio = revenue / spending</code>. Break-even at scale ≈ 17 fresh queries/day, well below agent-economy volume.
+        </p>
+
+        <h3>12.7 Reference operator quickstart</h3>
+        <p>
+          A complete bootstrap guide for any operator wanting to run a SatRank-compatible oracle is at <a href="https://github.com/proofoftrust21/satrank/blob/main/docs/OPERATOR_QUICKSTART.md" rel="noopener noreferrer"><code>docs/OPERATOR_QUICKSTART.md</code></a>: hardware tiers, Postgres + LND macaroon setup, Nostr identity generation, environment variables, federation timeline, and economic break-even analysis.
         </p>
       </section>
 

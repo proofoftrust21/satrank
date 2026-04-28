@@ -4,16 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SatRank · Sovereign trust oracle for Lightning</title>
-  <meta name="description" content="Intent-driven service discovery on Bitcoin Lightning. Ask for a category and a budget, get a ranked list of L402 endpoints with Bayesian trust posterior, then pay 1 sat per request.">
+  <meta name="description" content="Sovereign trust oracle for autonomous agents on Bitcoin Lightning. 5-stage L402 posterior (challenge / invoice / payment / delivery / quality), weekly calibration history signed on Nostr, federated SatRank-compatible oracles, MCP + DVM agent-native interfaces.">
   <meta name="theme-color" content="#07090d">
   <meta property="og:title" content="SatRank · Sovereign trust oracle for Lightning">
-  <meta property="og:description" content="Intent-driven service discovery on Bitcoin Lightning. Bayesian trust posterior, 1 sat per request, AGPL-3.0, Nostr-native.">
+  <meta property="og:description" content="5-stage L402 contract posterior, weekly signed calibration history, federation, MCP + DVM. AGPL-3.0, Nostr-native.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://satrank.dev">
   <meta property="og:image" content="https://satrank.dev/logo.png">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="SatRank · sovereign trust oracle for Lightning">
-  <meta name="twitter:description" content="Intent-driven service discovery on Bitcoin Lightning.">
+  <meta name="twitter:description" content="5-stage L402 posterior + weekly signed calibration + federated oracles for autonomous agents on Lightning.">
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="canonical" href="https://satrank.dev">
@@ -50,7 +50,7 @@
     </h1>
 
     <p class="hero-sub">
-      Lightning is the emerging settlement rail for machine-to-machine payments, but most nodes don't route reliably and most L402 services don't have SLAs. SatRank measures every indexed endpoint from its own LND, publishes a Bayesian trust posterior per node, and returns a ranked shortlist when your agent posts an intent. No account, no API key. Pay 1 sat per query, or take the free tier.
+      Lightning is the emerging settlement rail for machine-to-machine payments, but most nodes don't route reliably and most L402 services don't have SLAs. SatRank measures every indexed endpoint from its own LND, decomposes the L402 contract into <strong>5 stages</strong> (challenge → invoice → payment → delivery → quality), publishes a Bayesian posterior per stage, and ships a <strong>weekly signed calibration history</strong> on Nostr so any agent can verify the oracle's accuracy across time. Federated by design: any operator can run a SatRank-compatible oracle and cross-attest. No account, no API key.
     </p>
 
     <div class="hero-cta">
@@ -226,27 +226,30 @@ if result["success"]:
 <pre class="json"><span class="j-brace">{</span>
   <span class="j-key">"intent"</span>: <span class="j-brace">{</span>
     <span class="j-key">"category"</span>: <span class="j-str">"energy/intelligence"</span>,
-    <span class="j-key">"budget_sats"</span>: <span class="j-num">50</span>,
-    <span class="j-key">"max_latency_ms"</span>: <span class="j-null">null</span>
+    <span class="j-key">"budget_sats"</span>: <span class="j-num">50</span>
   <span class="j-brace">}</span>,
   <span class="j-key">"candidates"</span>: [
     <span class="j-brace">{</span>
       <span class="j-key">"rank"</span>: <span class="j-num">1</span>,
       <span class="j-key">"endpoint_url"</span>: <span class="j-str">"https://grid.ptsolutions.io/…/ercot"</span>,
-      <span class="j-key">"service_name"</span>: <span class="j-str">"Grid Energy Intelligence — ERCOT"</span>,
+      <span class="j-key">"http_method"</span>: <span class="j-str">"GET"</span>,
       <span class="j-key">"price_sats"</span>: <span class="j-num">25</span>,
       <span class="j-key">"bayesian"</span>: <span class="j-brace">{</span>
-        <span class="j-key">"p_success"</span>: <span class="j-num">0.801</span>,
-        <span class="j-key">"ci95_low"</span>: <span class="j-num">0.475</span>,
-        <span class="j-key">"ci95_high"</span>: <span class="j-num">0.983</span>,
-        <span class="j-key">"n_obs"</span>: <span class="j-num">4.55</span>,
-        <span class="j-key">"verdict"</span>: <span class="j-str">"INSUFFICIENT"</span>
+        <span class="j-key">"p_success"</span>: <span class="j-num">0.94</span>, <span class="j-key">"ci95_low"</span>: <span class="j-num">0.89</span>, <span class="j-key">"ci95_high"</span>: <span class="j-num">0.97</span>,
+        <span class="j-key">"n_obs"</span>: <span class="j-num">47</span>, <span class="j-key">"verdict"</span>: <span class="j-str">"SAFE"</span>
       <span class="j-brace">}</span>,
-      <span class="j-key">"advisory"</span>: <span class="j-brace">{</span>
-        <span class="j-key">"advisory_level"</span>: <span class="j-str">"yellow"</span>,
-        <span class="j-key">"recommendation"</span>: <span class="j-str">"proceed_with_caution"</span>
+      <span class="j-key">"stage_posteriors"</span>: <span class="j-brace">{</span>
+        <span class="j-key">"p_e2e"</span>: <span class="j-num">0.81</span>,
+        <span class="j-key">"meaningful_stages"</span>: [<span class="j-str">"challenge"</span>, <span class="j-str">"invoice"</span>, <span class="j-str">"payment"</span>, <span class="j-str">"delivery"</span>, <span class="j-str">"quality"</span>],
+        <span class="j-key">"stages"</span>: <span class="j-brace">{</span>
+          <span class="j-key">"challenge"</span>: <span class="j-brace">{</span> <span class="j-key">"p_success"</span>: <span class="j-num">0.99</span>, <span class="j-key">"n_obs"</span>: <span class="j-num">47</span>, <span class="j-key">"is_meaningful"</span>: <span class="j-bool">true</span> <span class="j-brace">}</span>,
+          <span class="j-key">"invoice"</span>:   <span class="j-brace">{</span> <span class="j-key">"p_success"</span>: <span class="j-num">0.98</span>, <span class="j-key">"n_obs"</span>: <span class="j-num">38</span>, <span class="j-key">"is_meaningful"</span>: <span class="j-bool">true</span> <span class="j-brace">}</span>,
+          <span class="j-key">"payment"</span>:   <span class="j-brace">{</span> <span class="j-key">"p_success"</span>: <span class="j-num">0.92</span>, <span class="j-key">"n_obs"</span>: <span class="j-num">23</span>, <span class="j-key">"is_meaningful"</span>: <span class="j-bool">true</span> <span class="j-brace">}</span>,
+          <span class="j-key">"delivery"</span>:  <span class="j-brace">{</span> <span class="j-key">"p_success"</span>: <span class="j-num">0.96</span>, <span class="j-key">"n_obs"</span>: <span class="j-num">19</span>, <span class="j-key">"is_meaningful"</span>: <span class="j-bool">true</span> <span class="j-brace">}</span>,
+          <span class="j-key">"quality"</span>:   <span class="j-brace">{</span> <span class="j-key">"p_success"</span>: <span class="j-num">0.91</span>, <span class="j-key">"n_obs"</span>: <span class="j-num">14</span>, <span class="j-key">"is_meaningful"</span>: <span class="j-bool">true</span> <span class="j-brace">}</span>
+        <span class="j-brace">}</span>
       <span class="j-brace">}</span>,
-      <span class="j-key">"health"</span>: <span class="j-brace">{</span> <span class="j-key">"reachability"</span>: <span class="j-num">1</span> <span class="j-brace">}</span>
+      <span class="j-key">"advisory"</span>: <span class="j-brace">{</span> <span class="j-key">"advisory_level"</span>: <span class="j-str">"green"</span>, <span class="j-key">"recommendation"</span>: <span class="j-str">"proceed"</span> <span class="j-brace">}</span>
     <span class="j-brace">}</span>
   ],
   <span class="j-key">"meta"</span>: <span class="j-brace">{</span> <span class="j-key">"total_matched"</span>: <span class="j-num">48</span>, <span class="j-key">"returned"</span>: <span class="j-num">2</span> <span class="j-brace">}</span>
@@ -291,17 +294,17 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
     <div class="container">
       <div class="section-head">
         <div class="section-kicker">Trust model</div>
-        <h2 class="section-title">Two layers: a free Bayesian posterior, and a paid component breakdown.</h2>
-        <p class="section-desc">Every candidate in <code>/api/intent</code> ships with a free Bayesian posterior: enough for an agent to decide whether the endpoint is worth paying. If you need the full decomposition behind the posterior, query <code>GET /api/agent/:hash</code>. That's paid (1 sat) because it reveals proprietary scoring components.</p>
+        <h2 class="section-title">Three layers: a free posterior, a 5-stage L402 contract decomposition, and a paid LN-graph breakdown.</h2>
+        <p class="section-desc">Every candidate in <code>/api/intent</code> ships with the free Bayesian posterior plus the per-stage L402 contract decomposition (challenge / invoice / payment / delivery / quality). The 5-stage view tells your agent <em>which step is likely to fail</em>, not just whether the request will succeed end-to-end. The paid LN-graph component breakdown (1 sat) gives the deterministic node-level scoring for diligence callers.</p>
       </div>
 
       <!-- 4.1 Free posterior -->
       <div class="subsection">
         <div class="subsection-head">
           <span class="subsection-num">4.1</span>
-          <h3>Free · Bayesian posterior</h3>
+          <h3>Free · Bayesian posterior + 5-stage L402 contract</h3>
         </div>
-        <p class="subsection-desc">Computed from our own LND probes, weighted by recency. <code>p_success</code> is the posterior mean; <code>ci95_low</code>/<code>ci95_high</code> bound the 95% credible interval; <code>n_obs</code> is the effective sample size; <code>verdict</code> summarises confidence (<code>CONVERGED</code> / <code>INSUFFICIENT</code>). Delivered in every <code>/api/intent</code> candidate and in <code>GET /api/agents/top</code>.</p>
+        <p class="subsection-desc">Each candidate carries the legacy <code>bayesian.p_success</code> posterior <em>plus</em> a <code>stage_posteriors</code> block decomposing the L402 contract into 5 independent Beta posteriors. The composed end-to-end probability is the chain rule product over stages with sufficient observations. <code>http_method</code> is persisted from the upstream registry so the SDK calls the right method without a 405-fallback round trip.</p>
 
         <div class="code-card">
           <div class="code-head">
@@ -328,13 +331,13 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         </div>
       </div>
 
-      <!-- 4.2 Paid decomposition -->
+      <!-- 4.2 LN-graph scoring -->
       <div class="subsection">
         <div class="subsection-head">
           <span class="subsection-num">4.2</span>
-          <h3>Paid · 5-component decomposition</h3>
+          <h3>Paid · LN-graph scoring (5 components)</h3>
         </div>
-        <p class="subsection-desc">The free posterior (above) tells your agent how likely the node is to route. The decomposition below tells it <em>why</em>. These are the five components of SatRank's deterministic scoring function, used to seed the Bayesian prior. Weights are frozen and public. The per-node numeric contribution is available via <code>GET /api/agent/:hash</code> (1 sat per call).</p>
+        <p class="subsection-desc">Distinct from the 5-stage L402 contract above: this is the deterministic <em>node-level</em> scoring used to seed the Bayesian prior. It answers "is this Lightning node well-connected, well-routed, well-aged?" — orthogonal to "does this paid endpoint deliver?". Five components, frozen public weights. The per-node numeric contribution is available via <code>GET /api/profile/:id</code> (1 sat per call).</p>
 
         <div class="factors-grid">
           <div class="factor">
@@ -518,10 +521,35 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
           <span class="ep-desc">Liveness: database, LND, bitcoind, Nostr relay status</span>
           <span class="ep-cost ep-free">free</span>
         </li>
+        <li>
+          <span class="method method-get">GET</span>
+          <span class="ep-path">/api/oracle/budget</span>
+          <span class="ep-desc">Self-funding loop snapshot: lifetime + 30d + 7d revenue / spending / balance / coverage_ratio</span>
+          <span class="ep-cost ep-free">free</span>
+        </li>
+        <li>
+          <span class="method method-get">GET</span>
+          <span class="ep-path">/api/oracle/peers</span>
+          <span class="ep-desc">SatRank-compatible oracles discovered via kind 30784 announcements. Federation aggregation entry point</span>
+          <span class="ep-cost ep-free">free</span>
+        </li>
+        <li>
+          <span class="method method-get">GET</span>
+          <span class="ep-path">/api/oracle/peers/:pubkey/calibrations</span>
+          <span class="ep-desc">Calibration history of a specific peer (kind 30783 events ingested). Cross-oracle meta-confidence</span>
+          <span class="ep-cost ep-free">free</span>
+        </li>
+        <li>
+          <span class="method method-get">GET</span>
+          <span class="ep-path">/api/oracle/assertion/:url_hash</span>
+          <span class="ep-desc">Trust assertion metadata (kind 30782 event id, oracle pubkey, valid_until, BOLT12 TLV hint) for an endpoint</span>
+          <span class="ep-cost ep-free">free</span>
+        </li>
       </ul>
 
       <p class="api-footnote">
-        Interactive Swagger UI: <a href="/api/docs">/api/docs</a> · Raw OpenAPI 3.1: <a href="/api/openapi.json">/api/openapi.json</a>.
+        Interactive Swagger UI: <a href="/api/docs">/api/docs</a> · Raw OpenAPI 3.1: <a href="/api/openapi.json">/api/openapi.json</a>.<br>
+        Agent-native protocols beyond REST: <strong>MCP server</strong> (intent + verify_assertion tools) for Claude / ChatGPT / Cursor, and <strong>Nostr DVM</strong> (kind 5900 / 6900) for sovereign agents who never touch HTTP.
       </p>
     </div>
   </section>
@@ -531,28 +559,32 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
     <div class="container">
       <div class="nostr-card">
         <div class="section-kicker">Nostr-native distribution</div>
-        <h2 class="section-title">Every score, every service, every report, on public relays.</h2>
-        <p class="section-desc">SatRank publishes its trust graph to <code>relay.damus.io</code>, <code>nos.lol</code>, and <code>relay.primal.net</code> every 6 hours. Any Nostr client can subscribe, verify the signatures, and stream updates in real time. No SDK, no API key, no trust in SatRank's uptime.</p>
+        <h2 class="section-title">Every posterior, every calibration, every outcome — signed, on public relays.</h2>
+        <p class="section-desc">SatRank publishes its trust graph + calibration history + transferable assertions to <code>relay.damus.io</code>, <code>nos.lol</code>, and <code>relay.primal.net</code>. Any Nostr client can subscribe, verify the Schnorr signatures, and stream updates in real time. The same Nostr surface lets other oracles federate (kind 30784 announcement) and any agent publish outcomes (kind 7402 with PoW + preimage proof).</p>
         <div class="nostr-grid">
           <div>
-            <div class="nostr-label">Kind 30382</div>
-            <div class="nostr-desc">Trust assertions: posterior, verdict, components per node</div>
+            <div class="nostr-label">Kind 30382 / 30383 / 30384</div>
+            <div class="nostr-desc">Node / endpoint / service endorsements: posterior, verdict, source, recent_activity</div>
           </div>
           <div>
-            <div class="nostr-label">Kind 30383</div>
-            <div class="nostr-desc">Service endpoints: URL, price, category, operator pubkey</div>
+            <div class="nostr-label">Kind 30782</div>
+            <div class="nostr-desc">Per-endpoint trust assertion (NIP-33 addressable). 5 stages + p_e2e + valid_until + calibration_proof</div>
           </div>
           <div>
-            <div class="nostr-label">Kind 30384</div>
-            <div class="nostr-desc">Operator profiles: NIP-05, verified identity, badge</div>
+            <div class="nostr-label">Kind 30783</div>
+            <div class="nostr-desc">Weekly oracle calibration: predicted vs observed delta_mean / delta_p95. The provenance moat</div>
           </div>
           <div>
-            <div class="nostr-label">Kind 30385</div>
-            <div class="nostr-desc">Reports: outcome, preimage-verified flag, reporter tier</div>
+            <div class="nostr-label">Kind 30784</div>
+            <div class="nostr-desc">Oracle announcement: pubkey, lnd_pubkey, catalogue_size, capabilities. Federation discovery</div>
+          </div>
+          <div>
+            <div class="nostr-label">Kind 7402</div>
+            <div class="nostr-desc">Crowd outcome reports: agent publishes outcome + PoW + preimage. Sybil-weighted into the posterior</div>
           </div>
           <div>
             <div class="nostr-label">Kind 5900 → 6900</div>
-            <div class="nostr-desc">NIP-90 DVM: on-demand score as a Nostr job</div>
+            <div class="nostr-desc">NIP-90 DVM: <code>j: trust-check</code> (legacy) and <code>j: intent-resolve</code> (sovereign agent flow)</div>
           </div>
           <div>
             <div class="nostr-label">satrank@satrank.dev</div>
@@ -562,6 +594,35 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <div class="nostr-relays">
           Relays: <code>relay.damus.io</code> · <code>nos.lol</code> · <code>relay.primal.net</code>
           &nbsp;·&nbsp; <a href="/methodology.html#nostr-distribution">How it works →</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. FEDERATION -->
+  <section class="section section-why">
+    <div class="container">
+      <div class="section-head">
+        <div class="section-kicker">Federation</div>
+        <h2 class="section-title">Run your own oracle. Cross-attest the others.</h2>
+        <p class="section-desc">SatRank is one of N+1 SatRank-compatible oracles. The federation discovery protocol (kind 30784) and the calibration cross-attestation pipeline (kind 30783) let any operator spin up an independent oracle, publish its own posteriors, and have agents aggregate the network with weighted Bayesian model averaging — no single oracle can capture the trust signal. <a href="https://github.com/proofoftrust21/satrank/blob/main/docs/OPERATOR_QUICKSTART.md" rel="noopener noreferrer">Operator quickstart →</a></p>
+      </div>
+
+      <div class="why-grid">
+        <div class="why-card">
+          <div class="why-num">01</div>
+          <h3>Discovery built-in.</h3>
+          <p>Subscribe to kind 30784 on the canonical relays and you get every SatRank-compatible oracle within 24 hours of announcement. <code>GET /api/oracle/peers</code> exposes the local snapshot. The SDK ships <code>aggregateOracles()</code> with built-in trust filters (max staleness, minimum catalogue size, calibration history required).</p>
+        </div>
+        <div class="why-card">
+          <div class="why-num">02</div>
+          <h3>Cross-attested calibration.</h3>
+          <p>Each oracle publishes a kind 30783 weekly calibration event: <code>delta_mean</code>, <code>delta_p95</code>, <code>n_endpoints</code>. SatRank ingests every peer's calibration and exposes the full history at <code>GET /api/oracle/peers/:pubkey/calibrations</code>. An oracle that drifts is visible to the entire federation.</p>
+        </div>
+        <div class="why-card">
+          <div class="why-num">03</div>
+          <h3>Web of trust via kind 7402.</h3>
+          <p>Any agent who has paid for an L402 endpoint can publish a kind 7402 outcome report (with PoW + preimage proof). Every oracle ingests the report with Sybil-resistant weighting (<code>base × pow_factor × identity_age × preimage_factor</code>), and after a 1h anti-spam delay the report is consolidated into the per-stage posteriors. The trust signal grows with the agent network, not just with the oracle's own probes.</p>
         </div>
       </div>
     </div>
@@ -588,8 +649,8 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         </div>
         <div class="why-card">
           <div class="why-num">03</div>
-          <h3>The oracle has to be sovereign.</h3>
-          <p>An AI-native trust oracle can't live behind a trusted API gateway. It is the gateway. SatRank runs its own bitcoind, its own LND, its own Nostr identity, and publishes to public relays. If SatRank goes down tomorrow, the last 30 days of scores are still verifiable on Nostr.</p>
+          <h3>The oracle has to be sovereign + federated.</h3>
+          <p>An AI-native trust oracle can't live behind a trusted API gateway. It is the gateway. SatRank runs its own bitcoind, its own LND, its own Nostr identity. Beyond sovereignty, the oracle has to be <em>federated</em>: any operator can run a SatRank-compatible instance, cross-attest calibration, and an agent aggregates N oracles weighted by their published accuracy. If any single oracle goes dark, the federation continues — and the last weeks of signed calibration history remain verifiable on public relays.</p>
         </div>
       </div>
     </div>
