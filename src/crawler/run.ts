@@ -778,7 +778,11 @@ async function main(): Promise<void> {
     // sweep takes longer than the interval (cold tier scans the largest pool).
     const { ServiceHealthCrawler } = await import('./serviceHealthCrawler');
     const { ServiceEndpointRepository } = await import('../repositories/serviceEndpointRepository');
+    const { EndpointStagePosteriorsRepository } = await import('../repositories/endpointStagePosteriorsRepository');
+    const { InvoiceValidityService } = await import('../services/invoiceValidityService');
     const serviceEndpointRepo = new ServiceEndpointRepository(pool);
+    const stagePosteriorsRepo = new EndpointStagePosteriorsRepository(pool);
+    const invoiceValidityService = new InvoiceValidityService(stagePosteriorsRepo);
     const serviceHealthCrawler = new ServiceHealthCrawler(
       serviceEndpointRepo,
       txRepo,
@@ -786,6 +790,7 @@ async function main(): Promise<void> {
       dualWriteLogger,
       agentRepo,
       bayesianScoringServiceMain,
+      invoiceValidityService,
     );
 
     const tierIntervals = {
