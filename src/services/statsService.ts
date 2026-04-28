@@ -57,7 +57,8 @@ const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 // Must match the latest migration version in migrations.ts (or in src/database/migrations/)
 // Phase 5.10A : v48 (http_method). Phase 5.14 : v49 (endpoint_stage_posteriors).
 // Phase 5.15 : v50 (outcomes log + calibration runs).
-const EXPECTED_SCHEMA_VERSION = 50;
+// Phase 6.4 : v51 (oracle_revenue_log).
+const EXPECTED_SCHEMA_VERSION = 51;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that

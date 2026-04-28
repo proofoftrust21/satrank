@@ -84,6 +84,7 @@ import {
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createL402Native } from './middleware/l402Native';
+import { OracleBudgetService } from './services/oracleBudgetService';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
@@ -514,6 +515,11 @@ export function createApp() {
   const balanceAuth = createBalanceAuth(pool, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(pool);
 
+  // Phase 6.4 — self-funding loop tracker. Logge chaque paid L402 call
+  // dans oracle_revenue_log + chaque paid probe spending. Source of truth
+  // pour /api/oracle/budget.
+  const oracleBudgetService = new OracleBudgetService(pool);
+
   // L402 native gate — all paid endpoints go through createL402Native.
   // Pricing Mix A+D (2026-04-26): /agent/:publicKeyHash and its sub-routes
   // moved to free discovery, so they are no longer in the pricingMap.
@@ -533,6 +539,20 @@ export function createApp() {
       '/intent': 2,
     },
     operatorSecret: config.OPERATOR_BYPASS_SECRET,
+    onPaidCallSettled: async (route, priceSats, paymentHash) => {
+      // Mappe la route au source label du revenue log.
+      const sourceMap: Record<string, 'fresh_query' | 'probe_query' | 'verdict_query' | 'profile_query' | 'other'> = {
+        '/intent': 'fresh_query',
+        '/probe': 'probe_query',
+        '/verdicts': 'verdict_query',
+        '/profile/:id': 'profile_query',
+      };
+      const source = sourceMap[route] ?? 'other';
+      await oracleBudgetService.logRevenue(source, priceSats, {
+        route,
+        payment_hash: paymentHash.slice(0, 32),
+      });
+    },
   });
 
   api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController, paidGate)); // report, deposit, profile (decide/best-route are 410 Gone)
@@ -619,6 +639,18 @@ export function createApp() {
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
   api.get('/stats/reports', discoveryRateLimit, reportStatsController.getStats);
+  // Phase 6.4 — /api/oracle/budget : public observability du self-funding
+  // loop. Lifetime + 30d + 7d revenue/spending + balance + coverage_ratio.
+  // Free, rate-limited via discoveryRateLimit. Permet aux agents/auditors
+  // de vérifier que l'oracle est durablement financé.
+  api.get('/oracle/budget', discoveryRateLimit, async (_req, res, next) => {
+    try {
+      const snapshot = await oracleBudgetService.getBudgetMultiWindow();
+      res.json({ data: snapshot });
+    } catch (err) {
+      next(err);
+    }
+  });
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');
