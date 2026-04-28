@@ -20,8 +20,8 @@ import {
 import type { NostrMultiKindPublisher } from '../nostr/nostrMultiKindPublisher';
 import { sha256 } from '../utils/crypto';
 import { endpointHash } from '../utils/urlCanonical';
-import type { Agent, ServiceEndpoint } from '../types';
-import type { ServiceEndpoint as RepoServiceEndpoint } from '../repositories/serviceEndpointRepository';
+import type { Agent } from '../types';
+import type { ServiceEndpoint, ServiceEndpoint as RepoServiceEndpoint } from '../repositories/serviceEndpointRepository';
 
 let testDb: TestDb;
 const ORACLE_PK = 'satrank-test-oracle-pubkey';

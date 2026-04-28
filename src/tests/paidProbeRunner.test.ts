@@ -30,7 +30,7 @@ function makeMainnetInvoice(amountSats: number, signWith: 'peer' | 'self' = 'pee
       { tagName: 'expire_time', data: 3600 },
     ],
   };
-  const encoded = encode(data);
+  const encoded = encode(data as Parameters<typeof encode>[0]);
   const signed = sign(encoded, signWith === 'peer' ? PRIV_PEER : PRIV_SELF) as { paymentRequest: string };
   return signed.paymentRequest;
 }

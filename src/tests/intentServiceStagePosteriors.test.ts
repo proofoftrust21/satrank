@@ -125,7 +125,7 @@ describe('IntentService — stage_posteriors propagation (Phase 5.14)', () => {
     );
 
     const svc = buildService(db, /* withStagePosteriorsRepo */ false);
-    const result = await svc.resolveIntent({ category: 'data' });
+    const result = await svc.resolveIntent({ category: 'data' }, undefined);
     expect(result.candidates.length).toBeGreaterThanOrEqual(1);
     const cand = result.candidates.find(c => c.endpoint_url === url);
     expect(cand).toBeDefined();
@@ -146,7 +146,7 @@ describe('IntentService — stage_posteriors propagation (Phase 5.14)', () => {
     await serviceRepo.updatePrice(url, 5);
 
     const svc = buildService(db, /* withStagePosteriorsRepo */ true);
-    const result = await svc.resolveIntent({ category: 'data' });
+    const result = await svc.resolveIntent({ category: 'data' }, undefined);
     const cand = result.candidates.find(c => c.endpoint_url === url);
     expect(cand).toBeDefined();
     expect(cand!.stage_posteriors).toBeUndefined();
@@ -167,14 +167,14 @@ describe('IntentService — stage_posteriors propagation (Phase 5.14)', () => {
 
     const svc = buildService(db, true);
     // Première requête fresh=false : compute + cache.
-    const a = await svc.resolveIntent({ category: 'data' });
+    const a = await svc.resolveIntent({ category: 'data' }, undefined);
     let stats = svc.getResponseCacheStats();
     expect(stats.misses).toBe(1);
     expect(stats.hits).toBe(0);
     expect(stats.size).toBe(1);
 
     // 2e requête identique : hit.
-    const b = await svc.resolveIntent({ category: 'data' });
+    const b = await svc.resolveIntent({ category: 'data' }, undefined);
     stats = svc.getResponseCacheStats();
     expect(stats.hits).toBe(1);
     expect(b).toEqual(a); // identical response
@@ -189,7 +189,7 @@ describe('IntentService — stage_posteriors propagation (Phase 5.14)', () => {
 
     // Clear puis nouvelle requête : miss à nouveau.
     svc.clearResponseCache();
-    await svc.resolveIntent({ category: 'data' });
+    await svc.resolveIntent({ category: 'data' }, undefined);
     const statsClear = svc.getResponseCacheStats();
     expect(statsClear.misses).toBe(1);
     expect(statsClear.hits).toBe(0);
@@ -229,7 +229,7 @@ describe('IntentService — stage_posteriors propagation (Phase 5.14)', () => {
     }
 
     const svc = buildService(db, /* withStagePosteriorsRepo */ true);
-    const result = await svc.resolveIntent({ category: 'data' });
+    const result = await svc.resolveIntent({ category: 'data' }, undefined);
     const cand = result.candidates.find(c => c.endpoint_url === url);
     expect(cand).toBeDefined();
     const sp = cand!.stage_posteriors;

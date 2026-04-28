@@ -23,6 +23,9 @@ function makeInvoice(opts: FakeInvoiceOpts = {}): string {
   //   tb  → testnet (lntb)
   //   tbs → signet  (lntbs)
   //   bcrt → regtest (lnbcrt)
+  // PaymentRequestObject sera complété par la lib avec les defaults — on
+  // typer en `unknown` pour que TS ne se plaigne pas des champs lib-internes
+  // (network, coinType) absents de l'interface publique.
   const data: Record<string, unknown> = {
     network: undefined as unknown,
     coinType: opts.network === 'bc' || !opts.network ? 'bitcoin' : (opts.network === 'tb' ? 'testnet' : opts.network),
@@ -41,7 +44,7 @@ function makeInvoice(opts: FakeInvoiceOpts = {}): string {
   if (opts.network === 'bc' || !opts.network) {
     (data as Record<string, unknown>).coinType = 'bitcoin';
   }
-  const signed = encode(data);
+  const signed = encode(data as Parameters<typeof encode>[0]);
   // signRecovery binds payee_node_key to the signing pubkey.
   const PRIV = Buffer.from(PRIVKEY, 'hex');
   // Use the bolt11 lib's sign helper indirectly: encode-then-sign.

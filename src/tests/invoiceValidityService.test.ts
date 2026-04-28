@@ -24,7 +24,7 @@ function makeMainnetInvoice(amountSats: number, timestampOffsetSec = 0): string 
       { tagName: 'expire_time', data: 3600 },
     ],
   };
-  const encoded = encode(data);
+  const encoded = encode(data as Parameters<typeof encode>[0]);
   const signed = sign(encoded, PRIV) as { paymentRequest: string };
   return signed.paymentRequest;
 }

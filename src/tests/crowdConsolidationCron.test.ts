@@ -66,6 +66,7 @@ describe('CrowdConsolidationCron (Phase 9.0)', () => {
       latency_ms: null,
       observed_at: observedAt,
       ingested_at: observedAt,
+      consolidated_at: null,
     });
   }
 

@@ -30,11 +30,8 @@ describe('NostrEventSubscriber dedup + dispatch', () => {
     });
     // Simulate the same event arriving via 3 relays.
     const event = makeEvent('event-id-1');
-    // @ts-expect-error — accessing private for unit testing dedup
     sub['handleEvent'](event, 'wss://relay1');
-    // @ts-expect-error — accessing private for unit testing dedup
     sub['handleEvent'](event, 'wss://relay2');
-    // @ts-expect-error — accessing private for unit testing dedup
     sub['handleEvent'](event, 'wss://relay3');
     // Wait for async dispatch resolution.
     await new Promise((r) => setTimeout(r, 5));
@@ -50,11 +47,8 @@ describe('NostrEventSubscriber dedup + dispatch', () => {
       filters: [{ kinds: [30784] }],
       onEvent: async (event) => { dispatched.push(event); },
     });
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('a'), 'wss://r1');
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('b'), 'wss://r1');
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('c'), 'wss://r2');
     await new Promise((r) => setTimeout(r, 5));
     expect(dispatched.map((e) => e.id).sort()).toEqual(['a', 'b', 'c']);
@@ -71,11 +65,8 @@ describe('NostrEventSubscriber dedup + dispatch', () => {
         if (event.id === 'broken') throw new Error('handler boom');
       },
     });
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('ok-1'), 'wss://r1');
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('broken'), 'wss://r1');
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('ok-2'), 'wss://r1');
     await new Promise((r) => setTimeout(r, 10));
     expect(dispatched).toBe(3); // tous 3 ont été tentés
@@ -89,11 +80,8 @@ describe('NostrEventSubscriber dedup + dispatch', () => {
       onEvent: async () => { /* noop */ },
     });
     expect(sub.seenCount).toBe(0);
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('a'), 'r');
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('a'), 'r'); // dup
-    // @ts-expect-error — private dedup
     sub['handleEvent'](makeEvent('b'), 'r');
     expect(sub.seenCount).toBe(2);
   });
