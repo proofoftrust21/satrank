@@ -86,6 +86,7 @@ import { createBalanceAuth } from './middleware/balanceAuth';
 import { createL402Native } from './middleware/l402Native';
 import { OracleBudgetService } from './services/oracleBudgetService';
 import { TrustAssertionRepository } from './repositories/trustAssertionRepository';
+import { OraclePeerRepository } from './repositories/oracleFederationRepository';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
@@ -666,6 +667,43 @@ export function createApp() {
   // valeurs et les ajoute aux TLV custom. Pas de standard IETF —
   // proposition à valider avec les écosystèmes.
   const trustAssertionRepoApi = new TrustAssertionRepository(pool);
+  // Phase 7.1 — /api/oracle/peers : list des autres oracles SatRank-
+  // compatible découverts via les kind 30784 ingérés sur les relays.
+  // Format inclut oracle_pubkey, lnd_pubkey, catalogue_size, latest
+  // calibration/assertion event ids, last_seen — l'agent SDK filtre
+  // côté client par calibration_error / age / catalogue_size selon ses
+  // critères. Pas de filtering trust côté serveur (sovereignty).
+  const oraclePeerRepoApi = new OraclePeerRepository(pool);
+  api.get('/oracle/peers', discoveryRateLimit, async (req, res, next) => {
+    try {
+      const limit = Math.min(Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50), 200);
+      const peers = await oraclePeerRepoApi.list(limit);
+      const nowSec = Math.floor(Date.now() / 1000);
+      res.json({
+        data: {
+          peers: peers.map((p) => ({
+            oracle_pubkey: p.oracle_pubkey,
+            lnd_pubkey: p.lnd_pubkey,
+            catalogue_size: p.catalogue_size,
+            calibration_event_id: p.calibration_event_id,
+            last_assertion_event_id: p.last_assertion_event_id,
+            contact: p.contact,
+            onboarding_url: p.onboarding_url,
+            last_seen: p.last_seen,
+            first_seen: p.first_seen,
+            age_sec: nowSec - p.first_seen,
+            stale_sec: nowSec - p.last_seen,
+            latest_announcement_event_id: p.latest_announcement_event_id,
+          })),
+          count: peers.length,
+          limit,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   api.get('/oracle/assertion/:url_hash', discoveryRateLimit, async (req, res, next) => {
     try {
       const urlHash = String(req.params.url_hash);

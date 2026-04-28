@@ -835,6 +835,62 @@ async function main(): Promise<void> {
           { initialDelayMs: trustInitialDelay, intervalMs: trustIntervalMs },
           'Phase 6.2 — Trust assertion cron scheduled (kind 30782 weekly)',
         );
+
+        // Phase 7.0 — kind 30784 oracle announcement cron. Annonce CETTE
+        // instance comme oracle SatRank-compatible aux autres clients +
+        // peers. Cadence 24h pour la réactivité discovery.
+        const { OracleAnnouncementPublisher, ANNOUNCEMENT_INTERVAL_MS } = await import('../services/oracleAnnouncementPublisher');
+        const { OracleAnnouncementRepository } = await import('../repositories/oracleFederationRepository');
+        const announcementRepo = new OracleAnnouncementRepository(pool);
+        // LND pubkey local — best-effort. Si LND pas configuré, on annonce
+        // sans (les clients downstream peuvent se passer de la vérif
+        // sovereign LND).
+        let lndPubkeyLocal: string | undefined;
+        try {
+          if (lndClient.isConfigured() && lndClient.getInfo) {
+            const info = await lndClient.getInfo();
+            lndPubkeyLocal = info?.identity_pubkey;
+          }
+        } catch {
+          /* swallow — annoncement publish without lnd_pubkey */
+        }
+        const announcementPublisher = new OracleAnnouncementPublisher({
+          serviceEndpointRepo: serviceEndpointRepoMulti,
+          calibrationRepo: calibRepo,
+          announcementRepo,
+          publisher: multiKindPublisher,
+          oraclePubkey,
+          lndPubkey: lndPubkeyLocal,
+          relays: multiKindRelays,
+        });
+        const runAnnouncement = (): void => {
+          announcementPublisher
+            .publishCycle()
+            .then((res) => {
+              if (res === null) return;
+              logger.info(
+                { eventId: res.event_id.slice(0, 12), catalogueSize: res.catalogue_size },
+                'Oracle announcement cron tick complete (kind 30784)',
+              );
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Oracle announcement cron error');
+            });
+        };
+        // Initial fire 2h après boot, puis 24h.
+        const announceInitialDelay = 2 * 60 * 60 * 1000;
+        const announceIntervalMs = ANNOUNCEMENT_INTERVAL_MS;
+        const announceTimer = setTimeout(() => {
+          runAnnouncement();
+          const recurrent = setInterval(runAnnouncement, announceIntervalMs);
+          recurrent.unref?.();
+        }, announceInitialDelay);
+        announceTimer.unref?.();
+        logger.info(
+          { initialDelayMs: announceInitialDelay, intervalMs: announceIntervalMs },
+          'Phase 7.0 — Oracle announcement cron scheduled (kind 30784 daily)',
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : '';
