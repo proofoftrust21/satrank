@@ -200,7 +200,7 @@ Configured via the BetterStack v2 API. Monitor management lives in the BetterSta
 
 - `data.status` not equal to `ok`.
 - `data.dbStatus` or `data.lndStatus` not equal to `ok`.
-- `data.schemaVersion` drift relative to the expected schema (currently 41).
+- `data.schemaVersion` drift relative to the expected schema (currently 56).
 - `data.scoringStale` true.
 - `data.scoringAgeSec` greater than 7200 (2h scoring loop guardrail).
 
@@ -212,7 +212,7 @@ Brevo SMTP via msmtp on VM1 also covers LND backup cron failures (see `/root/bac
 
 ## 9. Database migrations
 
-Postgres 16 on VM2, consolidated schema at version 41. Migrations are bootstrapped idempotently at api container start from `src/database/migrations.ts` using `src/database/postgres-schema.sql` as the source of truth. There is no manual migration step during continuous deploys.
+Postgres 16 on VM2. Consolidated baseline at version 41 in `src/database/postgres-schema.sql`; incremental migrations v42 → v56 in `src/database/migrations/` apply on top. v48–v56 add the PR-1 → PR-7 surface (per-stage posteriors, calibration log, oracle revenue log, trust assertions, oracle federation, crowd outcomes, security hardening). Migrations are bootstrapped idempotently at api container start from `src/database/migrations.ts`. There is no manual migration step during continuous deploys.
 
 For forward migrations in new phases, edit `src/database/migrations.ts`, increment `CONSOLIDATED_VERSION`, add ALTER statements in the sequence block. `src/tests/migrations.test.ts` validates replay from v1. On deploy, the api container runs migrations before accepting traffic.
 
