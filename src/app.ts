@@ -86,6 +86,7 @@ import { createBalanceAuth } from './middleware/balanceAuth';
 import { createL402Native } from './middleware/l402Native';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
+import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
 import { PreimagePoolRepository } from './repositories/preimagePoolRepository';
 
 // Routes
@@ -126,6 +127,7 @@ export function createApp() {
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, pool);
   const serviceEndpointRepo = new ServiceEndpointRepository(pool);
+  const endpointStagePosteriorsRepo = new EndpointStagePosteriorsRepository(pool);
   const preimagePoolRepo = new PreimagePoolRepository(pool);
   const riskService = new RiskService();
 
@@ -262,6 +264,7 @@ export function createApp() {
     trendService,
     probeRepo,
     operatorService,
+    endpointStagePosteriorsRepo,
   });
   const intentController = new IntentController(intentService);
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);

@@ -20,10 +20,12 @@ import type {
   ServiceEndpoint,
   ServiceEndpointRepository,
 } from '../repositories/serviceEndpointRepository';
+import type { EndpointStagePosteriorsRepository } from '../repositories/endpointStagePosteriorsRepository';
 import type { AgentService } from './agentService';
 import type { BayesianVerdictService } from './bayesianVerdictService';
 import type { TrendService } from './trendService';
 import type { OperatorResourceLookup, OperatorService } from './operatorService';
+import { composeStagePosteriors, type ComposedPosterior } from './stagePosteriorComposition';
 import type { BayesianScoreBlock, Verdict, VerdictFlag } from '../types';
 import type {
   IntentCandidate,
@@ -122,6 +124,10 @@ export interface IntentServiceDeps {
    *  les statuts pending/rejected. Absent → fallback strict (operator_id=null,
    *  aucun advisory operator émis). */
   operatorService?: OperatorService;
+  /** Phase 5.14 — optional. Quand fourni, chaque candidat expose le bloc
+   *  stage_posteriors (5 stages du contrat L402 + p_e2e composé). Absent →
+   *  bloc omis du payload, agents retombent sur bayesian.p_success legacy. */
+  endpointStagePosteriorsRepo?: EndpointStagePosteriorsRepository;
   /** Clock injectable pour tests déterministes. */
   now?: () => number;
 }
@@ -142,6 +148,9 @@ interface EnrichedCandidate {
   lastProbeAgeSec: number | null;
   medianLatencyMs: number | null;
   httpStatus: 'healthy' | 'degraded' | 'down' | 'unknown';
+  /** Phase 5.14 — composé 5-stage. null si endpointStagePosteriorsRepo n'est
+   *  pas wiré (back-compat) OU si aucun stage n'a de row pour cet endpoint. */
+  stagePosteriors: ComposedPosterior | null;
 }
 
 export class IntentService {
@@ -352,6 +361,19 @@ export class IntentService {
       ? await this.deps.operatorService.resolveOperatorForEndpoint(endpointHash(svc.url))
       : null;
 
+    // Phase 5.14 — fetch les 5 stages du contrat L402, composer end-to-end.
+    // Repo optional pour back-compat tests qui ne wirent pas le nouveau hub.
+    let stagePosteriors: ComposedPosterior | null = null;
+    if (this.deps.endpointStagePosteriorsRepo) {
+      const stages = await this.deps.endpointStagePosteriorsRepo.findAllStages(
+        svc.url,
+        this.now(),
+      );
+      if (stages.size > 0) {
+        stagePosteriors = composeStagePosteriors(stages);
+      }
+    }
+
     return {
       svc,
       operatorPubkey: agent?.public_key ?? null,
@@ -365,6 +387,7 @@ export class IntentService {
       lastProbeAgeSec,
       medianLatencyMs,
       httpStatus,
+      stagePosteriors,
     };
   }
 
@@ -457,6 +480,21 @@ export class IntentService {
       // 402index. Le SDK fulfill() l'utilise en défaut au lieu du fallback
       // GET-puis-405-puis-POST. Toujours présent (default 'GET' au schema).
       http_method: c.svc.http_method,
+      // Phase 5.14 — composé 5-stage end-to-end + breakdown par stage. Émis
+      // uniquement quand au moins un stage a une row en DB ; sinon le bloc
+      // est omis et l'agent retombe sur bayesian.p_success legacy.
+      ...(c.stagePosteriors !== null
+        ? {
+            stage_posteriors: {
+              stages: c.stagePosteriors.stages,
+              p_e2e: c.stagePosteriors.p_e2e,
+              p_e2e_pessimistic: c.stagePosteriors.p_e2e_pessimistic,
+              p_e2e_optimistic: c.stagePosteriors.p_e2e_optimistic,
+              meaningful_stages: c.stagePosteriors.meaningful_stages,
+              measured_stages: c.stagePosteriors.measured_stages,
+            },
+          }
+        : {}),
       ...(sources !== undefined ? { sources } : {}),
       ...(consumption_type !== undefined ? { consumption_type } : {}),
       ...(provider_contact !== undefined ? { provider_contact } : {}),
