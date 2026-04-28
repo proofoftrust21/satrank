@@ -114,8 +114,16 @@ export interface ServiceSearchFilters {
   minUptime?: number;
   /** SQL-level sort axis. `activity` is the default (ORDER BY check_count DESC).
    *  `p_success` sort is delegated to the controller (requires per-row agent
-   *  lookup, so it's a post-filter re-sort in JS). */
-  sort?: 'p_success' | 'activity' | 'price' | 'uptime';
+   *  lookup, so it's a post-filter re-sort in JS).
+   *
+   *  Phase 5.8 — added `latency`, `reliability`, `cost` to power the new
+   *  /api/intent and /api/services `optimize=` parameter. Each axis maps to
+   *  a deterministic ORDER BY against an existing column (no composite
+   *  weighting — preserves the Bayesian probabilistic oracle thesis as
+   *  the default). The strategic review showed these axes carry real
+   *  per-endpoint variance (latency: 122x range; reliability: stddev 19.5)
+   *  that p_success-only ranking ignored. */
+  sort?: 'p_success' | 'activity' | 'price' | 'uptime' | 'latency' | 'reliability' | 'cost';
   limit?: number;
   offset?: number;
 }
@@ -602,15 +610,41 @@ export class ServiceEndpointRepository {
         COALESCE(se.upstream_reliability_score, 0) DESC,
         COALESCE(se.last_checked_at, 0) DESC
       `,
+      // Phase 5.8 — three explicit dimension axes feed the `optimize=` parameter.
+      // Each is a deterministic ORDER BY against existing columns; no
+      // composite weighting. Tiebreakers chosen so a deterministic order
+      // emerges even when the primary signal is missing.
+      // `latency`: lowest median (or last) HTTP latency wins. NULLS LAST
+      // so endpoints we've never timed sort below the slowest known one.
+      latency: `
+        COALESCE(se.last_latency_ms, 99999) ASC,
+        COALESCE(se.upstream_reliability_score, 0) DESC,
+        COALESCE(se.last_checked_at, 0) DESC
+      `,
+      // `reliability`: highest 402index reliability_score wins. Stddev 19.5
+      // across 24 distinct values per the audit; meaningful agent signal.
+      reliability: `
+        COALESCE(se.upstream_reliability_score, 0) DESC,
+        COALESCE(se.upstream_uptime_30d, 0) DESC,
+        COALESCE(esp.posterior_alpha / NULLIF(esp.posterior_alpha + esp.posterior_beta, 0), 0) DESC
+      `,
+      // `cost`: cheapest first. Tied prices broken by Bayesian posterior so
+      // among free or equally priced endpoints, the more reliable one wins.
+      cost: `
+        COALESCE(se.service_price_sats, 99999999) ASC,
+        COALESCE(esp.posterior_alpha / NULLIF(esp.posterior_alpha + esp.posterior_beta, 0), 0) DESC
+      `,
     };
     const sortKey = typeof filters.sort === 'string' && Object.prototype.hasOwnProperty.call(SORT_SQL, filters.sort)
       ? filters.sort
       : 'activity';
     const sortCol = SORT_SQL[sortKey];
     // Only attach the streaming posteriors LEFT JOIN when the sort actually
-    // needs it. The other axes (price/uptime/activity) read service_endpoints
-    // alone and don't need the join, so we keep their plan unchanged.
-    const joinSql = sortKey === 'p_success'
+    // needs it. price/uptime/activity/latency don't reference `esp.*` so they
+    // run without the join. p_success/reliability/cost reference the streaming
+    // posterior in their tiebreakers, so they need it.
+    const needsPosteriorJoin = ['p_success', 'reliability', 'cost'].includes(sortKey);
+    const joinSql = needsPosteriorJoin
       ? `LEFT JOIN endpoint_streaming_posteriors esp
            ON esp.url_hash = encode(digest(se.url, 'sha256'), 'hex')
            AND esp.source = 'probe'`

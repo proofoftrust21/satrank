@@ -38,6 +38,9 @@ const intentSchema = z.object({
   /** Mix A+D — opt-in synchronous probe of the top candidates. Paid path
    *  (2 sats) wired in src/app.ts via the conditional paidGate. */
   fresh: z.boolean().optional(),
+  /** Phase 5.8 — optimization axis. Default `p_success` (Bayesian) when
+   *  omitted. Other values: `latency`, `reliability`, `cost`. */
+  optimize: z.enum(['p_success', 'latency', 'reliability', 'cost']).optional(),
 });
 
 export class IntentController {
@@ -48,7 +51,7 @@ export class IntentController {
       const parsed = intentSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
-      const { category, keywords, budget_sats, max_latency_ms, caller, limit } = parsed.data;
+      const { category, keywords, budget_sats, max_latency_ms, caller, limit, optimize } = parsed.data;
       // Mix A+D — accept the flag from the body (zod) OR the query string
       // (`?fresh=true`). The L402 paywall in src/app.ts uses the same helper,
       // so the controller and middleware always agree on which path was paid.
@@ -69,7 +72,7 @@ export class IntentController {
       }
 
       const response = await this.intentService.resolveIntent(
-        { category, keywords, budget_sats, max_latency_ms, caller },
+        { category, keywords, budget_sats, max_latency_ms, caller, optimize },
         limit,
         { fresh },
       );

@@ -431,7 +431,34 @@ Content-Type: application/json
   "limit":          5
 }</code></pre>
 
-        <p>Valid categories are enumerated at <code>GET /api/intent/categories</code>. The resolver filters <code>service_endpoints</code> by category, then by budget (<code>service_price_sats ≤ budget_sats</code>), then by 7-day median HTTP latency, then enriches each candidate with a Bayesian block, flags, reachability, and advisory, and sorts by <code>(p_success DESC, ci95_low DESC, price_sats ASC)</code>.</p>
+        <p>Valid categories are enumerated at <code>GET /api/intent/categories</code>. The resolver filters <code>service_endpoints</code> by category, then by budget (<code>service_price_sats ≤ budget_sats</code>), then by 7-day median HTTP latency, then enriches each candidate with a Bayesian block, flags, reachability, and advisory, and sorts by <code>(p_success DESC, ci95_low DESC, price_sats ASC)</code> by default.</p>
+
+        <h3>6.1.1 Multi-dimensional ranking via <code>optimize=</code> (Phase 5.8)</h3>
+        <p>
+          SatRank's canonical ranking signal is the Bayesian posterior <code>p_success</code> — a probabilistic statement of "given the observed probe history, what is the probability the next request succeeds?" That answer is right for most callers. But agents have orthogonal priorities a single number cannot express:
+        </p>
+        <ul>
+          <li>A trading bot wants the <em>fastest</em> endpoint (latency-sensitive).</li>
+          <li>A batch processor wants the <em>most reliable</em> endpoint (uptime-sensitive).</li>
+          <li>A budget-strict agent wants the <em>cheapest</em> endpoint that still works.</li>
+          <li>A compliance agent wants the most-vetted endpoint (Bayesian default).</li>
+        </ul>
+        <p>
+          Phase 5.8 introduces the <code>optimize</code> parameter on <code>POST /api/intent</code> (and the corresponding <code>sort=</code> query parameter on <code>GET /api/services</code>). It does <strong>not</strong> compose the signals into a hand-tuned weighted sum — that would substitute hand-picked weights for honest math and dilute the Bayesian probabilistic oracle thesis. Instead each axis dispatches to a deterministic <code>ORDER BY</code> on existing columns:
+        </p>
+        <table>
+          <tr><th><code>optimize</code></th><th>Primary signal</th><th>Tiebreakers</th></tr>
+          <tr><td><code>p_success</code> (default)</td><td><code>posterior_alpha / (alpha+beta)</code> DESC</td><td>n_obs, upstream_reliability, freshness</td></tr>
+          <tr><td><code>latency</code></td><td><code>median_latency_ms</code> ASC</td><td>upstream_reliability, freshness</td></tr>
+          <tr><td><code>reliability</code></td><td><code>upstream_reliability_score</code> DESC</td><td>upstream_uptime_30d, p_success</td></tr>
+          <tr><td><code>cost</code></td><td><code>service_price_sats</code> ASC</td><td>p_success</td></tr>
+        </table>
+        <p>
+          The default stays <code>p_success</code> so callers that don't pass the parameter get the Bayesian ranking unchanged. The chosen axis is echoed back at <code>intent.optimize</code> in the response, and <code>meta.ranking_explanation</code> spells out the primary signal and tiebreakers used so an agent never has to read the source to understand its own results.
+        </p>
+        <p>
+          This is an <em>agency</em>-preserving design: SatRank does not decide for the agent which dimension matters; the agent does. The signals (<code>median_latency_ms</code>, <code>upstream_reliability_score</code>, <code>upstream_uptime_30d</code>, <code>service_price_sats</code>) are <em>also</em> exposed on every candidate so an agent can read all four and apply its own selection rule on top.
+        </p>
 
         <h3>6.2 Response shape</h3>
         <pre><code>{

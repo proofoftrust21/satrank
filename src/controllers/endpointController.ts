@@ -67,6 +67,12 @@ export class EndpointController {
       const sources = svc?.sources && svc.sources.length > 1 ? svc.sources : undefined;
       const consumption_type = svc?.consumption_type ?? undefined;
       const provider_contact = svc?.provider_contact ?? undefined;
+      // Phase 5.8 — upstream 402index signals (reliability_score + uptime_30d).
+      // strategic-review.md verified these have meaningful per-endpoint variance
+      // (24 + 17 distinct values respectively) and are essential for agents
+      // calling /api/services/:hash to evaluate a row holistically.
+      const reliability_score = svc?.upstream_reliability_score ?? undefined;
+      const uptime_30d = svc?.upstream_uptime_30d ?? undefined;
       const metadata = svc ? {
         url: svc.url,
         name: svc.name,
@@ -78,6 +84,8 @@ export class EndpointController {
         ...(sources !== undefined ? { sources } : {}),
         ...(consumption_type !== undefined ? { consumption_type } : {}),
         ...(provider_contact !== undefined ? { provider_contact } : {}),
+        ...(reliability_score !== undefined ? { reliability_score } : {}),
+        ...(uptime_30d !== undefined ? { uptime_30d } : {}),
       } : null;
 
       const now = Math.floor(Date.now() / 1000);
