@@ -161,4 +161,57 @@ describe('SatRankDvm', async () => {
     expect(result.verdict).toBe('UNKNOWN');
     expect(result.bayesian).toBeNull();
   });
+
+  it('Phase 6.1 — processIntentResolve proxies to /api/intent and returns the JSON body', async () => {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
+      privateKeyHex: 'aa'.repeat(32),
+      relays: [],
+    });
+    const originalFetch = global.fetch;
+    const captured: Array<{ url: string; body: string }> = [];
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      captured.push({ url: String(url), body: String(init?.body ?? '') });
+      return new Response(JSON.stringify({
+        intent: { category: 'data/finance' },
+        candidates: [{ rank: 1, endpoint_url: 'https://x.test/api', http_method: 'GET' }],
+        meta: { total_matched: 1, returned: 1, strictness: 'strict', warnings: [] },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      const intentJson = JSON.stringify({ category: 'data/finance', budget_sats: 5 });
+      const result = await (dvm as unknown as { processIntentResolve: (j: string) => Promise<unknown> }).processIntentResolve(intentJson) as { candidates: Array<{ endpoint_url: string }> };
+      expect(captured).toHaveLength(1);
+      expect(captured[0].url).toContain('/api/intent');
+      expect(JSON.parse(captured[0].body).category).toBe('data/finance');
+      expect(result.candidates[0].endpoint_url).toBe('https://x.test/api');
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('Phase 6.1 — processIntentResolve handles invalid JSON input gracefully', async () => {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
+      privateKeyHex: 'aa'.repeat(32),
+      relays: [],
+    });
+    const result = await (dvm as unknown as { processIntentResolve: (j: string) => Promise<unknown> }).processIntentResolve('not-valid-json{{') as { error: string };
+    expect(result.error).toBe('invalid_intent_json');
+  });
+
+  it('Phase 6.1 — processIntentResolve surfaces upstream API failure', async () => {
+    const dvm = new SatRankDvm(agentRepo, probeRepo, bayesianVerdict, undefined, {
+      privateKeyHex: 'aa'.repeat(32),
+      relays: [],
+    });
+    const originalFetch = global.fetch;
+    global.fetch = (async () => new Response('rate limited', { status: 429 })) as typeof fetch;
+    try {
+      const result = await (dvm as unknown as { processIntentResolve: (j: string) => Promise<unknown> }).processIntentResolve(JSON.stringify({ category: 'x' })) as { error: string; status: number };
+      expect(result.error).toBe('intent_api_failed');
+      expect(result.status).toBe(429);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });

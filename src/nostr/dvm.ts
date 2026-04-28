@@ -14,7 +14,14 @@ import { verdictTotal } from '../middleware/metrics';
 const KIND_JOB_REQUEST = 5900;
 const KIND_JOB_RESULT = 6900;
 const KIND_HANDLER_INFO = 31990;
-const JOB_TYPE = 'trust-check';
+const JOB_TYPE_TRUST_CHECK = 'trust-check';
+// Phase 6.1 — second job type. Agents publient kind 5900 avec
+// ["j", "intent-resolve"] et ["i", JSON, "json"] où JSON = body /api/intent
+// (category, keywords, budget_sats, max_latency_ms, optimize, fresh, limit).
+// SatRank répond kind 6900 avec content = body /api/intent serialized.
+// Pour les agents souverains qui veulent éviter HTTP entirely.
+const JOB_TYPE_INTENT_RESOLVE = 'intent-resolve';
+const SUPPORTED_JOB_TYPES = [JOB_TYPE_TRUST_CHECK, JOB_TYPE_INTENT_RESOLVE] as const;
 const QUERY_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 
@@ -142,15 +149,17 @@ export class SatRankDvm {
       created_at: Math.floor(Date.now() / 1000),
       tags: [
         ['k', String(KIND_JOB_REQUEST)],
-        ['d', 'satrank-trust-check'],
+        ['d', 'satrank-dvm'],
         ['t', 'lightning'],
         ['t', 'trust'],
         ['t', 'web-of-trust'],
+        ['t', 'intent-resolve'], // Phase 6.1 — discover indexable
       ],
       content: JSON.stringify({
-        name: 'SatRank Trust Check',
-        about: 'Lightning node trust scoring. Returns a Bayesian Beta-Binomial posterior (verdict + p_success + ci95 + n_obs) and reachability for any Lightning node pubkey.',
+        name: 'SatRank Trust Oracle',
+        about: 'Lightning node trust scoring (j: trust-check) + L402 intent resolution (j: intent-resolve). Returns Bayesian Beta-Binomial posteriors with the 5-stage L402 contract breakdown. Sovereign Nostr-native interface.',
         website: 'https://satrank.dev',
+        job_types: SUPPORTED_JOB_TYPES,
       }),
     }, sk);
 
@@ -259,7 +268,14 @@ export class SatRankDvm {
       // above is what triggers the actual reconnect.
       const myPubkey = this.myPubkey!;
       relay!.subscribe(
-        [{ kinds: [KIND_JOB_REQUEST], '#j': [JOB_TYPE], since: Math.floor(Date.now() / 1000) }],
+        [
+          {
+            kinds: [KIND_JOB_REQUEST],
+            // Phase 6.1 — multi-job filter : trust-check + intent-resolve.
+            '#j': [...SUPPORTED_JOB_TYPES],
+            since: Math.floor(Date.now() / 1000),
+          },
+        ],
         {
           onevent: (event: { id: string; pubkey: string; tags: string[][]; content: string }) => {
             // Ignore own events
@@ -275,7 +291,7 @@ export class SatRankDvm {
       // Successful subscribe — reset the manual-reconnect attempt counter
       // so the next failure restarts at the shortest backoff.
       this.reconnectAttempts.delete(url);
-      logger.info({ relay: url }, 'DVM subscribed to trust-check jobs');
+      logger.info({ relay: url, jobTypes: SUPPORTED_JOB_TYPES }, 'DVM subscribed');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ relay: url, error: msg }, 'DVM failed to connect to relay — scheduling manual reconnect');
@@ -309,29 +325,53 @@ export class SatRankDvm {
       if (now - ts > DEDUP_WINDOW_MS) this.seenRequests.delete(id);
     }
 
+    // Phase 6.1 — dispatch sur le j-tag. Default trust-check pour back-compat
+    // (les requesters historiques ne mettent pas toujours le tag explicite).
+    const jTag = event.tags.find((t) => t[0] === 'j');
+    const jobType = jTag?.[1] ?? JOB_TYPE_TRUST_CHECK;
+
     const iTag = event.tags.find(t => t[0] === 'i');
     if (!iTag || !iTag[1]) {
-      logger.warn({ eventId: event.id.slice(0, 12) }, 'DVM job request missing input tag');
+      logger.warn({ eventId: event.id.slice(0, 12), jobType }, 'DVM job request missing input tag');
       return;
     }
 
-    const lnPubkey = iTag[1];
-    if (!/^(02|03)[a-f0-9]{64}$/.test(lnPubkey)) {
-      logger.warn({ eventId: event.id.slice(0, 12), input: lnPubkey.slice(0, 16) }, 'DVM job request invalid pubkey format');
-      return;
-    }
-
-    logger.info({ eventId: event.id.slice(0, 12), pubkey: lnPubkey.slice(0, 12), requester: event.pubkey.slice(0, 12), relay: arrivedVia }, 'DVM job request received');
-
-    let result: Awaited<ReturnType<typeof this.processRequest>>;
-    try {
-      result = await Promise.race([
-        this.processRequest(lnPubkey),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Processing timeout')), QUERY_TIMEOUT_MS)),
-      ]);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ eventId: event.id.slice(0, 12), error: msg }, 'DVM job processing failed');
+    let result: unknown;
+    if (jobType === JOB_TYPE_TRUST_CHECK) {
+      const lnPubkey = iTag[1];
+      if (!/^(02|03)[a-f0-9]{64}$/.test(lnPubkey)) {
+        logger.warn({ eventId: event.id.slice(0, 12), input: lnPubkey.slice(0, 16) }, 'DVM job request invalid pubkey format');
+        return;
+      }
+      logger.info({ eventId: event.id.slice(0, 12), pubkey: lnPubkey.slice(0, 12), requester: event.pubkey.slice(0, 12), relay: arrivedVia, jobType }, 'DVM trust-check request received');
+      try {
+        result = await Promise.race([
+          this.processRequest(lnPubkey),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Processing timeout')), QUERY_TIMEOUT_MS)),
+        ]);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ eventId: event.id.slice(0, 12), error: msg }, 'DVM trust-check processing failed');
+        return;
+      }
+    } else if (jobType === JOB_TYPE_INTENT_RESOLVE) {
+      // Phase 6.1 — intent-resolve : iTag[1] = JSON canonical du body
+      // /api/intent. Proxie HTTP vers SATRANK_API_BASE pour bénéficier du
+      // cache (PR-3 6.5) et de toute la pipeline standard. Pas d'I/O direct
+      // au DB depuis le DVM — il reste un thin wrapper.
+      logger.info({ eventId: event.id.slice(0, 12), requester: event.pubkey.slice(0, 12), relay: arrivedVia, jobType }, 'DVM intent-resolve request received');
+      try {
+        result = await Promise.race([
+          this.processIntentResolve(iTag[1]),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Processing timeout')), QUERY_TIMEOUT_MS)),
+        ]);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ eventId: event.id.slice(0, 12), error: msg }, 'DVM intent-resolve processing failed');
+        return;
+      }
+    } else {
+      logger.warn({ eventId: event.id.slice(0, 12), jobType }, 'DVM unsupported job type — ignored');
       return;
     }
 
@@ -401,20 +441,32 @@ export class SatRankDvm {
     }
 
     if (published.length > 0) {
-      logger.info(
-        {
-          eventId: event.id.slice(0, 12),
-          pubkey: lnPubkey.slice(0, 12),
-          verdict: result.verdict,
-          pSuccess: result.bayesian?.p_success ?? null,
-          nObs: result.bayesian?.n_obs ?? null,
-          source: result.source,
-          publishedTo: published,
-          rejectedBy: rejected.length ? rejected : undefined,
-          skippedRelays: skipped.length ? skipped : undefined,
-        },
-        'DVM job result published',
-      );
+      // Phase 6.1 — logging discriminé par jobType : trust-check expose
+      // verdict + p_success + n_obs ; intent-resolve expose le shape
+      // candidate count + warnings.
+      const logFields: Record<string, unknown> = {
+        eventId: event.id.slice(0, 12),
+        jobType,
+        publishedTo: published,
+        rejectedBy: rejected.length ? rejected : undefined,
+        skippedRelays: skipped.length ? skipped : undefined,
+      };
+      if (jobType === JOB_TYPE_TRUST_CHECK && result && typeof result === 'object') {
+        const r = result as { verdict?: string; bayesian?: { p_success?: number; n_obs?: number } | null; source?: string };
+        Object.assign(logFields, {
+          verdict: r.verdict,
+          pSuccess: r.bayesian?.p_success ?? null,
+          nObs: r.bayesian?.n_obs ?? null,
+          source: r.source,
+        });
+      } else if (jobType === JOB_TYPE_INTENT_RESOLVE && result && typeof result === 'object') {
+        const r = result as { candidates?: unknown[]; meta?: { total_matched?: number; returned?: number } };
+        Object.assign(logFields, {
+          totalMatched: r.meta?.total_matched ?? null,
+          returned: r.meta?.returned ?? (Array.isArray(r.candidates) ? r.candidates.length : null),
+        });
+      }
+      logger.info(logFields, 'DVM job result published');
     } else {
       logger.error(
         {
@@ -497,6 +549,51 @@ export class SatRankDvm {
       source: 'live_ping',
       verdict: 'UNKNOWN',
     };
+  }
+
+  /** Phase 6.1 — intent-resolve. Reçoit le JSON canonical du body
+   *  /api/intent depuis l'agent souverain Nostr, proxie vers
+   *  SATRANK_API_BASE/api/intent, retourne la réponse pour insertion dans
+   *  le content du kind 6900. Pas de logique métier ici — c'est un thin
+   *  bridge entre Nostr et HTTP qui bénéficie automatiquement du cache
+   *  côté serveur (PR-3 6.5) et des protections en place.
+   *
+   *  L'apiBase est lu depuis l'env SATRANK_API_BASE (default satrank.dev),
+   *  même config que le MCP intent tool, pour qu'un opérateur puisse
+   *  fédérer DVM + MCP sur la même instance. */
+  private async processIntentResolve(intentJson: string): Promise<unknown> {
+    let parsedIntent: unknown;
+    try {
+      parsedIntent = JSON.parse(intentJson);
+    } catch {
+      return { error: 'invalid_intent_json' };
+    }
+    const apiBase = process.env.SATRANK_API_BASE ?? 'https://satrank.dev';
+    const url = new URL('/api/intent', apiBase).toString();
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'SatRank-DVM-Intent/1.0',
+        },
+        body: JSON.stringify(parsedIntent),
+      });
+      const text = await resp.text();
+      if (!resp.ok) {
+        return { error: 'intent_api_failed', status: resp.status, body: text };
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { error: 'intent_api_non_json', raw: text };
+      }
+    } catch (err) {
+      return {
+        error: 'intent_api_unreachable',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   stop(): void {
