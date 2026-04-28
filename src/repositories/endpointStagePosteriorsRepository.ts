@@ -119,6 +119,73 @@ export interface StageObservation {
 export class EndpointStagePosteriorsRepository {
   constructor(private readonly db: Queryable) {}
 
+  /** Phase 9.0 — variant qui prend directement le url_hash. Permet aux
+   *  callers (consolidation cron de crowd_outcome_reports) qui ont déjà
+   *  le hash sans avoir l'URL d'origine. Délégation pure : appelle
+   *  observeByUrlHashInternal. */
+  async observeByUrlHash(
+    urlHash: string,
+    stage: Stage,
+    success: boolean,
+    weight: number,
+    outcomeLabel?: string,
+    nowSec?: number,
+  ): Promise<void> {
+    return this.observeByUrlHashInternal(urlHash, stage, success, weight, outcomeLabel, nowSec);
+  }
+
+  private async observeByUrlHashInternal(
+    urlHash: string,
+    stage: Stage,
+    success: boolean,
+    weight: number,
+    outcomeLabel: string | undefined,
+    nowSec: number | undefined,
+  ): Promise<void> {
+    const t = nowSec ?? Math.floor(Date.now() / 1000);
+    const w = weight;
+    const dAlpha = success ? w : 0;
+    const dBeta = success ? 0 : w;
+    await this.db.query(
+      `INSERT INTO endpoint_stage_posteriors
+         (endpoint_url_hash, stage, alpha, beta, n_obs, last_updated)
+       VALUES (
+         $1::text,
+         $2::smallint,
+         ($3::double precision + $5::double precision),
+         ($4::double precision + $6::double precision),
+         ($5::double precision + $6::double precision),
+         $7::bigint
+       )
+       ON CONFLICT (endpoint_url_hash, stage)
+       DO UPDATE SET
+         alpha = $3::double precision + (
+           $5::double precision
+           + (endpoint_stage_posteriors.alpha - $3::double precision)
+             * exp(-($7::bigint - endpoint_stage_posteriors.last_updated)::double precision / $8::double precision)
+         ),
+         beta = $4::double precision + (
+           $6::double precision
+           + (endpoint_stage_posteriors.beta - $4::double precision)
+             * exp(-($7::bigint - endpoint_stage_posteriors.last_updated)::double precision / $8::double precision)
+         ),
+         n_obs = (
+           endpoint_stage_posteriors.n_obs
+             * exp(-($7::bigint - endpoint_stage_posteriors.last_updated)::double precision / $8::double precision)
+         ) + $5::double precision + $6::double precision,
+         last_updated = $7::bigint`,
+      [urlHash, stage, DEFAULT_PRIOR_ALPHA, DEFAULT_PRIOR_BETA, dAlpha, dBeta, t, TAU_SECONDS],
+    );
+    if (stage >= 2) {
+      await this.db.query(
+        `INSERT INTO endpoint_stage_outcomes_log
+           (endpoint_url_hash, stage, success, weight, outcome_label, observed_at)
+         VALUES ($1::text, $2::smallint, $3::boolean, $4::double precision, $5, $6::bigint)`,
+        [urlHash, stage, success, w, outcomeLabel ?? null, t],
+      );
+    }
+  }
+
   /** Phase 5.14 — applique une observation à un stage, en upsert. Ingestion
    *  decay-at-write : avant d'incrémenter, on rabat le posterior existant au
    *  temps de l'observation, puis on ajoute le poids. Cohérent avec

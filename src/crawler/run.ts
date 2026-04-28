@@ -960,6 +960,69 @@ async function main(): Promise<void> {
           logger.error({ error: msg }, 'Failed to start crowd-outcomes subscriber');
         });
         logger.info('Phase 8.2 — Crowd outcomes subscriber started (kind 7402 permanent)');
+
+        // Phase 9.0 — crowd consolidation cron horaire. Lit les reports
+        // observed >= 1h ago, weight >= 0.3 (= base), pousse vers
+        // endpoint_stage_posteriors avec le weight effectif.
+        const { CrowdConsolidationCron } = await import('../services/crowdConsolidationCron');
+        const consolidationCron = new CrowdConsolidationCron({
+          crowdRepo,
+          stagePosteriorsRepo: stagePosteriorsForCrowd,
+        });
+        const runConsolidation = (): void => {
+          consolidationCron
+            .runOnce()
+            .then((res) => {
+              if (res.consolidated > 0 || res.errors > 0) {
+                logger.info(
+                  { consolidated: res.consolidated, errors: res.errors },
+                  'Crowd consolidation cron tick',
+                );
+              }
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Crowd consolidation cron error');
+            });
+        };
+        const consolidationInitialDelay = 30 * 60 * 1000;
+        const consolidationIntervalMs = 60 * 60 * 1000; // hourly
+        const consolidationTimer = setTimeout(() => {
+          runConsolidation();
+          const recurrent = setInterval(runConsolidation, consolidationIntervalMs);
+          recurrent.unref?.();
+        }, consolidationInitialDelay);
+        consolidationTimer.unref?.();
+        logger.info('Phase 9.0 — Crowd consolidation cron scheduled (hourly)');
+
+        // Phase 9.1 — subscribe permanent kind 30783 (peer calibrations).
+        const { PeerCalibrationRepository } = await import('../repositories/peerCalibrationRepository');
+        const { PeerCalibrationIngestor, KIND_ORACLE_CALIBRATION: KIND_CALIB } = await import('../services/peerCalibrationIngestor');
+        const peerCalibrationRepo = new PeerCalibrationRepository(pool);
+        const peerCalibrationIngestor = new PeerCalibrationIngestor({
+          peerCalibrationRepo,
+          selfOraclePubkey: oraclePubkey,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+        });
+        const peerCalibrationSubscriber = new NostrEventSubscriber({
+          label: 'peer-calibrations',
+          relays: multiKindRelays,
+          filters: [{ kinds: [KIND_CALIB], '#d': ['satrank-calibration'] }],
+          onEvent: async (event) => {
+            const result = await peerCalibrationIngestor.ingest(event);
+            if (result.outcome === 'rejected') {
+              logger.debug(
+                { reason: result.reason, eventId: event.id.slice(0, 12), pubkey: event.pubkey.slice(0, 12) },
+                'peer-calibrations subscription rejected event',
+              );
+            }
+          },
+        });
+        peerCalibrationSubscriber.start().catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Failed to start peer-calibrations subscriber');
+        });
+        logger.info('Phase 9.1 — Peer calibrations subscriber started (kind 30783 permanent)');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : '';

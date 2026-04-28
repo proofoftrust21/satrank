@@ -135,6 +135,7 @@ export class CrowdOutcomeIngestor {
       latency_ms: Number.isFinite(latencyMs) ? latencyMs : null,
       observed_at: event.created_at,
       ingested_at: nowSec,
+      consolidated_at: null,
     });
     if (!inserted) {
       return { outcome: 'duplicate', effective_weight: weightResult.effective_weight };

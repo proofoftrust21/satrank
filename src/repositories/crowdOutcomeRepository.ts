@@ -21,6 +21,9 @@ export interface CrowdOutcomeRecord {
   latency_ms: number | null;
   observed_at: number;
   ingested_at: number;
+  /** Phase 9.0 — timestamp où la consolidation cron a poussé le report
+   *  dans endpoint_stage_posteriors. NULL = pas encore consolidé. */
+  consolidated_at: number | null;
 }
 
 export class CrowdOutcomeRepository {
@@ -71,12 +74,50 @@ export class CrowdOutcomeRepository {
               outcome, stage, success, effective_weight, pow_factor,
               identity_age_factor, preimage_factor, declared_pow_bits,
               verified_pow_bits, preimage_verified, latency_ms,
-              observed_at, ingested_at
+              observed_at, ingested_at, consolidated_at
          FROM crowd_outcome_reports
         WHERE event_id = $1::text`,
       [eventId],
     );
     return rows[0] ?? null;
+  }
+
+  /** Phase 9.0 — reports en attente de consolidation. Filtre :
+   *    observed_at <= cutoffObservedAt (anti-spam delay)
+   *    consolidated_at IS NULL (pas encore matérialisé)
+   *    effective_weight >= minWeight (rejette les très-faibles, default 0.3 = base) */
+  async findPendingConsolidation(
+    cutoffObservedAt: number,
+    minWeight: number,
+    limit: number,
+  ): Promise<CrowdOutcomeRecord[]> {
+    const { rows } = await this.db.query<CrowdOutcomeRecord>(
+      `SELECT event_id, agent_pubkey, endpoint_url_hash, trust_assertion_event_id,
+              outcome, stage, success, effective_weight, pow_factor,
+              identity_age_factor, preimage_factor, declared_pow_bits,
+              verified_pow_bits, preimage_verified, latency_ms,
+              observed_at, ingested_at, consolidated_at
+         FROM crowd_outcome_reports
+        WHERE consolidated_at IS NULL
+          AND observed_at <= $1::bigint
+          AND effective_weight >= $2::double precision
+        ORDER BY observed_at ASC
+        LIMIT $3::int`,
+      [cutoffObservedAt, minWeight, limit],
+    );
+    return rows;
+  }
+
+  /** Marque un report comme consolidé. Idempotent — UPDATE conditionnel
+   *  empêche overwrite si déjà consolidé (cron concurrent safe). */
+  async markConsolidated(eventId: string, consolidatedAt: number): Promise<void> {
+    await this.db.query(
+      `UPDATE crowd_outcome_reports
+          SET consolidated_at = $2::bigint
+        WHERE event_id = $1::text
+          AND consolidated_at IS NULL`,
+      [eventId, consolidatedAt],
+    );
   }
 }
 

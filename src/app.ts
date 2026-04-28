@@ -87,6 +87,7 @@ import { createL402Native } from './middleware/l402Native';
 import { OracleBudgetService } from './services/oracleBudgetService';
 import { TrustAssertionRepository } from './repositories/trustAssertionRepository';
 import { OraclePeerRepository } from './repositories/oracleFederationRepository';
+import { PeerCalibrationRepository } from './repositories/peerCalibrationRepository';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
@@ -696,6 +697,43 @@ export function createApp() {
             latest_announcement_event_id: p.latest_announcement_event_id,
           })),
           count: peers.length,
+          limit,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Phase 9.1 — /api/oracle/peers/:pubkey/calibrations : historique des
+  // kind 30783 calibration events publiés par un peer SatRank-compatible.
+  // Permet aux clients de vérifier la calibration history d'un peer
+  // avant de l'inclure dans une aggregation. Cross-oracle meta-confidence.
+  const peerCalibrationRepoApi = new PeerCalibrationRepository(pool);
+  api.get('/oracle/peers/:pubkey/calibrations', discoveryRateLimit, async (req, res, next) => {
+    try {
+      const pubkey = String(req.params.pubkey);
+      if (!/^[a-f0-9]{64}$/.test(pubkey)) {
+        return res.status(400).json({ error: { code: 'INVALID_PUBKEY', message: 'pubkey must be a 64-char hex Schnorr key' } });
+      }
+      const limit = Math.min(Math.max(1, parseInt(String(req.query.limit ?? '20'), 10) || 20), 100);
+      const calibrations = await peerCalibrationRepoApi.listByPeer(pubkey, limit);
+      res.json({
+        data: {
+          peer_pubkey: pubkey,
+          calibrations: calibrations.map((c) => ({
+            event_id: c.event_id,
+            window_start: c.window_start,
+            window_end: c.window_end,
+            window_days: Math.round((c.window_end - c.window_start) / 86400),
+            delta_mean: c.delta_mean,
+            delta_median: c.delta_median,
+            delta_p95: c.delta_p95,
+            n_endpoints: c.n_endpoints,
+            n_outcomes: c.n_outcomes,
+            observed_at: c.observed_at,
+          })),
+          count: calibrations.length,
           limit,
         },
       });
