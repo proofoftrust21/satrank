@@ -152,6 +152,49 @@ describe('IntentService — stage_posteriors propagation (Phase 5.14)', () => {
     expect(cand!.stage_posteriors).toBeUndefined();
   });
 
+  it('Phase 6.5 — fresh=false response is cached (idempotent), fresh=true bypasses cache', async () => {
+    const hash = sha256('op-cache');
+    await agentRepo.insert(makeAgent(hash));
+    const url = 'https://cache.example/data';
+    await serviceRepo.upsert(hash, url, 200, 100, '402index');
+    await serviceRepo.updateMetadata(url, {
+      name: 'cache',
+      description: null,
+      category: 'data',
+      provider: null,
+    });
+    await serviceRepo.updatePrice(url, 5);
+
+    const svc = buildService(db, true);
+    // Première requête fresh=false : compute + cache.
+    const a = await svc.resolveIntent({ category: 'data' });
+    let stats = svc.getResponseCacheStats();
+    expect(stats.misses).toBe(1);
+    expect(stats.hits).toBe(0);
+    expect(stats.size).toBe(1);
+
+    // 2e requête identique : hit.
+    const b = await svc.resolveIntent({ category: 'data' });
+    stats = svc.getResponseCacheStats();
+    expect(stats.hits).toBe(1);
+    expect(b).toEqual(a); // identical response
+
+    // 3e requête fresh=true : bypass cache (pas de hit + pas de miss compté).
+    await svc.resolveIntent({ category: 'data' }, undefined, { fresh: true });
+    const stats3 = svc.getResponseCacheStats();
+    expect(stats3.hits).toBe(1); // pas changé
+    // Note : fresh=true ne consume pas le compteur hits/misses (cache.get
+    // n'est pas appelé). En revanche, on ne set() pas non plus pour
+    // ne pas polluer le cache fresh=false avec une réponse fresh.
+
+    // Clear puis nouvelle requête : miss à nouveau.
+    svc.clearResponseCache();
+    await svc.resolveIntent({ category: 'data' });
+    const statsClear = svc.getResponseCacheStats();
+    expect(statsClear.misses).toBe(1);
+    expect(statsClear.hits).toBe(0);
+  });
+
   it('emits stage_posteriors when at least one stage has data; meaningful_stages reflects threshold', async () => {
     const hash = sha256('op-staged');
     await agentRepo.insert(makeAgent(hash));

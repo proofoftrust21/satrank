@@ -35,6 +35,7 @@ import type {
   IntentStrictness,
 } from '../types/intent';
 import { computeBaseFlags } from '../utils/flags';
+import { IntentResponseCache } from '../utils/intentResponseCache';
 
 /** Flags critiques, alignés sur advisoryService.CRITICAL_FLAGS (dupliqués
  *  intentionnellement — CRITICAL_FLAGS n'est pas exporté). */
@@ -155,9 +156,29 @@ interface EnrichedCandidate {
 
 export class IntentService {
   private readonly now: () => number;
+  // Phase 6.5 — cache idempotent in-memory pour les requests fresh=false.
+  // TTL court (60s) + LRU bounded (500 entries) — sous load, hit rate
+  // attendu 70-80% sur les categories chaudes. Cache miss fall through to
+  // full compute (no behavior change). fresh=true bypass.
+  private readonly responseCache = new IntentResponseCache<IntentResponse>({
+    ttlSeconds: 60,
+    maxEntries: 500,
+  });
 
   constructor(private readonly deps: IntentServiceDeps) {
     this.now = deps.now ?? (() => Math.floor(Date.now() / 1000));
+  }
+
+  /** Phase 6.5 — invalidation manuelle du cache. Exposée pour les tests
+   *  + futur endpoint admin si on veut force-refresh. */
+  clearResponseCache(): void {
+    this.responseCache.clear();
+  }
+
+  /** Phase 6.5 — stats observabilité. À exposer plus tard via
+   *  /api/oracle/cache-stats si justifié. */
+  getResponseCacheStats() {
+    return this.responseCache.stats();
   }
 
   /** GET /api/intent/categories — liste des catégories vivantes avec compte
@@ -196,6 +217,25 @@ export class IntentService {
       INTENT_LIMIT_MAX,
     );
     const keywords = (req.keywords ?? []).map(k => k.trim()).filter(k => k.length > 0);
+
+    // Phase 6.5 — cache lookup. Skipped si fresh=true (paid path doit
+    // toujours run le sync probe). Key = canonical hash de la request +
+    // limit. La response cachée embarque déjà les warnings + meta, donc
+    // pas de divergence visible côté client.
+    let cacheKey: string | null = null;
+    if (!fresh) {
+      cacheKey = IntentResponseCache.canonicalKey({
+        category: req.category,
+        keywords,
+        budget_sats: req.budget_sats,
+        max_latency_ms: req.max_latency_ms,
+        optimize: req.optimize,
+        caller: req.caller,
+        limit,
+      });
+      const cached = this.responseCache.get(cacheKey, this.now());
+      if (cached) return cached;
+    }
 
     // Phase 5.6 — pull by Bayesian p_success DESC instead of uptime DESC.
     // The JS post-enrichment sort still re-ranks the top-N by p_success
@@ -291,7 +331,7 @@ export class IntentService {
       }
     }
 
-    return {
+    const response: IntentResponse = {
       intent: {
         category: req.category,
         keywords,
@@ -311,6 +351,13 @@ export class IntentService {
         ranking_explanation: rankingExplanationFor(optimize),
       },
     };
+
+    // Phase 6.5 — populate cache pour les requests fresh=false. fresh=true
+    // n'est jamais cached (le caller a payé pour le sync probe).
+    if (cacheKey !== null) {
+      this.responseCache.set(cacheKey, response, this.now());
+    }
+    return response;
   }
 
   private async enrich(svc: ServiceEndpoint): Promise<EnrichedCandidate> {
