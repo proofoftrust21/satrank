@@ -75,6 +75,12 @@ export interface IntentCandidate {
   service_name: string | null;
   price_sats: number | null;
   median_latency_ms: number | null;
+  /** Phase 5.10A — méthode HTTP attendue par l'endpoint, persistée depuis
+   *  402index. fulfill() l'utilise par défaut quand opts.request.method
+   *  n'est pas fourni explicitement, ce qui évite le 405-puis-fallback sur
+   *  les endpoints POST-only. Optional côté SDK pour compat avec un oracle
+   *  pré-v48 qui ne le retournerait pas. */
+  http_method?: 'GET' | 'POST';
   bayesian: BayesianBlock;
   advisory: AdvisoryBlock;
   health: HealthBlock;

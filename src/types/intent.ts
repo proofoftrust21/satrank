@@ -98,6 +98,12 @@ export interface IntentCandidate {
    *  Phase 5 — falls back to `service_endpoints.last_latency_ms` (single
    *  most-recent observation) when service_probes has no data. */
   median_latency_ms: number | null;
+  /** Phase 5.10A — méthode HTTP à utiliser pour appeler l'endpoint, persistée
+   *  depuis 402index sur ~95% des entrées. Le SDK fulfill() l'utilise par
+   *  défaut quand l'agent n'override pas opts.request.method, ce qui élimine
+   *  le 405-puis-fallback sur les endpoints POST-only. Toujours présent
+   *  (default 'GET' au schema). */
+  http_method: 'GET' | 'POST';
   /** Phase 5.8 — upstream signals from 402index, surfaced for the new
    *  `optimize=` parameter. The strategic review verified these signals
    *  carry real per-endpoint variance (reliability_score has 24 distinct

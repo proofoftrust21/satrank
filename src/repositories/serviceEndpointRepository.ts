@@ -72,6 +72,16 @@ export interface ServiceEndpoint {
   sources: string[];
   consumption_type: string | null;
   provider_contact: string | null;
+  /** Phase 5.10A — méthode HTTP attendue par l'endpoint, exposée par 402index
+   *  (`http_method`) sur ~95% des entrées. Avant v48, ce signal était parsé
+   *  par le crawler puis jeté ; toute la chaîne aval (intentService,
+   *  decideService, SDK fulfill) défaut sur GET, ce qui fait échouer
+   *  silencieusement les 444 entrées POST-only de llm402.ai et tous les
+   *  endpoints qui requièrent POST. Persisté ici pour que /api/intent expose
+   *  la méthode au candidat retourné — l'agent (et le SDK) l'utilise sans
+   *  avoir à essayer-puis-fallback. Default 'GET' pour les rows pré-v48 et
+   *  les endpoints sans signal upstream. */
+  http_method: 'GET' | 'POST';
 }
 
 /** Vague 1 G.2 — payload accepted by upsertUpstreamSignals. Mirrors the
@@ -485,6 +495,19 @@ export class ServiceEndpointRepository {
         now,
         url,
       ],
+    );
+  }
+
+  /** Phase 5.10A — set http_method on an endpoint, called from the registry
+   *  crawler after each ingestion / update path. Idempotent : updating to the
+   *  same value is a no-op write. Constraint enforced at the schema level
+   *  (CHECK http_method IN ('GET', 'POST')) so an upstream serving 'PUT' or
+   *  'DELETE' would surface a Postgres CheckViolation rather than silently
+   *  storing an unsupported value — caller catches and falls back to GET. */
+  async setHttpMethod(url: string, method: 'GET' | 'POST'): Promise<void> {
+    await this.db.query(
+      `UPDATE service_endpoints SET http_method = $1 WHERE url = $2`,
+      [method, url],
     );
   }
 

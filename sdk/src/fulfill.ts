@@ -308,6 +308,8 @@ async function attemptCandidate(
       candidate.endpoint_url,
       request,
       remainingTime,
+      undefined,
+      candidate.http_method,
     );
   } catch (err) {
     return {
@@ -396,6 +398,7 @@ async function attemptCandidate(
       request,
       remainingTime,
       `L402 ${challenge.token}:${pay.preimage}`,
+      candidate.http_method,
     );
   } catch (err) {
     return {
@@ -441,11 +444,16 @@ async function httpCall(
   request: FulfillRequest | undefined,
   timeoutMs: number,
   authHeader?: string,
+  candidateHttpMethod?: 'GET' | 'POST',
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const method = request?.method ?? 'GET';
+    // Phase 5.10A — résolution de méthode :
+    //   1. agent override (request.method) wins toujours
+    //   2. sinon : méthode persistée par l'oracle (candidate.http_method)
+    //   3. sinon (oracle pré-v48) : default historique 'GET'
+    const method = request?.method ?? candidateHttpMethod ?? 'GET';
     const url = buildUrl(baseUrl, request?.path, request?.query);
     const headers: Record<string, string> = {
       Accept: 'application/json',

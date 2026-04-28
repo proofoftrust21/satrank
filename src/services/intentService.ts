@@ -453,6 +453,10 @@ export class IntentService {
       service_name: c.svc.name,
       price_sats: c.svc.service_price_sats,
       median_latency_ms: c.medianLatencyMs,
+      // Phase 5.10A — méthode HTTP attendue par l'endpoint, persistée depuis
+      // 402index. Le SDK fulfill() l'utilise en défaut au lieu du fallback
+      // GET-puis-405-puis-POST. Toujours présent (default 'GET' au schema).
+      http_method: c.svc.http_method,
       ...(sources !== undefined ? { sources } : {}),
       ...(consumption_type !== undefined ? { consumption_type } : {}),
       ...(provider_contact !== undefined ? { provider_contact } : {}),
