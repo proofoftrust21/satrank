@@ -159,6 +159,13 @@ describe('Phase 5.8 — optimize= parameter', async () => {
     // is the only differentiator. p_success increases with index; latency
     // decreases (lower = better); reliability flips; price decreases.
     const op = sha256('opt-op');
+    // Audit 2026-04-29 — endpoints stay above RISKY_P_THRESHOLD=0.50 so the
+    // intent service's RISKY filter doesn't drop them from the pool. Pre-audit,
+    // C was alpha=3/beta=7 (p=0.3) with n_obs=9.x; UNKNOWN_MIN_N_OBS=10 saved
+    // it from RISKY by routing it to INSUFFICIENT. With UNKNOWN_MIN_N_OBS now
+    // 5, n_obs=9.x is no longer INSUFFICIENT and p=0.3 → RISKY → filtered out.
+    // Bump to p∈[0.6, 0.9] so all 3 endpoints keep non-RISKY verdicts; the
+    // optimize-axis ordering (latency / reliability / cost) is unchanged.
     await seed(db, agentRepo, serviceRepo, {
       agentHash: op, url: 'https://o.example/A', category: 'data',
       alpha: 9, beta: 1, totalIngestions: 10,        // p ≈ 0.9
@@ -168,14 +175,14 @@ describe('Phase 5.8 — optimize= parameter', async () => {
     });
     await seed(db, agentRepo, serviceRepo, {
       agentHash: op, url: 'https://o.example/B', category: 'data',
-      alpha: 6, beta: 4, totalIngestions: 10,        // p ≈ 0.6
+      alpha: 7, beta: 3, totalIngestions: 10,        // p ≈ 0.7
       lastLatencyMs: 100,                            // fastest
       reliability: 95,                               // highest
       priceSats: 5,                                  // cheapest
     });
     await seed(db, agentRepo, serviceRepo, {
       agentHash: op, url: 'https://o.example/C', category: 'data',
-      alpha: 3, beta: 7, totalIngestions: 10,        // p ≈ 0.3
+      alpha: 6, beta: 4, totalIngestions: 10,        // p ≈ 0.6
       lastLatencyMs: 400,                            // mid
       reliability: 80,                               // mid
       priceSats: 20,                                 // mid
@@ -189,8 +196,8 @@ describe('Phase 5.8 — optimize= parameter', async () => {
     const r = await svc.resolveIntent({ category: 'data', keywords: [] }, 5);
     expect(r.intent.optimize).toBe('p_success');
     expect(r.candidates[0].endpoint_url).toBe('https://o.example/A'); // p=0.9
-    expect(r.candidates[1].endpoint_url).toBe('https://o.example/B'); // p=0.6
-    expect(r.candidates[2].endpoint_url).toBe('https://o.example/C'); // p=0.3
+    expect(r.candidates[1].endpoint_url).toBe('https://o.example/B'); // p=0.7
+    expect(r.candidates[2].endpoint_url).toBe('https://o.example/C'); // p=0.6
   });
 
   it('optimize=latency → fastest first', async () => {

@@ -263,18 +263,24 @@ describe('Phase 5.7 — cross-route Bayesian consistency', async () => {
     expect(row.provider_contact).toBe('@LnHyper');
   });
 
-  it('GET /api/services omits sources / consumption_type / provider_contact when null', async () => {
+  it('GET /api/services exposes single-source sources[]; omits consumption_type / provider_contact when null', async () => {
+    // Audit 2026-04-29 — single-source rows used to omit `sources` "for clean
+    // payloads", which left agents without any attribution. Now the array is
+    // always surfaced (the upsert seeds it with the registry source name);
+    // consumption_type / provider_contact stay undefined when the upstream
+    // doesn't expose them.
     const op = sha256('clean-svc');
     await seed(db, agentRepo, serviceRepo, {
       agentHash: op, url: 'https://clean.example/api', category: 'data',
       alpha: 7, beta: 3, totalIngestions: 10,
-      // No sources/consumption_type/provider_contact passed.
+      // No sources/consumption_type/provider_contact passed — sources[] still
+      // holds whatever upsert injected (here '402index' per seed helper).
     });
     const app = buildApp(db);
     const r = await request(app).get('/api/services?category=data&limit=10');
     expect(r.status).toBe(200);
     const row = r.body.data[0];
-    expect(row.sources).toBeUndefined();
+    expect(row.sources).toEqual(['402index']);
     expect(row.consumption_type).toBeUndefined();
     expect(row.provider_contact).toBeUndefined();
   });
