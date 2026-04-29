@@ -22,6 +22,12 @@ export type RevenueSource =
   | 'profile_query'
   | 'paid_probe'
   | 'donation'
+  /** Deposit settlement — `/api/deposit` confirme un paymentHash + preimage,
+   *  insert dans `token_balance`, et logge le montant en revenue. Les paid
+   *  calls qui consomment ensuite ce balance ne re-loggent PAS de revenue —
+   *  l'argent est déjà comptabilisé ici. Distinct de fresh_query/probe_query
+   *  qui sont des single-use payments via macaroon natif L402. */
+  | 'deposit'
   | 'other';
 
 export interface RevenueEvent {

@@ -89,6 +89,7 @@ import { OracleBudgetService } from './services/oracleBudgetService';
 import { TrustAssertionRepository } from './repositories/trustAssertionRepository';
 import { OraclePeerRepository } from './repositories/oracleFederationRepository';
 import { PeerCalibrationRepository } from './repositories/peerCalibrationRepository';
+import { CalibrationRepository } from './repositories/calibrationRepository';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
@@ -251,7 +252,12 @@ export function createApp() {
     restUrl: config.LND_REST_URL,
     macaroonPath: config.LND_INVOICE_MACAROON_PATH,
   });
-  const depositController = new DepositController(pool, lndInvoiceService);
+  // Self-funding loop tracker — constructed here (instead of at line ~531)
+  // so DepositController can log deposits as revenue at settlement. Audit
+  // 2026-04-29 found the budget loop reporting revenue=0 because deposits
+  // were not wired to logRevenue.
+  const oracleBudgetService = new OracleBudgetService(pool);
+  const depositController = new DepositController(pool, lndInvoiceService, oracleBudgetService);
   const probeController = new ProbeController(pool, lndClient, {
     txRepo,
     bayesian: bayesianScoringService,
@@ -525,10 +531,11 @@ export function createApp() {
   const balanceAuth = createBalanceAuth(pool, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(pool);
 
-  // Phase 6.4 — self-funding loop tracker. Logge chaque paid L402 call
-  // dans oracle_revenue_log + chaque paid probe spending. Source of truth
-  // pour /api/oracle/budget.
-  const oracleBudgetService = new OracleBudgetService(pool);
+  // Phase 6.4 — self-funding loop tracker. Already constructed earlier in
+  // the wiring (right after lndInvoiceService) so DepositController can use
+  // it. Logge chaque paid L402 call dans oracle_revenue_log + chaque paid
+  // probe spending. Source of truth pour /api/oracle/budget.
+  // (oracleBudgetService is in scope from the earlier construction.)
 
   // L402 native gate — all paid endpoints go through createL402Native.
   // Pricing Mix A+D (2026-04-26): /agent/:publicKeyHash and its sub-routes
@@ -724,7 +731,28 @@ export function createApp() {
   // kind 30783 calibration events publiés par un peer SatRank-compatible.
   // Permet aux clients de vérifier la calibration history d'un peer
   // avant de l'inclure dans une aggregation. Cross-oracle meta-confidence.
+  //
+  // Audit 2026-04-29 fix — when the requested pubkey is OUR oracle, the
+  // peer-calibrations ingestor skips self events (anti-loop) so the peer
+  // table is always empty for our own pubkey. Fall back to oracle_calibration_runs
+  // (the table we write before publishing) so /api/oracle/peers/<self>/calibrations
+  // returns our own calibration history instead of a misleading empty list.
   const peerCalibrationRepoApi = new PeerCalibrationRepository(pool);
+  const ownCalibrationRepoApi = new CalibrationRepository(pool);
+  // Compute self oracle pubkey once at boot if NOSTR_PRIVATE_KEY is set.
+  // Lazy import — keeps the dependency outside the cold path when no key is
+  // configured (dev/test).
+  let selfOraclePubkeyApi: string | null = null;
+  if (config.NOSTR_PRIVATE_KEY) {
+    try {
+      const { getPublicKey: getPubkey } = require('nostr-tools/pure');
+      const { hexToBytes: h2b } = require('@noble/hashes/utils');
+      selfOraclePubkeyApi = getPubkey(h2b(config.NOSTR_PRIVATE_KEY));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ error: msg }, 'Failed to derive self oracle pubkey for /oracle/peers/<self>/calibrations fallback');
+    }
+  }
   api.get('/oracle/peers/:pubkey/calibrations', discoveryRateLimit, async (req, res, next) => {
     try {
       const pubkey = String(req.params.pubkey);
@@ -732,11 +760,21 @@ export function createApp() {
         return res.status(400).json({ error: { code: 'INVALID_PUBKEY', message: 'pubkey must be a 64-char hex Schnorr key' } });
       }
       const limit = Math.min(Math.max(1, parseInt(String(req.query.limit ?? '20'), 10) || 20), 100);
-      const calibrations = await peerCalibrationRepoApi.listByPeer(pubkey, limit);
-      res.json({
-        data: {
-          peer_pubkey: pubkey,
-          calibrations: calibrations.map((c) => ({
+      const isSelf = selfOraclePubkeyApi !== null && pubkey === selfOraclePubkeyApi;
+      const calibrationsPayload = isSelf
+        ? (await ownCalibrationRepoApi.listRuns(limit)).map((r) => ({
+            event_id: r.published_event_id,
+            window_start: r.window_start,
+            window_end: r.window_end,
+            window_days: Math.round((r.window_end - r.window_start) / 86400),
+            delta_mean: r.delta_mean,
+            delta_median: r.delta_median,
+            delta_p95: r.delta_p95,
+            n_endpoints: r.n_endpoints,
+            n_outcomes: r.n_outcomes,
+            observed_at: r.created_at,
+          }))
+        : (await peerCalibrationRepoApi.listByPeer(pubkey, limit)).map((c) => ({
             event_id: c.event_id,
             window_start: c.window_start,
             window_end: c.window_end,
@@ -747,8 +785,13 @@ export function createApp() {
             n_endpoints: c.n_endpoints,
             n_outcomes: c.n_outcomes,
             observed_at: c.observed_at,
-          })),
-          count: calibrations.length,
+          }));
+      res.json({
+        data: {
+          peer_pubkey: pubkey,
+          is_self: isSelf,
+          calibrations: calibrationsPayload,
+          count: calibrationsPayload.length,
           limit,
         },
       });

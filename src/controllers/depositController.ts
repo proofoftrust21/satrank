@@ -9,6 +9,7 @@ import { logger } from '../logger';
 import { depositPhaseTotal } from '../middleware/metrics';
 import { DepositTierService } from '../services/depositTierService';
 import { LndInvoiceService } from '../services/lndInvoiceService';
+import type { OracleBudgetService } from '../services/oracleBudgetService';
 import { withTransaction } from '../database/transaction';
 
 const MIN_DEPOSIT_SATS = 21;
@@ -26,11 +27,17 @@ export class DepositController {
   private pool: Pool;
   private tierService: DepositTierService;
   private lndInvoice: LndInvoiceService;
+  /** Optional — `/api/oracle/budget` self-funding loop tracker. When wired,
+   *  every successful deposit settlement logs a `revenue` event so the budget
+   *  snapshot reflects real cash inflow. Audit 2026-04-29 found the lifetime
+   *  revenue at 0 because the wiring was missing here. */
+  private budgetService: OracleBudgetService | null;
 
-  constructor(pool: Pool, lndInvoice: LndInvoiceService) {
+  constructor(pool: Pool, lndInvoice: LndInvoiceService, budgetService?: OracleBudgetService) {
     this.pool = pool;
     this.tierService = new DepositTierService(pool);
     this.lndInvoice = lndInvoice;
+    this.budgetService = budgetService ?? null;
   }
 
   /** GET /api/deposit/tiers — public schedule, no auth required.
@@ -270,6 +277,29 @@ export class DepositController {
       quota, tierId: tier.tier_id, rate: tier.rate_sats_per_request, credits,
     }, 'Deposit verified and balance credited');
     depositPhaseTotal.inc({ phase: 'verify_success_fresh' });
+
+    // Audit 2026-04-29 fix — log the deposit as revenue against the
+    // self-funding loop. The dedup partial-unique index on
+    // oracle_revenue_log(payment_hash) makes this idempotent even if
+    // verifyDeposit is invoked twice for the same paymentHash via race.
+    // Failures are non-fatal: a logging hiccup must not block the user
+    // from getting their balance, but we surface them at warn for triage.
+    if (this.budgetService) {
+      try {
+        await this.budgetService.logRevenue(
+          'deposit',
+          quota,
+          { tierId: tier.tier_id, rateSatsPerRequest: tier.rate_sats_per_request, credits },
+          body.paymentHash,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          { error: msg, paymentHash: body.paymentHash.slice(0, 16), quota },
+          'oracle_revenue_log deposit insert failed (non-fatal)',
+        );
+      }
+    }
 
     res.status(201).json({
       data: {

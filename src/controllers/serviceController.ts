@@ -268,21 +268,47 @@ export class ServiceController {
         return;
       }
 
-      // bestQuality = max(p_success × uptime), price ignored
+      // Audit 2026-04-29 fix — pre-rank the pool on each axis with explicit
+      // tie-breakers, then take the top of each ranking. Previous reduce()
+      // logic only moved on strict > / <, so on a thin/tied pool the same
+      // endpoint won all 3 axes (the one that happened to be first in the
+      // input order). The audit caught this: 51 candidates, 3 picks all
+      // pointing at Hyperdope/predictions/signals.
       const pSuccess = (s: typeof pool[number]): number => s.bayesian?.p_success ?? 0;
-      const bestQuality = pool.reduce((best, s) =>
-        (pSuccess(s) * s.uptimeRatio) > (pSuccess(best) * best.uptimeRatio) ? s : best,
-      );
+      const qualityScore = (s: typeof pool[number]): number => pSuccess(s) * s.uptimeRatio;
+      const valueScore = (s: typeof pool[number]): number => qualityScore(s) / Math.sqrt(s.price);
 
-      // bestValue = max((p_success × uptime) / sqrt(price)) — sqrt softens price impact
-      const bestValue = pool.reduce((best, s) => {
-        const sValue = (pSuccess(s) * s.uptimeRatio) / Math.sqrt(s.price);
-        const bValue = (pSuccess(best) * best.uptimeRatio) / Math.sqrt(best.price);
-        return sValue > bValue ? s : best;
+      // Quality = max(p × uptime); ties broken by lower price (cheaper wins),
+      // then by higher n_obs (more confident wins).
+      const byQuality = [...pool].sort((a, b) => {
+        const dq = qualityScore(b) - qualityScore(a);
+        if (Math.abs(dq) > 1e-9) return dq;
+        if (a.price !== b.price) return a.price - b.price;
+        return (b.bayesian?.n_obs ?? 0) - (a.bayesian?.n_obs ?? 0);
       });
+      const bestQuality = byQuality[0];
 
-      // cheapest = min(price) among pool
-      const cheapest = pool.reduce((min, s) => s.price < min.price ? s : min);
+      // Value = max((p × uptime) / sqrt(price)); ties broken by lower price,
+      // then higher n_obs. Already cost-sensitive by design.
+      const byValue = [...pool].sort((a, b) => {
+        const dv = valueScore(b) - valueScore(a);
+        if (Math.abs(dv) > 1e-9) return dv;
+        if (a.price !== b.price) return a.price - b.price;
+        return (b.bayesian?.n_obs ?? 0) - (a.bayesian?.n_obs ?? 0);
+      });
+      // Pick the first byValue entry that differs from bestQuality (preserve
+      // diversity on a thin pool). If every entry coincides with bestQuality,
+      // accept the convergence — the pool is genuinely degenerate.
+      const bestValue = byValue.find(s => s !== bestQuality) ?? byValue[0];
+
+      // Cheapest = min(price); ties broken by higher quality, then higher n_obs.
+      const byCheapest = [...pool].sort((a, b) => {
+        if (a.price !== b.price) return a.price - b.price;
+        const dq = qualityScore(b) - qualityScore(a);
+        if (Math.abs(dq) > 1e-9) return dq;
+        return (b.bayesian?.n_obs ?? 0) - (a.bayesian?.n_obs ?? 0);
+      });
+      const cheapest = byCheapest.find(s => s !== bestQuality && s !== bestValue) ?? byCheapest[0];
 
       // Sim #5 #8 / #6 #3: even the "best" of a thin candidate pool can have
       // poor uptime or degraded HTTP; surface structured warnings so agents

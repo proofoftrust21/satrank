@@ -155,4 +155,22 @@ export class CalibrationRepository {
     );
     return rows[0] ?? null;
   }
+
+  /** Audit 2026-04-29 fix — list our own calibration runs for the
+   *  `/api/oracle/peers/<self>/calibrations` endpoint. The peer-calibrations
+   *  ingestor explicitly skips self events (anti-loop), so a self lookup
+   *  through PeerCalibrationRepository returns empty. This method serves
+   *  the local oracle_calibration_runs table directly so the federation
+   *  surface can be inspected by clients pointing at our own pubkey. */
+  async listRuns(limit = 20): Promise<CalibrationRunRecord[]> {
+    const { rows } = await this.db.query<CalibrationRunRecord>(
+      `SELECT window_start, window_end, delta_mean, delta_median, delta_p95,
+              n_endpoints, n_outcomes, published_event_id, created_at
+         FROM oracle_calibration_runs
+        ORDER BY window_end DESC
+        LIMIT $1::int`,
+      [Math.max(1, Math.min(100, limit))],
+    );
+    return rows;
+  }
 }
