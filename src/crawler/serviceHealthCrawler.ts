@@ -19,6 +19,10 @@ import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLog
 import type { Transaction } from '../types';
 import type { BayesianScoringService } from '../services/bayesianScoringService';
 import type { InvoiceValidityService } from '../services/invoiceValidityService';
+import {
+  type EndpointStagePosteriorsRepository,
+  STAGE_CHALLENGE,
+} from '../repositories/endpointStagePosteriorsRepository';
 import { parseL402Challenge } from '../utils/l402HeaderParser';
 
 const CHECK_RATE_MS = 200; // 5 checks/sec
@@ -54,6 +58,12 @@ export class ServiceHealthCrawler {
      *  decode + validation; the outcome feeds endpoint_stage_posteriors
      *  stage=2 (invoice). Coût zéro sat. Optional pour back-compat tests. */
     private invoiceValidityService?: InvoiceValidityService,
+    /** Phase 5.14 / Sim 7 follow-up — when wired, every probe outcome is
+     *  recorded into endpoint_stage_posteriors stage=1 (challenge). Success
+     *  iff status==402 AND a parseable L402 challenge was returned. Without
+     *  this, stage 1 stays empty and stage_posteriors is absent on every
+     *  candidate served by /api/intent. Optional for back-compat tests. */
+    private stagePosteriorsRepo?: EndpointStagePosteriorsRepository,
   ) {}
 
   /** Production entrypoint — probe a single tier. */
@@ -115,6 +125,11 @@ export class ServiceHealthCrawler {
       // Bayesian block discriminates per URL, not per operator. Skipped when
       // bayesianService isn't wired (test harnesses that don't care about scoring).
       await this.ingestProbeStreaming(endpoint, healthy);
+      // Phase 5.14 / Sim 7 follow-up — Stage 1 challenge. Records every
+      // probe outcome (including dead hosts and non-402 responses) so the
+      // 5-stage decomposition has a populated first stage. Without this
+      // write, /api/intent omits stage_posteriors on every candidate.
+      await this.observeChallenge(endpoint, status, wwwAuthenticate);
       // Phase 5.11 — Stage 2 invoice validity. Quand le probe a retourné 402
       // ET un challenge L402 parseable, on décode + valide la BOLT11 et
       // alimente endpoint_stage_posteriors stage=2. Coût : 0 sat (decode
@@ -129,6 +144,48 @@ export class ServiceHealthCrawler {
 
     logger.info({ ...result }, 'Service health crawl complete');
     return result;
+  }
+
+  /** Phase 5.14 / Sim 7 follow-up — Stage 1 challenge. Records whether the
+   *  endpoint returned a valid L402 challenge (HTTP 402 + parseable
+   *  WWW-Authenticate carrying both macaroon and invoice). Every probe
+   *  outcome contributes one observation: dead hosts, 5xx, 200, and 4xx
+   *  all count as `success=false`; only a clean 402 + parseable challenge
+   *  counts as `success=true`. Without this write, stage_posteriors stays
+   *  absent on every candidate (Sim 7 finding: 10/10 agents flagged
+   *  stage_posteriors=absent). No-op when stagePosteriorsRepo isn't wired
+   *  (test harnesses). Never throws — failures log and the probe loop
+   *  continues. */
+  private async observeChallenge(
+    endpoint: ServiceEndpoint,
+    status: number,
+    wwwAuthenticate: string | null,
+  ): Promise<void> {
+    if (!this.stagePosteriorsRepo) return;
+    const challenge = status === 402 ? parseL402Challenge(wwwAuthenticate) : null;
+    const success = challenge !== null;
+    const outcomeLabel = success
+      ? 'l402_challenge_ok'
+      : status === 402
+        ? 'l402_challenge_unparseable'
+        : status === 0
+          ? 'host_unreachable'
+          : `http_${status}`;
+    try {
+      await this.stagePosteriorsRepo.observe(
+        {
+          endpoint_url: endpoint.url,
+          stage: STAGE_CHALLENGE,
+          success,
+          outcome_label: outcomeLabel,
+        },
+      );
+    } catch (err) {
+      logger.warn(
+        { url: endpoint.url, error: err instanceof Error ? err.message : String(err) },
+        'Stage 1 challenge observation failed (non-fatal)',
+      );
+    }
   }
 
   /** Phase 5.11 — Stage 2 invoice validity. Décodage + validation locale

@@ -1088,6 +1088,7 @@ async function main(): Promise<void> {
       agentRepo,
       bayesianScoringServiceMain,
       invoiceValidityService,
+      stagePosteriorsRepo,
     );
 
     const tierIntervals = {
