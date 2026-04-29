@@ -92,8 +92,16 @@ PAID_PROBE_ENABLED=false
 PAID_PROBE_INTERVAL_HOURS=6
 PAID_PROBE_MAX_PER_PROBE_SATS=5
 PAID_PROBE_TOTAL_BUDGET_SATS=50
+PAID_PROBE_BUDGET_PER_24H_SATS=1000
 PAID_PROBE_MAX_PER_CYCLE=10
 ```
+
+`PAID_PROBE_BUDGET_PER_24H_SATS` is a sliding 24h cap added in the audit r2
+follow-up (2026-04-29). Each cycle reads the cumulative `paid_probe` spending
+of the last 24 hours and caps the per-cycle spend at
+`min(PAID_PROBE_TOTAL_BUDGET_SATS, BUDGET_PER_24H - spent_last_24h)`. Set to
+`0` to disable the rolling guard. Default 1000 ≈ $0.40/day, ~$12/month —
+covers τ=7d posterior decay refresh + new endpoint bootstrap without runaway.
 
 Cap math: 50 sats/cycle × 4 cycles/day = ~200 sats/day max ≈ ~$1/month
 at default cap. Adjust `MAX_PER_PROBE_SATS` upward (e.g. 50) to cover

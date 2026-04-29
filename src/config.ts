@@ -78,7 +78,17 @@ const configSchema = z.object({
   PAID_PROBE_ENABLED: z.coerce.boolean().default(false),
   PAID_PROBE_INTERVAL_HOURS: z.coerce.number().int().positive().default(6),
   PAID_PROBE_MAX_PER_PROBE_SATS: z.coerce.number().int().positive().default(5),
+  /** Per-cycle cap. Each cron tick won't spend more than this. With multiple
+   *  ticks per day, the daily cumulative could exceed this — see the rolling
+   *  24h cap below to bound the total daily burn. */
   PAID_PROBE_TOTAL_BUDGET_SATS: z.coerce.number().int().positive().default(50),
+  /** Audit r2 (2026-04-29) — rolling 24h cap on cumulative paid_probe
+   *  spending. Each cycle reads the last-24h spending from oracle_revenue_log
+   *  and caps itself at (BUDGET_PER_24H - spent_last_24h). Set to 0 to
+   *  disable the rolling guard (only per-cycle cap remains). Default 1000
+   *  ≈ $0.40/day, ~$12/month — covers τ=7d decay refresh + new endpoint
+   *  bootstrap without runaway. */
+  PAID_PROBE_BUDGET_PER_24H_SATS: z.coerce.number().int().nonnegative().default(1000),
   PAID_PROBE_MAX_PER_CYCLE: z.coerce.number().int().positive().default(10),
   // Excellence pass — validate every newly ingested endpoint with a single
   // paid probe to seed stages 3-5 with n_obs=1, breaking the cold-start

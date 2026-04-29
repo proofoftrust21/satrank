@@ -133,4 +133,38 @@ describe('OracleBudgetService (Phase 6.4)', () => {
     expect(snap.revenue_sats).toBe(200);
     expect(snap.spending_sats).toBe(100);
   });
+
+  describe('Audit r2 — sumByWindow (rolling 24h cap)', () => {
+    it('returns 0 when no events match', async () => {
+      const sum = await service.sumByWindow('spending', 'paid_probe', 24 * 60 * 60);
+      expect(sum).toBe(0);
+    });
+
+    it('sums only matching type+source within the window', async () => {
+      await service.logSpending('paid_probe', 100);
+      await service.logSpending('paid_probe', 50);
+      await service.logRevenue('fresh_query', 999);   // wrong type
+      await service.logSpending('other', 7);          // wrong source
+      const sum = await service.sumByWindow('spending', 'paid_probe', 24 * 60 * 60);
+      expect(sum).toBe(150);
+    });
+
+    it('respects the time window — events outside the window are excluded', async () => {
+      const past = Math.floor(Date.now() / 1000) - 48 * 60 * 60; // 48h ago
+      await service.log({
+        type: 'spending', source: 'paid_probe', amount_sats: 200, observed_at: past,
+      });
+      await service.logSpending('paid_probe', 30);
+      const sum24h = await service.sumByWindow('spending', 'paid_probe', 24 * 60 * 60);
+      const sum72h = await service.sumByWindow('spending', 'paid_probe', 72 * 60 * 60);
+      expect(sum24h).toBe(30);
+      expect(sum72h).toBe(230);
+    });
+
+    it('returns 0 for windowSec ≤ 0 (defensive)', async () => {
+      await service.logSpending('paid_probe', 999);
+      const sum = await service.sumByWindow('spending', 'paid_probe', 0);
+      expect(sum).toBe(0);
+    });
+  });
 });

@@ -896,6 +896,24 @@ async function main(): Promise<void> {
             try {
               const ready = await ensurePaidProbeRunner();
               if (!ready) return;
+              // Audit r2 (2026-04-29) — rolling 24h cap. Read the
+              // cumulative paid_probe spending of the last 24h, derive
+              // remaining = BUDGET_PER_24H - spent_last_24h, and cap the
+              // per-cycle budget at the stricter of the two. When set to 0,
+              // skip this guard entirely (legacy per-cycle-only behavior).
+              let effectiveBudget = config.PAID_PROBE_TOTAL_BUDGET_SATS;
+              if (config.PAID_PROBE_BUDGET_PER_24H_SATS > 0) {
+                const spentLast24h = await oracleBudgetSvc.sumByWindow('spending', 'paid_probe', 24 * 60 * 60);
+                const remaining24h = config.PAID_PROBE_BUDGET_PER_24H_SATS - spentLast24h;
+                if (remaining24h <= 0) {
+                  logger.info(
+                    { spentLast24h, cap24h: config.PAID_PROBE_BUDGET_PER_24H_SATS },
+                    'Paid probe cycle: 24h rolling budget exhausted — skipped',
+                  );
+                  return;
+                }
+                effectiveBudget = Math.min(config.PAID_PROBE_TOTAL_BUDGET_SATS, remaining24h);
+              }
               // Sim 7 follow-up — prioritised candidate selection. Replaces
               // the naive findStaleByTier('hot') + post-filter approach.
               // The new query joins endpoint_stage_posteriors and orders
@@ -920,7 +938,7 @@ async function main(): Promise<void> {
               const summary = await ready.runner.runOnce({
                 endpoint_urls: hot.map((e) => e.url),
                 maxPerProbeSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
-                totalBudgetSats: config.PAID_PROBE_TOTAL_BUDGET_SATS,
+                totalBudgetSats: effectiveBudget,
                 maxProbesPerCycle: config.PAID_PROBE_MAX_PER_CYCLE,
                 selfPubkey: ready.selfPubkey,
               });
@@ -996,6 +1014,22 @@ async function main(): Promise<void> {
               try {
                 const ready = await ensurePaidProbeRunner();
                 if (!ready) return;
+                // Audit r2 (2026-04-29) — same rolling 24h cap as the
+                // hourly cron. Sweep contributes to the same paid_probe
+                // spending bucket; budget remaining is shared across both.
+                let sweepCycleCap = config.PAID_PROBE_MAX_PER_PROBE_SATS * config.PAID_PROBE_SWEEP_MAX_PER_RUN;
+                if (config.PAID_PROBE_BUDGET_PER_24H_SATS > 0) {
+                  const spentLast24h = await oracleBudgetSvc.sumByWindow('spending', 'paid_probe', 24 * 60 * 60);
+                  const remaining24h = config.PAID_PROBE_BUDGET_PER_24H_SATS - spentLast24h;
+                  if (remaining24h <= 0) {
+                    logger.info(
+                      { spentLast24h, cap24h: config.PAID_PROBE_BUDGET_PER_24H_SATS },
+                      'Paid probe sweep: 24h rolling budget exhausted — skipped',
+                    );
+                    return;
+                  }
+                  sweepCycleCap = Math.min(sweepCycleCap, remaining24h);
+                }
                 const candidates = await serviceEndpointRepoMulti.findSweepCandidates({
                   limit: config.PAID_PROBE_SWEEP_MAX_PER_RUN,
                   maxPriceSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
@@ -1009,7 +1043,7 @@ async function main(): Promise<void> {
                 const summary = await ready.runner.runOnce({
                   endpoint_urls: candidates.map((e) => e.url),
                   maxPerProbeSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
-                  totalBudgetSats: config.PAID_PROBE_MAX_PER_PROBE_SATS * config.PAID_PROBE_SWEEP_MAX_PER_RUN,
+                  totalBudgetSats: sweepCycleCap,
                   maxProbesPerCycle: config.PAID_PROBE_SWEEP_MAX_PER_RUN,
                   selfPubkey: ready.selfPubkey,
                 });

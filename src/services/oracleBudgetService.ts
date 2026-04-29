@@ -114,6 +114,30 @@ export class OracleBudgetService {
     await this.log({ type: 'spending', source, amount_sats: amountSats, metadata });
   }
 
+  /** Audit r2 follow-up — somme des sats `spending` (ou `revenue`) pour un
+   *  source donné sur une fenêtre glissante. Utilisé par paidProbeRunner
+   *  pour implémenter un cap rolling 24h : avant chaque cycle, on lit la
+   *  spending du dernier jour, on calcule remaining = cap_24h - spent_last_24h,
+   *  et on plafonne la cycle à ce remaining. Évite d'épuiser un cap lifetime
+   *  en quelques jours puis de laisser le cron silently dead. */
+  async sumByWindow(
+    type: RevenueType,
+    source: RevenueSource,
+    windowSec: number,
+  ): Promise<number> {
+    if (windowSec <= 0) return 0;
+    const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+    const { rows } = await this.db.query<{ total: string }>(
+      `SELECT COALESCE(SUM(amount_sats), 0)::text AS total
+         FROM oracle_revenue_log
+        WHERE type = $1::text
+          AND source = $2::text
+          AND observed_at >= $3::bigint`,
+      [type, source, cutoff],
+    );
+    return Number(rows[0]?.total ?? 0);
+  }
+
   /** Snapshot du budget sur une fenêtre. Retourne lifetime si windowSec
    *  absent. */
   async getBudget(opts: BudgetWindow = {}): Promise<BudgetSnapshot> {
