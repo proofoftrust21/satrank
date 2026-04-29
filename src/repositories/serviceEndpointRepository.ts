@@ -235,6 +235,17 @@ export class ServiceEndpointRepository {
    *  working: when l402directory ingestion completes, the count of
    *  ['402index','l402directory'] must equal the cross-source overlap
    *  computed from the upstream catalogues. */
+  /** Total non-deprecated L402 endpoints. Used by /api/stats so the
+   *  landing page can advertise the L402 catalogue size accurately
+   *  (previously it mis-reported `agentRepo.countBySource('lightning_graph')`,
+   *  which counts LN nodes, as L402 endpoints). */
+  async countActive(): Promise<number> {
+    const { rows } = await this.db.query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM service_endpoints WHERE deprecated = FALSE`,
+    );
+    return Number(rows[0]?.c ?? 0);
+  }
+
   async countBySources(): Promise<Array<{ sources: string[]; count: number }>> {
     const { rows } = await this.db.query<{ sources: string[]; c: string }>(
       `SELECT sources, COUNT(*)::text AS c

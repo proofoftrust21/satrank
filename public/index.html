@@ -79,7 +79,7 @@
       <div class="section-head">
         <div class="section-kicker">Live network</div>
         <h2 class="section-title">The Lightning graph, measured not gossiped.</h2>
-        <p class="section-desc">Every L402 endpoint is crawled, decoded, and price-extracted from a real BOLT11 invoice. Every Lightning node is probed from our own LND. The numbers below refresh every 6 hours.</p>
+        <p class="section-desc">Every L402 endpoint is crawled, decoded, and price-extracted from a real BOLT11 invoice. Every Lightning node is probed from our own LND. The numbers below are cached for 5 minutes.</p>
       </div>
 
       <div class="stats-grid">
@@ -96,7 +96,7 @@
         <div class="stat-card">
           <div class="stat-value loading" id="stat-reachable">…</div>
           <div class="stat-label">Verified reachable</div>
-          <div class="stat-sub">Answered an LND probe within 48h</div>
+          <div class="stat-sub">Latest LND probe was reachable, on a non-stale node</div>
         </div>
         <div class="stat-card">
           <div class="stat-value loading" id="stat-probes-24h">…</div>
@@ -502,6 +502,18 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
           <span class="ep-path">/api/profile/:id</span>
           <span class="ep-desc">Full profile: 5-component decomposition, reports, survival, evidence</span>
           <span class="ep-cost">1 sat</span>
+        </li>
+        <li>
+          <span class="method method-post">POST</span>
+          <span class="ep-path">/api/verdicts</span>
+          <span class="ep-desc">Batch verdicts for up to 100 hashes in one request — amortised 1 sat per batch</span>
+          <span class="ep-cost">1 sat</span>
+        </li>
+        <li>
+          <span class="method method-post">POST</span>
+          <span class="ep-path">/api/probe</span>
+          <span class="ep-desc">End-to-end L402 probe via SatRank's own LND, with full per-stage telemetry</span>
+          <span class="ep-cost">5 sats</span>
         </li>
         <li>
           <span class="method method-post">POST</span>

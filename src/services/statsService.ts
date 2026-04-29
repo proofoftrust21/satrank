@@ -237,6 +237,11 @@ export class StatsService {
       return {
         totalAgents: await this.agentRepo.count(),
         totalEndpoints: await this.agentRepo.countBySource('lightning_graph'),
+        // Phase 7.3 — accurate L402 catalogue count for the landing page.
+        // The legacy `totalEndpoints` field above counts Lightning nodes
+        // from the gossip graph and was previously mis-rendered as L402
+        // endpoints on the public site. Both are now surfaced separately.
+        serviceEndpointCount: this.serviceEndpointRepo ? await this.serviceEndpointRepo.countActive() : 0,
         nodesProbed,
         phantomRate: nodesProbed > 0 ? Math.round((1 - verifiedReachable / nodesProbed) * 100) : 0,
         verifiedReachable,

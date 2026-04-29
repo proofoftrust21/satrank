@@ -267,6 +267,11 @@ export interface HealthResponse {
 export interface NetworkStats {
   totalAgents: number;
   totalEndpoints: number;
+  /** Phase 7.3 — count of non-deprecated L402 endpoints in
+   *  service_endpoints. Distinct from `totalEndpoints` (which counts
+   *  Lightning nodes from the gossip graph). The landing page surfaces
+   *  this as the "L402 endpoints" stat. */
+  serviceEndpointCount: number;
   nodesProbed: number;
   phantomRate: number;
   verifiedReachable: number;
