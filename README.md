@@ -36,13 +36,14 @@ import { SatRank } from '@satrank/sdk';
 const sr = new SatRank({ wallet: myLnWallet });
 
 const result = await sr.fulfill({
-  category: 'energy/intelligence',
+  intent: { category: 'energy/intelligence' },
   budget_sats: 50,
 });
 
-console.log(result.response);     // the paid API response
-console.log(result.endpoint_url); // which endpoint served it
-console.log(result.paid_sats);    // what it cost
+console.log(result.success);            // true on a paid response
+console.log(result.response_body);      // the paid API response
+console.log(result.endpoint_used?.url); // which endpoint served it
+console.log(result.cost_sats);          // total sats spent across attempts
 ```
 
 ```python
@@ -50,14 +51,15 @@ from satrank import SatRank
 
 sr = SatRank(wallet=my_ln_wallet)
 
-result = sr.fulfill(
-    category="energy/intelligence",
+result = await sr.fulfill(
+    intent={"category": "energy/intelligence"},
     budget_sats=50,
 )
 
-print(result.response)      # the paid API response
-print(result.endpoint_url)  # which endpoint served it
-print(result.paid_sats)     # what it cost
+print(result["success"])                              # True on a paid response
+print(result["response_body"])                        # the paid API response
+print(result.get("endpoint_used", {}).get("url"))     # which endpoint served it
+print(result["cost_sats"])                            # total sats spent across attempts
 ```
 
 The SDK resolves the intent against the live registry, picks the top-ranked endpoint inside the budget, handles the L402 handshake, pays the invoice with the wallet, and returns the service response. Fallbacks on failure.
@@ -98,8 +100,8 @@ Requirements: Node `>=18.0.0`, Python `>=3.10`. Both SDKs are thin wrappers over
 
 The SatRank catalog of L402 endpoints is sourced from publicly available registries in the L402 ecosystem.
 
-- **[402index.io](https://402index.io)** — primary source (~95% of the current catalog). Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.
-- **[l402.directory](https://l402.directory)** — curated supplementary source with `.well-known/l402-directory-verify.txt` claim verification. Smaller catalog (~20 paid endpoints today) but contributes signals 402index does not surface: `consumption.type` (browser / api_response / stream / download), `provider.contact`, and per-service `.well-known` attestation. Cross-listed entries accumulate both attributions in `service_endpoints.sources[]`.
+- **[402index.io](https://402index.io)** — primary source for the current catalog. Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.
+- **[l402.directory](https://l402.directory)** — curated supplementary source ingested as of schema v45 with `.well-known/l402-directory-verify.txt` claim verification. Contributes signals 402index does not surface: `consumption.type` (browser / api_response / stream / download), `provider.contact`, and per-service `.well-known` attestation. Cross-listed entries accumulate both attributions in `service_endpoints.sources[]`. Live source breakdown: `serviceSources` field on [/api/stats](https://satrank.dev/api/stats).
 
 Operator self-submissions are accepted via `POST /api/services/register` with NIP-98 authentication and a one-time L402 listing fee. Submitted endpoints are labeled `source=self_registered` in the database and are validated by the same registry crawler before they enter the ranking pool. Self-submissions can only fill empty metadata fields; trusted-source data (name, category, description) is never overwritten.
 

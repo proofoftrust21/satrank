@@ -31,13 +31,14 @@ import { SatRank } from '@satrank/sdk';
 const sr = new SatRank({ wallet: myLnWallet });
 
 const result = await sr.fulfill({
-  category: 'energy/intelligence',
+  intent: { category: 'energy/intelligence' },
   budget_sats: 50,
 });
 
-console.log(result.response);     // the paid API response body
-console.log(result.endpoint_url); // which provider endpoint served it
-console.log(result.paid_sats);    // what it cost on the wire
+console.log(result.success);            // true on a paid response
+console.log(result.response_body);      // the paid API response body
+console.log(result.endpoint_used?.url); // which provider endpoint served it
+console.log(result.cost_sats);          // total sats spent (invoice + fees)
 ```
 
 ### Python
@@ -51,14 +52,15 @@ from satrank import SatRank
 
 sr = SatRank(wallet=my_ln_wallet)
 
-result = sr.fulfill(
-    category="energy/intelligence",
+result = await sr.fulfill(
+    intent={"category": "energy/intelligence"},
     budget_sats=50,
 )
 
-print(result.response)      # the paid API response body
-print(result.endpoint_url)  # which provider endpoint served it
-print(result.paid_sats)     # what it cost on the wire
+print(result["success"])                              # True on a paid response
+print(result["response_body"])                        # the paid API response body
+print(result.get("endpoint_used", {}).get("url"))     # which provider endpoint served it
+print(result["cost_sats"])                            # total sats spent (invoice + fees)
 ```
 
 ### What `sr.fulfill()` actually does

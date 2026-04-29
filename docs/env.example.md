@@ -78,6 +78,40 @@ PROBE_RATE_LIMIT_GLOBAL_PER_HOUR=20
 CRAWLER_METRICS_PORT=9091
 ```
 
+## Paid probes (Sim 7 follow-up — stages 3-5)
+
+OPT-IN. When `PAID_PROBE_ENABLED=true`, the crawler pays L402 invoices on
+priority-selected hot-tier endpoints to populate the payment / delivery /
+quality stages of the 5-stage L402 contract decomposition. The
+`probe-pay.macaroon` referenced by `LND_ADMIN_MACAROON_PATH` MUST be
+readable by the container user (uid 1001 = satrank) — `chown 1001:1001`
+on host.
+
+```
+PAID_PROBE_ENABLED=false
+PAID_PROBE_INTERVAL_HOURS=6
+PAID_PROBE_MAX_PER_PROBE_SATS=5
+PAID_PROBE_TOTAL_BUDGET_SATS=50
+PAID_PROBE_MAX_PER_CYCLE=10
+```
+
+Cap math: 50 sats/cycle × 4 cycles/day = ~200 sats/day max ≈ ~$1/month
+at default cap. Adjust `MAX_PER_PROBE_SATS` upward (e.g. 50) to cover
+the median catalogue invoice (~21 sats) — see
+[OPERATOR_QUICKSTART.md](OPERATOR_QUICKSTART.md) "Paid probe activation".
+
+## MCP / DVM upstream
+
+`SATRANK_API_BASE` is read by both the MCP server (`intent` tool) and
+the NIP-90 DVM (`j: intent-resolve`) when they need to call the oracle's
+own `/api/intent` from outside the api container. Default = production.
+Validation enforces `https://` (or `http://localhost` for dev) to
+prevent SSRF.
+
+```
+SATRANK_API_BASE=https://satrank.dev
+```
+
 ## Rate limiting
 
 ```
