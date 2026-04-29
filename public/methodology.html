@@ -133,12 +133,12 @@
 
         <h3>2.1 Lightning nodes</h3>
         <p>
-          Every node observed in the LND gossip graph is indexed. The crawler ingests <code>GET /v1/graph</code> from the oracle's own LND and upserts <code>agents</code> rows with alias, color, public key, first-seen and last-seen timestamps, channel count, aggregate capacity, and disabled-channels count. PageRank is recomputed hourly over the full graph. Live counts (captured at document build time from <code>/api/stats</code>): <strong>8,201 agents indexed</strong>, <strong>74,689 channels</strong>, <strong>9,490.2 BTC</strong> aggregate public capacity.
+          Every node observed in the LND gossip graph is indexed. The crawler ingests <code>GET /v1/graph</code> from the oracle's own LND and upserts <code>agents</code> rows with alias, color, public key, first-seen and last-seen timestamps, channel count, aggregate capacity, and disabled-channels count. PageRank is recomputed hourly over the full graph. Live counts (<code>totalAgents</code>, <code>totalChannels</code>, <code>networkCapacityBtc</code>) refresh every 5 minutes at <a href="/api/stats">/api/stats</a> — currently in the order of 8 000+ agents, 74 000+ channels, 9 000+ BTC of aggregate public capacity.
         </p>
 
         <h3>2.2 L402 service endpoints</h3>
         <p>
-          The registry crawler walks <code>https://402index.io/api/v1/services?protocol=L402</code>, plus any endpoint submitted through <code>POST /api/services/register</code>. For each URL, it issues a safe HTTPS GET (SSRF-hardened via <code>fetchSafeExternal</code>), expects a <code>HTTP 402 Payment Required</code> response with a <code>WWW-Authenticate</code> header, extracts the embedded BOLT11 invoice, decodes it through the local LND's <code>DecodePayReq</code>, and writes the mapping <code>(url_hash, operator_pubkey, price_sats, source)</code>. Live count: <strong>220 endpoints from 402index</strong>, across 28 categories (largest: <code>data</code> 52, <code>energy/intelligence</code> 48, <code>video</code> 35).
+          The registry crawler walks <code>https://402index.io/api/v1/services?protocol=L402</code>, plus any endpoint submitted through <code>POST /api/services/register</code>. For each URL, it issues a safe HTTPS GET (SSRF-hardened via <code>fetchSafeExternal</code>), expects a <code>HTTP 402 Payment Required</code> response with a <code>WWW-Authenticate</code> header, extracts the embedded BOLT11 invoice, decodes it through the local LND's <code>DecodePayReq</code>, and writes the mapping <code>(url_hash, operator_pubkey, price_sats, source)</code>. Live count (<code>serviceEndpointCount</code>) at <a href="/api/stats">/api/stats</a>; the live category breakdown is at <a href="/api/intent/categories">/api/intent/categories</a> (largest categories at the time of writing: <code>ai</code>, <code>data</code>, <code>energy/intelligence</code>, <code>video</code>).
         </p>
         <p>
           <a href="https://402index.io" rel="noopener noreferrer">402index.io</a> is maintained by Ryan Gentry as the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes its public API as its primary catalog source and adds the Bayesian probabilistic scoring layer on top. Beyond the URL itself, the v43 schema also persists six upstream quality signals provided by 402index per entry: <code>upstream_health_status</code>, <code>upstream_uptime_30d</code>, <code>upstream_latency_p50_ms</code>, <code>upstream_reliability_score</code>, <code>upstream_last_checked</code>, and <code>upstream_source</code>. The <code>resolveHierarchicalPrior</code> cascade in <code>bayesianScoringService</code> uses <code>upstream_reliability_score</code> as a Beta prior between the per-category aggregate and the flat <code>Beta(1.5, 1.5)</code> fallback, so a freshly ingested endpoint with a healthy upstream score enters the ranking pool above the flat prior without waiting for local probe evidence to accumulate.
@@ -152,7 +152,7 @@
 
         <h3>2.3 Probes</h3>
         <p>
-          Reachability is measured by issuing <code>QueryRoutes</code> from the oracle's LND at four liquidity tiers: <strong>1 000</strong>, <strong>10 000</strong>, <strong>100 000</strong>, <strong>1 000 000</strong> sats. A probe is <em>reachable</em> when LND returns at least one route; <em>unreachable</em> otherwise. Each probe persists hops, latency, amount, reachable flag, and timestamp. A rolling ring of 24 h activity holds <strong>895,786 probes</strong> at the time of writing.
+          Reachability is measured by issuing <code>QueryRoutes</code> from the oracle's LND at four liquidity tiers: <strong>1 000</strong>, <strong>10 000</strong>, <strong>100 000</strong>, <strong>1 000 000</strong> sats. A probe is <em>reachable</em> when LND returns at least one route; <em>unreachable</em> otherwise. Each probe persists hops, latency, amount, reachable flag, and timestamp. The live rolling 24 h count is exposed as <code>probes24h</code> at <a href="/api/stats">/api/stats</a> (typically in the order of 1 M probes/day).
         </p>
 
         <h3>2.4 Reports</h3>
@@ -167,7 +167,7 @@
 
         <h3>2.6 Database schema</h3>
         <p>
-          Schema version <strong>41</strong>. Twelve data tables: <code>agents</code>, <code>transactions</code>, <code>attestations</code>, <code>score_snapshots</code>, <code>probe_results</code>, <code>channel_snapshots</code>, <code>fee_snapshots</code>, <code>token_balance</code>, <code>service_endpoints</code>, <code>service_probes</code>, <code>token_query_log</code>, <code>report_bonus_ledger</code>, plus streaming posteriors tables (<code>endpoint_streaming_posteriors</code>, <code>node_streaming_posteriors</code>) and <code>endpoint_daily_buckets</code> for recent-activity counts. Engine: PostgreSQL 16 (migrated from SQLite in Phase 12B).
+          Schema version <strong>56</strong>. Consolidated baseline at v41 (PostgreSQL 16, migrated from SQLite in Phase 12B) plus v42 → v56 incremental migrations. Around 30 tables across four families: <em>core</em> (<code>agents</code>, <code>transactions</code>, <code>attestations</code>, <code>score_snapshots</code>, <code>probe_results</code>, <code>channel_snapshots</code>, <code>fee_snapshots</code>) ; <em>L402 economy</em> (<code>service_endpoints</code>, <code>service_probes</code>, <code>token_balance</code>, <code>token_query_log</code>, <code>deposit_tiers</code>, <code>preimage_pool</code>, <code>report_bonus_log</code>, <code>oracle_revenue_log</code>) ; <em>posteriors</em> (<code>endpoint_streaming_posteriors</code>, <code>node_streaming_posteriors</code>, <code>endpoint_stage_posteriors</code>, <code>endpoint_stage_outcomes_log</code>, <code>oracle_calibration_runs</code>, <code>endpoint_daily_buckets</code>, <code>node_daily_buckets</code>) ; <em>federation + crowd</em> (<code>trust_assertions_published</code>, <code>oracle_announcements_published</code>, <code>oracle_peers</code>, <code>peer_calibration_observations</code>, <code>crowd_outcome_reports</code>, <code>nostr_identity_first_seen</code>, <code>nostr_published_events</code>) ; <em>operators</em> (<code>operators</code>, <code>operator_identities</code>, <code>operator_owns_node</code>, <code>operator_owns_endpoint</code>, <code>operator_owns_service</code>). Live state at <code>/api/health</code>.
         </p>
       </section>
 
@@ -428,7 +428,7 @@ else:
 
 // Verified-tx bonus
 bonus = 1 + min(VERIFIED_TX_BONUS_CAP, verifiedForBonus) · 0.003
-      ∈ [1.0, 1.10]
+      ∈ [1.0, 1.045]   (VERIFIED_TX_BONUS_CAP = 15)
 
 total = round(max(0, totalFloat · probeMult · bonus))</code></pre>
         <p>
@@ -572,17 +572,24 @@ Content-Type: application/json
             <tr><td><code>/api/agents/top</code></td><td>GET</td><td>public</td><td>Ranked list sorted by <code>p_success</code>.</td></tr>
             <tr><td><code>/api/agents/movers</code></td><td>GET</td><td>public</td><td>Largest 7-day deltas.</td></tr>
             <tr><td><code>/api/agents/search</code></td><td>GET</td><td>public</td><td>Substring match on alias and pubkey.</td></tr>
-            <tr><td><code>/api/agent/:hash</code></td><td>GET</td><td>L402</td><td>Full record with scoring components.</td></tr>
-            <tr><td><code>/api/agent/:hash/verdict</code></td><td>GET</td><td>L402</td><td>Verdict, posterior, advisory, personal trust.</td></tr>
-            <tr><td><code>/api/agent/:hash/history</code></td><td>GET</td><td>L402</td><td>Score snapshots timeline.</td></tr>
-            <tr><td><code>/api/agent/:hash/attestations</code></td><td>GET</td><td>L402</td><td>Attestations received.</td></tr>
-            <tr><td><code>/api/verdicts</code></td><td>POST</td><td>L402</td><td>Batch verdict lookup.</td></tr>
+            <tr><td><code>/api/agent/:hash</code></td><td>GET</td><td>public · 10/min</td><td>Full record with scoring components.</td></tr>
+            <tr><td><code>/api/agent/:hash/verdict</code></td><td>GET</td><td>public · 10/min</td><td>Verdict, posterior, advisory, personal trust.</td></tr>
+            <tr><td><code>/api/agent/:hash/history</code></td><td>GET</td><td>public · 10/min</td><td>Score snapshots timeline.</td></tr>
+            <tr><td><code>/api/agent/:hash/attestations</code></td><td>GET</td><td>public · 10/min</td><td>Attestations received.</td></tr>
+            <tr><td><code>/api/profile/:id</code></td><td>GET</td><td>L402 · 1 sat</td><td>Full profile: 5-component decomposition, reports, survival, evidence.</td></tr>
+            <tr><td><code>/api/verdicts</code></td><td>POST</td><td>L402 · 1 sat</td><td>Batch verdict lookup, up to 100 hashes per call.</td></tr>
+            <tr><td><code>/api/probe</code></td><td>POST</td><td>L402 · 5 sats</td><td>End-to-end L402 probe via SatRank's own LND, with full per-stage telemetry.</td></tr>
+            <tr><td><code>/api/intent?fresh=true</code></td><td>POST</td><td>L402 · 2 sats</td><td>Same shape as /api/intent. Server runs a synchronous HTTP probe so <code>last_probe_age_sec &lt; 60 s</code>.</td></tr>
             <tr><td><code>/api/attestations</code></td><td>POST</td><td>API key</td><td>Write a signed attestation.</td></tr>
             <tr><td><code>/api/report</code></td><td>POST</td><td>L402 or API key</td><td>Report an outcome; preimage-scoped via <code>token_query_log</code>.</td></tr>
             <tr><td><code>/api/deposit</code></td><td>POST</td><td>public</td><td>Buy an L402 token balance (21 to 1 000 000 sats, tiered rate).</td></tr>
             <tr><td><code>/api/deposit/tiers</code></td><td>GET</td><td>public</td><td>List of valid deposit tiers.</td></tr>
             <tr><td><code>/api/ping/:pubkey</code></td><td>GET</td><td>public</td><td>Ad-hoc probe at 1 000 sats (rate-limited).</td></tr>
-            <tr><td><code>/api/services/register</code></td><td>POST</td><td>API key</td><td>Submit an L402 endpoint URL.</td></tr>
+            <tr><td><code>/api/services/register</code></td><td>POST</td><td>public · 10/min</td><td>Submit an L402 endpoint URL.</td></tr>
+            <tr><td><code>/api/oracle/budget</code></td><td>GET</td><td>public</td><td>Self-funding loop: lifetime + 30d + 7d revenue / spending / coverage_ratio.</td></tr>
+            <tr><td><code>/api/oracle/peers</code></td><td>GET</td><td>public</td><td>SatRank-compatible oracles discovered via kind 30784 announcements.</td></tr>
+            <tr><td><code>/api/oracle/peers/:pubkey/calibrations</code></td><td>GET</td><td>public</td><td>Calibration history (kind 30783) of a specific peer.</td></tr>
+            <tr><td><code>/api/oracle/assertion/:url_hash</code></td><td>GET</td><td>public</td><td>Trust assertion metadata (kind 30782) + BOLT12 TLV embedding hint.</td></tr>
             <tr><td><code>/api/services/best</code></td><td>GET</td><td>public</td><td>Top endpoints per category.</td></tr>
             <tr><td><code>/api/operators</code></td><td>GET</td><td>public</td><td>List of registered operators.</td></tr>
             <tr><td><code>/api/operator/:id</code></td><td>GET</td><td>public</td><td>Operator record with claimed resources.</td></tr>
@@ -783,7 +790,7 @@ Relays (DEFAULT_NOSTR_RELAYS, src/nostr/relays.ts):
 
         <h3>10.5 Reproducibility and audit</h3>
         <p>
-          Scoring version v18, frozen 2026-04-22 (commit <code>c02c264</code>, Phase 12C). Schema version v41. Legacy v2 endpoints retired. Audit surfaces exposed to agents:
+          Scoring version v18, frozen 2026-04-22 (commit <code>c02c264</code>, Phase 12C). Schema version v56 (consolidated baseline v41 + v42 → v56 incremental migrations). Legacy v2 endpoints retired. Audit surfaces exposed to agents:
         </p>
         <ul>
           <li>The <code>components</code> field in <code>GET /api/agent/:hash</code> (paid, 1 sat) exposes the five-component decomposition with dynamically renormalized weights.</li>
