@@ -26,7 +26,7 @@ const sk = hexToBytes(skHex);
 const profile = {
   name: 'SatRank',
   display_name: 'SatRank',
-  about: 'SatRank provides route reliability for Lightning payments. Agents declare an intent (endpoint, budget, constraints), get a Bayesian posterior with 95% credible interval, and pay 1 sat via native L402. Tiered deposits (21 to 1M sats) lock a per-request rate into the macaroon.\n\nNIP-85 kind 30382 provider: Lightning payment data meets Web of Trust. Dual publishing (Lightning-indexed + Nostr-indexed).\n\nBacked by a full bitcoind and LND node. Real probes, not gossip.',
+  about: 'Sovereign, federated trust oracle for the Lightning agentic economy.\n\nEvery L402 endpoint is decomposed into a 5-stage Beta posterior — challenge / invoice / payment / delivery / quality — composed via chain rule into p_e2e with 95% CI per stage. Agents read which step is likely to fail, not just an aggregate score.\n\nWeekly signed calibration history (kind 30783) is the moat — predicted vs observed delta on a rolling 7-day window. Per-endpoint kind 30782 transferable assertions (NIP-33). Kind 30784 oracle announcements for federation. Kind 7402 crowd outcomes from any agent (Sybil-resistant: PoW + identity age + preimage proof).\n\nThree agent-native protocols: HTTP REST, MCP server (Claude / ChatGPT / Cursor), NIP-90 DVM (kind 5900/6900). Run your own SatRank-compatible oracle and federate — see docs/OPERATOR_QUICKSTART.md.\n\nBacked by our own bitcoind full node + LND. Real probes, real preimages, not gossip.',
   website: 'https://satrank.dev',
   nip05: 'satrank@satrank.dev',
   lud16: 'wavykettle725@walletofsatoshi.com',

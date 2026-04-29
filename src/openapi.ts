@@ -553,6 +553,14 @@ export const openapiSpec = {
                   service_name: { type: ['string', 'null'] },
                   price_sats: { type: ['integer', 'null'] },
                   median_latency_ms: { type: ['integer', 'null'], description: 'SQL median over service_probes within 7 days (null if < 3 probes).' },
+                  http_method: {
+                    type: 'string',
+                    enum: ['GET', 'POST'],
+                    description: 'Phase 5.10A — HTTP method advertised by the upstream registry (402index.io). The SDK fulfill() defaults to this method when the agent does not explicitly override.',
+                  },
+                  stage_posteriors: {
+                    $ref: '#/components/schemas/StagePosteriorsBlock',
+                  },
                   bayesian: { $ref: '#/components/schemas/BayesianScoreBlock' },
                   advisory: { type: 'object', properties: {
                     advisory_level: { type: 'string', enum: ['green', 'yellow', 'orange', 'red', 'insufficient_freshness'] },
@@ -983,6 +991,154 @@ export const openapiSpec = {
         },
       },
     },
+    // Phase 6.4 + 6.3 + 7.1 — federation + transparency endpoints (free, public).
+    '/oracle/budget': {
+      get: {
+        summary: 'Self-funding loop snapshot',
+        operationId: 'getOracleBudget',
+        description: 'Phase 6.4 — public observability of the oracle\'s economic supportability. Returns lifetime + 30-day + 7-day snapshots of revenue (paid L402 calls) vs spending (paid probes), with `coverage_ratio = revenue / spending`. The intent is transparency : agents and auditors can verify the oracle is sustainably financed without trusting a self-claim. Free, rate-limited via discoveryRateLimit (10 req/min/IP).',
+        tags: ['Oracle'],
+        responses: {
+          '200': {
+            description: 'Multi-window budget snapshot',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'object',
+                      properties: {
+                        lifetime: { $ref: '#/components/schemas/BudgetSnapshot' },
+                        last_30d: { $ref: '#/components/schemas/BudgetSnapshot' },
+                        last_7d: { $ref: '#/components/schemas/BudgetSnapshot' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/oracle/peers': {
+      get: {
+        summary: 'List discovered SatRank-compatible oracles',
+        operationId: 'getOraclePeers',
+        description: 'Phase 7.1 — federation discovery. Subscribes permanently to kind 30784 announcements on Nostr relays and returns the local snapshot of all oracles seen. Each peer entry carries oracle_pubkey, lnd_pubkey, catalogue_size, latest calibration_event_id pointer, last_seen, age_sec. Trust filtering is client-side (sovereign) — the agent picks its own thresholds.',
+        tags: ['Oracle'],
+        parameters: [
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Peer list',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'object',
+                      properties: {
+                        peers: { type: 'array', items: { $ref: '#/components/schemas/OraclePeer' } },
+                        count: { type: 'integer' },
+                        limit: { type: 'integer' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/oracle/peers/{pubkey}/calibrations': {
+      get: {
+        summary: 'Calibration history of a specific peer',
+        operationId: 'getOraclePeerCalibrations',
+        description: 'Phase 9.1 — cross-oracle meta-confidence. Returns the kind 30783 calibration events ingested for a given peer, freshest first. Lets a client compare the peer\'s self-published delta_mean against historical observations from other oracles before trusting the peer for aggregation.',
+        tags: ['Oracle'],
+        parameters: [
+          {
+            name: 'pubkey',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            description: 'Peer oracle Schnorr pubkey (32 bytes hex)',
+          },
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Calibration history',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'object',
+                      properties: {
+                        peer_pubkey: { type: 'string' },
+                        calibrations: { type: 'array', items: { $ref: '#/components/schemas/PeerCalibration' } },
+                        count: { type: 'integer' },
+                        limit: { type: 'integer' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid pubkey format' },
+        },
+      },
+    },
+    '/oracle/assertion/{url_hash}': {
+      get: {
+        summary: 'Trust assertion metadata for an endpoint',
+        operationId: 'getOracleAssertion',
+        description: 'Phase 6.3 — returns the metadata of the latest kind 30782 trust assertion published by this oracle for a given endpoint, plus a BOLT12 TLV embedding hint. Lets operators retrieve the (event_id, oracle_pubkey, valid_until) needed to embed the trust signal directly in their BOLT12 offers — agents reading the offer get the trust signal without round-tripping to SatRank.',
+        tags: ['Oracle'],
+        parameters: [
+          {
+            name: 'url_hash',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            description: 'sha256 of the canonical endpoint URL (64 hex chars)',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Assertion metadata + BOLT12 TLV hint',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: { $ref: '#/components/schemas/TrustAssertionMetadata' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid url_hash format' },
+          '404': { description: 'No trust assertion published yet for this endpoint' },
+        },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -1013,6 +1169,115 @@ export const openapiSpec = {
       },
     },
     schemas: {
+      // Phase 6.4 — self-funding loop
+      BudgetSnapshot: {
+        type: 'object',
+        required: ['window_sec', 'revenue_sats', 'spending_sats', 'balance_sats', 'coverage_ratio', 'n_revenue_events', 'n_spending_events'],
+        properties: {
+          window_sec: { type: 'integer', nullable: true, description: 'Window in seconds. null = lifetime.' },
+          revenue_sats: { type: 'integer', description: 'Total sats logged on the revenue side (paid L402 calls).' },
+          spending_sats: { type: 'integer', description: 'Total sats logged on the spending side (paid probes).' },
+          balance_sats: { type: 'integer', description: 'revenue - spending. Negative = subsidized.' },
+          coverage_ratio: { type: 'number', nullable: true, description: 'revenue / spending. null when spending = 0.' },
+          n_revenue_events: { type: 'integer' },
+          n_spending_events: { type: 'integer' },
+        },
+      },
+      // Phase 7.1 — federation peer
+      OraclePeer: {
+        type: 'object',
+        required: ['oracle_pubkey', 'catalogue_size', 'last_seen', 'first_seen', 'age_sec', 'stale_sec'],
+        properties: {
+          oracle_pubkey: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          lnd_pubkey: { type: 'string', nullable: true, description: 'Sovereign LN identity if announced.' },
+          catalogue_size: { type: 'integer', description: 'Active trusted endpoints announced by the peer.' },
+          calibration_event_id: { type: 'string', nullable: true, description: 'Pointer to the latest kind 30783 calibration of this peer.' },
+          last_assertion_event_id: { type: 'string', nullable: true },
+          contact: { type: 'string', nullable: true },
+          onboarding_url: { type: 'string', nullable: true, description: 'https-only validated.' },
+          last_seen: { type: 'integer', description: 'Unix seconds of last announcement received.' },
+          first_seen: { type: 'integer', description: 'Unix seconds of first observation. Useful for Sybil-resistance.' },
+          age_sec: { type: 'integer' },
+          stale_sec: { type: 'integer', description: 'now - last_seen. Filter ≥ 7d for stale peers.' },
+          latest_announcement_event_id: { type: 'string', nullable: true },
+        },
+      },
+      // Phase 9.1 — cross-oracle calibration observation
+      PeerCalibration: {
+        type: 'object',
+        required: ['event_id', 'window_start', 'window_end', 'window_days', 'n_endpoints', 'n_outcomes', 'observed_at'],
+        properties: {
+          event_id: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          window_start: { type: 'integer' },
+          window_end: { type: 'integer' },
+          window_days: { type: 'integer' },
+          delta_mean: { type: 'number', nullable: true },
+          delta_median: { type: 'number', nullable: true },
+          delta_p95: { type: 'number', nullable: true },
+          n_endpoints: { type: 'integer' },
+          n_outcomes: { type: 'integer' },
+          observed_at: { type: 'integer' },
+        },
+      },
+      // Phase 6.3 — trust assertion metadata + BOLT12 TLV hint
+      TrustAssertionMetadata: {
+        type: 'object',
+        required: ['endpoint_url_hash', 'kind', 'event_id', 'oracle_pubkey', 'valid_until', 'expires_in_sec', 'expired', 'meaningful_stages_count', 'published_at', 'relays', 'bolt12_tlv_hint'],
+        properties: {
+          endpoint_url_hash: { type: 'string' },
+          kind: { type: 'integer', enum: [30782] },
+          event_id: { type: 'string', description: 'Nostr event id (32 bytes hex).' },
+          oracle_pubkey: { type: 'string' },
+          valid_until: { type: 'integer' },
+          expires_in_sec: { type: 'integer' },
+          expired: { type: 'boolean' },
+          p_e2e: { type: 'number', nullable: true },
+          meaningful_stages_count: { type: 'integer' },
+          calibration_proof_event_id: { type: 'string', nullable: true, description: 'Pointer to the kind 30783 calibration that backs this assertion.' },
+          published_at: { type: 'integer' },
+          relays: { type: 'array', items: { type: 'string' } },
+          bolt12_tlv_hint: {
+            type: 'object',
+            properties: {
+              type_event_id: { type: 'integer', enum: [65537] },
+              type_oracle_pubkey: { type: 'integer', enum: [65538] },
+              event_id_hex: { type: 'string' },
+              oracle_pubkey_hex: { type: 'string' },
+            },
+          },
+        },
+      },
+      // Phase 5.14 — 5-stage L402 contract decomposition
+      StagePosteriorEntry: {
+        type: 'object',
+        required: ['stage', 'alpha', 'beta', 'p_success', 'ci95_low', 'ci95_high', 'n_obs', 'is_meaningful'],
+        properties: {
+          stage: { type: 'string', enum: ['challenge', 'invoice', 'payment', 'delivery', 'quality'] },
+          alpha: { type: 'number' },
+          beta: { type: 'number' },
+          p_success: { type: 'number', minimum: 0, maximum: 1 },
+          ci95_low: { type: 'number', minimum: 0, maximum: 1 },
+          ci95_high: { type: 'number', minimum: 0, maximum: 1 },
+          n_obs: { type: 'number' },
+          is_meaningful: { type: 'boolean', description: 'true when n_obs effective ≥ 3 (the stage contributed to p_e2e).' },
+        },
+      },
+      StagePosteriorsBlock: {
+        type: 'object',
+        required: ['stages', 'meaningful_stages', 'measured_stages'],
+        properties: {
+          stages: {
+            type: 'object',
+            additionalProperties: { $ref: '#/components/schemas/StagePosteriorEntry' },
+            description: 'Map keyed by stage name (challenge / invoice / payment / delivery / quality). Stages absent from the map are not yet measured for this endpoint.',
+          },
+          p_e2e: { type: 'number', nullable: true, description: 'Chain-rule product of meaningful stages\' p_success. null when no stage is meaningful.' },
+          p_e2e_pessimistic: { type: 'number', nullable: true, description: 'Product of CI95_low. Pessimistic bound (not a strict CI95 of the product).' },
+          p_e2e_optimistic: { type: 'number', nullable: true, description: 'Product of CI95_high. Optimistic bound.' },
+          meaningful_stages: { type: 'array', items: { type: 'string' } },
+          measured_stages: { type: 'integer', minimum: 0, maximum: 5 },
+        },
+      },
       BayesianSourceBlock: {
         oneOf: [
           { type: 'null' },

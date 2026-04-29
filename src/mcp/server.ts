@@ -48,6 +48,52 @@ import { logger } from '../logger';
 
 import { sha256 } from '../utils/crypto';
 
+// Phase 6.0 — base URL de l'API SatRank vers laquelle le MCP `intent` tool
+// proxie. Security C1+H1 — validation centrale dans config.ts (https-only
+// sauf localhost) empêche SSRF via file:// / http://internal.
+const SATRANK_API_BASE = config.SATRANK_API_BASE;
+// Security C3 — cap réponses HTTP à 1 MB pour empêcher memory exhaustion
+// si l'instance pointée par SATRANK_API_BASE retourne un body géant.
+const MAX_INTENT_RESPONSE_BYTES = 1024 * 1024;
+const INTENT_FETCH_TIMEOUT_MS = 8000;
+
+/** Security C3 + L2 — fetch avec hard cap byte size + timeout. Stream le
+ *  body et abort dès qu'on dépasse maxBytes. */
+async function fetchWithCap(
+  url: string,
+  init: RequestInit,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ status: number; ok: boolean; body: string; truncated: boolean }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal });
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      return { status: resp.status, ok: resp.ok, body: '', truncated: false };
+    }
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let truncated = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) {
+        truncated = true;
+        try { await reader.cancel(); } catch { /* swallow */ }
+        break;
+      }
+      chunks.push(value);
+    }
+    const body = Buffer.concat(chunks).toString('utf-8');
+    return { status: resp.status, ok: resp.ok, body, truncated };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Zod validation schemas for MCP args (same rules as HTTP controllers)
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)');
 // Accepts both 64-char SHA256 hash and 66-char Lightning compressed pubkey
@@ -76,6 +122,37 @@ const searchAgentsArgs = z.object({
 });
 const getTopMoversArgs = z.object({
   limit: z.number().int().min(1).max(20).default(5),
+});
+
+// Phase 6.0 — `intent` tool args. Mirror du body /api/intent côté HTTP.
+// Le MCP proxie vers l'API SatRank ; agent reçoit la réponse JSON brute.
+const intentArgs = z.object({
+  category: z.string().min(1).max(64).describe('Service category (e.g. "data/finance", "ai/text")'),
+  keywords: z.array(z.string()).optional().describe('Filter keywords (AND match on metadata)'),
+  budget_sats: z.number().int().min(1).max(10000).optional().describe('Hard budget per request'),
+  max_latency_ms: z.number().int().min(1).max(60000).optional().describe('Latency ceiling for matching'),
+  fresh: z.boolean().optional().describe('Force a sync HTTP probe (costs 2 sats — only when wallet attached)'),
+  caller: z.string().optional().describe('Agent identifier (snake_case)'),
+  optimize: z.enum(['p_success', 'latency', 'reliability', 'cost']).optional().describe('Ranking axis'),
+  limit: z.number().int().min(1).max(20).optional().describe('Number of candidates returned'),
+});
+
+// Phase 6.0 — `verify_assertion` tool args. Vérification offline d'une
+// kind 30782 / 30783 trust assertion publiée par un oracle SatRank-compatible.
+// Schéma : agent reçoit l'event Nostr brut, extrait kind / pubkey / sig,
+// vérifie Schnorr + window valid_until + format. Aucun appel réseau.
+const verifyAssertionArgs = z.object({
+  event: z.object({
+    id: z.string().regex(/^[a-f0-9]{64}$/, 'Nostr event id is 32-byte hex'),
+    pubkey: z.string().regex(/^[a-f0-9]{64}$/, 'Schnorr pubkey is 32-byte hex'),
+    created_at: z.number().int(),
+    kind: z.number().int(),
+    tags: z.array(z.array(z.string())),
+    content: z.string(),
+    sig: z.string().regex(/^[a-f0-9]{128}$/, 'Schnorr signature is 64-byte hex'),
+  }).describe('Raw Nostr event (kind 30782 trust assertion or 30783 calibration)'),
+  expected_oracle_pubkey: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('Optional : reject the assertion if pubkey does not match this expected oracle identity'),
+  now_sec: z.number().int().optional().describe('Optional : current epoch seconds for valid_until check (default = Date.now / 1000)'),
 });
 const getBatchVerdictsArgs = z.object({
   hashes: z.array(identifierSchema).min(1).max(100),
@@ -350,6 +427,50 @@ async function main() {
           required: ['pubkey'],
         },
       },
+      {
+        name: 'intent',
+        description: 'Phase 6.0 — Resolve an intent (category + keywords + budget + latency ceiling) into a ranked list of L402 endpoint candidates. Each candidate carries the Bayesian trust posterior, the 5-stage breakdown (challenge / invoice / payment / delivery / quality) when available, http_method, and a freshness advisory. The first agent-native primitive : ask for what you want, get a ranked shortlist, choose one, pay it directly. SatRank never custodies sats.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            category: { type: 'string', minLength: 1, maxLength: 64, description: 'Service category (e.g. "data/finance", "ai/text")' },
+            keywords: { type: 'array', items: { type: 'string' }, description: 'Filter keywords (AND match on metadata)' },
+            budget_sats: { type: 'number', minimum: 1, maximum: 10000, description: 'Hard budget per request' },
+            max_latency_ms: { type: 'number', minimum: 1, maximum: 60000, description: 'Latency ceiling for matching' },
+            fresh: { type: 'boolean', description: 'Force a sync HTTP probe (costs 2 sats — only when paying via /api/intent?fresh=true with a wallet)' },
+            caller: { type: 'string', description: 'Agent identifier (pubkey hash or snake_case alias)' },
+            optimize: { type: 'string', enum: ['p_success', 'latency', 'reliability', 'cost'], description: 'Ranking axis (default: p_success)' },
+            limit: { type: 'number', minimum: 1, maximum: 20, description: 'Number of candidates returned (default: 5)' },
+          },
+          required: ['category'],
+        },
+      },
+      {
+        name: 'verify_assertion',
+        description: 'Phase 6.0 — Verify offline a SatRank-compatible trust assertion (kind 30782 transferable assertion, or kind 30783 oracle calibration). Validates Schnorr signature, optionally enforces an expected oracle pubkey, and reads the valid_until tag. No network call ; the entire check is cryptographic + structural. Use this to compose oracle output across agents without re-querying SatRank.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            event: {
+              type: 'object',
+              description: 'Raw Nostr event (kind 30782 / 30783)',
+              properties: {
+                id: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+                pubkey: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+                created_at: { type: 'number' },
+                kind: { type: 'number' },
+                tags: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+                content: { type: 'string' },
+                sig: { type: 'string', pattern: '^[a-f0-9]{128}$' },
+              },
+              required: ['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'],
+            },
+            expected_oracle_pubkey: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Optional : reject the assertion if pubkey does not match this expected oracle identity' },
+            now_sec: { type: 'number', description: 'Optional : current epoch seconds for valid_until check' },
+          },
+          required: ['event'],
+        },
+      },
     ],
   }));
 
@@ -570,6 +691,64 @@ async function main() {
           } catch {
             return { content: [{ type: 'text', text: JSON.stringify({ pubkey: parsed.data.pubkey, reachable: false, error: 'no_route', latencyMs: Date.now() - startMs }, null, 2) }] };
           }
+        }
+
+        case 'intent': {
+          // Phase 6.0 — proxie vers POST /api/intent. Le MCP expose les
+          // candidates avec le bloc stage_posteriors (Phase 5.14) + http_method
+          // (Phase 5.10A) — l'agent voit tout ce qu'il faut pour choisir +
+          // appeler directement l'endpoint. SatRank ne touche pas l'argent.
+          const parsed = intentArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL('/api/intent', SATRANK_API_BASE);
+          if (parsed.data.fresh) url.searchParams.set('fresh', 'true');
+          if (parsed.data.optimize) url.searchParams.set('optimize', parsed.data.optimize);
+          if (parsed.data.limit) url.searchParams.set('limit', String(parsed.data.limit));
+          try {
+            // Security C3 — fetchWithCap : timeout 8s + body cap 1MB.
+            const resp = await fetchWithCap(
+              url.toString(),
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'User-Agent': 'SatRank-MCP/1.0' },
+                body: JSON.stringify({
+                  category: parsed.data.category,
+                  keywords: parsed.data.keywords,
+                  budget_sats: parsed.data.budget_sats,
+                  max_latency_ms: parsed.data.max_latency_ms,
+                  caller: parsed.data.caller,
+                }),
+              },
+              MAX_INTENT_RESPONSE_BYTES,
+              INTENT_FETCH_TIMEOUT_MS,
+            );
+            if (!resp.ok) {
+              return { content: [{ type: 'text', text: JSON.stringify({ error: 'intent_failed', status: resp.status, body: resp.body, truncated: resp.truncated }, null, 2) }], isError: true };
+            }
+            if (resp.truncated) {
+              return { content: [{ type: 'text', text: JSON.stringify({ error: 'response_too_large', max_bytes: MAX_INTENT_RESPONSE_BYTES }, null, 2) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: resp.body }] };
+          } catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: 'network_error', detail: err instanceof Error ? err.message : String(err) }, null, 2) }], isError: true };
+          }
+        }
+
+        case 'verify_assertion': {
+          // Phase 6.0 — verify offline une trust assertion (kind 30782) ou
+          // calibration event (kind 30783). Pure function in assertionVerifier.
+          const parsed = verifyAssertionArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const { verifyAssertion } = await import('../utils/assertionVerifier');
+          const result = verifyAssertion(parsed.data.event, {
+            expected_oracle_pubkey: parsed.data.expected_oracle_pubkey,
+            now_sec: parsed.data.now_sec,
+          });
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         default:

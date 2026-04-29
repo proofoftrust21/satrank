@@ -18,6 +18,8 @@ import type { DualWriteMode, TransactionRepository } from '../repositories/trans
 import type { DualWriteEnrichment, DualWriteLogger } from '../utils/dualWriteLogger';
 import type { Transaction } from '../types';
 import type { BayesianScoringService } from '../services/bayesianScoringService';
+import type { InvoiceValidityService } from '../services/invoiceValidityService';
+import { parseL402Challenge } from '../utils/l402HeaderParser';
 
 const CHECK_RATE_MS = 200; // 5 checks/sec
 const FETCH_TIMEOUT_MS = 3000;
@@ -48,6 +50,10 @@ export class ServiceHealthCrawler {
      *  prior. Optional so test harnesses that don't care about scoring can
      *  still construct the crawler with the legacy 5-arg form. */
     private bayesianService?: BayesianScoringService,
+    /** Phase 5.11 — when wired, every 402 response triggers a local BOLT11
+     *  decode + validation; the outcome feeds endpoint_stage_posteriors
+     *  stage=2 (invoice). Coût zéro sat. Optional pour back-compat tests. */
+    private invoiceValidityService?: InvoiceValidityService,
   ) {}
 
   /** Production entrypoint — probe a single tier. */
@@ -71,6 +77,7 @@ export class ServiceHealthCrawler {
       let status = 0;
       let latencyMs = 0;
       let healthy = false;
+      let wwwAuthenticate: string | null = null;
 
       try {
         // SSRF guard via fetchSafeExternal — single connect-time DNS lookup
@@ -85,6 +92,11 @@ export class ServiceHealthCrawler {
         latencyMs = Date.now() - start;
         status = resp.status;
         healthy = resp.status === 402 || (resp.status >= 200 && resp.status < 300);
+        // Phase 5.11 — capture WWW-Authenticate pour stage 2. Le body n'est
+        // jamais consommé (SatRank n'est pas un proxy de contenu).
+        if (status === 402) {
+          wwwAuthenticate = resp.headers.get('www-authenticate');
+        }
       } catch (err: unknown) {
         if (err instanceof SsrfBlockedError) {
           logger.debug({ url: endpoint.url, reason: err.message }, 'Health crawler skipped URL (SSRF)');
@@ -103,6 +115,11 @@ export class ServiceHealthCrawler {
       // Bayesian block discriminates per URL, not per operator. Skipped when
       // bayesianService isn't wired (test harnesses that don't care about scoring).
       await this.ingestProbeStreaming(endpoint, healthy);
+      // Phase 5.11 — Stage 2 invoice validity. Quand le probe a retourné 402
+      // ET un challenge L402 parseable, on décode + valide la BOLT11 et
+      // alimente endpoint_stage_posteriors stage=2. Coût : 0 sat (decode
+      // local). Skipped si l'invoiceValidityService n'est pas wiré (tests).
+      await this.observeInvoiceValidity(endpoint, status, wwwAuthenticate);
 
       result.checked++;
       if (result.checked < stale.length) {
@@ -112,6 +129,40 @@ export class ServiceHealthCrawler {
 
     logger.info({ ...result }, 'Service health crawl complete');
     return result;
+  }
+
+  /** Phase 5.11 — Stage 2 invoice validity. Décodage + validation locale
+   *  d'une BOLT11 extraite du challenge L402, écrit le résultat dans
+   *  endpoint_stage_posteriors stage=2. Pas d'I/O réseau (le decode est
+   *  local), donc on ne ralentit pas le tier rate-limit du health crawler.
+   *
+   *  No-op quand :
+   *  - invoiceValidityService non wiré (tests sans le service)
+   *  - status != 402 (pas de challenge à valider)
+   *  - WWW-Authenticate absent ou non parseable comme L402
+   *  La méthode n'avale jamais une exception : si le service échoue, on
+   *  log et on continue le probe loop. */
+  private async observeInvoiceValidity(
+    endpoint: ServiceEndpoint,
+    status: number,
+    wwwAuthenticate: string | null,
+  ): Promise<void> {
+    if (!this.invoiceValidityService) return;
+    if (status !== 402) return;
+    const challenge = parseL402Challenge(wwwAuthenticate);
+    if (!challenge) return;
+    try {
+      await this.invoiceValidityService.observe({
+        endpoint_url: endpoint.url,
+        invoice: challenge.invoice,
+        advertisedPriceSats: endpoint.service_price_sats,
+      });
+    } catch (err) {
+      logger.warn(
+        { url: endpoint.url, error: err instanceof Error ? err.message : String(err) },
+        'Stage 2 invoice validity observation failed (non-fatal)',
+      );
+    }
   }
 
   /** Phase 5 — endpoint-keyed streaming posterior write. probeCrawler.ts

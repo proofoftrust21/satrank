@@ -44,3 +44,17 @@ export {
   NetworkError,
   WalletError,
 } from './errors';
+
+// Phase 7.2 — federation aggregation primitives.
+export {
+  fetchOraclePeers,
+  filterByCalibrationError,
+  aggregateOracles,
+} from './aggregate';
+export type {
+  OraclePeer,
+  FetchOraclePeersOptions,
+  FetchOraclePeersResult,
+  FilterPeersOptions,
+  AggregateOraclesOptions,
+} from './aggregate';

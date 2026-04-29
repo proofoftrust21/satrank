@@ -55,7 +55,15 @@ const NETWORK_STATS_CACHE_KEY = 'stats:network';
 const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 
 // Must match the latest migration version in migrations.ts (or in src/database/migrations/)
-const EXPECTED_SCHEMA_VERSION = 47;
+// Phase 5.10A : v48 (http_method). Phase 5.14 : v49 (endpoint_stage_posteriors).
+// Phase 5.15 : v50 (outcomes log + calibration runs).
+// Phase 6.4 : v51 (oracle_revenue_log).
+// Phase 6.2 : v52 (trust_assertions_published).
+// Phase 7.0/7.1 : v53 (oracle_announcements_published + oracle_peers).
+// Phase 8.1 : v54 (crowd_outcome_reports + nostr_identity_first_seen).
+// Phase 9.0/9.1 : v55 (consolidated_at + peer_calibration_observations).
+// Security audit : v56 (anti-double-revenue payment_hash UNIQUE).
+const EXPECTED_SCHEMA_VERSION = 56;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that

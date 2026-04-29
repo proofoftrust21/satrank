@@ -65,6 +65,30 @@ export interface HealthBlock {
   last_probe_age_sec: number | null;
 }
 
+/** Phase 5.14 — Beta posterior par stage du contrat L402. Cinq stages :
+ *  challenge / invoice / payment / delivery / quality. */
+export interface StagePosteriorEntry {
+  stage: 'challenge' | 'invoice' | 'payment' | 'delivery' | 'quality';
+  alpha: number;
+  beta: number;
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  n_obs: number;
+  is_meaningful: boolean;
+}
+
+export interface StagePosteriorsBlock {
+  stages: Record<string, StagePosteriorEntry>;
+  /** Produit des p_success des stages avec n_obs >= IS_MEANINGFUL_MIN_N_OBS.
+   *  null = aucun stage meaningful, l'agent retombe sur bayesian.p_success. */
+  p_e2e: number | null;
+  p_e2e_pessimistic: number | null;
+  p_e2e_optimistic: number | null;
+  meaningful_stages: string[];
+  measured_stages: number;
+}
+
 /** Candidate endpoint as returned by /api/intent. snake_case preserved so
  *  the JSON round-trips cleanly. */
 export interface IntentCandidate {
@@ -75,6 +99,18 @@ export interface IntentCandidate {
   service_name: string | null;
   price_sats: number | null;
   median_latency_ms: number | null;
+  /** Phase 5.10A — méthode HTTP attendue par l'endpoint, persistée depuis
+   *  402index. fulfill() l'utilise par défaut quand opts.request.method
+   *  n'est pas fourni explicitement, ce qui évite le 405-puis-fallback sur
+   *  les endpoints POST-only. Optional côté SDK pour compat avec un oracle
+   *  pré-v48 qui ne le retournerait pas. */
+  http_method?: 'GET' | 'POST';
+  /** Phase 5.14 — décomposition 5-stage du contrat L402 (challenge / invoice
+   *  / payment / delivery / quality). Émis quand l'oracle a au moins un
+   *  stage en DB pour cet endpoint. Optional côté SDK pour compat avec un
+   *  oracle pré-v49. Agents fine-grained lisent stages.delivery.p_success ;
+   *  agents simples utilisent p_e2e ou retombent sur bayesian.p_success. */
+  stage_posteriors?: StagePosteriorsBlock;
   bayesian: BayesianBlock;
   advisory: AdvisoryBlock;
   health: HealthBlock;

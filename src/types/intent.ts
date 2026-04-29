@@ -81,6 +81,42 @@ export interface IntentAdvisoryBlock {
   freshness_status: FreshnessStatus;
 }
 
+/** Phase 5.14 — un Beta posterior par stage du contrat L402. Stages :
+ *  'challenge' / 'invoice' / 'payment' / 'delivery' / 'quality'. */
+export interface StagePosteriorEntry {
+  /** Nom court du stage. */
+  stage: 'challenge' | 'invoice' | 'payment' | 'delivery' | 'quality';
+  alpha: number;
+  beta: number;
+  p_success: number;
+  ci95_low: number;
+  ci95_high: number;
+  /** Nombre d'observations effectives (n_obs après décroissance vers le prior). */
+  n_obs: number;
+  /** True quand n_obs >= IS_MEANINGFUL_MIN_N_OBS (3). Stages non meaningful
+   *  sont exclus du produit p_e2e — le caller voit le bloc pour transparence
+   *  mais sait que la valeur est dominée par le prior. */
+  is_meaningful: boolean;
+}
+
+export interface StagePosteriorsBlock {
+  /** Mapping nom-de-stage → entry. Stages absents = pas encore mesurés en DB
+   *  pour cet endpoint (distinct de "mesuré avec n_obs faible"). */
+  stages: Record<string, StagePosteriorEntry>;
+  /** Produit des p_success des stages meaningful. null si zero stage
+   *  meaningful (= rien à composer, l'agent retombe sur `bayesian.p_success`). */
+  p_e2e: number | null;
+  /** Borne pessimist : produit des CI95_low. Pas un IC95 strict du produit
+   *  (qui n'est pas analytique pour des Beta indépendants). */
+  p_e2e_pessimistic: number | null;
+  /** Borne optimist : produit des CI95_high. */
+  p_e2e_optimistic: number | null;
+  /** Liste des noms de stages inclus dans le produit p_e2e. */
+  meaningful_stages: string[];
+  /** Nombre total de stages présents en DB (1 à 5). */
+  measured_stages: number;
+}
+
 export interface IntentCandidate {
   rank: number;
   endpoint_url: string;
@@ -98,6 +134,23 @@ export interface IntentCandidate {
    *  Phase 5 — falls back to `service_endpoints.last_latency_ms` (single
    *  most-recent observation) when service_probes has no data. */
   median_latency_ms: number | null;
+  /** Phase 5.10A — méthode HTTP à utiliser pour appeler l'endpoint, persistée
+   *  depuis 402index sur ~95% des entrées. Le SDK fulfill() l'utilise par
+   *  défaut quand l'agent n'override pas opts.request.method, ce qui élimine
+   *  le 405-puis-fallback sur les endpoints POST-only. Toujours présent
+   *  (default 'GET' au schema). */
+  http_method: 'GET' | 'POST';
+  /** Phase 5.14 — décomposition du contrat L402 en 5 stages (challenge,
+   *  invoice, payment, delivery, quality). Chaque stage maintient son propre
+   *  Beta posterior, le composé end-to-end est `p_e2e = ∏ p_i` pour les
+   *  stages avec n_obs effectif >= 3.
+   *
+   *  Bloc émis seulement quand ≥1 stage a une row en DB pour cet endpoint.
+   *  Les agents sans intérêt pour la décomposition continuent d'utiliser
+   *  `bayesian.p_success` (legacy, équivalent au stage 1 challenge). Les
+   *  agents fine-grained (ex. workflow critique = exigence forte sur
+   *  delivery+quality) lisent `stages.delivery.p_success` directement. */
+  stage_posteriors?: StagePosteriorsBlock;
   /** Phase 5.8 — upstream signals from 402index, surfaced for the new
    *  `optimize=` parameter. The strategic review verified these signals
    *  carry real per-endpoint variance (reliability_score has 24 distinct

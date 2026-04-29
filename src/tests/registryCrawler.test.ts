@@ -154,6 +154,8 @@ describe('RegistryCrawler', async () => {
     const entry = await repo.findByUrl(url);
     expect(entry).toBeDefined();
     expect(entry!.last_http_status).toBe(402);
+    // Phase 5.10A — http_method persisted from 402index entry
+    expect(entry!.http_method).toBe('POST');
   });
 
   it('POST fallback: GET returns 405, POST is retried and ingested', async () => {
@@ -188,6 +190,11 @@ describe('RegistryCrawler', async () => {
     const entry = await repo.findByUrl(url);
     expect(entry).toBeDefined();
     expect(entry!.last_http_status).toBe(402);
+    // Phase 5.10A — when 402index doesn't advertise http_method, the schema
+    // default 'GET' is preserved (no setHttpMethod call). Caller relies on
+    // the 405-fallback at probe time, but the persisted value reflects
+    // upstream truth: 402index said nothing, so we say nothing → 'GET' default.
+    expect(entry!.http_method).toBe('GET');
   });
 
   it('host cap: 4 new URLs on the same host with cap=2 → 2 ingested, 2 capped', async () => {
@@ -552,5 +559,55 @@ describe('RegistryCrawler', async () => {
     for (const s of newUrls) {
       expect(await repo.findByUrl(s.url)).toBeUndefined();
     }
+  });
+
+  it('Phase 5.10A — setHttpMethod updates the column and findByUrl returns the new value', async () => {
+    const url = 'https://method-flip.example.com/api';
+    const pubkey = '02' + 'd'.repeat(64);
+    await repo.upsert(sha256(pubkey), url, 402, 50, '402index');
+    // Default at insert time: schema default 'GET'.
+    let entry = await repo.findByUrl(url);
+    expect(entry!.http_method).toBe('GET');
+    // Flip to POST → persisted.
+    await repo.setHttpMethod(url, 'POST');
+    entry = await repo.findByUrl(url);
+    expect(entry!.http_method).toBe('POST');
+    // Idempotent: writing same value again is a no-op.
+    await repo.setHttpMethod(url, 'POST');
+    entry = await repo.findByUrl(url);
+    expect(entry!.http_method).toBe('POST');
+    // Flip back to GET.
+    await repo.setHttpMethod(url, 'GET');
+    entry = await repo.findByUrl(url);
+    expect(entry!.http_method).toBe('GET');
+  });
+
+  it('Phase 5.10A — refresh path: existing row gets http_method updated when 402index changes it', async () => {
+    const url = 'https://method-changed.example.com/api/run';
+    const pubkey = '02' + 'e'.repeat(64);
+    // Step 1 — pre-seed as GET-only (e.g. row created by an older crawler pass).
+    await repo.upsert(sha256(pubkey), url, 402, 80, '402index');
+    expect((await repo.findByUrl(url))!.http_method).toBe('GET');
+
+    // Step 2 — 402index now advertises this URL as POST. The crawler refresh
+    // path should propagate the change to service_endpoints.
+    global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+      if (urlStr.includes('402index.io/api/v1/services')) {
+        const body = JSON.stringify({
+          services: [{ url, protocol: 'L402', name: 'method-changed', description: null, category: null, provider: null, http_method: 'POST' }],
+        });
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      // The refresh path may re-probe to backfill a missing price; respond 402.
+      const headers = new Headers();
+      headers.set('www-authenticate', `L402 macaroon="fake", invoice="lnbc20n1pfakemethodchanged"`);
+      return new Response('', { status: 402, headers });
+    }) as typeof fetch;
+    const decodeBolt11 = async () => ({ destination: pubkey, num_satoshis: '20' });
+    const crawler = new RegistryCrawler(repo, decodeBolt11);
+    await crawler.run();
+
+    expect((await repo.findByUrl(url))!.http_method).toBe('POST');
   });
 });

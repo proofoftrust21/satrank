@@ -55,6 +55,12 @@ export interface L402NativeOptions {
   /** Secret operator (X-Operator-Token). Match timing-safe => passe-plat du
    *  gate L402. Undefined => branche desactivee. */
   operatorSecret?: string;
+  /** Phase 6.4 — callback optional firing après l'acceptation du first-use
+   *  paiement L402. Reçoit (route, priceSats, paymentHash). Permet de
+   *  logger le revenue dans oracle_revenue_log sans coupler le middleware
+   *  au service qui suit. Erreurs swallowed (logger uniquement) — la
+   *  comptabilité ne doit pas bloquer la requête. */
+  onPaidCallSettled?: (route: string, priceSats: number, paymentHash: string) => Promise<void>;
 }
 
 interface L402ErrorBody {
@@ -214,6 +220,22 @@ export function createL402Native(opts: L402NativeOptions) {
 
       // Token valide + paiement confirme : balanceAuth auto-creera le row.
       logger.info({ paymentHash: payload.ph.slice(0, 16), route: payload.rt, priceSats: payload.ps }, 'L402 native first-use accepted');
+      // Phase 6.4 — log revenue. Fire-and-forget : la requête ne doit pas
+      // bloquer sur la compta. Erreurs swallowed avec un warn pour audit.
+      // Security H2 — Promise.race timeout 3s pour empêcher l'épuisement
+      // du Postgres pool si logRevenue hang (DB partition / cold cache).
+      if (opts.onPaidCallSettled) {
+        const callbackPromise = opts.onPaidCallSettled(payload.rt, payload.ps, payload.ph);
+        const timeout = new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('onPaidCallSettled timeout (3s)')), 3000),
+        );
+        Promise.race([callbackPromise, timeout]).catch((err) => {
+          logger.warn(
+            { error: err instanceof Error ? err.message : String(err), paymentHash: payload.ph.slice(0, 16) },
+            'L402 onPaidCallSettled callback failed (non-fatal)',
+          );
+        });
+      }
       next();
     } catch (err) {
       next(err);

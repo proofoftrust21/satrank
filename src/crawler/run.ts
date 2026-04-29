@@ -725,6 +725,303 @@ async function main(): Promise<void> {
           },
           'Nostr multi-kind scheduler started',
         );
+
+        // Phase 5.15 — calibration moat. Cron weekly qui calcule
+        // |p_predicted - p_observed| sur la fenêtre 7d et publie un
+        // kind 30783 signé. Réutilise le multiKindPublisher (déjà connecté
+        // aux 3 relais SatRank avec NOSTR_PRIVATE_KEY).
+        const { CalibrationRepository } = await import('../repositories/calibrationRepository');
+        const { CalibrationService } = await import('../services/calibrationService');
+        const { CalibrationPublisher } = await import('../services/calibrationPublisher');
+        // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath
+        const { getPublicKey } = await import('nostr-tools/pure');
+        const { hexToBytes } = await import('@noble/hashes/utils');
+        const oraclePubkey = getPublicKey(hexToBytes(config.NOSTR_PRIVATE_KEY)) as string;
+        const calibRepo = new CalibrationRepository(pool);
+        const calibService = new CalibrationService(calibRepo);
+        const calibPublisher = new CalibrationPublisher({
+          service: calibService,
+          repo: calibRepo,
+          publisher: multiKindPublisher,
+          oraclePubkey,
+        });
+        const runCalibration = (): void => {
+          calibPublisher
+            .publishCycle()
+            .then((res) => {
+              if (res === null) {
+                logger.info('Calibration cron: skipped (recent run exists)');
+                return;
+              }
+              logger.info(
+                {
+                  eventId: res.eventId?.slice(0, 12),
+                  n_endpoints: res.result.n_endpoints,
+                  n_outcomes: res.result.n_outcomes,
+                  delta_mean: res.result.delta_mean,
+                  delta_p95: res.result.delta_p95,
+                },
+                'Calibration cron tick complete (kind 30783 published)',
+              );
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Calibration cron error');
+            });
+        };
+        // Initial firing après 1h (le boot a besoin de stabilité avant de
+        // cogner le DB pour scanner le log).
+        const calibInitialDelay = 60 * 60 * 1000;
+        const calibIntervalMs = 7 * 24 * 60 * 60 * 1000; // weekly
+        const initialTimer = setTimeout(() => {
+          runCalibration();
+          const recurrent = setInterval(runCalibration, calibIntervalMs);
+          recurrent.unref?.();
+        }, calibInitialDelay);
+        initialTimer.unref?.();
+        logger.info(
+          { initialDelayMs: calibInitialDelay, intervalMs: calibIntervalMs },
+          'Phase 5.15 — Calibration cron scheduled (kind 30783 weekly)',
+        );
+
+        // Phase 6.2 — kind 30782 trust assertions cron. Pour chaque endpoint
+        // avec stage_posteriors meaningful, publish un event NIP-33
+        // addressable replaceable. Permet aux agents Nostr-natifs +
+        // verify_assertion (Phase 6.0) de composer offline.
+        const { TrustAssertionPublisher } = await import('../services/trustAssertionPublisher');
+        const { TrustAssertionRepository } = await import('../repositories/trustAssertionRepository');
+        const { EndpointStagePosteriorsRepository: StageRepoCtor } = await import('../repositories/endpointStagePosteriorsRepository');
+        const trustRepo = new TrustAssertionRepository(pool);
+        const stagePosteriorsRepoForTrust = new StageRepoCtor(pool);
+        const trustPublisher = new TrustAssertionPublisher({
+          serviceEndpointRepo: serviceEndpointRepoMulti,
+          stagePosteriorsRepo: stagePosteriorsRepoForTrust,
+          calibrationRepo: calibRepo,
+          trustAssertionRepo: trustRepo,
+          publisher: multiKindPublisher,
+          oraclePubkey,
+          relays: multiKindRelays,
+        });
+        const runTrustAssertions = (): void => {
+          trustPublisher
+            .publishCycle()
+            .then((res) => {
+              logger.info(
+                {
+                  published: res.outcomes.published,
+                  skipped_recent: res.outcomes.skipped_recent,
+                  skipped_no_meaningful: res.outcomes.skipped_no_meaningful,
+                  publish_failed: res.outcomes.publish_failed,
+                  duration_sec: res.cycle_finished_at - res.cycle_started_at,
+                },
+                'Trust assertion cron tick complete (kind 30782)',
+              );
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Trust assertion cron error');
+            });
+        };
+        // Initial fire 90 min après boot (après calibration), puis weekly.
+        const trustInitialDelay = 90 * 60 * 1000;
+        const trustIntervalMs = 7 * 24 * 60 * 60 * 1000;
+        const trustInitialTimer = setTimeout(() => {
+          runTrustAssertions();
+          const recurrent = setInterval(runTrustAssertions, trustIntervalMs);
+          recurrent.unref?.();
+        }, trustInitialDelay);
+        trustInitialTimer.unref?.();
+        logger.info(
+          { initialDelayMs: trustInitialDelay, intervalMs: trustIntervalMs },
+          'Phase 6.2 — Trust assertion cron scheduled (kind 30782 weekly)',
+        );
+
+        // Phase 7.0 — kind 30784 oracle announcement cron. Annonce CETTE
+        // instance comme oracle SatRank-compatible aux autres clients +
+        // peers. Cadence 24h pour la réactivité discovery.
+        const { OracleAnnouncementPublisher, ANNOUNCEMENT_INTERVAL_MS } = await import('../services/oracleAnnouncementPublisher');
+        const { OracleAnnouncementRepository } = await import('../repositories/oracleFederationRepository');
+        const announcementRepo = new OracleAnnouncementRepository(pool);
+        // LND pubkey local — best-effort. Si LND pas configuré, on annonce
+        // sans (les clients downstream peuvent se passer de la vérif
+        // sovereign LND).
+        let lndPubkeyLocal: string | undefined;
+        try {
+          if (lndClient.isConfigured() && lndClient.getInfo) {
+            const info = await lndClient.getInfo();
+            lndPubkeyLocal = info?.identity_pubkey;
+          }
+        } catch {
+          /* swallow — annoncement publish without lnd_pubkey */
+        }
+        const announcementPublisher = new OracleAnnouncementPublisher({
+          serviceEndpointRepo: serviceEndpointRepoMulti,
+          calibrationRepo: calibRepo,
+          announcementRepo,
+          publisher: multiKindPublisher,
+          oraclePubkey,
+          lndPubkey: lndPubkeyLocal,
+          relays: multiKindRelays,
+        });
+        const runAnnouncement = (): void => {
+          announcementPublisher
+            .publishCycle()
+            .then((res) => {
+              if (res === null) return;
+              logger.info(
+                { eventId: res.event_id.slice(0, 12), catalogueSize: res.catalogue_size },
+                'Oracle announcement cron tick complete (kind 30784)',
+              );
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Oracle announcement cron error');
+            });
+        };
+        // Initial fire 2h après boot, puis 24h.
+        const announceInitialDelay = 2 * 60 * 60 * 1000;
+        const announceIntervalMs = ANNOUNCEMENT_INTERVAL_MS;
+        const announceTimer = setTimeout(() => {
+          runAnnouncement();
+          const recurrent = setInterval(runAnnouncement, announceIntervalMs);
+          recurrent.unref?.();
+        }, announceInitialDelay);
+        announceTimer.unref?.();
+        logger.info(
+          { initialDelayMs: announceInitialDelay, intervalMs: announceIntervalMs },
+          'Phase 7.0 — Oracle announcement cron scheduled (kind 30784 daily)',
+        );
+
+        // Phase 8.0 — subscribe permanent kind 30784. Ingère les
+        // announcements d'autres oracles SatRank-compatible. Self-bootstrap :
+        // notre propre announcement (republished 24h) revient sur la
+        // subscription et nous-mêmes apparaissons dans oracle_peers.
+        const { OraclePeerRepository } = await import('../repositories/oracleFederationRepository');
+        const { OraclePeersDiscovery } = await import('../services/oraclePeersDiscovery');
+        const { NostrEventSubscriber } = await import('../nostr/nostrEventSubscriber');
+        // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath
+        const { verifyEvent: verifyEventFn } = await import('nostr-tools/pure');
+        const oraclePeerRepo = new OraclePeerRepository(pool);
+        const peersDiscovery = new OraclePeersDiscovery({
+          peerRepo: oraclePeerRepo,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+        });
+        const peersSubscriber = new NostrEventSubscriber({
+          label: 'oracle-peers',
+          relays: multiKindRelays,
+          filters: [{ kinds: [30784], '#d': ['satrank-oracle-announcement'] }],
+          onEvent: async (event) => {
+            const result = await peersDiscovery.ingestAnnouncement(event);
+            if (result.outcome === 'rejected') {
+              logger.warn(
+                { reason: result.reason, eventId: event.id.slice(0, 12), pubkey: event.pubkey.slice(0, 12) },
+                'oracle-peers subscription rejected announcement',
+              );
+            }
+          },
+        });
+        peersSubscriber.start().catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Failed to start oracle-peers subscriber');
+        });
+        logger.info('Phase 8.0 — Oracle peers subscriber started (kind 30784 permanent)');
+
+        // Phase 8.2 — subscribe permanent kind 7402 (crowd outcome reports).
+        // Ingest les outcomes publiés par n'importe quel agent Nostr,
+        // pondère via Sybil resistance (PoW + identity-age + preimage-proof),
+        // persist dans crowd_outcome_reports.
+        const { CrowdOutcomeRepository, NostrIdentityRepository } = await import('../repositories/crowdOutcomeRepository');
+        const { CrowdOutcomeIngestor, KIND_CROWD_OUTCOME } = await import('../services/crowdOutcomeIngestor');
+        const crowdRepo = new CrowdOutcomeRepository(pool);
+        const identityRepo = new NostrIdentityRepository(pool);
+        const stagePosteriorsForCrowd = new StageRepoCtor(pool);
+        const crowdIngestor = new CrowdOutcomeIngestor({
+          crowdRepo,
+          identityRepo,
+          stagePosteriorsRepo: stagePosteriorsForCrowd,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+        });
+        const crowdSubscriber = new NostrEventSubscriber({
+          label: 'crowd-outcomes',
+          relays: multiKindRelays,
+          filters: [{ kinds: [KIND_CROWD_OUTCOME] }],
+          onEvent: async (event) => {
+            const result = await crowdIngestor.ingest(event);
+            if (result.outcome === 'rejected') {
+              logger.debug(
+                { reason: result.reason, eventId: event.id.slice(0, 12), pubkey: event.pubkey.slice(0, 12) },
+                'crowd-outcomes subscription rejected report',
+              );
+            }
+          },
+        });
+        crowdSubscriber.start().catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Failed to start crowd-outcomes subscriber');
+        });
+        logger.info('Phase 8.2 — Crowd outcomes subscriber started (kind 7402 permanent)');
+
+        // Phase 9.0 — crowd consolidation cron horaire. Lit les reports
+        // observed >= 1h ago, weight >= 0.3 (= base), pousse vers
+        // endpoint_stage_posteriors avec le weight effectif.
+        const { CrowdConsolidationCron } = await import('../services/crowdConsolidationCron');
+        const consolidationCron = new CrowdConsolidationCron({
+          pool,
+        });
+        const runConsolidation = (): void => {
+          consolidationCron
+            .runOnce()
+            .then((res) => {
+              if (res.consolidated > 0 || res.errors > 0) {
+                logger.info(
+                  { consolidated: res.consolidated, errors: res.errors },
+                  'Crowd consolidation cron tick',
+                );
+              }
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Crowd consolidation cron error');
+            });
+        };
+        const consolidationInitialDelay = 30 * 60 * 1000;
+        const consolidationIntervalMs = 60 * 60 * 1000; // hourly
+        const consolidationTimer = setTimeout(() => {
+          runConsolidation();
+          const recurrent = setInterval(runConsolidation, consolidationIntervalMs);
+          recurrent.unref?.();
+        }, consolidationInitialDelay);
+        consolidationTimer.unref?.();
+        logger.info('Phase 9.0 — Crowd consolidation cron scheduled (hourly)');
+
+        // Phase 9.1 — subscribe permanent kind 30783 (peer calibrations).
+        const { PeerCalibrationRepository } = await import('../repositories/peerCalibrationRepository');
+        const { PeerCalibrationIngestor, KIND_ORACLE_CALIBRATION: KIND_CALIB } = await import('../services/peerCalibrationIngestor');
+        const peerCalibrationRepo = new PeerCalibrationRepository(pool);
+        const peerCalibrationIngestor = new PeerCalibrationIngestor({
+          peerCalibrationRepo,
+          selfOraclePubkey: oraclePubkey,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+        });
+        const peerCalibrationSubscriber = new NostrEventSubscriber({
+          label: 'peer-calibrations',
+          relays: multiKindRelays,
+          filters: [{ kinds: [KIND_CALIB], '#d': ['satrank-calibration'] }],
+          onEvent: async (event) => {
+            const result = await peerCalibrationIngestor.ingest(event);
+            if (result.outcome === 'rejected') {
+              logger.debug(
+                { reason: result.reason, eventId: event.id.slice(0, 12), pubkey: event.pubkey.slice(0, 12) },
+                'peer-calibrations subscription rejected event',
+              );
+            }
+          },
+        });
+        peerCalibrationSubscriber.start().catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Failed to start peer-calibrations subscriber');
+        });
+        logger.info('Phase 9.1 — Peer calibrations subscriber started (kind 30783 permanent)');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : '';
@@ -778,7 +1075,11 @@ async function main(): Promise<void> {
     // sweep takes longer than the interval (cold tier scans the largest pool).
     const { ServiceHealthCrawler } = await import('./serviceHealthCrawler');
     const { ServiceEndpointRepository } = await import('../repositories/serviceEndpointRepository');
+    const { EndpointStagePosteriorsRepository } = await import('../repositories/endpointStagePosteriorsRepository');
+    const { InvoiceValidityService } = await import('../services/invoiceValidityService');
     const serviceEndpointRepo = new ServiceEndpointRepository(pool);
+    const stagePosteriorsRepo = new EndpointStagePosteriorsRepository(pool);
+    const invoiceValidityService = new InvoiceValidityService(stagePosteriorsRepo);
     const serviceHealthCrawler = new ServiceHealthCrawler(
       serviceEndpointRepo,
       txRepo,
@@ -786,6 +1087,7 @@ async function main(): Promise<void> {
       dualWriteLogger,
       agentRepo,
       bayesianScoringServiceMain,
+      invoiceValidityService,
     );
 
     const tierIntervals = {

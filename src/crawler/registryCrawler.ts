@@ -326,6 +326,13 @@ export class RegistryCrawler {
                 last_checked: parseIso(svc.last_checked),
                 source: '402index',
               });
+              // Phase 5.10A — persist http_method on every refresh. Idempotent
+              // when the upstream value is unchanged. Drives /api/intent's
+              // candidate.http_method exposure so SDK fulfill() picks the
+              // correct method without a 405-fallback round-trip.
+              if (existing.http_method !== httpMethod) {
+                await this.serviceEndpointRepo.setHttpMethod(svc.url, httpMethod);
+              }
               result.updated++;
               // Re-probe only if price is still null — avoid needless GET on healthy, priced endpoints
               if (existing.service_price_sats === null) {
@@ -404,6 +411,12 @@ export class RegistryCrawler {
                 last_checked: parseIso(svc.last_checked),
                 source: '402index',
               });
+              // Phase 5.10A — persist http_method on initial ingestion. The
+              // table default is 'GET'; we only write when the upstream value
+              // differs from the default, avoiding redundant UPDATEs.
+              if (httpMethod !== 'GET') {
+                await this.serviceEndpointRepo.setHttpMethod(svc.url, httpMethod);
+              }
               if (discovered.priceSats && discovered.priceSats > 0) {
                 await this.serviceEndpointRepo.updatePrice(svc.url, discovered.priceSats);
               }

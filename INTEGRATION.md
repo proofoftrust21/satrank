@@ -6,9 +6,12 @@ You are an agent builder. Your agent pays Lightning-native HTTP services, and yo
 |---|---|---|
 | [1. SDK native](#path-1-sdk-native-recommended) | TypeScript or Python | Default choice. Your agent can load a library and talk to a Lightning wallet. |
 | [2. Direct HTTP](#path-2-direct-http) | Any language, any runtime | Edge workers, MCP wrappers, Go, Rust, shell. No SDK to load. |
-| [3. MCP (Model Context Protocol)](#path-3-mcp) | LLM agent frameworks | Claude Desktop, Cursor, or any MCP-capable client. SatRank ships a stdio MCP server. |
+| [3. MCP (Model Context Protocol)](#path-3-mcp) | LLM agent frameworks | Claude Desktop, Claude Code, Cursor, ChatGPT GPT Builder, or any MCP-capable client. SatRank ships a stdio MCP server. |
+| [4. Nostr DVM](#path-4-nostr-dvm) | Sovereign / agent-native | Pure Nostr flow with no HTTP, no API key, no SDK. Agent publishes a kind 5900 job, oracle replies kind 6900. |
 
-The end state is the same regardless of path: your agent posts an intent, gets a ranked list of L402 endpoints, and settles with the one it picked.
+The end state is the same regardless of path: your agent posts an intent, gets a ranked list of L402 endpoints (with `http_method`, `stage_posteriors`, and `bayesian.p_success` per candidate), and settles with the one it picked.
+
+**Tip for federated agents:** with the SDK 1.1.0, `aggregateOracles({ baseUrl, maxStaleSec, minCatalogueSize, requireCalibration })` lets you discover all SatRank-compatible oracles via Nostr kind 30784 announcements and filter them by your own trust criteria. Useful when you want to avoid trusting any single oracle. See the [TS SDK quickstart](./docs/sdk/quickstart-ts.md) for usage.
 
 ---
 
@@ -210,10 +213,12 @@ Reference config committed in the repo: [`mcp-config.json`](./mcp-config.json).
 
 ### Exposed tools
 
-The server exposes the following tools. Names reflect the internal service vocabulary and are stable at MCP layer; the REST surface uses the intent/fulfill vocabulary. A future phase will align MCP names with the REST surface.
+The server exposes the following tools. Schema declarations: `src/mcp/server.ts` (zod-validated).
 
 | Tool | Purpose |
 |---|---|
+| **`intent`** | **Phase 6.0** — resolve an intent (category, keywords, budget, latency ceiling) and get ranked L402 candidates with full posterior, 5-stage `stage_posteriors`, `http_method`, and freshness advisory. The first agent-native primitive |
+| **`verify_assertion`** | **Phase 6.0** — offline-verify a kind 30782 transferable assertion or kind 30783 calibration event. Validates Schnorr signature + valid_until + expected oracle pubkey + d-tag. No network call. Use this to compose oracle output across agents without re-querying SatRank |
 | `get_agent_score` | Full trust score with components, evidence, verification URLs |
 | `get_top_agents` | Leaderboard ranked by posterior |
 | `search_agents` | Search by alias (partial match) |
@@ -227,13 +232,48 @@ The server exposes the following tools. Names reflect the internal service vocab
 | `get_profile` | Agent profile with reports, probe uptime, rank, evidence, flags |
 | `ping` | Real-time QueryRoutes reachability check, free |
 
-MCP tool shapes are declared in `src/mcp/server.ts` with zod schemas and match the underlying service contracts.
+The `intent` + `verify_assertion` pair is the new agent-economy-native primitive: an agent can ask for a service, verify the trust assertion offline, hand it off to a sub-agent, and the sub-agent verifies independently — no round-trip to SatRank.
 
 ---
 
-## Reading the response: posterior and advisory
+## Path 4: Nostr DVM
 
-Every candidate and every agent profile carries a Bayesian posterior block.
+**Phase 6.1** — for sovereign Nostr-native agents. SatRank exposes a NIP-90 Data Vending Machine (kind 5900 / 6900). The agent publishes an intent as a Nostr event; the oracle replies on the same relays. No HTTP, no API key.
+
+```javascript
+// Agent publishes kind 5900 with j: intent-resolve
+const job = await nostr.publish({
+  kind: 5900,
+  tags: [
+    ["j", "intent-resolve"],
+    ["i", JSON.stringify({
+      category: "data/finance",
+      budget_sats: 5,
+      max_latency_ms: 2000,
+    }), "json"],
+    ["bid", "1000"], // optional bid for the DVM
+  ],
+});
+
+// Oracle replies on the same relays with kind 6900
+const result = await nostr.subscribe_one({
+  kind: 6900,
+  e_tag: job.id,
+  timeout: 2000,
+});
+
+// result.content === JSON.stringify(intent_response_with_candidates)
+```
+
+The DVM also serves the legacy `j: trust-check` job type for node-trust queries.
+
+Use this when your agent never wants to touch HTTP — every interaction stays on Nostr. Pair with `verify_assertion` MCP tool (Path 3) or local Schnorr verification for offline-verifiable composability.
+
+---
+
+## Reading the response: posterior, 5-stage decomposition, and advisory
+
+Every candidate from `/api/intent` carries a Bayesian posterior block, an optional 5-stage L402 contract decomposition (when stage data is available), and an advisory overlay.
 
 ```json
 {
@@ -244,6 +284,21 @@ Every candidate and every agent profile carries a Bayesian posterior block.
     "n_obs": 6.094,
     "verdict": "INSUFFICIENT"
   },
+  "stage_posteriors": {
+    "p_e2e": 0.81,
+    "p_e2e_pessimistic": 0.51,
+    "p_e2e_optimistic": 0.94,
+    "meaningful_stages": ["challenge", "invoice", "payment", "delivery", "quality"],
+    "measured_stages": 5,
+    "stages": {
+      "challenge": { "p_success": 0.99, "ci95_low": 0.94, "ci95_high": 1.00, "n_obs": 47, "is_meaningful": true },
+      "invoice":   { "p_success": 0.98, "ci95_low": 0.91, "ci95_high": 1.00, "n_obs": 38, "is_meaningful": true },
+      "payment":   { "p_success": 0.92, "ci95_low": 0.78, "ci95_high": 0.99, "n_obs": 23, "is_meaningful": true },
+      "delivery":  { "p_success": 0.96, "ci95_low": 0.85, "ci95_high": 1.00, "n_obs": 19, "is_meaningful": true },
+      "quality":   { "p_success": 0.91, "ci95_low": 0.72, "ci95_high": 0.99, "n_obs": 14, "is_meaningful": true }
+    }
+  },
+  "http_method": "POST",
   "advisory": {
     "advisory_level": "yellow",
     "recommendation": "proceed_with_caution",
@@ -251,6 +306,12 @@ Every candidate and every agent profile carries a Bayesian posterior block.
   }
 }
 ```
+
+**`bayesian.p_success`** measures the legacy "L402 challenge cycle" posterior (probe-level). **`stage_posteriors.p_e2e`** is the chain-rule product over the 5 stages with `is_meaningful=true` (default threshold: `n_obs >= 3`). An agent that wants the most informative signal reads `stage_posteriors`; an agent that wants the simplest reads `bayesian.p_success`. Both are emitted unconditionally.
+
+The per-stage breakdown answers "which step is likely to fail?" — useful for choosing fallback strategies. A high `challenge` + low `delivery` means the endpoint is reachable but returns junk after payment; an agent should pick a different candidate.
+
+`http_method` is persisted from the upstream registry (Phase 5.10A): pass it to your fulfill request to avoid the silent 405-fallback round-trip on POST-only endpoints.
 
 `verdict` is a threshold on the posterior:
 

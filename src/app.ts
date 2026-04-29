@@ -84,8 +84,13 @@ import {
 import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createL402Native } from './middleware/l402Native';
+import { OracleBudgetService } from './services/oracleBudgetService';
+import { TrustAssertionRepository } from './repositories/trustAssertionRepository';
+import { OraclePeerRepository } from './repositories/oracleFederationRepository';
+import { PeerCalibrationRepository } from './repositories/peerCalibrationRepository';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
+import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
 import { PreimagePoolRepository } from './repositories/preimagePoolRepository';
 
 // Routes
@@ -126,6 +131,7 @@ export function createApp() {
   const trendService = new TrendService(agentRepo, snapshotRepo);
   const attestationService = new AttestationService(attestationRepo, agentRepo, txRepo, pool);
   const serviceEndpointRepo = new ServiceEndpointRepository(pool);
+  const endpointStagePosteriorsRepo = new EndpointStagePosteriorsRepository(pool);
   const preimagePoolRepo = new PreimagePoolRepository(pool);
   const riskService = new RiskService();
 
@@ -262,6 +268,7 @@ export function createApp() {
     trendService,
     probeRepo,
     operatorService,
+    endpointStagePosteriorsRepo,
   });
   const intentController = new IntentController(intentService);
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
@@ -511,6 +518,11 @@ export function createApp() {
   const balanceAuth = createBalanceAuth(pool, { bypass: config.L402_BYPASS });
   const reportAuth = createReportAuth(pool);
 
+  // Phase 6.4 — self-funding loop tracker. Logge chaque paid L402 call
+  // dans oracle_revenue_log + chaque paid probe spending. Source of truth
+  // pour /api/oracle/budget.
+  const oracleBudgetService = new OracleBudgetService(pool);
+
   // L402 native gate — all paid endpoints go through createL402Native.
   // Pricing Mix A+D (2026-04-26): /agent/:publicKeyHash and its sub-routes
   // moved to free discovery, so they are no longer in the pricingMap.
@@ -530,6 +542,26 @@ export function createApp() {
       '/intent': 2,
     },
     operatorSecret: config.OPERATOR_BYPASS_SECRET,
+    onPaidCallSettled: async (route, priceSats, paymentHash) => {
+      // Mappe la route au source label du revenue log.
+      const sourceMap: Record<string, 'fresh_query' | 'probe_query' | 'verdict_query' | 'profile_query' | 'other'> = {
+        '/intent': 'fresh_query',
+        '/probe': 'probe_query',
+        '/verdicts': 'verdict_query',
+        '/profile/:id': 'profile_query',
+      };
+      const source = sourceMap[route] ?? 'other';
+      // Security H1 — payment_hash passé en dédup-key explicite : INSERT
+      // ON CONFLICT DO NOTHING empêche le double-revenue si 2 requêtes
+      // first-use simultanées passent par le callback avant que
+      // token_balance auto-crée le row.
+      await oracleBudgetService.logRevenue(
+        source,
+        priceSats,
+        { route },
+        paymentHash,
+      );
+    },
   });
 
   api.use(createV2Routes(v2Controller, balanceAuth, reportAuth, depositController, paidGate)); // report, deposit, profile (decide/best-route are 410 Gone)
@@ -616,6 +648,145 @@ export function createApp() {
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
   api.get('/stats/reports', discoveryRateLimit, reportStatsController.getStats);
+  // Phase 6.4 — /api/oracle/budget : public observability du self-funding
+  // loop. Lifetime + 30d + 7d revenue/spending + balance + coverage_ratio.
+  // Free, rate-limited via discoveryRateLimit. Permet aux agents/auditors
+  // de vérifier que l'oracle est durablement financé.
+  api.get('/oracle/budget', discoveryRateLimit, async (_req, res, next) => {
+    try {
+      const snapshot = await oracleBudgetService.getBudgetMultiWindow();
+      res.json({ data: snapshot });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Phase 6.3 — /api/oracle/assertion/:url_hash : metadata de la kind 30782
+  // trust assertion publiée par l'oracle pour un endpoint donné. Permet
+  // aux operators de retrouver l'event_id à embarquer dans leur BOLT12
+  // offer (TLV custom) et aux agents de fetch directement depuis les
+  // relays sans passer par /api/intent.
+  //
+  // Hint BOLT12 TLV : convention proposée
+  //   type 65537 → event_id (32 bytes raw, hex on the wire)
+  //   type 65538 → oracle_pubkey (32 bytes raw)
+  // Le BOLT12 builder côté operator (FewSats, Alby toolkit, etc.) lit ces
+  // valeurs et les ajoute aux TLV custom. Pas de standard IETF —
+  // proposition à valider avec les écosystèmes.
+  const trustAssertionRepoApi = new TrustAssertionRepository(pool);
+  // Phase 7.1 — /api/oracle/peers : list des autres oracles SatRank-
+  // compatible découverts via les kind 30784 ingérés sur les relays.
+  // Format inclut oracle_pubkey, lnd_pubkey, catalogue_size, latest
+  // calibration/assertion event ids, last_seen — l'agent SDK filtre
+  // côté client par calibration_error / age / catalogue_size selon ses
+  // critères. Pas de filtering trust côté serveur (sovereignty).
+  const oraclePeerRepoApi = new OraclePeerRepository(pool);
+  api.get('/oracle/peers', discoveryRateLimit, async (req, res, next) => {
+    try {
+      const limit = Math.min(Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50), 200);
+      const peers = await oraclePeerRepoApi.list(limit);
+      const nowSec = Math.floor(Date.now() / 1000);
+      res.json({
+        data: {
+          peers: peers.map((p) => ({
+            oracle_pubkey: p.oracle_pubkey,
+            lnd_pubkey: p.lnd_pubkey,
+            catalogue_size: p.catalogue_size,
+            calibration_event_id: p.calibration_event_id,
+            last_assertion_event_id: p.last_assertion_event_id,
+            contact: p.contact,
+            onboarding_url: p.onboarding_url,
+            last_seen: p.last_seen,
+            first_seen: p.first_seen,
+            age_sec: nowSec - p.first_seen,
+            stale_sec: nowSec - p.last_seen,
+            latest_announcement_event_id: p.latest_announcement_event_id,
+          })),
+          count: peers.length,
+          limit,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Phase 9.1 — /api/oracle/peers/:pubkey/calibrations : historique des
+  // kind 30783 calibration events publiés par un peer SatRank-compatible.
+  // Permet aux clients de vérifier la calibration history d'un peer
+  // avant de l'inclure dans une aggregation. Cross-oracle meta-confidence.
+  const peerCalibrationRepoApi = new PeerCalibrationRepository(pool);
+  api.get('/oracle/peers/:pubkey/calibrations', discoveryRateLimit, async (req, res, next) => {
+    try {
+      const pubkey = String(req.params.pubkey);
+      if (!/^[a-f0-9]{64}$/.test(pubkey)) {
+        return res.status(400).json({ error: { code: 'INVALID_PUBKEY', message: 'pubkey must be a 64-char hex Schnorr key' } });
+      }
+      const limit = Math.min(Math.max(1, parseInt(String(req.query.limit ?? '20'), 10) || 20), 100);
+      const calibrations = await peerCalibrationRepoApi.listByPeer(pubkey, limit);
+      res.json({
+        data: {
+          peer_pubkey: pubkey,
+          calibrations: calibrations.map((c) => ({
+            event_id: c.event_id,
+            window_start: c.window_start,
+            window_end: c.window_end,
+            window_days: Math.round((c.window_end - c.window_start) / 86400),
+            delta_mean: c.delta_mean,
+            delta_median: c.delta_median,
+            delta_p95: c.delta_p95,
+            n_endpoints: c.n_endpoints,
+            n_outcomes: c.n_outcomes,
+            observed_at: c.observed_at,
+          })),
+          count: calibrations.length,
+          limit,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  api.get('/oracle/assertion/:url_hash', discoveryRateLimit, async (req, res, next) => {
+    try {
+      const urlHash = String(req.params.url_hash);
+      if (!/^[a-f0-9]{64}$/.test(urlHash)) {
+        return res.status(400).json({ error: { code: 'INVALID_URL_HASH', message: 'url_hash must be a 64-char hex SHA256' } });
+      }
+      const record = await trustAssertionRepoApi.findByUrlHash(urlHash);
+      if (!record) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No trust assertion published yet for this endpoint. Wait for the next cron tick (≤ 7 days) or check that the endpoint has meaningful stage posteriors.' } });
+      }
+      const nowSec = Math.floor(Date.now() / 1000);
+      const expiresInSec = record.valid_until - nowSec;
+      res.json({
+        data: {
+          endpoint_url_hash: record.endpoint_url_hash,
+          kind: 30782,
+          event_id: record.event_id,
+          oracle_pubkey: record.oracle_pubkey,
+          valid_until: record.valid_until,
+          expires_in_sec: expiresInSec,
+          expired: expiresInSec < 0,
+          p_e2e: record.p_e2e,
+          meaningful_stages_count: record.meaningful_stages_count,
+          calibration_proof_event_id: record.calibration_proof_event_id,
+          published_at: record.published_at,
+          relays: record.relays,
+          bolt12_tlv_hint: {
+            note: 'Proposed convention for embedding the trust assertion in a BOLT12 offer. Type IDs not yet IETF-standardized — operators should track future BLIPs.',
+            type_event_id: 65537,
+            type_oracle_pubkey: 65538,
+            event_id_hex: record.event_id,
+            oracle_pubkey_hex: record.oracle_pubkey,
+          },
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');

@@ -14,6 +14,7 @@ interface EndpointSpec {
   price_sats?: number | null;
   rank?: number;
   verdict?: 'SAFE' | 'RISKY' | 'UNKNOWN' | 'INSUFFICIENT';
+  http_method?: 'GET' | 'POST';
 }
 
 function makeIntentPayload(candidates: EndpointSpec[]): unknown {
@@ -27,6 +28,7 @@ function makeIntentPayload(candidates: EndpointSpec[]): unknown {
       service_name: c.service_name ?? null,
       price_sats: c.price_sats ?? null,
       median_latency_ms: null,
+      http_method: c.http_method,
       bayesian: {
         p_success: 0.9,
         ci95_low: 0.8,
@@ -880,6 +882,154 @@ describe('SatRank.fulfill — edge behavior', () => {
     expect(seen[0].headers['X-Agent-Id']).toBe('agent-42');
     expect(seen[0].url).toContain('lang=en');
     expect(seen[1].headers.Authorization).toMatch(/^L402 t:/);
+  });
+
+  it('Phase 5.10A — defaults to candidate.http_method when agent does not override', async () => {
+    const candidateUrl = 'https://post-only.test/api';
+    const seenMethods: string[] = [];
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([
+                { endpoint_url: candidateUrl, http_method: 'POST' },
+              ]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u.startsWith(candidateUrl),
+        response: (_url, init) => {
+          seenMethods.push(init.method ?? 'GET');
+          const headers = (init.headers ?? {}) as Record<string, string>;
+          return headers.Authorization
+            ? new Response(JSON.stringify({ done: true }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+      // pas de request.method — le default doit venir du candidate.
+    });
+    expect(res.success).toBe(true);
+    expect(seenMethods).toEqual(['POST', 'POST']);
+  });
+
+  it('Phase 5.10A — agent request.method overrides candidate.http_method', async () => {
+    const candidateUrl = 'https://post-only.test/api';
+    const seenMethods: string[] = [];
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([
+                { endpoint_url: candidateUrl, http_method: 'POST' },
+              ]),
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u.startsWith(candidateUrl),
+        response: (_url, init) => {
+          seenMethods.push(init.method ?? 'GET');
+          const headers = (init.headers ?? {}) as Record<string, string>;
+          return headers.Authorization
+            ? new Response(JSON.stringify({ done: true }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+      request: { method: 'GET' }, // override
+    });
+    expect(res.success).toBe(true);
+    expect(seenMethods).toEqual(['GET', 'GET']);
+  });
+
+  it('Phase 5.10A — falls back to GET when oracle returned no http_method (pre-v48 compat)', async () => {
+    const candidateUrl = 'https://no-method.test/api';
+    const seenMethods: string[] = [];
+    const fetchMock = fetchRouter([
+      {
+        match: (u) => u.endsWith('/api/intent'),
+        response: () =>
+          new Response(
+            JSON.stringify(
+              makeIntentPayload([{ endpoint_url: candidateUrl }]),
+              // http_method absent intentionnellement (oracle pré-v48).
+            ),
+            { status: 200 },
+          ),
+      },
+      {
+        match: (u) => u.startsWith(candidateUrl),
+        response: (_url, init) => {
+          seenMethods.push(init.method ?? 'GET');
+          const headers = (init.headers ?? {}) as Record<string, string>;
+          return headers.Authorization
+            ? new Response(JSON.stringify({ done: true }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              })
+            : new Response('', {
+                status: 402,
+                headers: {
+                  'WWW-Authenticate':
+                    'L402 token="t", invoice="lnbc10n1ok"',
+                },
+              });
+        },
+      },
+    ]);
+    const sr = new SatRank({
+      apiBase: 'https://api.test',
+      fetch: fetchMock,
+      wallet: stubWallet(),
+    });
+    const res = await sr.fulfill({
+      intent: { category: 'data' },
+      budget_sats: 100,
+    });
+    expect(res.success).toBe(true);
+    expect(seenMethods).toEqual(['GET', 'GET']);
   });
 
   it('forwards constructor caller to /api/intent when opts.caller is missing', async () => {

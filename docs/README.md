@@ -2,6 +2,10 @@
 
 This directory contains active documentation for SatRank operators and integrators.
 
+## Federation
+
+- **[OPERATOR_QUICKSTART.md](OPERATOR_QUICKSTART.md)** — bootstrap guide for any operator wanting to run a SatRank-compatible oracle. Hardware tiers, Postgres + LND macaroons, Nostr identity, environment variables, federation timeline (Day 0 → Day 30+), economic break-even analysis. **Read this if you want to join the federation.**
+
 ## Operations
 
 - [env.example.md](env.example.md): environment variables reference for self-hosted deployments.
@@ -14,6 +18,8 @@ This directory contains active documentation for SatRank operators and integrato
 - [sdk/nlp-helper.md](sdk/nlp-helper.md): natural language intent parsing helper.
 - [sdk/wallet-drivers.md](sdk/wallet-drivers.md): supported wallet driver integrations.
 - [sdk/migration-0.2-to-1.0.md](sdk/migration-0.2-to-1.0.md): detailed SDK migration path from 0.2.x to 1.0.
+
+TypeScript SDK 1.1.0 (federation-aware: `aggregateOracles`, `stage_posteriors`, `http_method`) is on [npm](https://www.npmjs.com/package/@satrank/sdk). Python SDK 1.0.5 is on [PyPI](https://pypi.org/project/satrank/).
 
 ## Archive
 

@@ -8,6 +8,68 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [API + SDK-TS + Federation] - 2026-04-28
+
+Major non-breaking expansion of the oracle surface. PR-1 → PR-7 cumulative.
+
+### Added (API)
+
+- 5-stage L402 contract decomposition (Phase 5.10A → 5.14). Each candidate in `POST /api/intent` carries an optional `stage_posteriors` block decomposing the request into 5 independent Beta posteriors (challenge / invoice / payment / delivery / quality). Composed `p_e2e = ∏ p_i` over meaningful stages. `IntentCandidate.http_method` (`'GET' | 'POST'`) persisted from the upstream registry.
+- Calibration moat (Phase 5.15). Weekly cron publishes a kind 30783 Nostr event signed by the oracle, carrying `delta_mean` / `delta_median` / `delta_p95` between predicted and observed success rates over a rolling 7-day window. Top 20 per-endpoint deltas embedded in event content.
+- Transferable trust assertions (Phase 6.2 + 6.3). Per-endpoint kind 30782 NIP-33 addressable replaceable events published weekly. New endpoint `GET /api/oracle/assertion/:url_hash` returns the metadata + BOLT12 TLV embedding hint (type 65537 = event_id, type 65538 = oracle_pubkey).
+- Self-funding loop tracking (Phase 6.4). New endpoint `GET /api/oracle/budget` exposes lifetime + 30d + 7d snapshots of revenue vs spending with `coverage_ratio`. Anti-double-revenue dedup via partial UNIQUE index on payment_hash.
+- Idempotent intent cache (Phase 6.5). LRU + TTL 60s in front of `/api/intent`. fresh=true bypasses.
+- Federation discovery (Phase 7.0 → 8.0). Daily kind 30784 announcement (`oracle_pubkey`, `lnd_pubkey`, `catalogue_size`, `calibration_event_id`, `capabilities`). Permanent subscribe ingests other oracles. New endpoint `GET /api/oracle/peers`.
+- Cross-oracle calibration ingestion (Phase 9.1). Permanent subscribe to kind 30783 from peers. New endpoint `GET /api/oracle/peers/:pubkey/calibrations`.
+- Crowd outcome reports (Phase 8.1 + 8.2 + 9.0). Kind 7402 events from any agent. Sybil-resistant ingestion: `weight = base × pow_factor × identity_age_factor × preimage_factor` (max ~2.4, ≈ paid probe weight). 1h anti-spam delay before consolidation.
+- Agent-native MCP server tools (Phase 6.0). `intent` (proxies POST /api/intent) + `verify_assertion` (offline Schnorr + valid_until + calibration_proof verification of kind 30782 / 30783). For Claude / ChatGPT / Cursor / Alby integrations.
+- DVM intent-resolve (Phase 6.1). Extended NIP-90 DVM (kind 5900/6900) to handle `j: intent-resolve` jobs. Sovereign agents publish intent JSON via Nostr, oracle replies kind 6900.
+
+### Added (SDK-TS 1.1.0)
+
+- `IntentCandidate.http_method` and `IntentCandidate.stage_posteriors` exposed on the candidate type. `fulfill()` defaults to `candidate.http_method` when `opts.request.method` is not set, eliminating the silent 405-fallback round-trip on POST-only endpoints.
+- `aggregateOracles({ baseUrl, maxStaleSec, minCatalogueSize, requireCalibration, minAgeSec })` — federation aggregation primitive. Discovers peers via `GET /api/oracle/peers`, filters by agent's trust criteria.
+- Backwards-compatible: 1.0.x consumers keep behavior unchanged.
+
+### Security
+
+Audit fixes (security-reviewer agent + manual targeted audit) :
+- C1 SSRF via `SATRANK_API_BASE` → centralized validation in `config.ts` (https-only sauf localhost)
+- C2 PoW bypass via short hex → `countLeadingZeroBits` enforce strict 64-char
+- C3 memory exhaustion via unbounded `resp.text()` → streaming reader with cap (1MB MCP, 64KB paid probe)
+- H1 revenue double-logging race → migration v56 partial UNIQUE index on payment_hash
+- H2 `onPaidCallSettled` DB pool starvation → `Promise.race` 3s timeout
+- H3 `onboarding_url` phishing → https-only validation, javascript:/data:/http: rejected
+- H4 consolidation cron double-write → `FOR UPDATE SKIP LOCKED` + transaction
+- H5 `latency_ms` overflow → clamp [0, 300_000ms]
+- H6 `catalogue_size` overflow → clamp [0, 1_000_000]
+- M3 dedup Map unbounded → 50k FIFO eviction cap
+- M5 `selfPubkey` case bypass → lowercase compare both sides
+- 11 new regression tests labelled `Security X#`
+
+### Operator quickstart
+
+`docs/OPERATOR_QUICKSTART.md` — bootstrap guide for any operator joining the federation. Hardware tiers, Postgres + LND macaroons, Nostr identity generation, env vars, federation timeline (Day 0 → Day 30+), economic break-even (~17 fresh queries/day).
+
+### Migrations
+
+9 new schema migrations (v48 → v56) :
+- v48 `http_method` on service_endpoints
+- v49 `endpoint_stage_posteriors` hub
+- v50 outcomes log + `oracle_calibration_runs`
+- v51 `oracle_revenue_log`
+- v52 `trust_assertions_published`
+- v53 `oracle_announcements_published` + `oracle_peers`
+- v54 `crowd_outcome_reports` + `nostr_identity_first_seen`
+- v55 `consolidated_at` + `peer_calibration_observations`
+- v56 anti-double-revenue `payment_hash` UNIQUE
+
+### Tests
+
+- 1451/1451 server tests green (TypeScript strict + tsconfig.tests strict typecheck both clean)
+- 139/139 SDK tests green
+- 11 new regression tests on security audit findings
+
 ## [Maintenance] - 2026-04-26
 
 ### Fixed
