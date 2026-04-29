@@ -72,7 +72,7 @@ describe('computeVerdict', async () => {
 
     it('INSUFFICIENT prime sur SAFE même avec p=1.0 et convergence', () => {
       const r = svc.computeVerdict(
-        { pSuccess: 1.0, ci95Low: 0.95, ci95High: 1.0, nObs: 5 },
+        { pSuccess: 1.0, ci95Low: 0.95, ci95High: 1.0, nObs: UNKNOWN_MIN_N_OBS - 1 },
         CONVERGED,
       );
       expect(r.verdict).toBe('INSUFFICIENT');

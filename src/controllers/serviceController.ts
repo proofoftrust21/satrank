@@ -108,9 +108,11 @@ export class ServiceController {
 
         // Phase 5.7 — surface Phase 3 multi-source attribution + l402.directory
         // signals, matching what /api/intent already exposes per candidate.
-        // Single-source rows omit `sources` for clean payloads (informational
-        // noise otherwise). Null consumption_type/provider_contact omitted.
-        const sources = svc.sources && svc.sources.length > 1 ? svc.sources : undefined;
+        // Audit 2026-04-29 fix — previously single-source rows omitted
+        // `sources` entirely "for clean payloads", which left agents with no
+        // attribution on the most common case (single-source 402index). Always
+        // surface the array; an empty/missing column collapses to undefined.
+        const sources = svc.sources && svc.sources.length > 0 ? svc.sources : undefined;
         const consumption_type = svc.consumption_type ?? undefined;
         const provider_contact = svc.provider_contact ?? undefined;
         // Phase 5.8 — upstream 402index signals (reliability_score has 24

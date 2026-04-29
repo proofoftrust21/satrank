@@ -124,9 +124,16 @@ export const SAFE_MIN_N_OBS = 10;
 export const RISKY_P_THRESHOLD = 0.50;
 export const RISKY_CI95_HIGH_MAX = 0.65;
 
-/** UNKNOWN si intervalle trop large (incertitude) OU n_obs < minimum. */
+/** UNKNOWN si intervalle trop large (incertitude) OU n_obs < minimum.
+ *
+ *  Audit 2026-04-29 — abaissé de 10 à 5 : à 9 obs avec p=0.83 et ci_low=0.59,
+ *  le top candidate était marqué INSUFFICIENT, ce qui dégradait l'UX agent
+ *  alors qu'il y avait du signal exploitable. SAFE_MIN_N_OBS reste à 10
+ *  (passer SAFE exige toujours 10 obs + ci_low≥0.65 + ≥2 sources convergées).
+ *  Avec 5 ≤ n_obs < 10, le verdict tombe maintenant en UNKNOWN ou RISKY
+ *  selon p — distinction honnête (signal/pas-encore-converge) vs "rien". */
 export const UNKNOWN_CI95_INTERVAL_MAX = 0.40;
-export const UNKNOWN_MIN_N_OBS = 10;
+export const UNKNOWN_MIN_N_OBS = 5;
 
 // --- Source convergence ---
 /** Nombre minimum de sources qui doivent converger (p ≥ threshold) pour autoriser SAFE. */
