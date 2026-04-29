@@ -936,7 +936,10 @@ async function main(): Promise<void> {
                 return;
               }
               const summary = await ready.runner.runOnce({
-                endpoint_urls: hot.map((e) => e.url),
+                // Audit r3 fix — pass the catalogue http_method so POST-only
+                // endpoints (llm402.ai etc) don't get a 405 on the GET-by-default
+                // probe path. Default GET when the column is null/absent.
+                endpoints: hot.map((e) => ({ url: e.url, http_method: e.http_method ?? 'GET' })),
                 maxPerProbeSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
                 totalBudgetSats: effectiveBudget,
                 maxProbesPerCycle: config.PAID_PROBE_MAX_PER_CYCLE,
@@ -1041,7 +1044,7 @@ async function main(): Promise<void> {
                   return;
                 }
                 const summary = await ready.runner.runOnce({
-                  endpoint_urls: candidates.map((e) => e.url),
+                  endpoints: candidates.map((e) => ({ url: e.url, http_method: e.http_method ?? 'GET' })),
                   maxPerProbeSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
                   totalBudgetSats: sweepCycleCap,
                   maxProbesPerCycle: config.PAID_PROBE_SWEEP_MAX_PER_RUN,

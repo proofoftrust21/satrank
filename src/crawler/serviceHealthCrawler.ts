@@ -93,11 +93,21 @@ export class ServiceHealthCrawler {
         // SSRF guard via fetchSafeExternal — single connect-time DNS lookup
         // validated inline (no TOCTOU). Attacker-controlled URL resolving to
         // 169.254.169.254/10.0.0.1 is rejected at the Agent lookup hook.
+        // Audit r3 — utiliser endpoint.http_method (du catalogue 402index).
+        // Avant ce fix, le crawler GET-uniquement causait 405 Method Not
+        // Allowed sur les ~50 endpoints POST-only (llm402.ai principalement),
+        // qui se propageait dans last_http_status puis cascadait à tous les
+        // consommateurs (paid probe runner, freshProbeService, etc.).
+        const method = endpoint.http_method ?? 'GET';
         const start = Date.now();
         const resp = await fetchSafeExternal(endpoint.url, {
-          method: 'GET',
+          method,
           signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-          headers: { 'User-Agent': 'SatRank-HealthCheck/1.0' },
+          headers: {
+            'User-Agent': 'SatRank-HealthCheck/1.0',
+            ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+          },
+          ...(method === 'POST' ? { body: '{}' } : {}),
         });
         latencyMs = Date.now() - start;
         status = resp.status;

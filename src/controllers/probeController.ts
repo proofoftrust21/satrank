@@ -346,13 +346,27 @@ export class ProbeController {
       cost: { creditsDeducted: PROBE_COST_CREDITS },
     };
 
+    // Audit r3 — derive HTTP method from the catalogue when the URL is known.
+    // POST-only endpoints (llm402.ai, etc) return 405 on GET; without this
+    // lookup the user pays 5 sats and gets a confusing UNREACHABLE result on
+    // a perfectly working endpoint.
+    let probeMethod: 'GET' | 'POST' = 'GET';
+    if (this.bayesianDeps) {
+      try {
+        const ep = (await this.bayesianDeps.serviceEndpointRepo.findByUrl(url));
+        if (ep?.http_method === 'POST') probeMethod = 'POST';
+      } catch { /* fail open: stay on GET */ }
+    }
+
     // --- Step 1: first fetch ---
     const firstStart = Date.now();
     let firstResponse: Response | globalThis.Response | null = null;
     try {
       firstResponse = await fetchSafeExternal(url, {
-        method: 'GET',
+        method: probeMethod,
         signal: AbortSignal.timeout(config.PROBE_FETCH_TIMEOUT_MS),
+        headers: probeMethod === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
+        ...(probeMethod === 'POST' ? { body: '{}' } : {}),
       });
       result.firstFetch.latencyMs = Date.now() - firstStart;
       result.firstFetch.status = firstResponse.status;
@@ -433,9 +447,13 @@ export class ProbeController {
     const secondStart = Date.now();
     try {
       const secondResponse = await fetchSafeExternal(url, {
-        method: 'GET',
-        headers: { Authorization: authHeader },
+        method: probeMethod,
+        headers: {
+          Authorization: authHeader,
+          ...(probeMethod === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+        },
         signal: AbortSignal.timeout(config.PROBE_FETCH_TIMEOUT_MS),
+        ...(probeMethod === 'POST' ? { body: '{}' } : {}),
       });
       // F-07: cap the read, detect binary Content-Type, and never echo binary
       // bytes as a decoded "preview" string — a malicious target could craft a

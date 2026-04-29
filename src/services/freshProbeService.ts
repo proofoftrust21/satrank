@@ -37,17 +37,27 @@ export async function probeUrlsNow(
   const probe = async (url: string): Promise<FreshProbeResult> => {
     const start = Date.now();
     try {
+      // Audit r3 — read http_method from catalogue BEFORE the fetch so the
+      // synchronous probe respects POST-only endpoints (llm402.ai etc).
+      // Without this, agents who pay 2 sats for a fresh probe of a
+      // POST-only endpoint receive a 405 result and the persisted
+      // last_http_status is wrong for everyone downstream.
+      const endpointPre = await repo.findByUrl(url);
+      const method = endpointPre?.http_method ?? 'GET';
       const resp = await fetchSafeExternal(url, {
-        method: 'GET',
+        method,
         signal: AbortSignal.timeout(FRESH_PROBE_TIMEOUT_MS),
-        headers: { 'User-Agent': 'SatRank-FreshProbe/1.0' },
+        headers: {
+          'User-Agent': 'SatRank-FreshProbe/1.0',
+          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(method === 'POST' ? { body: '{}' } : {}),
       });
       const latencyMs = Date.now() - start;
       const status = resp.status;
       const healthy = status === 402 || (status >= 200 && status < 300);
-      const endpoint = await repo.findByUrl(url);
-      const agentHash = endpoint?.agent_hash ?? null;
-      const source = endpoint?.source ?? 'ad_hoc';
+      const agentHash = endpointPre?.agent_hash ?? null;
+      const source = endpointPre?.source ?? 'ad_hoc';
       await repo.upsert(agentHash, url, status, latencyMs, source);
       return { url, status, latency_ms: latencyMs, healthy };
     } catch (err) {

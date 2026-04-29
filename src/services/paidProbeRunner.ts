@@ -83,8 +83,19 @@ export interface PaidProbeResult {
   detail?: string;
 }
 
+/** Audit r3 — un endpoint candidat avec sa méthode HTTP attendue. La méthode
+ *  vient du catalogue (`service_endpoints.http_method`, exposé par 402index
+ *  sur ~95% des entrées). Avant ce refactor le runner faisait toujours GET,
+ *  ce qui causait des 405 Method Not Allowed sur ~50% des candidats POST-only
+ *  (llm402.ai principalement) — le challenge fetch retournait 405 au lieu de
+ *  402, le runner taggait `probe_not_402` et zéro sat n'était dépensé. */
+export interface PaidProbeEndpoint {
+  url: string;
+  http_method: 'GET' | 'POST';
+}
+
 export interface PaidProbeRunOptions {
-  endpoint_urls: string[];
+  endpoints: PaidProbeEndpoint[];
   /** Cap absolu par probe. Une invoice > N sats est skipped (jamais payée). */
   maxPerProbeSats: number;
   /** Cap absolu sur l'ensemble du cycle. La probe N+1 est skipped si
@@ -155,14 +166,14 @@ export class PaidProbeRunner {
         quality_skipped: 0,
       },
     };
-    const limit = opts.maxProbesPerCycle ?? opts.endpoint_urls.length;
-    const urls = opts.endpoint_urls.slice(0, limit);
+    const limit = opts.maxProbesPerCycle ?? opts.endpoints.length;
+    const endpoints = opts.endpoints.slice(0, limit);
 
     if (!this.deps.lndClient.payInvoice) {
       // Pas de wiring LND — on retourne tout en skipped_no_lnd.
-      for (const url of urls) {
+      for (const ep of endpoints) {
         const result: PaidProbeResult = {
-          endpoint_url: url,
+          endpoint_url: ep.url,
           payment: 'skipped_no_lnd',
           delivery: 'delivery_skipped',
           quality: 'quality_skipped',
@@ -177,8 +188,8 @@ export class PaidProbeRunner {
       return summary;
     }
 
-    for (const url of urls) {
-      const result = await this.probeOne(url, opts, summary.totalSpent);
+    for (const ep of endpoints) {
+      const result = await this.probeOne(ep, opts, summary.totalSpent);
       summary.results.push(result);
       summary.totalSpent += result.sats_spent;
       summary.outcomes[result.payment] += 1;
@@ -195,7 +206,7 @@ export class PaidProbeRunner {
       ) {
         await this.deps.stagesRepo.observe(
           {
-            endpoint_url: url,
+            endpoint_url: ep.url,
             stage: STAGE_PAYMENT,
             success: result.payment === 'pay_ok',
             weight: 2, // WEIGHT_PAID_PROBE = 2.0 (paid > sovereign probe)
@@ -209,7 +220,7 @@ export class PaidProbeRunner {
       if (result.delivery !== 'delivery_skipped') {
         await this.deps.stagesRepo.observe(
           {
-            endpoint_url: url,
+            endpoint_url: ep.url,
             stage: STAGE_DELIVERY,
             success: result.delivery === 'delivery_ok',
             weight: 2,
@@ -223,7 +234,7 @@ export class PaidProbeRunner {
       if (result.quality !== 'quality_skipped') {
         await this.deps.stagesRepo.observe(
           {
-            endpoint_url: url,
+            endpoint_url: ep.url,
             stage: STAGE_QUALITY,
             success: result.quality === 'quality_ok',
             weight: 2,
@@ -237,17 +248,32 @@ export class PaidProbeRunner {
   }
 
   private async probeOne(
-    url: string,
+    ep: PaidProbeEndpoint,
     opts: PaidProbeRunOptions,
     spentSoFar: number,
   ): Promise<PaidProbeResult> {
-    // Step 1 — GET 402 challenge.
+    const url = ep.url;
+    const method = ep.http_method;
+    // Audit r3 — utiliser la méthode du catalogue. Beaucoup d'endpoints
+    // L402 (notamment la flotte llm402.ai) sont POST-only et renvoient 405
+    // Method Not Allowed sur GET — le runner les taggait alors `probe_not_402`
+    // et n'apprenait jamais rien d'eux. POST avec body vide sur ces endpoints
+    // déclenche correctement le 402 + macaroon + invoice.
+    // Step 1 — challenge fetch (méthode = http_method du catalogue).
     let firstResp: Response;
     try {
       firstResp = await this.fetchImpl(url, {
-        method: 'GET',
+        method,
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: { 'User-Agent': 'SatRank-PaidProbe/1.0' },
+        headers: {
+          'User-Agent': 'SatRank-PaidProbe/1.0',
+          // Body-carrying methods need a content-type even with empty body —
+          // some servers reject otherwise. Empty JSON body is the safest
+          // default for a probe (the endpoint will respond with 402 challenge
+          // before consuming any body content).
+          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(method === 'POST' ? { body: '{}' } : {}),
       });
     } catch (err) {
       if (err instanceof SsrfBlockedError) {
@@ -389,17 +415,19 @@ export class PaidProbeRunner {
       };
     }
 
-    // Step 4 — recall avec L402 token.
+    // Step 4 — recall avec L402 token, même méthode que le challenge.
     const token = `L402 ${challenge.macaroon}:${pay.paymentPreimage}`;
     let recallResp: Response;
     try {
       recallResp = await this.fetchImpl(url, {
-        method: 'GET',
+        method,
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: {
           'User-Agent': 'SatRank-PaidProbe/1.0',
           Authorization: token,
+          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
         },
+        ...(method === 'POST' ? { body: '{}' } : {}),
       });
     } catch {
       return {

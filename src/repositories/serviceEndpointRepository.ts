@@ -444,6 +444,12 @@ export class ServiceEndpointRepository {
             OR (esp_challenge.alpha / NULLIF(esp_challenge.alpha + esp_challenge.beta, 0)) >= $2::double precision
           )
           AND (esp_payment.n_obs IS NULL OR esp_payment.n_obs < $3::double precision)
+          -- Audit r3 — only probe endpoints whose most-recent crawler hit was
+          -- a 402 challenge. Without this filter, the cron picked up rows
+          -- whose last_http_status was 405/404/5xx etc and burned cycles
+          -- on dead/misconfigured endpoints. NULL accepted to allow
+          -- never-checked rows through (rare bootstrap case).
+          AND (se.last_http_status IS NULL OR se.last_http_status = 402)
         ORDER BY
           COALESCE(esp_payment.n_obs, 0) ASC,
           se.last_intent_query_at DESC NULLS LAST
@@ -549,6 +555,9 @@ export class ServiceEndpointRepository {
             OR (esp_challenge.alpha / NULLIF(esp_challenge.alpha + esp_challenge.beta, 0)) >= $2::double precision
           )
           AND (esp_payment.last_updated IS NULL OR esp_payment.last_updated < $3::bigint)
+          -- Audit r3 — same status filter as findPaidProbeCandidates: skip
+          -- endpoints whose last crawler hit was non-402 (4xx/5xx).
+          AND (se.last_http_status IS NULL OR se.last_http_status = 402)
         ORDER BY
           COALESCE(esp_payment.n_obs, 0) ASC,
           CASE WHEN se.last_intent_query_at IS NOT NULL THEN 1 ELSE 0 END DESC,

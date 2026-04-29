@@ -57,10 +57,10 @@ function fakeLnd(behavior: {
   } as unknown as LndGraphClient;
 }
 
-function makeFetch(routes: Array<{ match: (url: string, init?: RequestInit) => boolean; respond: () => Response }>): typeof fetch {
+function makeFetch(routes: Array<{ match: (url: string, init?: RequestInit) => boolean; respond: (init?: RequestInit) => Response }>): typeof fetch {
   return ((url: string, init?: RequestInit) => {
     for (const r of routes) {
-      if (r.match(url, init)) return Promise.resolve(r.respond());
+      if (r.match(url, init)) return Promise.resolve(r.respond(init));
     }
     throw new Error(`fetchMock: unmatched ${url}`);
   }) as unknown as typeof fetch;
@@ -78,6 +78,54 @@ describe('PaidProbeRunner', () => {
 
   afterAll(async () => {
     await teardownTestPool(testDb);
+  });
+
+  it('audit r3: POST-only endpoint — challenge fetch uses http_method=POST', async () => {
+    // Repro of the prod bug: llm402.ai returns 405 on GET but 402 on POST.
+    // The runner must use http_method=POST for the challenge fetch when the
+    // catalogue says so. Otherwise the entire llm402.ai fleet (~11 endpoints)
+    // sits in `probe_not_402` and never gets paid-probed.
+    const url = 'https://post-only.test/v1/chat';
+    const invoice = makeMainnetInvoice(5);
+    let methodsSeen: string[] = [];
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => {
+          if (u !== url) return false;
+          methodsSeen.push((init?.method ?? 'GET').toString());
+          return true;
+        },
+        respond: (init) => {
+          const isAuthorized = !!((init?.headers as Record<string, string> | undefined)?.['Authorization']);
+          const method = (init?.method ?? 'GET').toString();
+          if (method !== 'POST') return new Response('', { status: 405 });
+          if (!isAuthorized) {
+            return new Response('', {
+              status: 402,
+              headers: { 'WWW-Authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+            });
+          }
+          return new Response(JSON.stringify({ data: 'served' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    ]);
+    const runner = new PaidProbeRunner({
+      stagesRepo,
+      lndClient: fakeLnd({ payOk: true }),
+      fetchImpl: fetchMock,
+    });
+    const summary = await runner.runOnce({
+      endpoints: [{ url, http_method: 'POST' }],
+      maxPerProbeSats: 10,
+      totalBudgetSats: 100,
+      selfPubkey: SELF_PUBKEY,
+    });
+    expect(summary.outcomes.pay_ok).toBe(1);
+    expect(summary.outcomes.probe_not_402).toBe(0); // would be 1 with the GET-only bug
+    expect(methodsSeen.every(m => m === 'POST')).toBe(true);
+    expect(summary.totalSpent).toBe(5);
   });
 
   it('happy path: pay_ok + delivery_ok → stages 3 et 4 success', async () => {
@@ -111,7 +159,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMock,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       selfPubkey: SELF_PUBKEY,
@@ -144,7 +192,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMock,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       selfPubkey: SELF_PUBKEY,
@@ -177,7 +225,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMock,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 5, // invoice 100 > 5
       totalBudgetSats: 1000,
       selfPubkey: SELF_PUBKEY,
@@ -218,7 +266,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMockWithAuth,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: urls,
+      endpoints: urls.map((u: string) => ({ url: u, http_method: 'GET' as const })),
       maxPerProbeSats: 10,
       totalBudgetSats: 8, // suffit pour 1 (5 sats) mais bloque la 2nd (10 > 8)
       selfPubkey: SELF_PUBKEY,
@@ -250,7 +298,7 @@ describe('PaidProbeRunner', () => {
     const parsed = parseBolt11(invoice);
     expect(parsed.payeeNodeKey).toBeTruthy();
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       selfPubkey: parsed.payeeNodeKey!,
@@ -270,7 +318,7 @@ describe('PaidProbeRunner', () => {
       }]),
     });
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       selfPubkey: SELF_PUBKEY,
@@ -300,7 +348,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMock,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       selfPubkey: SELF_PUBKEY,
@@ -339,7 +387,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMock,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       selfPubkey: SELF_PUBKEY,
@@ -374,7 +422,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMock,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: [url],
+      endpoints: [{ url, http_method: 'GET' }],
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       selfPubkey: SELF_PUBKEY,
@@ -400,7 +448,7 @@ describe('PaidProbeRunner', () => {
       fetchImpl: fetchMock,
     });
     const summary = await runner.runOnce({
-      endpoint_urls: urls,
+      endpoints: urls.map((u: string) => ({ url: u, http_method: 'GET' as const })),
       maxPerProbeSats: 10,
       totalBudgetSats: 100,
       maxProbesPerCycle: 2,
