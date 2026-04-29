@@ -72,8 +72,13 @@ deploy:
 	# Audit M9: rsync preserves the local operator's UID by default, which
 	# mapped to UNKNOWN:staff on the server (no user with UID 501 exists).
 	# Force root:root ownership post-sync so the deploy never leaves files
-	# that another user with a matching UID could later modify.
-	ssh $(SATRANK_HOST) "chown -R root:root $(REMOTE_DIR) && chmod 600 $(REMOTE_DIR)/.env.production 2>/dev/null || true"
+	# that another user with a matching UID could later modify. The two
+	# probe-relevant macaroons (probe-pay.macaroon for paid-probe stages
+	# 3-5; invoice.macaroon for /api/deposit) need to stay readable by
+	# the container user (uid 1001 = satrank) — chown them back after the
+	# recursive root reset. Without this, every deploy breaks paid probes
+	# silently with EACCES at boot (Sim 7 follow-up bootstrap discovery).
+	ssh $(SATRANK_HOST) "chown -R root:root $(REMOTE_DIR) && chmod 600 $(REMOTE_DIR)/.env.production 2>/dev/null && chown 1001:1001 $(REMOTE_DIR)/probe-pay.macaroon $(REMOTE_DIR)/invoice.macaroon 2>/dev/null || true"
 
 # Cleanup
 clean:
