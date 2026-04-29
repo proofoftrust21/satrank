@@ -40,11 +40,11 @@
   <header class="doc-header">
     <div class="doc-eyebrow">
       <span class="pulse" aria-hidden="true"></span>
-      Developer docs · Free intent + 1 sat per fulfill
+      Developer docs · Free directory · Per-endpoint L402 pricing
     </div>
     <h1 class="doc-title">Build an agent on SatRank in five lines.</h1>
     <p class="doc-sub">
-      SatRank is a sovereign trust oracle for the Bitcoin Lightning Network. Your agent describes an intent (category, budget, latency ceiling), the oracle returns a ranked list of L402 endpoints with a Bayesian trust posterior, and the SDK handles the Lightning payment and the response. No account. No API key on the read path. Pay 1 sat per query, or take the free intent tier.
+      SatRank is a sovereign trust oracle for the Bitcoin Lightning Network. Your agent describes an intent (category, budget, latency ceiling), the oracle returns a ranked list of L402 endpoints with a Bayesian trust posterior + 5-stage L402 contract decomposition, and the SDK handles the Lightning payment and the response. No account. No API key on the read path. Discovery is free; the SDK's <code>fulfill()</code> pays whichever L402 endpoint it picks (price set by that endpoint). Optional paid SatRank endpoints (e.g. <code>/api/intent?fresh=true</code> at 2 sats, <code>/api/profile/:id</code> at 1 sat) are listed below.
     </p>
     <a href="/" class="doc-header-back">&larr; Back to SatRank</a>
   </header>
@@ -93,7 +93,8 @@ pip install satrank</code></pre>
 const sr = new SatRank({ apiBase: 'https://satrank.dev' });
 
 const result = await sr.fulfill({
-  intent: { category: 'data', budget_sats: 50, max_latency_ms: 5000 },
+  intent: { category: 'data', max_latency_ms: 5000 },
+  budget_sats: 50,
 });
 
 console.log(result.success);            // true on a paid response
@@ -106,8 +107,9 @@ console.log(result.response_body);      // the paid API response</code></pre>
 
 sr = SatRank(api_base="https://satrank.dev")
 
-result = sr.fulfill(
-    intent={"category": "data", "budget_sats": 50, "max_latency_ms": 5000},
+result = await sr.fulfill(
+    intent={"category": "data", "max_latency_ms": 5000},
+    budget_sats=50,
 )
 
 print(result["success"])                          # True on a paid response
@@ -132,11 +134,21 @@ print(result["response_body"])                    # the paid API response</code>
 
         <h3>Methods</h3>
         <ul>
-          <li><code>resolveIntent(intent)</code> &mdash; ranked candidates only. Free.</li>
-          <li><code>fulfill({ intent })</code> &mdash; resolve, pay, return response. Paid.</li>
-          <li><code>verdict(hashOrUrl)</code> &mdash; full Bayesian posterior for one target. Paid (1 sat).</li>
-          <li><code>report({ target, outcome, preimage })</code> &mdash; submit a first-party outcome. Free.</li>
+          <li><code>resolveIntent({ category, keywords?, budget_sats?, max_latency_ms?, fresh?, limit?, caller? })</code> &mdash; ranked candidates only. Free unless <code>fresh: true</code> (2 sats).</li>
+          <li><code>fulfill({ intent, budget_sats, request?, retry_policy?, max_fee_sats?, caller? })</code> &mdash; resolve, pay the chosen L402 endpoint, return its response. The SatRank API call itself is free; <code>cost_sats</code> reflects what was paid to the downstream endpoint.</li>
+          <li><code>listCategories()</code> &mdash; live category list. Free.</li>
         </ul>
+
+        <h3>Federation primitives (SDK 1.1.0)</h3>
+        <pre><code>import { aggregateOracles, fetchOraclePeers } from '@satrank/sdk';
+
+const fed = await aggregateOracles({
+  baseUrl: 'https://satrank.dev',
+  maxStaleSec: 7 * 86400,
+  minCatalogueSize: 50,
+  requireCalibration: true,
+});
+// fed.peers = list of trustworthy SatRank-compatible oracles</code></pre>
 
         <p>Source: <a href="https://github.com/proofoftrust21/satrank/tree/main/sdk" rel="noopener noreferrer">github.com/proofoftrust21/satrank/sdk</a>.</p>
       </section>
@@ -145,19 +157,32 @@ print(result["response_body"])                    # the paid API response</code>
         <h2>4. Python SDK</h2>
         <p>Mirror of the TypeScript SDK. Synchronous methods backed by <code>httpx</code>. Compatible with Python 3.10+.</p>
         <pre><code>from satrank import SatRank
+from satrank.aggregate import aggregate_oracles  # PR-7 federation primitive
 
 sr = SatRank(
     api_base="https://satrank.dev",
     wallet=my_ln_wallet,            # optional
     deposit_token="L402 deposit:&lt;preimage&gt;",  # optional
     caller="agent-42",
-    request_timeout_ms=10_000,
 )
 
-candidates = sr.resolve_intent({"category": "data", "budget_sats": 50})
-result     = sr.fulfill(intent={"category": "data", "budget_sats": 50})
-verdict    = sr.verdict("&lt;public_key_hash or url&gt;")
-sr.report(target="&lt;url&gt;", outcome="success", preimage="&lt;hex&gt;")</code></pre>
+# Free directory read.
+categories = await sr.list_categories()
+candidates = await sr.resolve_intent(category="data", budget_sats=50)
+
+# Resolve + pay the chosen L402 endpoint (cost = endpoint price, not SatRank price).
+result = await sr.fulfill(
+    intent={"category": "data", "max_latency_ms": 5000},
+    budget_sats=50,
+)
+
+# Federation: aggregate trustworthy peer oracles.
+fed = await aggregate_oracles(
+    base_url="https://satrank.dev",
+    max_stale_sec=7 * 86400,
+    min_catalogue_size=50,
+    require_calibration=True,
+)</code></pre>
 
         <p>Source: <a href="https://github.com/proofoftrust21/satrank/tree/main/python-sdk" rel="noopener noreferrer">github.com/proofoftrust21/satrank/python-sdk</a>.</p>
       </section>
@@ -236,8 +261,8 @@ WWW-Authenticate: L402 macaroon="MDAyN...", invoice="lnbc10n1p..."</code></pre>
           <tbody>
             <tr><td><code>POST /api/intent</code></td><td>10 requests / 60 seconds per IP</td></tr>
             <tr><td><code>POST /api/deposit</code></td><td>3 invoices / minute per IP</td></tr>
-            <tr><td><code>POST /api/report</code></td><td>30 requests / minute per token</td></tr>
-            <tr><td><code>POST /api/services/register</code></td><td>5 requests / minute per API key</td></tr>
+            <tr><td><code>POST /api/report</code></td><td>20 requests / minute per token</td></tr>
+            <tr><td><code>POST /api/services/register</code></td><td>10 requests / minute per IP</td></tr>
             <tr><td><code>GET  /api/ping/:pubkey</code></td><td>10 requests / minute per IP</td></tr>
           </tbody>
         </table>
@@ -261,8 +286,8 @@ WWW-Authenticate: L402 macaroon="MDAyN...", invoice="lnbc10n1p..."</code></pre>
         <h2>11. Data sources</h2>
         <p>The SatRank catalog of L402 endpoints is sourced from publicly available registries in the L402 ecosystem.</p>
         <ul>
-          <li><strong><a href="https://402index.io" rel="noopener noreferrer">402index.io</a></strong> &mdash; primary source (~95% of the current catalog). Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.</li>
-          <li><strong><a href="https://l402.directory" rel="noopener noreferrer">l402.directory</a></strong> &mdash; curated supplementary source with <code>.well-known/l402-directory-verify.txt</code> claim verification. Smaller catalog (~20 paid endpoints) but contributes signals 402index does not surface: <code>consumption.type</code> (browser / api_response / stream / download), <code>provider.contact</code>, and per-service <code>.well-known</code> attestation. Cross-listed entries accumulate both attributions in <code>service_endpoints.sources[]</code>.</li>
+          <li><strong><a href="https://402index.io" rel="noopener noreferrer">402index.io</a></strong> &mdash; primary source for the current catalog. Maintained by Ryan Gentry, the largest protocol-agnostic directory of paid APIs for AI agents. SatRank consumes their public API and adds Bayesian probabilistic scoring on top.</li>
+          <li><strong><a href="https://l402.directory" rel="noopener noreferrer">l402.directory</a></strong> &mdash; curated supplementary source ingested as of schema v45 with <code>.well-known/l402-directory-verify.txt</code> claim verification. Contributes signals 402index does not surface: <code>consumption.type</code> (browser / api_response / stream / download), <code>provider.contact</code>, and per-service <code>.well-known</code> attestation. Cross-listed entries accumulate both attributions in <code>service_endpoints.sources[]</code>. The live source breakdown is exposed at <code>serviceSources</code> on <a href="/api/stats">/api/stats</a>.</li>
         </ul>
         <p>Operator self-submissions are accepted via <code>POST /api/services/register</code> with NIP-98 authentication and a one-time L402 listing fee. Submitted endpoints are labeled <code>source=self_registered</code> in the database and validated by the same registry crawler before they enter the ranking pool. Self-submissions can only fill empty metadata fields; trusted-source data (name, category, description) is never overwritten.</p>
         <p>Roadmap: announcing <code>/api/services/register</code> publicly so operators can register without going through any third-party registry.</p>
