@@ -80,6 +80,25 @@ const configSchema = z.object({
   PAID_PROBE_MAX_PER_PROBE_SATS: z.coerce.number().int().positive().default(5),
   PAID_PROBE_TOTAL_BUDGET_SATS: z.coerce.number().int().positive().default(50),
   PAID_PROBE_MAX_PER_CYCLE: z.coerce.number().int().positive().default(10),
+  // Excellence pass — validate every newly ingested endpoint with a single
+  // paid probe to seed stages 3-5 with n_obs=1, breaking the cold-start
+  // chicken-and-egg loop (no demand signal → no paid probe → no
+  // stage_posteriors → not visible in /api/intent → no demand signal).
+  PAID_PROBE_VALIDATE_NEW: z.coerce.boolean().default(false),
+  // Excellence pass — monthly sweep cron: probes the medium-demand band
+  // (endpoints not in the daily Pareto-80 but with some signal — recent
+  // intent query, multi-source curation, healthy upstream score). Detects
+  // drift on endpoints that fell out of the hot tier without being
+  // explicitly deprecated. Default OFF; toggle on for excellence-tier
+  // catalogue coverage.
+  PAID_PROBE_SWEEP_ENABLED: z.coerce.boolean().default(false),
+  // Weekly tick: 25 probes × 4 weeks × ~25 sats avg = ~2 500 sats/month — covers
+  // 100 endpoints/month so the full ~450-endpoint catalogue rotates through
+  // every 4-5 months. The freshAfter window prevents re-probing a row that the
+  // daily Pareto-80 cron just hit.
+  PAID_PROBE_SWEEP_INTERVAL_HOURS: z.coerce.number().int().positive().default(24 * 7),
+  PAID_PROBE_SWEEP_MAX_PER_RUN: z.coerce.number().int().positive().default(25),
+  PAID_PROBE_SWEEP_FRESH_AFTER_DAYS: z.coerce.number().int().positive().default(30),
   // Probe safety rails — caps on the L402 invoice SatRank will pay and on the
   // probe round-trip fetch duration. Per-probe defaults are conservative;
   // override via env for stress demos.

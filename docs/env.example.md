@@ -100,6 +100,26 @@ at default cap. Adjust `MAX_PER_PROBE_SATS` upward (e.g. 50) to cover
 the median catalogue invoice (~21 sats) — see
 [OPERATOR_QUICKSTART.md](OPERATOR_QUICKSTART.md) "Paid probe activation".
 
+### Sweep cron (Excellence pass — medium-demand band)
+
+The Pareto-80 cron above probes the daily hot tier. The SWEEP cron is a
+slower, lower-rate cron that probes endpoints the daily cron misses —
+the medium-demand band: endpoints with at least *some* signal of future
+demand (recent intent query, multi-source curation, healthy upstream
+reliability) but not in the daily hot tier. Catches drift on the long
+tail of the catalogue. OPT-IN.
+
+```
+PAID_PROBE_SWEEP_ENABLED=false
+PAID_PROBE_SWEEP_INTERVAL_HOURS=168
+PAID_PROBE_SWEEP_MAX_PER_RUN=25
+PAID_PROBE_SWEEP_FRESH_AFTER_DAYS=30
+```
+
+Cap math: 25 probes × ~25 sats × 4 weeks/month = ~2 500 sats/month
+(~$1/month). Combined with the daily Pareto-80 cron (~8 000 sats/month
+in cruise), excellence-tier total ≈ 10 500 sats/month ≈ $4/month.
+
 ## MCP / DVM upstream
 
 `SATRANK_API_BASE` is read by both the MCP server (`intent` tool) and

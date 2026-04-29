@@ -985,6 +985,89 @@ async function main(): Promise<void> {
             },
             'Sim 7 follow-up — Paid probe cron scheduled (stages 3-5)',
           );
+
+          // Excellence pass — sweep cron. Probes the medium-demand band
+          // (endpoints not in the daily Pareto-80 but with some signal of
+          // future demand) on a slower cadence. Catches drift on the long
+          // tail of the catalogue. Skips rows already paid-probed within
+          // PAID_PROBE_SWEEP_FRESH_AFTER_DAYS to avoid double-tap.
+          if (config.PAID_PROBE_SWEEP_ENABLED) {
+            const runSweep = async (): Promise<void> => {
+              try {
+                const ready = await ensurePaidProbeRunner();
+                if (!ready) return;
+                const candidates = await serviceEndpointRepoMulti.findSweepCandidates({
+                  limit: config.PAID_PROBE_SWEEP_MAX_PER_RUN,
+                  maxPriceSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
+                  freshAfterDays: config.PAID_PROBE_SWEEP_FRESH_AFTER_DAYS,
+                  minChallengePSuccess: 0.4,
+                });
+                if (candidates.length === 0) {
+                  logger.info('Paid probe sweep: no candidates (all freshly probed or filtered) — skipped');
+                  return;
+                }
+                const summary = await ready.runner.runOnce({
+                  endpoint_urls: candidates.map((e) => e.url),
+                  maxPerProbeSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
+                  totalBudgetSats: config.PAID_PROBE_MAX_PER_PROBE_SATS * config.PAID_PROBE_SWEEP_MAX_PER_RUN,
+                  maxProbesPerCycle: config.PAID_PROBE_SWEEP_MAX_PER_RUN,
+                  selfPubkey: ready.selfPubkey,
+                });
+                if (summary.totalSpent > 0) {
+                  try {
+                    await oracleBudgetSvc.logSpending('paid_probe', summary.totalSpent, {
+                      mode: 'sweep',
+                      outcomes: summary.outcomes,
+                      delivery: summary.deliveryOutcomes,
+                      quality: summary.qualityOutcomes,
+                      n_endpoints: candidates.length,
+                    });
+                  } catch (logErr) {
+                    const errMsg = logErr instanceof Error ? logErr.message : String(logErr);
+                    logger.error(
+                      { error: errMsg, spent_sats: summary.totalSpent, n_endpoints: candidates.length },
+                      'ACCOUNTING FAILURE: paid probe sweep spent sats but logSpending() failed — manual reconciliation required against /api/oracle/budget',
+                    );
+                  }
+                }
+                logger.info(
+                  {
+                    candidates: candidates.length,
+                    probed: candidates.length,
+                    spent: summary.totalSpent,
+                    outcomes: summary.outcomes,
+                    delivery: summary.deliveryOutcomes,
+                    quality: summary.qualityOutcomes,
+                  },
+                  'Paid probe sweep cycle complete (medium-demand band)',
+                );
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logger.error({ error: msg }, 'Paid probe sweep cron error');
+              }
+            };
+            // Initial fire 4 hours after boot (gives the daily Pareto-80
+            // cron time to populate stage 3 first), then weekly default.
+            const sweepInitialDelay = 4 * 60 * 60 * 1000;
+            const sweepIntervalMs = config.PAID_PROBE_SWEEP_INTERVAL_HOURS * 60 * 60 * 1000;
+            const sweepInitialTimer = setTimeout(() => {
+              runSweep();
+              const recurrent = setInterval(runSweep, sweepIntervalMs);
+              recurrent.unref?.();
+            }, sweepInitialDelay);
+            sweepInitialTimer.unref?.();
+            logger.info(
+              {
+                initialDelayMs: sweepInitialDelay,
+                intervalMs: sweepIntervalMs,
+                maxPerRun: config.PAID_PROBE_SWEEP_MAX_PER_RUN,
+                freshAfterDays: config.PAID_PROBE_SWEEP_FRESH_AFTER_DAYS,
+              },
+              'Excellence pass — Paid probe SWEEP cron scheduled (medium-demand band)',
+            );
+          } else {
+            logger.info('Paid probe SWEEP cron disabled (PAID_PROBE_SWEEP_ENABLED=false)');
+          }
         } else {
           logger.info(
             'Paid probe cron disabled (PAID_PROBE_ENABLED=false) — stages 3-5 stay empty until enabled or until crowd outcomes flow',

@@ -447,6 +447,70 @@ export class ServiceEndpointRepository {
     return rows;
   }
 
+  /** Sim 7+ — sweep-mode candidate selection.
+   *
+   *  Where `findPaidProbeCandidates` focuses on the recently-queried hot
+   *  Pareto-80 (the cron's daily bread), `findSweepCandidates` covers the
+   *  slower drift surface: endpoints with at least *some* signal of future
+   *  demand but NOT yet sampled by paid probes in the last N days.
+   *
+   *  Demand-score proxy (multi-tier ORDER BY, no real-valued score in SQL —
+   *  cheaper to debug, deterministic):
+   *  1. stage 3 n_obs ASC (undersampled first)
+   *  2. last_intent_query_at NOT NULL boost (real demand signal)
+   *  3. multi-source attestation (more sources = more curated)
+   *  4. upstream_reliability_score DESC (402index quality signal)
+   *  5. service_price_sats ASC (cheaper = more likely consumed)
+   *
+   *  Hard filters (defense-in-depth, not over-eager):
+   *  - deprecated = FALSE
+   *  - check_count >= 1 (already probed at least once by the crawler)
+   *  - service_price_sats <= maxPriceSats (cost bound)
+   *  - last paid probe (stage 3) older than freshAfterDays days OR null
+   *  - stage 1 challenge p_success >= minChallengePSuccess (skip dead-at-challenge)
+   *
+   *  Cost model: with default thresholds and Palier 2 cruise caps
+   *  (maxPriceSats=50, monthly cron), this typically returns the 100-150
+   *  endpoints in the medium-demand band, sized for a sweep that adds
+   *  ~3000-4000 sats/month. */
+  async findSweepCandidates(opts: {
+    limit: number;
+    maxPriceSats: number;
+    freshAfterDays?: number;
+    minChallengePSuccess?: number;
+  }): Promise<ServiceEndpoint[]> {
+    const freshAfter = opts.freshAfterDays ?? 30;
+    const minChallengeP = opts.minChallengePSuccess ?? 0.4;
+    const cutoffSec = Math.floor(Date.now() / 1000) - freshAfter * 86400;
+    const { rows } = await this.db.query<ServiceEndpoint>(
+      `SELECT se.*
+         FROM service_endpoints se
+         LEFT JOIN endpoint_stage_posteriors esp_challenge
+                ON esp_challenge.endpoint_url_hash = encode(digest(se.url, 'sha256'), 'hex')
+               AND esp_challenge.stage = 1
+         LEFT JOIN endpoint_stage_posteriors esp_payment
+                ON esp_payment.endpoint_url_hash = encode(digest(se.url, 'sha256'), 'hex')
+               AND esp_payment.stage = 3
+        WHERE se.deprecated = FALSE
+          AND se.check_count >= 1
+          AND (se.service_price_sats IS NULL OR se.service_price_sats <= $1::int)
+          AND (
+            esp_challenge.alpha IS NULL
+            OR (esp_challenge.alpha / NULLIF(esp_challenge.alpha + esp_challenge.beta, 0)) >= $2::double precision
+          )
+          AND (esp_payment.last_updated IS NULL OR esp_payment.last_updated < $3::bigint)
+        ORDER BY
+          COALESCE(esp_payment.n_obs, 0) ASC,
+          CASE WHEN se.last_intent_query_at IS NOT NULL THEN 1 ELSE 0 END DESC,
+          COALESCE(array_length(se.sources, 1), 1) DESC,
+          COALESCE(se.upstream_reliability_score, 50) DESC,
+          se.service_price_sats ASC NULLS LAST
+        LIMIT $4::int`,
+      [opts.maxPriceSats, minChallengeP, cutoffSec, opts.limit],
+    );
+    return rows;
+  }
+
   /** Vague 3 Phase 2.6 — counts of endpoints per host. Used by registryCrawler
    *  to enforce ABSOLUTE_HOST_CAP_TOTAL: a single host (e.g. llm402.ai) cannot
    *  exceed N endpoints in the catalogue, regardless of how many cycles run.
