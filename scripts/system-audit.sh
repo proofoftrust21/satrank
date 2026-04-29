@@ -51,8 +51,46 @@ warn() { printf "  ${YELLOW}[WARN]${NC} %s\n" "$1"; WARN_COUNT=$((WARN_COUNT + 1
 section() { printf "\n${BLUE}== %s ==${NC}\n" "$1"; }
 detail() { printf "         ${NC}%s\n" "$1"; }
 
-curl_get() { curl -fsS --max-time 10 "$@" 2>/dev/null; }
-curl_get_with_status() { curl -sS --max-time 10 -w "\nHTTP_STATUS:%{http_code}" "$@" 2>/dev/null; }
+# API rate-limit on /api/* is 10/min/IP. The audit hits ~12 endpoints, so
+# pace at 7s/call to stay under the cap. Bypass the wait when an operator
+# token is supplied via OPERATOR_BYPASS_SECRET (skips rate limits + auth).
+RL_PAUSE_SEC="${RL_PAUSE_SEC:-7}"
+OPERATOR_HEADER=()
+if [ -n "${OPERATOR_BYPASS_SECRET:-}" ]; then
+  OPERATOR_HEADER=("-H" "X-Operator-Token: $OPERATOR_BYPASS_SECRET")
+  RL_PAUSE_SEC=0  # bypass token short-circuits the rate limiter
+fi
+
+curl_get() {
+  local rc
+  curl -fsS --max-time 10 ${OPERATOR_HEADER[@]+"${OPERATOR_HEADER[@]}"} "$@" 2>/dev/null
+  rc=$?
+  [ "$RL_PAUSE_SEC" -gt 0 ] && sleep "$RL_PAUSE_SEC"
+  return "$rc"
+}
+
+# SSH wrapper with retry on Connection refused (fail2ban transient).
+ssh_retry() {
+  local attempt=0
+  local max=3
+  local sleep_sec=8
+  local out
+  while [ "$attempt" -lt "$max" ]; do
+    out=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$SSH_HOST" "$@" 2>&1)
+    if [ $? -eq 0 ]; then
+      echo "$out"
+      return 0
+    fi
+    if echo "$out" | grep -q "Connection refused"; then
+      attempt=$((attempt + 1))
+      [ "$attempt" -lt "$max" ] && sleep "$sleep_sec"
+    else
+      # Non-transient error — give up immediately.
+      return 1
+    fi
+  done
+  return 1
+}
 
 # Pretty timestamp
 START_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -83,7 +121,7 @@ else
 fi
 
 if [ "$SKIP_SSH" -eq 0 ]; then
-  PS_OUT=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'docker ps --format "{{.Names}}\t{{.Status}}"' 2>/dev/null || echo '')
+  PS_OUT=$(ssh_retry 'docker ps --format "{{.Names}}\t{{.Status}}"' 2>/dev/null || echo '')
   for c in satrank-api satrank-crawler ptail-prod; do
     if echo "$PS_OUT" | grep -q "^$c"; then
       STATUS_LINE=$(echo "$PS_OUT" | grep "^$c" | head -1)
@@ -97,7 +135,7 @@ if [ "$SKIP_SSH" -eq 0 ]; then
     fi
   done
 
-  LND_BAL=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'lncli --tlscertpath=/mnt/HC_Volume_105326177/lnd/tls.cert --macaroonpath=/mnt/HC_Volume_105326177/lnd/data/chain/bitcoin/mainnet/admin.macaroon channelbalance 2>/dev/null' 2>/dev/null || echo '')
+  LND_BAL=$(ssh_retry 'lncli --tlscertpath=/mnt/HC_Volume_105326177/lnd/tls.cert --macaroonpath=/mnt/HC_Volume_105326177/lnd/data/chain/bitcoin/mainnet/admin.macaroon channelbalance 2>/dev/null' 2>/dev/null || echo '')
   if [ -n "$LND_BAL" ]; then
     LOCAL_SAT=$(echo "$LND_BAL" | jq -r '.local_balance.sat // "?"')
     if [ "$LOCAL_SAT" != "?" ] && [ "$LOCAL_SAT" -gt 100000 ]; then
@@ -140,8 +178,9 @@ for entry in "${ENDPOINTS_LIST[@]}"; do
   fi
 done
 
-# /api/intent — POST + check stage_posteriors + http_method
-INTENT_RESP=$(curl -fsS --max-time 10 -X POST "$API_BASE/api/intent" \
+# /api/intent — POST + check stage_posteriors + http_method (rate-limit-paced)
+[ "$RL_PAUSE_SEC" -gt 0 ] && sleep "$RL_PAUSE_SEC"
+INTENT_RESP=$(curl -fsS --max-time 10 ${OPERATOR_HEADER[@]+"${OPERATOR_HEADER[@]}"} -X POST "$API_BASE/api/intent" \
   -H 'Content-Type: application/json' \
   -d '{"category":"data/finance","limit":3}' 2>/dev/null || echo '')
 if [ -z "$INTENT_RESP" ]; then
@@ -167,7 +206,10 @@ else
   fi
 fi
 
-# 402 challenge gate
+# 402 challenge gate (rate-limit-paced; never use operator bypass on the
+# 402 canaries — those endpoints are L402-protected and bypass would
+# return 200 instead of the 402 we want to verify).
+[ "$RL_PAUSE_SEC" -gt 0 ] && sleep "$RL_PAUSE_SEC"
 INTENT_402=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" -X POST "$API_BASE/api/intent?fresh=true" \
   -H 'Content-Type: application/json' \
   -d '{"category":"data/finance","limit":1}' 2>/dev/null || echo '0')
@@ -177,6 +219,7 @@ INTENT_402=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" -X POST "$API
 # unauthenticated GET should return 402. /api/agent/:hash is FREE
 # in the current build (returns 404 for unknown hashes), so it's not
 # a reliable L402 canary post-PR-7.
+[ "$RL_PAUSE_SEC" -gt 0 ] && sleep "$RL_PAUSE_SEC"
 PROFILE_402=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" "$API_BASE/api/profile/0000000000000000000000000000000000000000000000000000000000000000" 2>/dev/null || echo '0')
 [ "$PROFILE_402" = "402" ] && pass "/api/profile/<zero-hash> → 402 (L402 native gate active)" || warn "/api/profile/<zero-hash> → $PROFILE_402 (expected 402)"
 
@@ -184,7 +227,7 @@ PROFILE_402=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" "$API_BASE/a
 section "3. Data flow (DB invariants)"
 # ---------------------------------------------------------------------------
 if [ "$SKIP_SSH" -eq 0 ]; then
-  STAGE_COUNTS=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'docker exec satrank-api node -e "
+  STAGE_COUNTS=$(ssh_retry 'docker exec satrank-api node -e "
 const {Pool} = require(\"pg\");
 const p = new Pool({connectionString: process.env.DATABASE_URL});
 p.query(\"SELECT stage, count(*) as n, round(avg(n_obs)::numeric, 2) as avg_n FROM endpoint_stage_posteriors GROUP BY stage ORDER BY stage\").then(r => {console.log(JSON.stringify(r.rows)); p.end();}).catch(e => {console.error(e.message); p.end();});
@@ -208,7 +251,7 @@ p.query(\"SELECT stage, count(*) as n, round(avg(n_obs)::numeric, 2) as avg_n FR
     fi
   done
 
-  REVENUE=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'docker exec satrank-api node -e "
+  REVENUE=$(ssh_retry 'docker exec satrank-api node -e "
 const {Pool} = require(\"pg\");
 const p = new Pool({connectionString: process.env.DATABASE_URL});
 p.query(\"SELECT type, count(*) as n, sum(amount_sats) as total FROM oracle_revenue_log GROUP BY type\").then(r => {console.log(JSON.stringify(r.rows)); p.end();}).catch(e => {console.error(e.message); p.end();});
@@ -226,7 +269,7 @@ fi
 section "4. Cron schedules (boot-logged)"
 # ---------------------------------------------------------------------------
 if [ "$SKIP_SSH" -eq 0 ]; then
-  CRON_LOG=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'docker logs satrank-crawler 2>&1 | grep -E "cron scheduled|cron disabled|Cron mode enabled|tier timer started" | head -30' 2>/dev/null || echo '')
+  CRON_LOG=$(ssh_retry 'docker logs satrank-crawler 2>&1 | grep -E "cron scheduled|cron disabled|Cron mode enabled|tier timer started" | head -30' 2>/dev/null || echo '')
   for pattern in \
     "Trust assertion cron scheduled" \
     "Oracle announcement cron scheduled" \
@@ -243,7 +286,7 @@ if [ "$SKIP_SSH" -eq 0 ]; then
     warn "  → paid probe cron is currently DISABLED (PAID_PROBE_ENABLED=false)"
   fi
 
-  AT_QUEUE=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'atq 2>/dev/null | head -5' 2>/dev/null || echo '')
+  AT_QUEUE=$(ssh_retry 'atq 2>/dev/null | head -5' 2>/dev/null || echo '')
   if [ -n "$AT_QUEUE" ]; then
     pass "at job queue:"
     echo "$AT_QUEUE" | sed "s|^|         |"
@@ -294,10 +337,10 @@ section "7. Observability"
 # ---------------------------------------------------------------------------
 if [ "$SKIP_SSH" -eq 0 ]; then
   # Health-check script lives at /root/satrank-health-check.sh (not under /root/satrank/).
-  HC_SCRIPT=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'ls -la /root/satrank-health-check.sh 2>/dev/null' 2>/dev/null || echo '')
+  HC_SCRIPT=$(ssh_retry 'ls -la /root/satrank-health-check.sh 2>/dev/null' 2>/dev/null || echo '')
   if [ -n "$HC_SCRIPT" ]; then
     pass "internal health-check script present at /root/satrank-health-check.sh"
-    HC_LOG_AGE=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'stat -c %Y /root/satrank-health-check.log 2>/dev/null' 2>/dev/null || echo '')
+    HC_LOG_AGE=$(ssh_retry 'stat -c %Y /root/satrank-health-check.log 2>/dev/null' 2>/dev/null || echo '')
     if [ -n "$HC_LOG_AGE" ]; then
       NOW=$(date +%s)
       AGE_SEC=$((NOW - HC_LOG_AGE))
@@ -311,7 +354,7 @@ if [ "$SKIP_SSH" -eq 0 ]; then
 
   # Crawler metrics: hit from VM1 host on 127.0.0.1:9091 (port-mapped from
   # container 0.0.0.0:9091 → host 127.0.0.1:9091). Container has no curl.
-  METRICS_OK=$(ssh -o ConnectTimeout=5 "$SSH_HOST" 'curl -fsS --max-time 3 http://127.0.0.1:9091/metrics 2>/dev/null | head -1' 2>/dev/null || echo '')
+  METRICS_OK=$(ssh_retry 'curl -fsS --max-time 3 http://127.0.0.1:9091/metrics 2>/dev/null | head -1' 2>/dev/null || echo '')
   [ -n "$METRICS_OK" ] && pass "crawler /metrics reachable on host:9091" || warn "crawler /metrics not reachable on host:9091"
 else
   warn "observability checks skipped — needs SSH"
