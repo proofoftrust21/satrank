@@ -409,6 +409,11 @@ async function main(): Promise<void> {
     restUrl: config.LND_REST_URL,
     macaroonPath: config.LND_MACAROON_PATH,
     timeoutMs: config.LND_TIMEOUT_MS,
+    // Sim 7 follow-up — paid-probe stages 3-5 require off-chain payments.
+    // Same probe-pay.macaroon as the api container (offchain:read +
+    // offchain:write, no channel/onchain). When unset, paidProbeRunner
+    // returns skipped_no_lnd for every probe and stages 3-5 stay empty.
+    adminMacaroonPath: config.LND_ADMIN_MACAROON_PATH,
   });
   const lndGraphCrawlerInstance = new LndGraphCrawler(lndClient, agentRepo, channelSnapshotRepo, feeSnapshotRepo);
 
@@ -835,6 +840,122 @@ async function main(): Promise<void> {
           { initialDelayMs: trustInitialDelay, intervalMs: trustIntervalMs },
           'Phase 6.2 — Trust assertion cron scheduled (kind 30782 weekly)',
         );
+
+        // Sim 7 follow-up — paid-probe cron for stages 3-5 (payment /
+        // delivery / quality). Pays N L402 invoices per cycle on the hot
+        // tier, populating the per-stage Beta posteriors used by
+        // /api/intent's stage_posteriors block. Conservative caps: 5
+        // sats/probe × 10 probes × 4 cycles/day = ~200 sats/day max.
+        // OPT-IN via PAID_PROBE_ENABLED=true. Self-pay skip via the LND
+        // identity_pubkey we already fetched for the announcement cron.
+        if (config.PAID_PROBE_ENABLED) {
+          const { PaidProbeRunner } = await import('../services/paidProbeRunner');
+          const { OracleBudgetService } = await import('../services/oracleBudgetService');
+          const oracleBudgetSvc = new OracleBudgetService(pool);
+          // Re-use lndPubkeyLocal from the announcement-cron block below
+          // by deferring the runner wiring there. We only need to fetch
+          // it once, so the construction runs after the announcement
+          // cron's getInfo() call has populated lndPubkeyLocal.
+          // (See block immediately following.)
+          // The runner itself is constructed lazily inside the cron tick
+          // so a transient LND outage at boot doesn't kill the whole
+          // crawler; instead the cron logs and skips.
+          let paidProbeRunnerSingleton: InstanceType<typeof PaidProbeRunner> | null = null;
+          let paidProbeSelfPubkey: string | null = null;
+          const ensurePaidProbeRunner = async (): Promise<{
+            runner: InstanceType<typeof PaidProbeRunner>;
+            selfPubkey: string;
+          } | null> => {
+            if (paidProbeRunnerSingleton && paidProbeSelfPubkey) {
+              return { runner: paidProbeRunnerSingleton, selfPubkey: paidProbeSelfPubkey };
+            }
+            try {
+              if (!lndClient.isConfigured() || !lndClient.getInfo) {
+                logger.warn('Paid probe cron skipped tick — LND client not configured');
+                return null;
+              }
+              const info = await lndClient.getInfo();
+              const pubkey = info?.identity_pubkey;
+              if (!pubkey || pubkey.length !== 66) {
+                logger.warn({ identity_pubkey: pubkey }, 'Paid probe cron skipped tick — invalid LND pubkey');
+                return null;
+              }
+              paidProbeSelfPubkey = pubkey;
+              paidProbeRunnerSingleton = new PaidProbeRunner({
+                stagesRepo: stagePosteriorsRepoForTrust,
+                lndClient,
+              });
+              return { runner: paidProbeRunnerSingleton, selfPubkey: pubkey };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.warn({ error: msg }, 'Paid probe cron skipped tick — getInfo() failed');
+              return null;
+            }
+          };
+          const runPaidProbe = async (): Promise<void> => {
+            try {
+              const ready = await ensurePaidProbeRunner();
+              if (!ready) return;
+              const hot = await serviceEndpointRepoMulti.findStaleByTier('hot', config.PAID_PROBE_MAX_PER_CYCLE);
+              if (hot.length === 0) {
+                logger.info('Paid probe cycle: no hot endpoints stale — skipped');
+                return;
+              }
+              const summary = await ready.runner.runOnce({
+                endpoint_urls: hot.map((e) => e.url),
+                maxPerProbeSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
+                totalBudgetSats: config.PAID_PROBE_TOTAL_BUDGET_SATS,
+                maxProbesPerCycle: config.PAID_PROBE_MAX_PER_CYCLE,
+                selfPubkey: ready.selfPubkey,
+              });
+              if (summary.totalSpent > 0) {
+                await oracleBudgetSvc.logSpending('paid_probe', summary.totalSpent, {
+                  outcomes: summary.outcomes,
+                  delivery: summary.deliveryOutcomes,
+                  quality: summary.qualityOutcomes,
+                  n_endpoints: hot.length,
+                });
+              }
+              logger.info(
+                {
+                  n: hot.length,
+                  spent: summary.totalSpent,
+                  outcomes: summary.outcomes,
+                  delivery: summary.deliveryOutcomes,
+                  quality: summary.qualityOutcomes,
+                },
+                'Paid probe cycle complete (stages 3-5)',
+              );
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error({ error: msg }, 'Paid probe cron error');
+            }
+          };
+          // Initial fire 30 min after boot (gives the api a chance to
+          // populate any startup state), then PAID_PROBE_INTERVAL_HOURS.
+          const paidInitialDelay = 30 * 60 * 1000;
+          const paidIntervalMs = config.PAID_PROBE_INTERVAL_HOURS * 60 * 60 * 1000;
+          const paidInitialTimer = setTimeout(() => {
+            runPaidProbe();
+            const recurrent = setInterval(runPaidProbe, paidIntervalMs);
+            recurrent.unref?.();
+          }, paidInitialDelay);
+          paidInitialTimer.unref?.();
+          logger.info(
+            {
+              initialDelayMs: paidInitialDelay,
+              intervalMs: paidIntervalMs,
+              maxPerProbeSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
+              totalBudgetSats: config.PAID_PROBE_TOTAL_BUDGET_SATS,
+              maxProbesPerCycle: config.PAID_PROBE_MAX_PER_CYCLE,
+            },
+            'Sim 7 follow-up — Paid probe cron scheduled (stages 3-5)',
+          );
+        } else {
+          logger.info(
+            'Paid probe cron disabled (PAID_PROBE_ENABLED=false) — stages 3-5 stay empty until enabled or until crowd outcomes flow',
+          );
+        }
 
         // Phase 7.0 — kind 30784 oracle announcement cron. Annonce CETTE
         // instance comme oracle SatRank-compatible aux autres clients +

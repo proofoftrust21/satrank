@@ -70,6 +70,16 @@ const configSchema = z.object({
   // routing node. Bake with:
   //   lncli bakemacaroon offchain:read offchain:write --save_to pay.macaroon
   LND_ADMIN_MACAROON_PATH: z.string().optional(),
+  // Sim 7 follow-up — paid-probe cron runs in the crawler. Pays L402 invoices
+  // for stages 3-5 (payment / delivery / quality) of the 5-stage L402
+  // contract decomposition. OPT-IN via PAID_PROBE_ENABLED=true. Defaults
+  // chosen conservatively: 5 sats/probe × 10 probes/cycle × 4 cycles/day
+  // = 200 sats/day max, ~6000 sats/month (~$2.50/month at $0.0004/sat).
+  PAID_PROBE_ENABLED: z.coerce.boolean().default(false),
+  PAID_PROBE_INTERVAL_HOURS: z.coerce.number().int().positive().default(6),
+  PAID_PROBE_MAX_PER_PROBE_SATS: z.coerce.number().int().positive().default(5),
+  PAID_PROBE_TOTAL_BUDGET_SATS: z.coerce.number().int().positive().default(50),
+  PAID_PROBE_MAX_PER_CYCLE: z.coerce.number().int().positive().default(10),
   // Probe safety rails — caps on the L402 invoice SatRank will pay and on the
   // probe round-trip fetch duration. Per-probe defaults are conservative;
   // override via env for stress demos.

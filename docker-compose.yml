@@ -83,6 +83,12 @@ services:
       # docker-compose.yml directory, so the path on the host is wherever
       # you deploy (no hardcoded server path in the public repo).
       - ./readonly.macaroon:/app/data/readonly.macaroon:ro
+      # Sim 7 follow-up — paid-probe macaroon (offchain:read + offchain:write
+      # only, no channel/onchain). Mounted into the crawler so the
+      # PaidProbeRunner cron can pay invoices for stages 3-5 (payment /
+      # delivery / quality). Same file as the api container; *.macaroon is
+      # excluded from rsync so this is a per-host file.
+      - ./probe-pay.macaroon:/app/macaroons/probe-pay.macaroon:ro
       # Phase 1 dry_run shadow-log directory (crawler is the main producer
       # via observer + serviceProbes modules). Shared with api container.
       - /var/log/satrank:/var/log/satrank
