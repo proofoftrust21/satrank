@@ -102,7 +102,39 @@ class HealthBlock(TypedDict, total=False):
     last_probe_age_sec: float | None
 
 
-class IntentCandidate(TypedDict):
+class StagePosteriorEntry(TypedDict, total=False):
+    """Phase 5.14 — Beta posterior for one stage of the L402 contract.
+
+    Five stages: challenge / invoice / payment / delivery / quality.
+    """
+
+    stage: Literal["challenge", "invoice", "payment", "delivery", "quality"]
+    alpha: float
+    beta: float
+    p_success: float
+    ci95_low: float
+    ci95_high: float
+    n_obs: float
+    is_meaningful: bool
+
+
+class StagePosteriorsBlock(TypedDict, total=False):
+    """Phase 5.14 — composed 5-stage posterior block.
+
+    `p_e2e = ∏ p_i` over stages with `n_obs >= IS_MEANINGFUL_MIN_N_OBS`.
+    `p_e2e = None` when no stage is meaningful — agents fall back to
+    `bayesian.p_success`.
+    """
+
+    stages: dict[str, StagePosteriorEntry]
+    p_e2e: float | None
+    p_e2e_pessimistic: float | None
+    p_e2e_optimistic: float | None
+    meaningful_stages: list[str]
+    measured_stages: int
+
+
+class IntentCandidate(TypedDict, total=False):
     rank: int
     endpoint_url: str
     endpoint_hash: str
@@ -110,6 +142,17 @@ class IntentCandidate(TypedDict):
     service_name: str | None
     price_sats: int | None
     median_latency_ms: int | None
+    # Phase 5.10A — HTTP method persisted from 402index. fulfill() uses
+    # this when opts.request.method is not provided, so POST-only endpoints
+    # don't silently 405-then-fallback. Optional for compat with pre-v48
+    # oracle responses.
+    http_method: Literal["GET", "POST"]
+    # Phase 5.14 — 5-stage L402 contract decomposition. Emitted when the
+    # oracle has at least one stage observation in DB. Optional for compat
+    # with pre-v49 oracle responses. Fine-grained agents read
+    # stages.delivery.p_success ; simple agents use p_e2e or fall back to
+    # bayesian.p_success.
+    stage_posteriors: StagePosteriorsBlock
     bayesian: BayesianBlock
     advisory: AdvisoryBlock
     health: HealthBlock
@@ -136,6 +179,27 @@ class IntentCategory(TypedDict):
 
 class IntentCategoriesResponse(TypedDict):
     categories: list[IntentCategory]
+
+
+class OraclePeer(TypedDict, total=False):
+    """Phase 7.2 — federation discovery primitive.
+
+    A SatRank-compatible oracle peer, as returned by GET /api/oracle/peers.
+    Used by ``aggregate_oracles()`` to discover and filter the federation.
+    """
+
+    oracle_pubkey: str
+    lnd_pubkey: str | None
+    catalogue_size: int
+    calibration_event_id: str | None
+    last_assertion_event_id: str | None
+    contact: str | None
+    onboarding_url: str | None
+    last_seen: int
+    first_seen: int
+    age_sec: int
+    stale_sec: int
+    latest_announcement_event_id: str | None
 
 
 class PayInvoiceResult(TypedDict):

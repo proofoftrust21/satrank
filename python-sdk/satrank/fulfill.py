@@ -381,6 +381,7 @@ async def _attempt_candidate(
             candidate["endpoint_url"],
             request=request,
             timeout_s=remaining_time,
+            candidate_http_method=candidate.get("http_method"),
         )
     except SatRankTimeout as exc:
         summary = {**base_summary, "outcome": "abort_timeout", "error": str(exc)}
@@ -444,6 +445,7 @@ async def _attempt_candidate(
             request=request,
             timeout_s=remaining_time,
             auth_header=f"L402 {token}:{preimage}",
+            candidate_http_method=candidate.get("http_method"),
         )
     except Exception as exc:
         summary = {
@@ -480,8 +482,13 @@ async def _http_call(
     request: Any,
     timeout_s: float,
     auth_header: str | None = None,
+    candidate_http_method: str | None = None,
 ) -> httpx.Response:
-    method = (request or {}).get("method", "GET")
+    # Phase 5.10A — method resolution order:
+    #   1. agent override (request.method) always wins
+    #   2. else: method persisted by the oracle (candidate.http_method)
+    #   3. else (pre-v48 oracle): historical default 'GET'
+    method = (request or {}).get("method") or candidate_http_method or "GET"
     url = _build_url(base_url, (request or {}).get("path"), (request or {}).get("query"))
     headers: dict[str, str] = {"Accept": "application/json"}
     if request and request.get("headers"):
