@@ -80,7 +80,7 @@ export interface LndGraphClient {
    *  backfill uses this to classify errors (malformed BOLT11 vs LND unreachable
    *  vs network mismatch) instead of getting a uniform null. */
   decodePayReqStrict?(payReq: string): Promise<{ destination: string; num_satoshis?: string }>;
-  payInvoice?(paymentRequest: string, feeLimitSat?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
+  payInvoice?(paymentRequest: string, feeLimitSat?: number, timeoutSec?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
   canPayInvoices?(): boolean;
 }
 
@@ -234,7 +234,7 @@ export class HttpLndGraphClient implements LndGraphClient {
     return { destination: data.destination, num_satoshis: data.num_satoshis };
   }
 
-  async payInvoice(paymentRequest: string, feeLimitSat: number = 10): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }> {
+  async payInvoice(paymentRequest: string, feeLimitSat: number = 10, timeoutSec: number = 60): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }> {
     // Must use the admin-scoped macaroon — the readonly one lacks
     // offchain:write and would return 401/permission-denied from lnd.
     if (!this.adminMacaroonHex) {
@@ -243,7 +243,10 @@ export class HttpLndGraphClient implements LndGraphClient {
     const url = `${this.restUrl}/v1/channels/transactions`;
     const body = JSON.stringify({ payment_request: paymentRequest, fee_limit: { fixed: String(feeLimitSat) } });
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60_000); // 60s for payment settlement
+    // Security audit (Finding 2) — caller-controlled timeout so the paid
+    // probe cron doesn't stall the crawler event loop for 60s × N hostile
+    // endpoints. paidProbeRunner passes PAY_TIMEOUT_DEFAULT_SEC (20s).
+    const timeout = setTimeout(() => controller.abort(), timeoutSec * 1000);
     try {
       const response = await fetch(url, {
         method: 'POST',

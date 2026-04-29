@@ -925,12 +925,29 @@ async function main(): Promise<void> {
                 selfPubkey: ready.selfPubkey,
               });
               if (summary.totalSpent > 0) {
-                await oracleBudgetSvc.logSpending('paid_probe', summary.totalSpent, {
-                  outcomes: summary.outcomes,
-                  delivery: summary.deliveryOutcomes,
-                  quality: summary.qualityOutcomes,
-                  n_endpoints: hot.length,
-                });
+                // Security audit (Finding 6) — separate try/catch around
+                // logSpending so a transient DB failure doesn't silently
+                // discard the spent-sats record. The payment already happened;
+                // only the accounting record is at risk. Surface as ERROR
+                // (not a generic "cron error") so the operator can reconcile.
+                try {
+                  await oracleBudgetSvc.logSpending('paid_probe', summary.totalSpent, {
+                    outcomes: summary.outcomes,
+                    delivery: summary.deliveryOutcomes,
+                    quality: summary.qualityOutcomes,
+                    n_endpoints: hot.length,
+                  });
+                } catch (logErr) {
+                  const errMsg = logErr instanceof Error ? logErr.message : String(logErr);
+                  logger.error(
+                    {
+                      error: errMsg,
+                      spent_sats: summary.totalSpent,
+                      n_endpoints: hot.length,
+                    },
+                    'ACCOUNTING FAILURE: paid probe spent sats but logSpending() failed — manual reconciliation required against /api/oracle/budget',
+                  );
+                }
               }
               logger.info(
                 {

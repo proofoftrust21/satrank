@@ -78,6 +78,14 @@ deploy:
 	# the container user (uid 1001 = satrank) — chown them back after the
 	# recursive root reset. Without this, every deploy breaks paid probes
 	# silently with EACCES at boot (Sim 7 follow-up bootstrap discovery).
+	#
+	# Security audit (Finding 8) — REMOTE_DIR is sent to the remote shell
+	# via the SSH command line. Validate it locally before substitution to
+	# prevent shell metachars / injection from a hostile env override.
+	@if echo '$(REMOTE_DIR)' | grep -qE '[^A-Za-z0-9_/.-]'; then \
+		echo "REFUSING: REMOTE_DIR='$(REMOTE_DIR)' contains characters outside [A-Za-z0-9_/.-]"; \
+		exit 1; \
+	fi
 	ssh $(SATRANK_HOST) "chown -R root:root $(REMOTE_DIR) && chmod 600 $(REMOTE_DIR)/.env.production 2>/dev/null && chown 1001:1001 $(REMOTE_DIR)/probe-pay.macaroon $(REMOTE_DIR)/invoice.macaroon 2>/dev/null || true"
 
 # Cleanup

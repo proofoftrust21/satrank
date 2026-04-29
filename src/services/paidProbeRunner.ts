@@ -325,6 +325,23 @@ export class PaidProbeRunner {
     }
 
     // Step 2c — cost guards.
+    // Security audit (Finding 1) — reject zero/negative amount invoices BEFORE
+    // the cost caps. parseBolt11 returns null amountSats on amount-less
+    // invoices (legal in BOLT11), and the prior `?? 0` fallback combined with
+    // strict `>` comparisons let zero-amount invoices pass both caps. A
+    // hostile endpoint could thus settle a 0-msat / 1-msat probe and inflate
+    // Stage 3 success counts for free.
+    if (amountSats <= 0) {
+      return {
+        endpoint_url: url,
+        payment: 'skipped_invoice_decode_failed',
+        delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
+        sats_spent: 0,
+        detail: `invoice has zero or unknown amount (parsed=${amountSats})`,
+      };
+    }
     if (amountSats > opts.maxPerProbeSats) {
       return {
         endpoint_url: url,
@@ -349,9 +366,13 @@ export class PaidProbeRunner {
     }
 
     // Step 3 — pay invoice.
+    // Security audit (Finding 2) — caller-bounded payment timeout. Without
+    // this, a hostile endpoint can return an invoice routing to a dead peer
+    // and the LND payInvoice call hangs for the full 60s default × every
+    // probe in the cycle, stalling the crawler event loop.
     const feeLimit = opts.feeLimitSats ?? 10;
     const pay = this.deps.lndClient.payInvoice
-      ? await this.deps.lndClient.payInvoice(challenge.invoice, feeLimit)
+      ? await this.deps.lndClient.payInvoice(challenge.invoice, feeLimit, PAY_TIMEOUT_DEFAULT_SEC)
       : { paymentPreimage: '', paymentHash: '', paymentError: 'no payInvoice' };
 
     if (pay.paymentError || !pay.paymentPreimage) {

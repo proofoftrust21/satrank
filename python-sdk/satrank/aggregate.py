@@ -29,10 +29,31 @@ Typical usage::
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from satrank.types import OraclePeer
+
+
+def _validate_oracle_url(url: str) -> str:
+    """Security audit (Finding 5) — validate scheme + host before issuing
+    the GET. Without this, a caller passing ``base_url='file:///etc/passwd'``
+    or ``base_url='http://169.254.169.254'`` (AWS metadata) would either
+    crash deep in httpx or successfully exfiltrate. The SDK is consumed by
+    agent code that may take ``base_url`` from a Nostr event or another
+    peer's response — defence in depth is required.
+
+    Returns the original URL on success; raises ``ValueError`` on rejection.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"oracle base_url must use http or https scheme, got: {parsed.scheme!r}"
+        )
+    if not parsed.netloc:
+        raise ValueError("oracle base_url must have a valid host")
+    return url
 
 
 async def fetch_oracle_peers(
@@ -53,7 +74,10 @@ async def fetch_oracle_peers(
         }
 
     Server-side ``limit`` clamps to 200.
+
+    Raises :class:`ValueError` if ``base_url`` is not http(s).
     """
+    _validate_oracle_url(base_url)
     url = f"{base_url.rstrip('/')}/api/oracle/peers"
     params = {"limit": str(limit)}
     own_client = http is None

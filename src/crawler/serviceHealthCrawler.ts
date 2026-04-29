@@ -164,13 +164,20 @@ export class ServiceHealthCrawler {
     if (!this.stagePosteriorsRepo) return;
     const challenge = status === 402 ? parseL402Challenge(wwwAuthenticate) : null;
     const success = challenge !== null;
+    // Security audit (Finding 7) — clamp `status` to the IANA HTTP range
+    // before interpolating into outcome_label. A misbehaving / hostile
+    // server could theoretically return a non-standard status code that
+    // pollutes the calibration audit log. Outside [100, 599] → 'http_unknown'.
+    const isValidHttpStatus = Number.isInteger(status) && status >= 100 && status <= 599;
     const outcomeLabel = success
       ? 'l402_challenge_ok'
       : status === 402
         ? 'l402_challenge_unparseable'
         : status === 0
           ? 'host_unreachable'
-          : `http_${status}`;
+          : isValidHttpStatus
+            ? `http_${status}`
+            : 'http_unknown';
     try {
       await this.stagePosteriorsRepo.observe(
         {

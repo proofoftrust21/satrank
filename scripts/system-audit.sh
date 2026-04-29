@@ -55,15 +55,27 @@ detail() { printf "         ${NC}%s\n" "$1"; }
 # pace at 7s/call to stay under the cap. Bypass the wait when an operator
 # token is supplied via OPERATOR_BYPASS_SECRET (skips rate limits + auth).
 RL_PAUSE_SEC="${RL_PAUSE_SEC:-7}"
-OPERATOR_HEADER=()
+# Security audit (Finding 3) — when OPERATOR_BYPASS_SECRET is set, write the
+# header to a chmod-600 temp file consumed via curl --header-from instead of
+# embedding the secret in the curl process argv. This keeps the secret out
+# of `ps auxww` output and out of any `set -x` shell trace. The temp file
+# is cleaned on exit (EXIT trap below).
+CURL_HEADER_FILE=""
+trap 'rm -f -- "$CURL_HEADER_FILE" 2>/dev/null || true' EXIT
 if [ -n "${OPERATOR_BYPASS_SECRET:-}" ]; then
-  OPERATOR_HEADER=("-H" "X-Operator-Token: $OPERATOR_BYPASS_SECRET")
+  CURL_HEADER_FILE=$(mktemp -t satrank-audit.XXXXXX) || { echo "mktemp failed"; exit 1; }
+  chmod 600 "$CURL_HEADER_FILE"
+  printf 'X-Operator-Token: %s\n' "$OPERATOR_BYPASS_SECRET" > "$CURL_HEADER_FILE"
   RL_PAUSE_SEC=0  # bypass token short-circuits the rate limiter
 fi
 
 curl_get() {
   local rc
-  curl -fsS --max-time 10 ${OPERATOR_HEADER[@]+"${OPERATOR_HEADER[@]}"} "$@" 2>/dev/null
+  if [ -n "$CURL_HEADER_FILE" ]; then
+    curl -fsS --max-time 10 -H "@$CURL_HEADER_FILE" "$@" 2>/dev/null
+  else
+    curl -fsS --max-time 10 "$@" 2>/dev/null
+  fi
   rc=$?
   [ "$RL_PAUSE_SEC" -gt 0 ] && sleep "$RL_PAUSE_SEC"
   return "$rc"
@@ -180,9 +192,15 @@ done
 
 # /api/intent — POST + check stage_posteriors + http_method (rate-limit-paced)
 [ "$RL_PAUSE_SEC" -gt 0 ] && sleep "$RL_PAUSE_SEC"
-INTENT_RESP=$(curl -fsS --max-time 10 ${OPERATOR_HEADER[@]+"${OPERATOR_HEADER[@]}"} -X POST "$API_BASE/api/intent" \
-  -H 'Content-Type: application/json' \
-  -d '{"category":"data/finance","limit":3}' 2>/dev/null || echo '')
+if [ -n "$CURL_HEADER_FILE" ]; then
+  INTENT_RESP=$(curl -fsS --max-time 10 -H "@$CURL_HEADER_FILE" -X POST "$API_BASE/api/intent" \
+    -H 'Content-Type: application/json' \
+    -d '{"category":"data/finance","limit":3}' 2>/dev/null || echo '')
+else
+  INTENT_RESP=$(curl -fsS --max-time 10 -X POST "$API_BASE/api/intent" \
+    -H 'Content-Type: application/json' \
+    -d '{"category":"data/finance","limit":3}' 2>/dev/null || echo '')
+fi
 if [ -z "$INTENT_RESP" ]; then
   fail "POST /api/intent unreachable"
 else
