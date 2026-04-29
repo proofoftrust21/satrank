@@ -915,7 +915,7 @@ weight ≤ 2.4 (≈ paid probe weight 2.0 in the legacy posterior)</code></pre>
 
         <h3>12.6 Self-funding loop</h3>
         <p>
-          The economic supportability of the oracle is publicly verifiable. Every paid call (<code>/api/intent?fresh=true</code>, <code>/api/probe</code>, <code>/api/verdicts</code>, <code>/api/profile/:id</code>) is logged on the revenue side; every paid probe is logged on the spending side. <code>GET /api/oracle/budget</code> exposes lifetime + 30d + 7d snapshots with <code>coverage_ratio = revenue / spending</code>. Break-even at scale ≈ 17 fresh queries/day, well below agent-economy volume.
+          The economic supportability of the oracle is publicly verifiable. Every paid call (<code>/api/intent?fresh=true</code>, <code>/api/probe</code>, <code>/api/verdicts</code>, <code>/api/profile/:id</code>) is logged on the revenue side; every paid probe is logged on the spending side. <code>GET /api/oracle/budget</code> exposes lifetime + 30d + 7d snapshots with <code>coverage_ratio = revenue / spending</code>. The active paid-probe configuration (cycle interval, per-cycle budget cap, candidate selection) determines the steady-state break-even — the live <code>coverage_ratio</code> is the source of truth, not a fixed estimate.
         </p>
 
         <h3>12.7 Reference operator quickstart</h3>

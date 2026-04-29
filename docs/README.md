@@ -19,7 +19,7 @@ This directory contains active documentation for SatRank operators and integrato
 - [sdk/wallet-drivers.md](sdk/wallet-drivers.md): supported wallet driver integrations.
 - [sdk/migration-0.2-to-1.0.md](sdk/migration-0.2-to-1.0.md): detailed SDK migration path from 0.2.x to 1.0.
 
-TypeScript SDK 1.1.0 (federation-aware: `aggregateOracles`, `stage_posteriors`, `http_method`) is on [npm](https://www.npmjs.com/package/@satrank/sdk). Python SDK 1.0.5 is on [PyPI](https://pypi.org/project/satrank/).
+TypeScript SDK 1.1.0 (`aggregateOracles`, `stage_posteriors`, `http_method`) is on [npm](https://www.npmjs.com/package/@satrank/sdk). Python SDK 1.1.0 (parity: `aggregate_oracles`, `stage_posteriors`, `http_method`) is on [PyPI](https://pypi.org/project/satrank/).
 
 ## Archive
 

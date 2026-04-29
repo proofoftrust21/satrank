@@ -63,6 +63,12 @@ cp <LND_DATA_DIR>/data/chain/bitcoin/mainnet/readonly.macaroon /root/satrank/rea
 # Pay macaroon: outbound probe payments, offchain scope only
 lncli bakemacaroon offchain:read offchain:write --save_to /root/satrank/probe-pay.macaroon
 chmod 600 /root/satrank/*.macaroon
+# The api + crawler containers run as uid 1001 (satrank). probe-pay.macaroon
+# and invoice.macaroon are mounted read-only into both containers and must be
+# readable by uid 1001 — chown them after bake. The make deploy step now
+# re-applies this every cycle (Sim 7 follow-up: a missed chown silently
+# disables paid probes via EACCES at boot).
+chown 1001:1001 /root/satrank/probe-pay.macaroon /root/satrank/invoice.macaroon
 ```
 
 Secret generation (run once per fresh deploy):
@@ -134,9 +140,11 @@ SATRANK_HOST=root@VM1 REMOTE_DIR=/root/satrank make deploy
 # 3. Rebuild image + recreate containers (runtime code changes require rebuild)
 ssh root@VM1 'cd /root/satrank && docker compose build api && docker compose up -d --force-recreate api'
 
-# 4. Verify
-curl -fsS https://satrank.dev/api/health
+# 4. Verify (single command, exit 0 = all green)
+./scripts/system-audit.sh
 ```
+
+`scripts/system-audit.sh` is the canonical post-deploy whitebox verification. It runs ~39 checks across infrastructure, API endpoints, data flow (5-stage posteriors counts, oracle_revenue_log), cron schedules, Nostr presence, SDK availability, and observability. Rate-limit-paced (7 s/call) and SSH-retry on fail2ban transients. Use `OPERATOR_BYPASS_SECRET=<…> ./scripts/system-audit.sh` to bypass the rate limiter and shorten the run. `--no-ssh` makes it curl-only.
 
 Downtime during --force-recreate is typically 5 to 10 seconds (Express cold boot plus healthcheck start_period). Rollback uses the same flow with a previous SHA: `git reset --hard <sha> && make deploy && docker compose build api && docker compose up -d --force-recreate api`.
 

@@ -8,6 +8,86 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [SDK-PY 1.1.0 + Sim 7 follow-up] - 2026-04-29
+
+Sim 7 follow-up: stage 1 challenge data writing wired + backfilled, paid
+probes activated for stages 3-5, Python SDK aligned to TS parity, deploy
+hardening, technical audit script.
+
+### Added (API)
+
+- `ServiceHealthCrawler.observeChallenge()` — every probe outcome (live,
+  dead host, 5xx, 4xx, 200, 402) now writes one observation to
+  `endpoint_stage_posteriors` stage=1. Without this write, the 5-stage
+  decomposition shipped in PR-1 was schema-only; Sim 7 found it absent
+  on every candidate. Live writes accumulate per-endpoint with τ=7d
+  decay-at-read.
+- `scripts/backfillStagePosteriors.ts` — one-shot, idempotent backfill
+  that compresses `service_endpoints.{check_count,success_count}`
+  aggregate into stage 1 posteriors. Seeded prod with 342 endpoints
+  ([0.55-0.86] p_success, avg n_obs=3.85) on first run.
+- `PaidProbeRunner` cron wired in `crawler/run.ts` (Sim 7 follow-up).
+  OPT-IN via `PAID_PROBE_ENABLED=true` env. Pays L402 invoices and
+  records stages 3 (payment) / 4 (delivery) / 5 (quality, via
+  `bodyQualityHeuristics`). Self-pay skip via cached LND
+  `identity_pubkey`. `OracleBudgetService.logSpending('paid_probe', …)`
+  on every cycle.
+- `ServiceEndpointRepository.findPaidProbeCandidates({maxPriceSats,
+  minChallengePSuccess, skipIfPaymentNObsAtLeast})` — prioritised
+  candidate selection. Joins `endpoint_stage_posteriors`, skips
+  dead-at-challenge + already-well-sampled endpoints, orders by stage 3
+  `n_obs ASC` then `last_intent_query_at DESC`. Concentrates spend on
+  the Pareto-80 demand subset (≈80 endpoints) instead of diluting
+  across the full 245 reachable catalogue.
+- 5 new env vars: `PAID_PROBE_ENABLED` (default false),
+  `PAID_PROBE_INTERVAL_HOURS` (default 6), `PAID_PROBE_MAX_PER_PROBE_SATS`
+  (default 5), `PAID_PROBE_TOTAL_BUDGET_SATS` (default 50),
+  `PAID_PROBE_MAX_PER_CYCLE` (default 10). All env-tunable without
+  redeploy.
+
+### Added (SDK-PY 1.1.0)
+
+- `IntentCandidate.http_method` and `IntentCandidate.stage_posteriors`
+  exposed on the TypedDict (parity with TS SDK 1.1.0).
+- `StagePosteriorEntry` and `StagePosteriorsBlock` TypedDicts (5-stage
+  decomposition shape).
+- `OraclePeer` TypedDict + new module `satrank.aggregate` with
+  `fetch_oracle_peers()` / `filter_by_calibration_error()` /
+  `aggregate_oracles()` — federation discovery primitive matching the
+  TS `aggregate.ts`.
+- `fulfill._http_call`: method resolution falls back to
+  `candidate.http_method` when `request.method` is not provided
+  (closes the silent 405-fallback class on POST-only endpoints).
+- 10 new tests in `tests/test_aggregate.py`. 128/128 passing.
+
+### Operations
+
+- `scripts/system-audit.sh` — exhaustive technical health audit (whitebox).
+  39 PASS / FAIL / WARN checks across infrastructure, API endpoints,
+  data flow, cron schedules, Nostr presence, SDK presence, observability.
+  Rate-limit-paced, SSH-retry, bash-3.2-safe. Exit code = number of FAILs.
+- `Makefile` deploy step preserves `1001:1001` ownership on
+  `probe-pay.macaroon` and `invoice.macaroon` so containers (uid 1001)
+  can read them after `chown -R root:root`. Without this, every deploy
+  silently broke paid probes with EACCES at boot (Sim 7 follow-up bug).
+- Sprint Mode (2026-04-29 → 2026-05-13): paid probes run at 24
+  cycles/day, 20 probes/cycle, 50 sats/probe cap, 300 sats/cycle cap →
+  bootstrap n_obs=5 across 80 priority endpoints in ~1 day. `at` job
+  programmed on VM1 to flip back to Palier 2 cruise (4 cycles/day, 10
+  probes, 150 sats/cycle) at the sprint end.
+
+### Migrations
+
+None — this release ships no schema changes; v56 from PR-7 remains the
+authoritative version.
+
+### Tests
+
+- 1451/1451 server tests green (TypeScript strict + tsconfig.tests strict
+  typecheck both clean)
+- 139/139 TS SDK tests green
+- 128/128 Python SDK tests green (118 prior + 10 new for `aggregate`)
+
 ## [API + SDK-TS + Federation] - 2026-04-28
 
 Major non-breaking expansion of the oracle surface. PR-1 → PR-7 cumulative.

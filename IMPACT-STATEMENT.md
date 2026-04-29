@@ -24,7 +24,7 @@ The federation primitives ship with the oracle: any operator can run a SatRank-c
 
 Three agent-native protocols in parallel: HTTP REST, MCP server (Claude / ChatGPT / Cursor), and NIP-90 Nostr DVM (sovereign agents who never touch HTTP).
 
-The payment rail is tiered and rate-locking. The five-tier deposit schedule is public at `GET /api/deposit/tiers`. An agent that deposits at the tier 5 floor locks in 0.05 sats per request for the lifetime of that deposit token. The economic supportability of the oracle is publicly verifiable at `GET /api/oracle/budget` — a self-funding loop where paid `/api/intent?fresh=true` revenue covers the paid-probe spending budget at agent-economy scale (~17 fresh queries/day to break even).
+The payment rail is tiered and rate-locking. The five-tier deposit schedule is public at `GET /api/deposit/tiers`. An agent that deposits at the tier 5 floor locks in 0.05 sats per request for the lifetime of that deposit token. The economic supportability of the oracle is publicly verifiable at `GET /api/oracle/budget` — a self-funding loop where paid `/api/intent?fresh=true` revenue covers the paid-probe spending budget. The active paid-probe configuration determines the steady-state break-even — the live `coverage_ratio` exposed by the budget endpoint is the source of truth, not a fixed estimate.
 
 ## Differentiation
 

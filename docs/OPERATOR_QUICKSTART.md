@@ -141,7 +141,7 @@ You should see :
 ## Federation flow
 
 ```
-Day 0   — boot, DB migrations apply (v1 → v55)
+Day 0   — boot, DB migrations apply (v1 → v56)
 Day 0+1h — first calibration cron tick (will skip — no outcomes yet)
 Day 0+90min — first trust assertion cron tick (skip if no meaningful stages)
 Day 0+2h — first oracle announcement kind 30784 published
@@ -183,18 +183,64 @@ Today the federation is "passive discovery + ingestion". The cross-attestation p
 - **Logs** are JSON-line via `pino`. Default level `info`. Pipe to your log aggregator.
 - **Metrics** exposed at `crawler:9091/metrics` (loopback by default — put nginx + auth in front if you want external scraping).
 - **Database backups** : `npm run backup:prod` (in the api container) writes a Postgres dump. Set it up as a cron on the host.
-- **Schema migrations** apply automatically on boot via `runMigrations()`. The latest version (v55) is logged in `EXPECTED_SCHEMA_VERSION` — if your DB is older the api refuses to start.
+- **Schema migrations** apply automatically on boot via `runMigrations()`. The latest version (v56) is logged in `EXPECTED_SCHEMA_VERSION` — if your DB is older the api refuses to start.
 - **Channel rotation** : if you run LND, rotate macaroons every 90 days. The probe-pay macaroon is the most sensitive (signs payments).
+
+## Paid probe activation (stages 3-5)
+
+Paid probes are OPT-IN via `PAID_PROBE_ENABLED=true`. Without it, the
+oracle ships stages 1 (challenge) + 2 (invoice) only — agents can still
+read `bayesian.p_success` and `stage_posteriors` for those two stages,
+but the end-to-end `p_e2e` won't include payment / delivery / quality.
+
+To enable :
+
+```bash
+# 1. Bake + chown the probe-pay macaroon (offchain scope only)
+lncli bakemacaroon offchain:read offchain:write --save_to /root/satrank/probe-pay.macaroon
+chown 1001:1001 /root/satrank/probe-pay.macaroon
+chmod 600 /root/satrank/probe-pay.macaroon
+
+# 2. Add to .env.production:
+PAID_PROBE_ENABLED=true
+PAID_PROBE_INTERVAL_HOURS=6                 # cycles per day = 24/this value
+PAID_PROBE_MAX_PER_PROBE_SATS=50            # per-invoice cap (median catalogue ~21 sats)
+PAID_PROBE_TOTAL_BUDGET_SATS=150            # absolute cap per cycle
+PAID_PROBE_MAX_PER_CYCLE=10                 # max endpoints probed per cycle
+
+# 3. Recreate the crawler — the cron schedules at boot
+docker compose up -d --force-recreate crawler
+
+# 4. Confirm the cron is armed (logs at info level on boot)
+docker logs satrank-crawler 2>&1 | grep "Paid probe cron scheduled"
+```
+
+The runner uses `findPaidProbeCandidates` to pick the
+Pareto-80 of agent demand : recently queried via `/api/intent`, alive at
+the challenge stage, not already well-sampled, under the price cap. It
+self-pay-skips invoices destined to its own LND.
+
+For the bootstrap phase only, it's reasonable to crank the caps up :
+`INTERVAL_HOURS=1` (24 cycles/day) + `MAX_PER_CYCLE=20` +
+`TOTAL_BUDGET_SATS=300` accumulates n_obs=5 across 80 priority
+endpoints in ~1 day, then revert to cruise. Use `at` or `cron` on the
+host to schedule the revert.
 
 ## Cost summary
 
 Conservative monthly :
 - Hetzner cx21 (api + crawler) : €4
 - Hetzner cpx21 (Postgres) : €7
-- LN routing fees (paid probes 5 sats × ~30/month) : ~$0.10
-- Total : ~€12/month + capital costs (LND channels)
+- LN routing fees with paid probes at default cruise caps (4 cycles/day
+  × 10 probes × ~21 sats median + LN fees) : ~6000-12000 sats/month
+  (~$2-5)
+- Total : ~€12/month + capital costs (LND channels) + paid-probe budget
 
-Self-funding break-even : ~17 paid `/intent?fresh=true` queries/day to cover paid-probe spending. At agent-economy scale, trivial.
+Self-funding break-even : the active paid-probe configuration determines
+the steady-state break-even. With cruise caps (~600 sats/day spending),
+~300 paid `/api/intent?fresh=true` queries/day covers it. The live
+`coverage_ratio` exposed by `GET /api/oracle/budget` is the source of
+truth — not a fixed estimate.
 
 ## Support
 

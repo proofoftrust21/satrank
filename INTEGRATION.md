@@ -17,7 +17,7 @@ The end state is the same regardless of path: your agent posts an intent, gets a
 
 ## Path 1: SDK native (recommended)
 
-The SDK is a thin wrapper around the public REST API plus an L402 flow driver. It is published on npm as `@satrank/sdk` and on PyPI as `satrank`. Both ship production-stable at `1.0.0`.
+The SDK is a thin wrapper around the public REST API plus an L402 flow driver. It is published on npm as `@satrank/sdk@1.1.0` and on PyPI as `satrank==1.1.0`. Both ship the PR-7 surface — `http_method` + `stage_posteriors` on every candidate, federation primitives via `aggregateOracles()` / `aggregate_oracles()`, and `fulfill()` defaults that close the silent 405-fallback class.
 
 ### TypeScript
 
