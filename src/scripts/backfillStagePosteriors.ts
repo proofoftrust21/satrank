@@ -11,7 +11,7 @@
 // continue accumulating on top with the standard decay-at-read mechanism.
 //
 // Usage:
-//   DATABASE_URL=postgres://... npx tsx scripts/backfill-stage-posteriors.ts
+//   DATABASE_URL=postgres://... node dist/scripts/backfillStagePosteriors.js
 //
 // Idempotent: re-running replaces the backfilled posteriors with the latest
 // aggregates from service_endpoints. Live observations between runs are
@@ -22,8 +22,8 @@ import { Pool } from 'pg';
 import {
   EndpointStagePosteriorsRepository,
   STAGE_CHALLENGE,
-} from '../src/repositories/endpointStagePosteriorsRepository';
-import { endpointHash } from '../src/utils/urlCanonical';
+} from '../repositories/endpointStagePosteriorsRepository';
+import { endpointHash } from '../utils/urlCanonical';
 
 interface EndpointRow {
   url: string;
