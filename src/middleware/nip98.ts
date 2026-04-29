@@ -49,6 +49,12 @@ const NIP98_MAX_AGE_FUTURE_SEC = 5;
 export interface Nip98VerifyResult {
   valid: boolean;
   pubkey: string | null;
+  /** The NIP-01 event id (sha256 of the canonical serialization) of the
+   *  signed Authorization envelope. Exposed for audit-log callers that need
+   *  to record the exact event used to authorize a request — e.g.
+   *  service_register_log. Always populated when the header parsed, even on
+   *  signature-invalid results, so failed attempts can be traced too. */
+  event_id: string | null;
   reason: 'invalid' | null;
   /** Diagnostic only. Keep OUT of any response body; log to stderr at warn. */
   detail?: string;
@@ -112,15 +118,19 @@ export async function verifyNip98(
   // Single external failure reason to close the oracle surface (audit M2).
   // Every branch that returns false builds the granular `detail` code for
   // logging only; the public shape carries `reason: 'invalid'` uniformly.
-  const fail = (pubkey: string | null, detail: string): Nip98VerifyResult => ({
-    valid: false, pubkey, reason: 'invalid', detail,
+  const fail = (
+    pubkey: string | null,
+    eventId: string | null,
+    detail: string,
+  ): Nip98VerifyResult => ({
+    valid: false, pubkey, event_id: eventId, reason: 'invalid', detail,
   });
 
   const event = parseHeader(authHeader);
-  if (!event) return fail(null, 'no_or_malformed_header');
+  if (!event) return fail(null, null, 'no_or_malformed_header');
 
   if (event.kind !== NIP98_KIND) {
-    return fail(event.pubkey ?? null, 'wrong_kind');
+    return fail(event.pubkey ?? null, event.id ?? null, 'wrong_kind');
   }
 
   // Asymmetric window (audit M1): allow up to 60s stale past, only 5s future.
@@ -130,15 +140,15 @@ export async function verifyNip98(
   const now = Math.floor(Date.now() / 1000);
   const drift = event.created_at - now;
   if (drift > NIP98_MAX_AGE_FUTURE_SEC || drift < -NIP98_MAX_AGE_PAST_SEC) {
-    return fail(event.pubkey, 'stale_or_future_event');
+    return fail(event.pubkey, event.id ?? null, 'stale_or_future_event');
   }
 
   const uTag = getTag(event, 'u');
-  if (uTag !== fullUrl) return fail(event.pubkey, 'url_mismatch');
+  if (uTag !== fullUrl) return fail(event.pubkey, event.id ?? null, 'url_mismatch');
 
   const methodTag = getTag(event, 'method');
   if ((methodTag ?? '').toUpperCase() !== method.toUpperCase()) {
-    return fail(event.pubkey, 'method_mismatch');
+    return fail(event.pubkey, event.id ?? null, 'method_mismatch');
   }
 
   // Body binding (audit C1 closure).
@@ -150,7 +160,7 @@ export async function verifyNip98(
   const bodyCarryingMethod = ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase());
   if (bodyCarryingMethod) {
     if (rawBody === null || rawBody === undefined) {
-      return fail(event.pubkey, 'rawbody_not_captured');
+      return fail(event.pubkey, event.id ?? null, 'rawbody_not_captured');
     }
     const bodyBuf = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody, 'utf8');
     const payloadTag = getTag(event, 'payload');
@@ -159,13 +169,13 @@ export async function verifyNip98(
     const EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
     if (bodyBuf.length === 0) {
       if (payloadTag !== null && payloadTag.toLowerCase() !== EMPTY_SHA256) {
-        return fail(event.pubkey, 'payload_mismatch');
+        return fail(event.pubkey, event.id ?? null, 'payload_mismatch');
       }
     } else {
-      if (payloadTag === null) return fail(event.pubkey, 'payload_missing');
+      if (payloadTag === null) return fail(event.pubkey, event.id ?? null, 'payload_missing');
       const expectedHash = crypto.createHash('sha256').update(bodyBuf).digest('hex');
       if (payloadTag.toLowerCase() !== expectedHash) {
-        return fail(event.pubkey, 'payload_mismatch');
+        return fail(event.pubkey, event.id ?? null, 'payload_mismatch');
       }
     }
   }
@@ -174,12 +184,12 @@ export async function verifyNip98(
   // so the module is loaded once at process start, not on every call.
   try {
     const ok = verifyNostrEvent(event);
-    if (!ok) return fail(event.pubkey, 'bad_signature');
+    if (!ok) return fail(event.pubkey, event.id ?? null, 'bad_signature');
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn({ error: msg }, 'NIP-98 verify threw — treating as invalid');
-    return fail(event.pubkey, 'verify_threw');
+    return fail(event.pubkey, event.id ?? null, 'verify_threw');
   }
 
-  return { valid: true, pubkey: event.pubkey, reason: null };
+  return { valid: true, pubkey: event.pubkey, event_id: event.id, reason: null };
 }

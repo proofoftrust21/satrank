@@ -82,6 +82,12 @@ export interface ServiceEndpoint {
    *  avoir à essayer-puis-fallback. Default 'GET' pour les rows pré-v48 et
    *  les endpoints sans signal upstream. */
   http_method: 'GET' | 'POST';
+  /** Excellence pass — npub_hex (or other operator id) of the npub who
+   *  successfully claimed this endpoint via the NIP-98-gated
+   *  /api/services/register POST. NULL for crawled-only rows or
+   *  pre-claim entries. First-claim semantics: only the holder of this
+   *  pubkey can PATCH/DELETE the metadata via the same surface. */
+  operator_id: string | null;
 }
 
 /** Vague 1 G.2 — payload accepted by upsertUpstreamSignals. Mirrors the
@@ -445,6 +451,50 @@ export class ServiceEndpointRepository {
       [opts.maxPriceSats, minChallengeP, skipPaidNObs, opts.limit],
     );
     return rows;
+  }
+
+  /** Excellence pass — set the operator_id on a service_endpoints row.
+   *  Returns the updated row, or null if the URL is unknown. Used by the
+   *  NIP-98-gated /api/services/register controller to claim ownership of
+   *  an endpoint after the operator has signed the registration request.
+   *  Caller is responsible for enforcing first-claim semantics: only set
+   *  if `operator_id IS NULL` to prevent npub-B taking over what npub-A
+   *  registered. */
+  async setOperatorIdIfNull(url: string, operatorId: string): Promise<{ updated: boolean; previousOperatorId: string | null }> {
+    const { rows } = await this.db.query<{ id: number; operator_id: string | null; previous_operator_id: string | null }>(
+      `UPDATE service_endpoints
+          SET operator_id = $1::text
+        WHERE url = $2::text
+          AND operator_id IS NULL
+        RETURNING id, operator_id, NULL::text AS previous_operator_id`,
+      [operatorId, url],
+    );
+    if (rows.length > 0) return { updated: true, previousOperatorId: null };
+    // Not updated: either URL doesn't exist OR operator_id already set.
+    const { rows: existing } = await this.db.query<{ operator_id: string | null }>(
+      `SELECT operator_id FROM service_endpoints WHERE url = $1::text LIMIT 1`,
+      [url],
+    );
+    return {
+      updated: false,
+      previousOperatorId: existing[0]?.operator_id ?? null,
+    };
+  }
+
+  /** Excellence pass — soft-delete a self-registered endpoint (mark
+   *  deprecated rather than hard-delete to preserve history + audit).
+   *  Caller verifies operator_id ownership before calling. */
+  async deprecateByUrl(url: string, reason: string): Promise<boolean> {
+    const { rows } = await this.db.query<{ id: number }>(
+      `UPDATE service_endpoints
+          SET deprecated = TRUE,
+              deprecated_reason = $1::text
+        WHERE url = $2::text
+          AND deprecated = FALSE
+        RETURNING id`,
+      [reason, url],
+    );
+    return rows.length > 0;
   }
 
   /** Sim 7+ — sweep-mode candidate selection.

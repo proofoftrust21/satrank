@@ -55,6 +55,7 @@ import { ServiceController } from './controllers/serviceController';
 import { IntentController } from './controllers/intentController';
 import { IntentService } from './services/intentService';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
+import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
 import {
@@ -280,7 +281,13 @@ export function createApp() {
     ? (invoice: string) => lndClient.decodePayReq!(invoice)
     : undefined;
   const registryCrawler = decodeBolt11 ? new RegistryCrawler(serviceEndpointRepo, decodeBolt11, preimagePoolRepo) : null;
-  const serviceRegisterController = new ServiceRegisterController(registryCrawler);
+  const serviceRegisterLogRepo = new ServiceRegisterLogRepository(pool);
+  const serviceRegisterController = new ServiceRegisterController({
+    registryCrawler,
+    serviceEndpointRepo,
+    registerLogRepo: serviceRegisterLogRepo,
+    operatorService,
+  });
 
   // Phase 7 — controller pour /api/operator(s) endpoints. operatorService est
   // construit plus haut (avant VerdictService pour les besoins C11/C12).
@@ -639,6 +646,8 @@ export function createApp() {
   api.post('/intent', discoveryRateLimit, conditionalIntentPaidGate, intentController.resolve);
   api.get('/intent/categories', discoveryRateLimit, intentController.categories);
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
+  api.patch('/services/register', discoveryRateLimit, serviceRegisterController.update);
+  api.delete('/services/register', discoveryRateLimit, serviceRegisterController.remove);
   // Phase 7 — operator registration (NIP-98 gated, rate-limited avec discovery
   // car endpoint à effort de preuve côté claimant — pas de quota L402).
   api.post('/operator/register', discoveryRateLimit, operatorController.register);

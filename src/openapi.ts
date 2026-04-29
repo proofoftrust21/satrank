@@ -662,10 +662,11 @@ export const openapiSpec = {
     },
     '/services/register': {
       post: {
-        summary: 'Self-register an L402 service',
+        summary: 'Self-register an L402 service (NIP-98 gated)',
         operationId: 'registerService',
-        description: 'Service operators can submit their L402 endpoint URL. SatRank validates by GET-ing the URL and parsing the WWW-Authenticate header. Must return HTTP 402 with a valid BOLT11 invoice. Free, rate-limited (10/min/IP).',
+        description: 'Service operators submit their L402 endpoint URL signed with a Nostr key (NIP-98 Authorization header). SatRank validates the URL by GET-ing it and parsing the WWW-Authenticate header (must return HTTP 402 with a valid BOLT11 invoice). The first signer to claim a URL becomes its operator: subsequent POST/PATCH/DELETE attempts from a different npub return 409. Free, rate-limited (10/min/IP).',
         tags: ['Discovery'],
+        security: [{ Nip98: [] }],
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: {
@@ -677,17 +678,66 @@ export const openapiSpec = {
           } } } },
         },
         responses: {
-          '201': { description: 'Service registered', content: { 'application/json': { schema: { type: 'object', properties: {
+          '201': { description: 'Service registered, ownership claimed', content: { 'application/json': { schema: { type: 'object', properties: {
             data: { type: 'object', properties: {
               url: { type: 'string' },
+              url_hash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
               registered: { type: 'boolean' },
               agentHash: { type: 'string' },
               priceSats: { type: ['integer', 'null'] },
+              fieldsUpdated: { type: 'array', items: { type: 'string' } },
+              operator_id: { type: 'string', description: 'npub_hex of the claiming operator' },
               message: { type: 'string' },
             } },
           } } } } },
           '400': { description: 'URL is not a valid L402 endpoint' },
+          '401': { description: 'NIP-98 Authorization missing or invalid' },
+          '409': { description: 'URL already claimed by a different operator' },
           '503': { description: 'Self-registration unavailable (LND BOLT11 decoder not configured)' },
+        },
+      },
+      patch: {
+        summary: 'Update self-registered service metadata (NIP-98, owner-only)',
+        operationId: 'updateRegisteredService',
+        description: 'Owner of a previously self-registered URL can update its metadata. Requires a NIP-98 Authorization header signed by the same npub that claimed the URL. Fields set to null are cleared; omitted fields are left unchanged.',
+        tags: ['Discovery'],
+        security: [{ Nip98: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: {
+            url: { type: 'string', format: 'uri', maxLength: 500 },
+            name: { type: ['string', 'null'], maxLength: 100 },
+            description: { type: ['string', 'null'], maxLength: 500 },
+            category: { type: ['string', 'null'], maxLength: 50 },
+            provider: { type: ['string', 'null'], maxLength: 100 },
+          } } } },
+        },
+        responses: {
+          '200': { description: 'Metadata updated' },
+          '401': { description: 'NIP-98 Authorization missing or invalid' },
+          '403': { description: 'Caller is not the registered owner of this URL' },
+          '404': { description: 'No endpoint registered for this URL' },
+        },
+      },
+      delete: {
+        summary: 'Soft-delete a self-registered service (NIP-98, owner-only)',
+        operationId: 'deleteRegisteredService',
+        description: 'Owner can mark their endpoint as deprecated. The row is preserved for forensic purposes but excluded from /api/intent and /api/services. Requires a NIP-98 Authorization header signed by the claiming npub.',
+        tags: ['Discovery'],
+        security: [{ Nip98: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: {
+            url: { type: 'string', format: 'uri', maxLength: 500 },
+            reason: { type: 'string', maxLength: 200 },
+          } } } },
+        },
+        responses: {
+          '200': { description: 'Endpoint deprecated' },
+          '401': { description: 'NIP-98 Authorization missing or invalid' },
+          '403': { description: 'Caller is not the registered owner of this URL' },
+          '404': { description: 'No endpoint registered for this URL' },
+          '409': { description: 'Endpoint already deprecated' },
         },
       },
     },
@@ -1147,6 +1197,11 @@ export const openapiSpec = {
         type: 'http',
         scheme: 'L402',
         description: 'L402 Lightning payment authentication. Base rate is 1 sat per request (tier 1). Two token options: (1) Fresh macaroon: send a request without credentials to receive HTTP 402 with a Lightning invoice. Pay and include: Authorization: L402 <macaroon>:<preimage>. (2) Deposit: POST /api/deposit with { amount: N } (21 to 1,000,000 sats), pay the invoice, verify, and use: Authorization: L402 deposit:<preimage>. Deposit tokens are priced at the tier rate burnt in at deposit time (see GET /api/deposit/tiers). Both token types work on all paid endpoints. X-SatRank-Balance header tracks remaining requests.',
+      },
+      Nip98: {
+        type: 'http',
+        scheme: 'Nostr',
+        description: 'NIP-98 HTTP authentication (https://github.com/nostr-protocol/nips/blob/master/98.md). Send Authorization: Nostr <base64-event> where the base64-encoded JSON is a kind 27235 Nostr event with tags [["u","<absolute-url>"], ["method","<HTTP-METHOD>"], ["payload","<sha256-hex-of-body>"]]. The event must be signed by the operator npub and timestamped within the last 60 seconds. SatRank verifies the signature, URL, method, payload-binding, and freshness before accepting the request. Used to gate self-registration endpoints so only the npub that claimed an endpoint can update or delete it.',
       },
     },
     parameters: {

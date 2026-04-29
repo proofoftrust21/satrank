@@ -133,4 +133,28 @@ describe('verifyNip98', () => {
     const result = await verifyNip98(authHeader, 'GET', URL_OK, null);
     expect(result.valid).toBe(true);
   });
+
+  // --- excellence pass: event_id surfaced for audit-log consumers ---
+  it('exposes the parsed event_id on success (audit-log surface)', async () => {
+    const body = JSON.stringify({ url: 'https://api.example.com/' });
+    const { authHeader } = signEvent({ url: URL_OK, method: 'POST', body });
+    const result = await verifyNip98(authHeader, 'POST', URL_OK, Buffer.from(body, 'utf8'));
+    expect(result.valid).toBe(true);
+    expect(result.event_id).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('exposes the parsed event_id even when verification fails after parsing (URL mismatch)', async () => {
+    const body = JSON.stringify({ x: 1 });
+    const { authHeader } = signEvent({ url: 'https://evil.com/api/report', method: 'POST', body });
+    const result = await verifyNip98(authHeader, 'POST', URL_OK, Buffer.from(body, 'utf8'));
+    expect(result.valid).toBe(false);
+    expect(result.detail).toBe('url_mismatch');
+    expect(result.event_id).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('event_id is null when the header could not be parsed', async () => {
+    const result = await verifyNip98('Nostr not-base64!@@', 'POST', URL_OK, Buffer.alloc(0));
+    expect(result.valid).toBe(false);
+    expect(result.event_id).toBeNull();
+  });
 });

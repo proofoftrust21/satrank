@@ -18,9 +18,13 @@ export function createAgentRoutes(
 ): Router {
   const router = Router();
 
-  router.get('/agents/top', controller.getTop);
-  router.get('/agents/movers', controller.getMovers);
-  router.get('/agents/search', controller.search);
+  // Excellence pass — align actual rate-limit with the public claim. The
+  // landing page says these reads share the 10/min/IP discovery limit; the
+  // SQL behind them (joins agents + score_snapshots + scoring) is also
+  // expensive, so 10/min is a sensible bound regardless.
+  router.get('/agents/top', discoveryRateLimit, controller.getTop);
+  router.get('/agents/movers', discoveryRateLimit, controller.getMovers);
+  router.get('/agents/search', discoveryRateLimit, controller.search);
 
   router.post('/verdicts', paidGate, balanceAuth, controller.batchVerdicts);
   router.get('/agent/:publicKeyHash/verdict', discoveryRateLimit, controller.getVerdict);
