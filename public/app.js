@@ -35,6 +35,13 @@
   }
 
   function endpointCount(s) {
+    // Phase 7.3 — landing-page stat "L402 endpoints" must reflect the
+    // L402 catalogue size, not the LN-graph node count. The legacy
+    // `totalEndpoints` field counts Lightning nodes (gossip source =
+    // 'lightning_graph'); the accurate L402 count lives in
+    // `serviceEndpointCount`. Fall back through serviceSources sum,
+    // then totalEndpoints (legacy fallback for old API responses).
+    if (typeof s.serviceEndpointCount === 'number') return Number(s.serviceEndpointCount);
     if (s.serviceSources && typeof s.serviceSources === 'object') {
       var sum = 0;
       Object.keys(s.serviceSources).forEach(function (k) {
