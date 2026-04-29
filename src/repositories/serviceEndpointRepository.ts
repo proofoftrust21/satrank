@@ -377,6 +377,65 @@ export class ServiceEndpointRepository {
     return rows;
   }
 
+  /** Sim 7 follow-up — paid-probe candidate selection with prioritisation.
+   *
+   *  Returns endpoints ranked for paid-probe scheduling so the cron spends
+   *  cycles on the highest-information endpoints (high demand,
+   *  undersampled, alive at challenge level, under price cap).
+   *
+   *  Filters:
+   *    - last_intent_query_at NOT NULL (= some demand exists)
+   *    - service_price_sats IS NULL OR <= maxPriceSats
+   *    - stage 1 (challenge) p_success >= minChallengePSuccess (skip
+   *      endpoints that don't even return a parseable L402 challenge)
+   *    - stage 3 (payment) n_obs < skipIfPaymentNObsAtLeast (skip already
+   *      well-sampled endpoints to spread the budget)
+   *    - deprecated = FALSE, check_count >= 1
+   *
+   *  Order:
+   *    - stage 3 n_obs ASC NULLS FIRST (undersampled first)
+   *    - last_intent_query_at DESC NULLS LAST (most recent demand)
+   *
+   *  Cost model: with the default thresholds and Palier 2 caps
+   *  (maxPriceSats=50), this typically returns the 50-80 endpoints in the
+   *  Pareto-80 of agent demand. Cycle budgets thus accumulate n_obs on
+   *  the same focused subset rather than diluting across the full 245
+   *  reachable catalogue. */
+  async findPaidProbeCandidates(opts: {
+    limit: number;
+    maxPriceSats: number;
+    minChallengePSuccess?: number;
+    skipIfPaymentNObsAtLeast?: number;
+  }): Promise<ServiceEndpoint[]> {
+    const minChallengeP = opts.minChallengePSuccess ?? 0.4;
+    const skipPaidNObs = opts.skipIfPaymentNObsAtLeast ?? 20;
+    const { rows } = await this.db.query<ServiceEndpoint>(
+      `SELECT se.*
+         FROM service_endpoints se
+         LEFT JOIN endpoint_stage_posteriors esp_challenge
+                ON esp_challenge.endpoint_url_hash = encode(digest(se.url, 'sha256'), 'hex')
+               AND esp_challenge.stage = 1
+         LEFT JOIN endpoint_stage_posteriors esp_payment
+                ON esp_payment.endpoint_url_hash = encode(digest(se.url, 'sha256'), 'hex')
+               AND esp_payment.stage = 3
+        WHERE se.deprecated = FALSE
+          AND se.check_count >= 1
+          AND se.last_intent_query_at IS NOT NULL
+          AND (se.service_price_sats IS NULL OR se.service_price_sats <= $1::int)
+          AND (
+            esp_challenge.alpha IS NULL
+            OR (esp_challenge.alpha / NULLIF(esp_challenge.alpha + esp_challenge.beta, 0)) >= $2::double precision
+          )
+          AND (esp_payment.n_obs IS NULL OR esp_payment.n_obs < $3::double precision)
+        ORDER BY
+          COALESCE(esp_payment.n_obs, 0) ASC,
+          se.last_intent_query_at DESC NULLS LAST
+        LIMIT $4::int`,
+      [opts.maxPriceSats, minChallengeP, skipPaidNObs, opts.limit],
+    );
+    return rows;
+  }
+
   /** Vague 3 Phase 2.6 — counts of endpoints per host. Used by registryCrawler
    *  to enforce ABSOLUTE_HOST_CAP_TOTAL: a single host (e.g. llm402.ai) cannot
    *  exceed N endpoints in the catalogue, regardless of how many cycles run.

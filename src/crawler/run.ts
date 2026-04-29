@@ -896,31 +896,24 @@ async function main(): Promise<void> {
             try {
               const ready = await ensurePaidProbeRunner();
               if (!ready) return;
-              // Pull a wider candidate pool than maxProbesPerCycle: the
-              // runner skips any URL whose invoice is over MAX_PER_PROBE,
-              // so taking only N candidates means we may waste cycles when
-              // the first N are all over-cap. 4× over-fetch + price
-              // pre-filter guarantees we hand the runner N reachable URLs.
-              const candidateLimit = config.PAID_PROBE_MAX_PER_CYCLE * 4;
-              const hotAll = await serviceEndpointRepoMulti.findStaleByTier('hot', candidateLimit);
-              if (hotAll.length === 0) {
-                logger.info('Paid probe cycle: no hot endpoints stale — skipped');
-                return;
-              }
-              // Pre-filter by advertised price: only consider endpoints
-              // whose decoded BOLT11 price (from the free-probe stage 2
-              // pipeline) fits under MAX_PER_PROBE. Endpoints with
-              // service_price_sats=NULL are kept (the runner re-decodes
-              // and skips at runtime if needed).
-              const reachable = hotAll.filter(
-                (e) => e.service_price_sats === null || e.service_price_sats === undefined ||
-                  e.service_price_sats <= config.PAID_PROBE_MAX_PER_PROBE_SATS,
-              );
-              const hot = reachable.slice(0, config.PAID_PROBE_MAX_PER_CYCLE);
+              // Sim 7 follow-up — prioritised candidate selection. Replaces
+              // the naive findStaleByTier('hot') + post-filter approach.
+              // The new query joins endpoint_stage_posteriors and orders
+              // by stage 3 n_obs ASC (undersampled first) + recency. This
+              // concentrates cycles on the 50-80 endpoints in the Pareto-80
+              // of agent demand and skips dead-at-challenge / well-covered
+              // endpoints. Bootstrap timeline drops from 30 j to ~10 j for
+              // n_obs=5 across the priority subset under Palier 2 caps.
+              const hot = await serviceEndpointRepoMulti.findPaidProbeCandidates({
+                limit: config.PAID_PROBE_MAX_PER_CYCLE,
+                maxPriceSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
+                minChallengePSuccess: 0.4,
+                skipIfPaymentNObsAtLeast: 20,
+              });
               if (hot.length === 0) {
                 logger.info(
-                  { hotAll: hotAll.length, cap: config.PAID_PROBE_MAX_PER_PROBE_SATS },
-                  'Paid probe cycle: no hot endpoints under price cap — skipped',
+                  { cap: config.PAID_PROBE_MAX_PER_PROBE_SATS },
+                  'Paid probe cycle: no priority candidates (all covered or filtered) — skipped',
                 );
                 return;
               }
@@ -941,8 +934,7 @@ async function main(): Promise<void> {
               }
               logger.info(
                 {
-                  hot_pool: hotAll.length,
-                  reachable: reachable.length,
+                  candidates: hot.length,
                   probed: hot.length,
                   spent: summary.totalSpent,
                   outcomes: summary.outcomes,
