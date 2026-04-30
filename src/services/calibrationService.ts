@@ -25,7 +25,12 @@ import {
 import type { CalibrationRepository } from '../repositories/calibrationRepository';
 
 export const DEFAULT_CALIBRATION_WINDOW_DAYS = 7;
-export const DEFAULT_CALIBRATION_MIN_OBS = 10;
+/** Audit Tier 1B (2026-04-30) — abaissé de 10 à 5. À 10 obs/(endpoint,stage)
+ *  sur 7d, aucun endpoint ne qualifiait avec le rythme cron actuel (1 probe/h)
+ *  → calibration publiait n_outcomes=0. À 5, les top 50 endpoints qualifient
+ *  rapidement, le moat publie un delta réel chaque semaine. SAFE_MIN_N_OBS
+ *  reste à 10 indépendamment (le verdict SAFE garde son seuil rigoureux). */
+export const DEFAULT_CALIBRATION_MIN_OBS = 5;
 
 export interface PerEndpointCalibration {
   endpoint_url_hash: string;

@@ -186,19 +186,24 @@ describe('CalibrationService', () => {
   it('respects windowDays option (smaller window → fewer outcomes)', async () => {
     const now = 1_700_006_000;
     const url = 'https://window-test.cal/api';
-    // 12 outcomes spread sur 14 jours (1 par jour).
-    for (let i = 0; i < 12; i++) {
-      const t = now - (i + 1) * 86400;
+    // 4 outcomes sur 14 jours (1 par jour), spaced so 7d window catches
+    // only 3 (under minObs=5) and 14d window catches all 4 (still under
+    // minObs unless we override). Use override to make the difference
+    // observable post-audit-r3 minObs change (10 → 5).
+    for (let i = 0; i < 4; i++) {
+      const t = now - (i + 1) * 2 * 86400; // every 2 days
       await stagesRepo.observe(
         { endpoint_url: url, stage: STAGE_PAYMENT, success: true },
         t,
       );
     }
-    // Default 7d window → ~7 outcomes (sous le minObs=10) → 0 endpoints
-    const default7d = await service.computeCalibration(now);
-    expect(default7d.n_endpoints).toBe(0);
-    // 14d window → tous les 12 outcomes → 1 endpoint
-    const wide14d = await service.computeCalibration(now, { windowDays: 14 });
+    // Default 7d window with custom minObs=3 → only the 3 most recent
+    // outcomes qualify
+    const default7d = await service.computeCalibration(now, { minObs: 3 });
+    expect(default7d.n_endpoints).toBe(1);
+    // 14d window with same minObs → all 4 outcomes qualify
+    const wide14d = await service.computeCalibration(now, { windowDays: 14, minObs: 3 });
     expect(wide14d.n_endpoints).toBe(1);
+    expect(wide14d.n_outcomes).toBeGreaterThan(default7d.n_outcomes);
   });
 });

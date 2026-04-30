@@ -265,7 +265,15 @@ export interface HealthResponse {
 }
 
 export interface NetworkStats {
+  /** Active agent count (stale=0). Audit Tier 5Q (2026-04-30) found this
+   *  field misleading — the label says "total" but the value is filtered to
+   *  active. Kept for backwards-compat; new consumers should use
+   *  `activeAgents` (alias) or `agentsAll` (active + stale). */
   totalAgents: number;
+  /** Same as `totalAgents`, named explicitly to reflect what it counts. */
+  activeAgents: number;
+  /** Active + stale. Equals the row count in the `agents` table. */
+  agentsAll: number;
   totalEndpoints: number;
   /** Phase 7.3 — count of non-deprecated L402 endpoints in
    *  service_endpoints. Distinct from `totalEndpoints` (which counts

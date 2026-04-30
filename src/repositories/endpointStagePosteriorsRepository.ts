@@ -176,14 +176,14 @@ export class EndpointStagePosteriorsRepository {
          last_updated = $7::bigint`,
       [urlHash, stage, DEFAULT_PRIOR_ALPHA, DEFAULT_PRIOR_BETA, dAlpha, dBeta, t, TAU_SECONDS],
     );
-    if (stage >= 2) {
-      await this.db.query(
-        `INSERT INTO endpoint_stage_outcomes_log
-           (endpoint_url_hash, stage, success, weight, outcome_label, observed_at)
-         VALUES ($1::text, $2::smallint, $3::boolean, $4::double precision, $5, $6::bigint)`,
-        [urlHash, stage, success, w, outcomeLabel ?? null, t],
-      );
-    }
+    // Audit Tier 1B (2026-04-30) — log all stages including stage 1.
+    // See observe() for full rationale.
+    await this.db.query(
+      `INSERT INTO endpoint_stage_outcomes_log
+         (endpoint_url_hash, stage, success, weight, outcome_label, observed_at)
+       VALUES ($1::text, $2::smallint, $3::boolean, $4::double precision, $5, $6::bigint)`,
+      [urlHash, stage, success, w, outcomeLabel ?? null, t],
+    );
   }
 
   /** Phase 5.14 — applique une observation à un stage, en upsert. Ingestion
@@ -232,18 +232,21 @@ export class EndpointStagePosteriorsRepository {
       [urlHash, obs.stage, DEFAULT_PRIOR_ALPHA, DEFAULT_PRIOR_BETA, dAlpha, dBeta, t, TAU_SECONDS],
     );
 
-    // Phase 5.15 — log per-observation pour la calibration cron. Stage 1
-    // (challenge) reste sur endpoint_streaming_posteriors source='probe' et
-    // n'est PAS double-loggé ici. Seuls les stages 2-5 (qui sont la cible
-    // directe de la calibration) sont loggés.
-    if (obs.stage >= 2) {
-      await this.db.query(
-        `INSERT INTO endpoint_stage_outcomes_log
-           (endpoint_url_hash, stage, success, weight, outcome_label, observed_at)
-         VALUES ($1::text, $2::smallint, $3::boolean, $4::double precision, $5, $6::bigint)`,
-        [urlHash, obs.stage, obs.success, w, obs.outcome_label ?? null, t],
-      );
-    }
+    // Audit Tier 1B (2026-04-30) — log toutes les stages, y compris stage 1
+    // (challenge). Avant ce fix, stage 1 était délibérément exclu avec
+    // l'argument "endpoint_streaming_posteriors le tient déjà" — mais la
+    // calibration cron (qui est LE moat de l'oracle) ne lit que ce log,
+    // jamais le streaming posterior. Conséquence : 99% du signal hors-budget
+    // (~8k probes/jour gratuits) était invisible à la calibration, qui
+    // tournait sur ~50 outcomes paid-probe/jour seulement. Résultat: bootstrap
+    // calibration n=0 publiée à Nostr, moat creux. Le volume additionnel
+    // (~56k rows/7d) reste léger sur PG indexé sur (endpoint_url_hash, stage).
+    await this.db.query(
+      `INSERT INTO endpoint_stage_outcomes_log
+         (endpoint_url_hash, stage, success, weight, outcome_label, observed_at)
+       VALUES ($1::text, $2::smallint, $3::boolean, $4::double precision, $5, $6::bigint)`,
+      [urlHash, obs.stage, obs.success, w, obs.outcome_label ?? null, t],
+    );
   }
 
   /** Phase 5.14 — lecture des 5 stages d'un endpoint, posteriors décroissés

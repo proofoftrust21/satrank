@@ -789,7 +789,21 @@ export class ServiceEndpointRepository {
   async findServices(filters: ServiceSearchFilters): Promise<{ services: ServiceEndpoint[]; total: number }> {
     // Only trusted sources appear in discovery — ad_hoc URLs may have wrong URL→agent bindings
     // Vague 3 Phase 2.6 — also filter out deprecated rows (e.g. 404-persistent fossiles)
-    const conditions: string[] = ["se.agent_hash IS NOT NULL", "se.source IN ('402index', 'self_registered')", "se.deprecated = FALSE"];
+    //
+    // Audit Tier 1C (2026-04-30) — exclude rows whose latest HTTP probe
+    // wasn't 402 (challenge) or a 2xx (already-credentialed). 4xx (404/401/
+    // 403) and 5xx mean the endpoint is currently broken — surfacing them
+    // sends agents straight into a wall and is the kind of false-positive
+    // that destroys oracle credibility. NULL accepted (= never probed yet,
+    // bootstrap window). The cron's findPaidProbeCandidates was already
+    // hardened with this filter; this brings /api/intent + /api/services
+    // in line.
+    const conditions: string[] = [
+      "se.agent_hash IS NOT NULL",
+      "se.source IN ('402index', 'self_registered')",
+      "se.deprecated = FALSE",
+      "(se.last_http_status IS NULL OR se.last_http_status = 402 OR se.last_http_status BETWEEN 200 AND 299)",
+    ];
     const params: unknown[] = [];
     let idx = 1;
 

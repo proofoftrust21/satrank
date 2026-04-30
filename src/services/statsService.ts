@@ -235,8 +235,16 @@ export class StatsService {
       const nodesProbed = this.probeRepo ? await this.probeRepo.countProbedAgents() : 0;
       const verifiedReachable = this.probeRepo ? await this.probeRepo.countReachable() : 0;
 
+      // Audit Tier 5Q (2026-04-30) — surface both active and total counts so
+      // consumers can read whichever they actually want without guessing.
+      // Single round-trip to DB (countIncludingStale) avoids a second query.
+      const activeAgents = await this.agentRepo.count();
+      const agentsAll = await this.agentRepo.countIncludingStale();
+
       return {
-        totalAgents: await this.agentRepo.count(),
+        totalAgents: activeAgents,
+        activeAgents,
+        agentsAll,
         totalEndpoints: await this.agentRepo.countBySource('lightning_graph'),
         // Phase 7.3 — accurate L402 catalogue count for the landing page.
         // The legacy `totalEndpoints` field above counts Lightning nodes
