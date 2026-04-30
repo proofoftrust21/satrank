@@ -218,6 +218,10 @@ export function createApp() {
     config.TRANSACTIONS_DUAL_WRITE_MODE,
     dualWriteLogger,
     bayesianScoringService,
+    // Audit Tier 3C — operator_id cross-reference. When reporter and target
+    // are owned by the same operator (Mallory's multiple LN nodes), the
+    // report is rejected to prevent backdoor self-promotion.
+    operatorOwnershipRepo,
   );
 
   // Tier 2 report bonus — gated by REPORT_BONUS_ENABLED env (off by default).

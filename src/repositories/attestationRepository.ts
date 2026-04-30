@@ -363,4 +363,26 @@ export class AttestationRepository {
     );
     return Number(rows[0]?.count ?? 0);
   }
+
+  /** Audit Tier 3A (2026-04-30) — count reports against a SUBJECT (target) in
+   *  the last N seconds, optionally filtered by categories. Used to cap
+   *  negative-report flooding ("censure de réputation") on a single target.
+   *  Without this guard, an attacker who spreads reports across many
+   *  attesters can sidestep the per-attester rate limit and dominate a
+   *  target's posterior with concerted negative reports. */
+  async countRecentBySubject(subjectHash: string, afterTimestamp: number, categories?: string[]): Promise<number> {
+    if (categories && categories.length > 0) {
+      if (categories.length > 20) throw new Error('categories array exceeds limit');
+      const { rows } = await this.db.query<{ count: string }>(
+        'SELECT COUNT(*)::text as count FROM attestations WHERE subject_hash = $1 AND timestamp >= $2 AND category = ANY($3::text[])',
+        [subjectHash, afterTimestamp, categories],
+      );
+      return Number(rows[0]?.count ?? 0);
+    }
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT COUNT(*)::text as count FROM attestations WHERE subject_hash = $1 AND timestamp >= $2',
+      [subjectHash, afterTimestamp],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
 }

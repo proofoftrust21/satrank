@@ -882,6 +882,9 @@ delta       = |p_predicted - p_observed|</code></pre>
         <p>
           A competitor that announces a similar oracle in 2027 cannot retroactively produce the historical calibration events: each event carries a timestamp + Schnorr signature. The provenance is the moat.
         </p>
+        <p>
+          <strong>Honesty disclosure (audit Tier 3L, 2026-04-30):</strong> the calibration cron runs over outcomes that SatRank itself observes. The published kind 30783 event embeds the top-20 per-endpoint deltas (endpoint_url_hash, stage, n_obs, p_predicted, p_observed) as content so any agent paying one of those endpoints can spot-check a single delta against its own observation. Today the moat is therefore <em>self-published</em>; falsifiability becomes <em>cross-attested</em> when at least one independent SatRank-compatible peer oracle is announcing kind 30783 against an overlapping catalogue. The federation discovery (kind 30784) and ingestion pipeline (<code>oraclePeersDiscovery</code>, <code>peerCalibrationIngestor</code>) are already shipped, awaiting peer participation.
+        </p>
 
         <h3>12.2 Transferable trust assertions (kind 30782)</h3>
         <p>

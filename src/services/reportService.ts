@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid';
 import type { Pool } from 'pg';
 import { AttestationRepository } from '../repositories/attestationRepository';
 import { AgentRepository } from '../repositories/agentRepository';
+import type { OperatorOwnershipRepository } from '../repositories/operatorRepository';
 import { TransactionRepository, type DualWriteMode } from '../repositories/transactionRepository';
 import type { ScoringService } from './scoringService';
 import type { BayesianScoringService } from './bayesianScoringService';
@@ -47,6 +48,16 @@ const REPORT_CATEGORIES: AttestationCategory[] = ['successful_transaction', 'fai
 const REPORT_RATE_LIMIT_WINDOW_SEC = 60; // 1 minute
 const REPORT_RATE_LIMIT_MAX = 20;
 const REPORT_DEDUP_WINDOW_SEC = 3600; // 1 hour
+// Audit Tier 3A (2026-04-30) — censorship-flood guard. Per target, cap the
+// number of NEGATIVE reports (failed_transaction, unresponsive) accepted in
+// a rolling 1h window. Above this count we reject as REPORT_TARGET_FLOOD —
+// the attempt to coordinate negative reports across many attesters is
+// throttled at the target level. Honest agents observe a target as broken
+// in groups of ≤30/h on the worst real outage; sustained 30+/h on a single
+// target signals coordinated abuse.
+const NEGATIVE_REPORT_CATEGORIES: AttestationCategory[] = ['failed_transaction', 'unresponsive'];
+const REPORT_TARGET_FLOOD_WINDOW_SEC = 3600;
+const REPORT_TARGET_FLOOD_MAX = 30;
 const PREIMAGE_WEIGHT_BONUS = 2.0;
 const BASE_WEIGHT_FLOOR = 0.3;
 const BASE_WEIGHT_MAX = 1.0;
@@ -68,6 +79,13 @@ export class ReportService {
      *  les tests unitaires qui n'ont pas besoin du pipeline bayésien peuvent
      *  omettre la dépendance. */
     private bayesian?: BayesianScoringService,
+    /** Audit Tier 3C (2026-04-30) — quand fourni, le service rejette les
+     *  reports où reporter et target sont liés au même operator_id. Empêche
+     *  l'auto-promotion via plusieurs LN nodes contrôlés par le même
+     *  opérateur (Mallory possède LN-A et LN-B, signe un report depuis B
+     *  pointant sur A). Optionnel pour les tests qui n'ont pas besoin du
+     *  registre operators. */
+    private ownershipRepo?: OperatorOwnershipRepository,
   ) {}
 
   /** Looks up token_query_log to decide the tx source:
@@ -113,6 +131,32 @@ export class ReportService {
     // Self-report not allowed
     if (input.reporter === input.target) {
       throw new ValidationError('An agent cannot report on itself');
+    }
+
+    // Audit Tier 3C (2026-04-30) — operator_id cross-reference. Without
+    // this check, an operator who controls multiple LN nodes (one signs the
+    // report, another runs the endpoint) bypasses the literal reporter ===
+    // target guard and self-promotes through the back door. We block any
+    // report where reporter and target are mapped to the SAME operator_id.
+    // No-op when ownershipRepo is not wired or when either side has no
+    // operator mapping (fail open: legitimate strangers must not be blocked).
+    if (this.ownershipRepo) {
+      const reporterOp = await this.ownershipRepo.findOperatorForNode(input.reporter);
+      const targetOp = await this.ownershipRepo.findOperatorForNode(input.target);
+      if (reporterOp && targetOp && reporterOp.operator_id === targetOp.operator_id) {
+        logger.warn(
+          {
+            reporter: input.reporter.slice(0, 12),
+            target: input.target.slice(0, 12),
+            operator_id: reporterOp.operator_id.slice(0, 12),
+          },
+          'Self-promotion via shared operator_id — rejecting (audit Tier 3C)',
+        );
+        throw new ValidationError(
+          'Reporter and target are owned by the same operator. ' +
+          'Self-promotion through controlled LN nodes is not allowed.',
+        );
+      }
     }
 
     // Preimage verification (pure computation — safe outside transaction)
@@ -171,6 +215,28 @@ export class ReportService {
       );
       if (recentCount >= REPORT_RATE_LIMIT_MAX) {
         throw new ValidationError(`Rate limit exceeded: max ${REPORT_RATE_LIMIT_MAX} reports per minute`);
+      }
+
+      // Audit Tier 3A (2026-04-30) — censorship-flood guard. Cap negative
+      // reports per target in a 1h window. Honest agents observing a real
+      // outage rarely exceed 30/h on one target; sustained 30+/h signals
+      // coordinated abuse from many attesters trying to dominate the
+      // posterior. Only failure / timeout categories count — this check
+      // does not throttle legitimate success reports on popular endpoints.
+      if (input.outcome === 'failure' || input.outcome === 'timeout') {
+        const negativeCount = await attRepo.countRecentBySubject(
+          input.target, now - REPORT_TARGET_FLOOD_WINDOW_SEC, NEGATIVE_REPORT_CATEGORIES,
+        );
+        if (negativeCount >= REPORT_TARGET_FLOOD_MAX) {
+          logger.warn(
+            { target: input.target.slice(0, 12), reporter: input.reporter.slice(0, 12), recentCount: negativeCount },
+            'Negative-report flood on target — rejecting (audit Tier 3A)',
+          );
+          throw new ValidationError(
+            `Target negative-report flood: ${negativeCount} negative reports in the last hour exceeds cap ${REPORT_TARGET_FLOOD_MAX}. ` +
+            'Excess negative reports are throttled to prevent reputation censorship — retry after the window resets.',
+          );
+        }
       }
 
       // Dedup: 1 report per (reporter, target) per hour
@@ -359,6 +425,26 @@ export class ReportService {
       agRepo: AgentRepository,
       txRepo: TransactionRepository,
     ): Promise<void> => {
+      // Audit Tier 3A (2026-04-30) — same target-side flood guard as the
+      // authenticated path. The anonymous path is the higher-risk vector
+      // (no reporter identity tied to a paid token), so the cap is
+      // particularly important here.
+      if (input.outcome === 'failure' || input.outcome === 'timeout') {
+        const negativeCount = await attRepo.countRecentBySubject(
+          input.target, now - REPORT_TARGET_FLOOD_WINDOW_SEC, NEGATIVE_REPORT_CATEGORIES,
+        );
+        if (negativeCount >= REPORT_TARGET_FLOOD_MAX) {
+          logger.warn(
+            { target: input.target.slice(0, 12), recentCount: negativeCount, anonymous: true },
+            'Negative-report flood on target — rejecting anonymous (audit Tier 3A)',
+          );
+          throw new ValidationError(
+            `Target negative-report flood: ${negativeCount} reports in 1h exceeds cap ${REPORT_TARGET_FLOOD_MAX}. ` +
+            'Excess negative reports are throttled to prevent reputation censorship.',
+          );
+        }
+      }
+
       // Upsert synthetic agent pour satisfaire la FK attester_hash/sender_hash
       const existingReporter = await agRepo.findByHash(reporterHash);
       if (!existingReporter) {
