@@ -373,7 +373,7 @@ export const openapiSpec = {
       post: {
         summary: 'Report outcome',
         operationId: 'report',
-        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously queried this target; see token_query_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.',
+        description: 'Submit a success/failure/timeout report. Authenticated (X-API-Key or an L402 deposit token that previously queried this target; see token_query_log scoping). Does not consume quota. Weighted by reporter trust score and reporter badge tier; preimage verification gives a 2x weight bonus.\n\n**Anti-abuse guards (audit Tier 3, 2026-04-30):**\n- 3A: per-target negative-report flood cap. The 31st failed/timeout report on the same target within 1h returns 400 with detail "Target negative-report flood". Honest agents on the worst real outage rarely exceed 30/h on one target; sustained traffic above signals coordinated reputation censorship.\n- 3C: operator cross-reference. When reporter and target are owned by the same operator (multi-LN-node Mallory), the report is rejected. Honest cross-operator reports pass.',
         tags: ['Reports'],
         security: [{ apiKey: [] }, { l402: [] }],
         requestBody: {
@@ -385,7 +385,7 @@ export const openapiSpec = {
             description: 'Report accepted',
             content: { 'application/json': { schema: { type: 'object', properties: { data: { $ref: '#/components/schemas/ReportResponse' } } } } },
           },
-          '400': { $ref: '#/components/responses/ValidationError' },
+          '400': { description: 'Validation error, self-report, target-flood cap exceeded (Tier 3A), or shared-operator self-promotion (Tier 3C)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '401': { description: 'Missing or invalid auth (no X-API-Key and no query-scoped L402 token for this target)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '403': { description: 'L402 token not scoped to this target (no token_query_log row linking token→target within the auth window)', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '404': { $ref: '#/components/responses/NotFound' },
@@ -506,7 +506,7 @@ export const openapiSpec = {
       post: {
         summary: 'Resolve a structured intent to ranked L402 candidates',
         operationId: 'resolveIntent',
-        description: 'Discovery API. The agent provides a structured intent (category + optional keywords + budget + max_latency); SatRank returns up to 20 candidates ranked Bayesian-native (p_success DESC → ci95_low DESC → price_sats ASC) with advisory overlay and health snapshot. Neutral ordering (no paid listing). snake_case convention.\n\nPricing Mix A+D (2026-04-26): the default path is **free** (rate-limited at 10/min/IP) with explicit staleness disclaimer (per-candidate `advisory.freshness_status` + `meta.upgrade_path`). Pass `fresh=true` (query string `?fresh=true` or body `{ "fresh": true }`) to upgrade to the **paid** path (2 sats via L402): the server runs a synchronous HTTP probe on the top candidates and guarantees `last_probe_age_sec < 60s`.\n\nCategory must be a known enum member (see GET /api/intent/categories). Unknown categories → 400 INVALID_CATEGORY. Malformed categories → 400 VALIDATION_ERROR.\n\nStrictness tiers (aligned with /api/services/best): strict (SAFE only) → relaxed (any non-RISKY, warning FALLBACK_RELAXED) → degraded (pool empty, warning NO_CANDIDATES). RISKY candidates are never returned.',
+        description: 'Discovery API. The agent provides a structured intent (category + optional keywords + budget + max_latency); SatRank returns up to 20 candidates ranked Bayesian-native (p_success DESC → ci95_low DESC → price_sats ASC) with advisory overlay and health snapshot. Neutral ordering (no paid listing). snake_case convention.\n\nPricing Mix A+D (2026-04-26): the default path is **free** (rate-limited at 10/min/IP) with explicit staleness disclaimer (per-candidate `advisory.freshness_status` + `meta.upgrade_path`). Pass `fresh=true` (query string `?fresh=true` or body `{ "fresh": true }`) to upgrade to the **paid** path (2 sats via L402): the server runs a synchronous HTTP probe on the top candidates and guarantees `last_probe_age_sec < 60s`.\n\n**Quality filter (audit Tier 1C, 2026-04-30):** endpoints whose latest crawler probe returned a non-recoverable status (4xx other than 402, or 5xx) are excluded from the response. Only `last_http_status IN {NULL, 402, 200..299}` are eligible — agents never see currently-broken endpoints.\n\n**Diversity cap (audit Tier 4M, 2026-04-30):** the top-N is post-processed so no single operator_pubkey appears more than 2× and no single host appears more than 2×. Overflow candidates are appended at tail to honor the requested `limit`. Without this, a dominant operator who holds many endpoints in a category captured every slot.\n\nCategory must be a known enum member (see GET /api/intent/categories). Unknown categories → 400 INVALID_CATEGORY. Malformed categories → 400 VALIDATION_ERROR.\n\nStrictness tiers (aligned with /api/services/best): strict (SAFE only) → relaxed (any non-RISKY, warning FALLBACK_RELAXED) → degraded (pool empty, warning NO_CANDIDATES). RISKY candidates are never returned.',
         tags: ['Discovery'],
         parameters: [
           {
@@ -625,7 +625,7 @@ export const openapiSpec = {
       get: {
         summary: 'Discover L402 services by category or keyword',
         operationId: 'searchServices',
-        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with the SatRank canonical Bayesian block for the backing Lightning node. Free endpoint (no L402 required). Data sourced from 402index.io, refreshed every 24h.',
+        description: 'Browse and search the L402 service registry. Returns service metadata (name, description, category, provider, price) enriched with the SatRank canonical Bayesian block for the backing Lightning node. Free endpoint (no L402 required). Data sourced from 402index.io, refreshed every 24h.\n\n**Quality filter (audit Tier 1C, 2026-04-30):** same as /api/intent — endpoints whose latest crawler probe returned a non-recoverable status (4xx other than 402, or 5xx) are excluded. Only `last_http_status IN {NULL, 402, 200..299}` rows are returned.',
         tags: ['Discovery'],
         parameters: [
           { name: 'q', in: 'query', required: false, schema: { type: 'string', maxLength: 100 }, description: 'Fulltext search across name, description, category, and provider' },
@@ -664,7 +664,7 @@ export const openapiSpec = {
       post: {
         summary: 'Self-register an L402 service (NIP-98 gated)',
         operationId: 'registerService',
-        description: 'Service operators submit their L402 endpoint URL signed with a Nostr key (NIP-98 Authorization header). SatRank validates the URL by GET-ing it and parsing the WWW-Authenticate header (must return HTTP 402 with a valid BOLT11 invoice). The first signer to claim a URL becomes its operator: subsequent POST/PATCH/DELETE attempts from a different npub return 409. Free, rate-limited (10/min/IP).',
+        description: 'Service operators submit their L402 endpoint URL signed with a Nostr key (NIP-98 Authorization header). SatRank validates the URL by GET-ing it, parsing the WWW-Authenticate header (must return HTTP 402 with a valid BOLT11 invoice), and checking for an optional `nostr-pubkey` ownership tag. Two enforcement paths apply:\n\n1. **Endpoint declares `nostr-pubkey="<hex>"` in WWW-Authenticate** (audit Tier 4N, recommended): only a NIP-98 signed by that exact pubkey is accepted. Any other npub gets a 403 OWNERSHIP_MISMATCH. This is the cryptographic proof of ownership and protects against first-claim sniping.\n2. **Endpoint does NOT declare the tag** (legacy fallback): first-claim semantics apply. The first NIP-98 signer to register the URL becomes its operator; subsequent attempts from a different npub return 409 ALREADY_CLAIMED.\n\nReplay protection: each NIP-98 event id is cached for 65 s; submitting the same Authorization header twice returns 401 NIP98_INVALID. Free, rate-limited (10/min/IP).',
         tags: ['Discovery'],
         security: [{ Nip98: [] }],
         requestBody: {
@@ -690,9 +690,10 @@ export const openapiSpec = {
               message: { type: 'string' },
             } },
           } } } } },
-          '400': { description: 'URL is not a valid L402 endpoint' },
-          '401': { description: 'NIP-98 Authorization missing or invalid' },
-          '409': { description: 'URL already claimed by a different operator' },
+          '400': { description: 'URL is not a valid L402 endpoint (NOT_L402)' },
+          '401': { description: 'NIP-98 Authorization missing, invalid, or replayed (NIP98_INVALID)' },
+          '403': { description: 'OWNERSHIP_MISMATCH — endpoint declares a different nostr-pubkey owner via WWW-Authenticate. Audit Tier 4N (2026-04-30): only the declared owner can claim it.' },
+          '409': { description: 'ALREADY_CLAIMED — URL already claimed by a different operator (when no nostr-pubkey tag is declared, first-claim semantics apply)' },
           '503': { description: 'Self-registration unavailable (LND BOLT11 decoder not configured)' },
         },
       },
@@ -839,7 +840,7 @@ export const openapiSpec = {
         operationId: 'probeEndpoint',
         tags: ['Discovery'],
         security: [{ l402: [] }],
-        description: 'SatRank fetches the target URL, parses the L402 challenge, pays the BOLT11 invoice from its own LND node, and retries the request with the preimage. Returns the full telemetry: first fetch, challenge, payment outcome, authenticated retry. Costs 5 credits per call (1 deducted by balanceAuth, 4 deducted in the handler).',
+        description: 'SatRank fetches the target URL using the catalogue-declared `http_method` (GET or POST), parses the L402 challenge, pays the BOLT11 invoice from its own LND node, then re-verifies that `SHA256(preimage) === invoice.payment_hash` before crediting pay_ok (audit Tier 2H, 2026-04-30 — defense-in-depth even though Lightning guarantees this match). On mismatch the call returns with `paymentError: preimage_hash_mismatch` and stages 3-5 are not credited as success. Returns the full telemetry: first fetch, challenge, payment outcome, authenticated retry. Costs 5 credits per call (1 deducted by balanceAuth, 4 deducted in the handler).',
         requestBody: {
           required: true,
           content: { 'application/json': { schema: {
