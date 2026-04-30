@@ -1479,6 +1479,49 @@ async function main(): Promise<void> {
     timerWellKnownL402.unref?.();
     logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'WellKnownL402 crawler timer started');
 
+    // Sim 8 follow-up — 402index RSS feed change-stream. Same upstream truth
+    // as the main registry crawl but lighter cadence path that surfaces the
+    // 100-item rolling window of new listings between full crawls. Strict
+    // x402 filter: Lightning-pure invariant (decision 2026-04-30).
+    const { L402IndexRssCrawler } = await import('./l402IndexRssCrawler');
+    const l402IndexRssCrawler = new L402IndexRssCrawler(serviceEndpointRepo, registryCrawler);
+
+    (async () => {
+      try {
+        await l402IndexRssCrawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial l402index_rss crawl error');
+      }
+    })();
+
+    const timerL402IndexRss = setInterval(async () => {
+      try {
+        await l402IndexRssCrawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'l402index_rss crawl error');
+      }
+    }, config.CRAWL_INTERVAL_REGISTRY_MS);
+    timerL402IndexRss.unref?.();
+    logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'L402IndexRss crawler timer started');
+
+    // Sim 8 follow-up — kind 31402 (forgesworn proposal) consumer. Ingests
+    // Nostr-broadcast L402 service announcements. Filters out x402/cashu
+    // (Lightning-pure invariant 2026-04-30) and forgesworn-crawler dupes.
+    // Uses the same default 3 relays as the publisher; subscription is
+    // permanent — no private key required since we only listen.
+    const { Kind31402Consumer } = await import('../nostr/kind31402Consumer');
+    const kind31402Relays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(r => r.length > 0);
+    const kind31402Consumer = new Kind31402Consumer({
+      serviceEndpointRepo,
+      registryCrawler,
+      relays: kind31402Relays.length > 0 ? kind31402Relays : undefined,
+    });
+    kind31402Consumer.start().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ error: msg }, 'Failed to start kind-31402 subscriber');
+    });
+    logger.info({ relays: kind31402Relays.length }, 'Sim 8 — Kind 31402 consumer started (Nostr-native L402 discovery)');
+
     // Retention cleanup — sweep old rows from time-series tables
     // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
     // before the first crawl so we start with a trimmed dataset.
