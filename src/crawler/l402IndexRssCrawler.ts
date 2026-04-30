@@ -14,10 +14,16 @@
 import { logger } from '../logger';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { RegistryCrawler, ProbeResult } from './registryCrawler';
-import { isSafeUrl } from '../utils/ssrf';
+import { isSafeUrl, fetchSafeExternal, readBodyCapped } from '../utils/ssrf';
 
 const FEED_URL = 'https://402index.io/feed.xml';
 const FETCH_TIMEOUT_MS = 8000;
+/** Audit H2 — hard byte cap on the RSS feed. Today's feed is ~25KB; 512KB
+ *  is 20× headroom. Any compliant 100-item rolling window fits trivially. */
+const FEED_MAX_BYTES = 524_288;
+/** Audit H2 — also cap the parsed item count after parse so a hostile
+ *  feed can't drive an unbounded loop within the byte cap. */
+const MAX_ITEMS_PARSED = 500;
 
 const HOST_INGESTION_CAP_PER_CYCLE = parseInt(
   process.env.L402INDEX_RSS_HOST_INGESTION_CAP_PER_CYCLE
@@ -73,7 +79,9 @@ function isTemplatedUrl(url: string): boolean {
 }
 
 /** Parse the 402index RSS payload into Lightning-only items. Returns the raw
- *  count separately so the caller can log how many x402 items we filtered. */
+ *  count separately so the caller can log how many x402 items we filtered.
+ *  Audit H2 — caps the parsed item count at MAX_ITEMS_PARSED to bound CPU
+ *  even when the input passes the byte cap. */
 export function parseFeed(xml: string): { items: RssItem[]; rawCount: number; x402Filtered: number } {
   const items: RssItem[] = [];
   let x402Filtered = 0;
@@ -83,6 +91,7 @@ export function parseFeed(xml: string): { items: RssItem[]; rawCount: number; x4
   let m: RegExpExecArray | null;
   let raw = 0;
   while ((m = itemRegex.exec(xml)) !== null) {
+    if (raw >= MAX_ITEMS_PARSED) break;
     raw++;
     const inner = m[1];
     const ep = endpointRegex.exec(inner);
@@ -143,12 +152,21 @@ export class L402IndexRssCrawler {
 
     let xml: string;
     try {
-      const resp = await fetch(this.feedUrl, {
+      // Audit H1+M3 — fetchSafeExternal closes the redirect-to-private-IP
+      // path and validates the resolved IP at connect time (DNS rebinding
+      // protection that plain fetch lacks).
+      const resp = await fetchSafeExternal(this.feedUrl, {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: { 'User-Agent': 'SatRank-L402IndexRssCrawler/1.0' },
       });
       if (!resp.ok) throw new Error(`feed returned ${resp.status}`);
-      xml = await resp.text();
+      // Audit H2 — hard byte cap before regex parse to prevent OOM via a
+      // multi-hundred-MB hostile feed.
+      const { body, truncated } = await readBodyCapped(resp, FEED_MAX_BYTES);
+      if (truncated) {
+        logger.warn({ feed: this.feedUrl, maxBytes: FEED_MAX_BYTES }, 'L402IndexRss: feed truncated at byte cap');
+      }
+      xml = body.toString('utf8');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ feed: this.feedUrl, error: msg }, 'L402IndexRss feed fetch failed');

@@ -447,4 +447,18 @@ describe('advisoryService — Sim 8 fix: p_e2e escalation', () => {
     expect(advisoryLevelFromE2e(0.70)).toBe(null);
     expect(advisoryLevelFromE2e(1.0)).toBe(null);
   });
+
+  it('audit L4 — non-finite p_e2e (NaN, Infinity) is treated as no signal', () => {
+    expect(advisoryLevelFromE2e(NaN)).toBe(null);
+    expect(advisoryLevelFromE2e(Infinity)).toBe(null);
+    expect(advisoryLevelFromE2e(-Infinity)).toBe(null);
+    // Also exercised end-to-end: a NaN pE2e must not produce a LOW_E2E /
+    // CRITICAL_E2E advisory, just as null doesn't.
+    const r = computeAdvisoryReport({
+      bayesian: { p_success: 0.85, ci95_low: 0.84, ci95_high: 0.86, n_obs: 100 },
+      pE2e: NaN,
+    });
+    expect(r.advisory_level).toBe('green');
+    expect(r.advisories.find(a => a.code === 'LOW_E2E' || a.code === 'CRITICAL_E2E')).toBeUndefined();
+  });
 });

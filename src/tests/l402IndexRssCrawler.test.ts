@@ -183,6 +183,15 @@ describe('L402IndexRssCrawler', async () => {
     expect(r.discovered).toBe(1);
   });
 
+  it('audit H2 — feed with >MAX items is truncated', async () => {
+    const items: Array<{ url: string; method?: string; protocol?: string }> = [];
+    for (let i = 0; i < 600; i++) items.push({ url: `https://h${i}.example/x`, method: 'GET', protocol: 'L402' });
+    global.fetch = feedFetch(buildFeed(items));
+    const crawler = new L402IndexRssCrawler(repo, fakeProber({}));
+    const r = await crawler.run();
+    expect(r.totalItemsRaw).toBe(500); // capped at MAX_ITEMS_PARSED
+  });
+
   it('100-item realistic feed: aggregate funnel totals match input', async () => {
     const items: Array<{ url: string; method?: string; protocol?: string }> = [];
     for (let i = 0; i < 50; i++) items.push({ url: `https://lh${i}.example/x`, method: 'GET', protocol: 'L402' });

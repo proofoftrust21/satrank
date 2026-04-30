@@ -11,11 +11,17 @@
 import { logger } from '../logger';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { RegistryCrawler, ProbeResult } from './registryCrawler';
-import { isSafeUrl } from '../utils/ssrf';
+import { isSafeUrl, fetchSafeExternal, readBodyCapped } from '../utils/ssrf';
 
 const README_URL =
   'https://raw.githubusercontent.com/Fewsats/awesome-L402/main/README.md';
 const FETCH_TIMEOUT_MS = 8000;
+/** Audit H2 — README byte cap. Today's README is ~25KB; 2MB is 80× headroom
+ *  for community growth. */
+const README_MAX_BYTES = 2_097_152;
+/** Audit H2 — also cap extracted-URL count after parse so even a 2MB README
+ *  packed with URLs can't drive an unbounded probe loop. */
+const MAX_URLS_EXTRACTED = 1000;
 
 const HOST_INGESTION_CAP_PER_CYCLE = parseInt(
   process.env.AWESOME_L402_HOST_INGESTION_CAP_PER_CYCLE
@@ -103,7 +109,9 @@ export interface AwesomeL402CrawlResult {
 }
 
 /** Extract HTTPS URLs from a markdown blob. Pulls from `[text](url)` and
- *  bare https:// occurrences. Output is deduplicated. */
+ *  bare https:// occurrences. Output is deduplicated and capped at
+ *  MAX_URLS_EXTRACTED (audit H2 — bounds CPU even when input passes the
+ *  byte cap). */
 export function extractHttpsUrls(markdown: string): string[] {
   const urls = new Set<string>();
   const linkRegex = /\[[^\]]*\]\((https:\/\/[^)\s]+)\)/g;
@@ -111,9 +119,11 @@ export function extractHttpsUrls(markdown: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = linkRegex.exec(markdown)) !== null) {
     urls.add(m[1].replace(/[.,)]+$/, ''));
+    if (urls.size >= MAX_URLS_EXTRACTED) break;
   }
   while ((m = bareRegex.exec(markdown)) !== null) {
     urls.add(m[1].replace(/[.,)]+$/, ''));
+    if (urls.size >= MAX_URLS_EXTRACTED) break;
   }
   return Array.from(urls);
 }
@@ -178,12 +188,21 @@ export class AwesomeL402Crawler {
 
     let markdown: string;
     try {
-      const resp = await fetch(this.readmeUrl, {
+      // Audit H1+M3 — fetchSafeExternal closes the redirect-to-private-IP
+      // path and validates the resolved IP at connect time.
+      const resp = await fetchSafeExternal(this.readmeUrl, {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: { 'User-Agent': 'SatRank-AwesomeL402Crawler/1.0' },
       });
       if (!resp.ok) throw new Error(`README returned ${resp.status}`);
-      markdown = await resp.text();
+      // Audit H2 — hard byte cap before regex scan. The Fewsats README is
+      // ~25KB; 2MB cap is 80× headroom but bounds the input enough to
+      // prevent OOM on a hostile redirect.
+      const { body, truncated } = await readBodyCapped(resp, README_MAX_BYTES);
+      if (truncated) {
+        logger.warn({ readmeUrl: this.readmeUrl, maxBytes: README_MAX_BYTES }, 'AwesomeL402: README truncated at byte cap');
+      }
+      markdown = body.toString('utf8');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ readmeUrl: this.readmeUrl, error: msg }, 'AwesomeL402 README fetch failed');

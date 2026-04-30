@@ -24,17 +24,36 @@ import { DEFAULT_NOSTR_RELAYS } from './relays';
 
 const KIND_31402 = 31402;
 
+/** Audit M2 — cap urls per event so a maximally-stuffed 64KB event can't
+ *  fan out to ~1500 concurrent probeUrl calls. The forgesworn spec is
+ *  per-operator-endpoint; 5 covers clearnet + .onion + .hns transports
+ *  with headroom and blocks amplification attempts. */
+const MAX_URLS_PER_EVENT = 5;
+
+/** Lightweight signature-verification dependency. Mirrors the pattern in
+ *  oraclePeersDiscovery / crowdOutcomeIngestor / operatorCrawler — every
+ *  consumer of untrusted Nostr events injects verifyEvent so it can be
+ *  stubbed under test. Audit M1 — without this, an attacker could spoof
+ *  events from any pubkey on any relay and amplify probes against any
+ *  public-internet host. */
+type VerifyEvent = (event: NostrEventLike) => boolean;
+
 export interface Kind31402ConsumerOptions {
   serviceEndpointRepo: ServiceEndpointRepository;
   registryCrawler: Pick<RegistryCrawler, 'probeUrl'>;
+  /** Schnorr signature verifier. Required: events fail-closed if the verifier
+   *  rejects, mirrors oracle-peers + crowd-outcomes hardening. */
+  verifyEvent: VerifyEvent;
   relays?: readonly string[];
 }
 
 export interface Kind31402Stats {
   eventsReceived: number;
+  eventsIgnoredBadSignature: number;
   eventsIgnoredCrawler: number;
   eventsIgnoredNonLightning: number;
   eventsIgnoredMalformed: number;
+  eventsTruncatedUrls: number;
   urlsAttempted: number;
   urlsMergedExisting: number;
   urlsAlreadyAttributed: number;
@@ -91,17 +110,21 @@ export class Kind31402Consumer {
   private subscriber: NostrEventSubscriber;
   private serviceEndpointRepo: ServiceEndpointRepository;
   private registryCrawler: Pick<RegistryCrawler, 'probeUrl'>;
+  private verifyEvent: VerifyEvent;
   private stats: Kind31402Stats = this.emptyStats();
 
   constructor(opts: Kind31402ConsumerOptions) {
     this.serviceEndpointRepo = opts.serviceEndpointRepo;
     this.registryCrawler = opts.registryCrawler;
+    this.verifyEvent = opts.verifyEvent;
     const relays = (opts.relays ?? DEFAULT_NOSTR_RELAYS).slice() as string[];
     this.subscriber = new NostrEventSubscriber({
       label: 'kind-31402',
       relays,
       filters: [{ kinds: [KIND_31402] }],
-      onEvent: (ev) => this.handleEvent(ev),
+      // Audit INFO-1 — pass arrivedVia through so log entries can attribute
+      // events to the relay that delivered them.
+      onEvent: (ev, arrivedVia) => this.handleEvent(ev, arrivedVia),
     });
   }
 
@@ -119,8 +142,25 @@ export class Kind31402Consumer {
     return { ...this.stats };
   }
 
-  private async handleEvent(event: NostrEventLike): Promise<void> {
+  private async handleEvent(event: NostrEventLike, arrivedVia?: string): Promise<void> {
     this.stats.eventsReceived++;
+
+    // Audit M1 — verify Schnorr signature before any URL processing.
+    // Fail-closed: a relay can't spoof events from any pubkey to amplify
+    // probes against arbitrary internet hosts.
+    let signatureOk = false;
+    try {
+      signatureOk = this.verifyEvent(event);
+    } catch (err) {
+      logger.warn(
+        { eventId: event.id?.slice(0, 12), arrivedVia, error: err instanceof Error ? err.message : String(err) },
+        'Kind31402Consumer: verifyEvent threw',
+      );
+    }
+    if (!signatureOk) {
+      this.stats.eventsIgnoredBadSignature++;
+      return;
+    }
 
     // Skip crawler-origin republications — those duplicate URLs already
     // discoverable via the HTTP-side crawler.
@@ -137,15 +177,30 @@ export class Kind31402Consumer {
 
     // Multiple `url` tags allowed (clearnet / .onion / .hns transports).
     // We ingest each clearnet HTTPS URL.
-    const urlTags: string[] = [];
+    const urlTagsAll: string[] = [];
     for (const t of event.tags) {
       if (Array.isArray(t) && t.length >= 2 && t[0] === 'url') {
-        urlTags.push(t[1]);
+        urlTagsAll.push(t[1]);
       }
     }
-    if (urlTags.length === 0) {
+    if (urlTagsAll.length === 0) {
       this.stats.eventsIgnoredMalformed++;
       return;
+    }
+    // Audit M2 — cap URLs to bound probe fan-out per event. Forgesworn
+    // events in the wild carry 1-3 transports; 5 leaves headroom.
+    const urlTags = urlTagsAll.slice(0, MAX_URLS_PER_EVENT);
+    if (urlTagsAll.length > MAX_URLS_PER_EVENT) {
+      this.stats.eventsTruncatedUrls++;
+      logger.warn(
+        {
+          eventId: event.id?.slice(0, 12),
+          arrivedVia,
+          urlCount: urlTagsAll.length,
+          cap: MAX_URLS_PER_EVENT,
+        },
+        'Kind31402Consumer: event url tags truncated',
+      );
     }
 
     for (const rawUrl of urlTags) {
@@ -202,9 +257,11 @@ export class Kind31402Consumer {
   private emptyStats(): Kind31402Stats {
     return {
       eventsReceived: 0,
+      eventsIgnoredBadSignature: 0,
       eventsIgnoredCrawler: 0,
       eventsIgnoredNonLightning: 0,
       eventsIgnoredMalformed: 0,
+      eventsTruncatedUrls: 0,
       urlsAttempted: 0,
       urlsMergedExisting: 0,
       urlsAlreadyAttributed: 0,

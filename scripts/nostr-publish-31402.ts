@@ -10,6 +10,12 @@
 // Usage:
 //   NOSTR_PRIVATE_KEY=<hex> npx tsx scripts/nostr-publish-31402.ts
 //   DRY_RUN=1 NOSTR_PRIVATE_KEY=<hex> npx tsx scripts/nostr-publish-31402.ts
+//
+// Audit L3 — passing the key on the command line surfaces it in `ps aux`
+// for the lifetime of the process and in shell history. For automation,
+// prefer reading via env file: `set -a; . /run/secrets/nostr.env; set +a;
+// npx tsx scripts/nostr-publish-31402.ts`. The DRY_RUN output prints the
+// signed event JSON only — Schnorr signatures don't leak the secret key.
 import { webcrypto } from 'node:crypto';
 if (!(globalThis as { crypto?: unknown }).crypto) {
   (globalThis as { crypto: unknown }).crypto = webcrypto;

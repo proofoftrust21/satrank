@@ -482,7 +482,9 @@ async function main(): Promise<void> {
     let nostrPublishFn: (() => Promise<void>) | undefined;
     let timerNostr: ReturnType<typeof setInterval> | null = null;
     let timerZapMining: ReturnType<typeof setInterval> | null = null;
-    logger.info({ hasKey: !!config.NOSTR_PRIVATE_KEY, keyLen: config.NOSTR_PRIVATE_KEY?.length ?? 0 }, 'Nostr publisher check');
+    // Audit L2 — only log presence, not length. The 64-char hex format is
+    // public (secp256k1 scalar) but no signal needed at the log layer.
+    logger.info({ hasKey: !!config.NOSTR_PRIVATE_KEY }, 'Nostr publisher check');
     if (config.NOSTR_PRIVATE_KEY) {
       logger.info('Nostr private key found — loading publisher module');
       try {
@@ -1509,11 +1511,16 @@ async function main(): Promise<void> {
     // (Lightning-pure invariant 2026-04-30) and forgesworn-crawler dupes.
     // Uses the same default 3 relays as the publisher; subscription is
     // permanent — no private key required since we only listen.
+    // Audit M1 — verifyEvent is required so a malicious relay can't spoof
+    // events from any pubkey and amplify probes against arbitrary hosts.
     const { Kind31402Consumer } = await import('../nostr/kind31402Consumer');
+    // @ts-expect-error — moduleResolution "node" can't resolve ESM subpath
+    const { verifyEvent: verifyEventFnK31402 } = await import('nostr-tools/pure');
     const kind31402Relays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(r => r.length > 0);
     const kind31402Consumer = new Kind31402Consumer({
       serviceEndpointRepo,
       registryCrawler,
+      verifyEvent: (event) => verifyEventFnK31402(event as unknown as Parameters<typeof verifyEventFnK31402>[0]),
       relays: kind31402Relays.length > 0 ? kind31402Relays : undefined,
     });
     kind31402Consumer.start().catch((err: unknown) => {

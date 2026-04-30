@@ -115,9 +115,12 @@ export interface AdvisoryInput {
 
 /** Resolve a low-p_e2e signal into an escalation level (or null when the
  *  signal is missing or too high to escalate). Pure helper — exported for
- *  test ergonomics. */
+ *  test ergonomics. Audit L4 — Number.isFinite excludes NaN/Infinity that
+ *  pass `== null` but would otherwise return null silently and mask a bug
+ *  in the upstream composer. Treating non-finite as "no signal" is correct
+ *  but should be explicit. */
 export function advisoryLevelFromE2e(pE2e: number | null | undefined): AdvisoryLevel | null {
-  if (pE2e == null) return null;
+  if (pE2e == null || !Number.isFinite(pE2e)) return null;
   if (pE2e < E2E_THRESHOLDS.red)    return 'red';
   if (pE2e < E2E_THRESHOLDS.orange) return 'orange';
   if (pE2e < E2E_THRESHOLDS.yellow) return 'yellow';
@@ -209,7 +212,9 @@ function buildAdvisories(
   // never deliver), LOW_E2E covers the 0.30-0.60 yellow/orange band. The
   // override on advisory_level happens in computeAdvisoryReport; this just
   // emits the human-readable reason so agents can see *why* the level moved.
-  if (pE2e != null && pE2e < E2E_THRESHOLDS.yellow) {
+  // Audit L4 — Number.isFinite mirrors advisoryLevelFromE2e so NaN/Infinity
+  // don't silently slip past the threshold comparison.
+  if (pE2e != null && Number.isFinite(pE2e) && pE2e < E2E_THRESHOLDS.yellow) {
     const strength = Math.min(1, Math.max(0, 1 - pE2e));
     if (pE2e < E2E_THRESHOLDS.red) {
       advisories.push(critical(

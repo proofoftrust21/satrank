@@ -150,6 +150,14 @@ A curated list of L402 services.
     expect(r.preCapSkipped.malformed_readme).toBe(1);
   });
 
+  it('audit H2 — extractHttpsUrls truncates beyond MAX_URLS_EXTRACTED', async () => {
+    // Build a markdown with 1500 unique URLs; cap is 1000.
+    const lines: string[] = ['# header'];
+    for (let i = 0; i < 1500; i++) lines.push(`- See https://h${i}.example/path`);
+    const md = lines.join('\n');
+    expect(extractHttpsUrls(md).length).toBe(1000);
+  });
+
   it('non-L402 candidates land in not_402 funnel without ingesting', async () => {
     global.fetch = readmeFetch(`
 The README is a useful place that mostly lists things like

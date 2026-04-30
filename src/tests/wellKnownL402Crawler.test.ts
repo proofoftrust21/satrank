@@ -236,6 +236,52 @@ describe('WellKnownL402Crawler', async () => {
     expect(r.discovered).toBe(0);
   });
 
+  it('audit H3 — pins provider.url to manifest host when they disagree', async () => {
+    // A compromised manifest sets provider.url to attacker-controlled.
+    // Without pinning, endpoints would resolve against attacker.example
+    // and cause SatRank to probe arbitrary third-party domains.
+    global.fetch = manifestResponse({
+      'https://victim.example': {
+        protocol: 'L402',
+        provider: { name: 'Victim', url: 'https://attacker.example' },
+        endpoints: [{ path: '/api/foo', method: 'POST' }],
+      },
+    });
+    // Probe map intentionally only has the victim-host URL. If the pin
+    // works, the crawler resolves /api/foo against victim.example. If the
+    // pin fails, it would call attacker.example (not in the map → reason
+    // 'network_error', no discovery).
+    const probe: ProbeResult = {
+      result: { agentHash: sha256('02' + '7'.repeat(64)), priceSats: 1, latencyMs: 10 },
+      outcome: { finalStatus: 402, methodUsed: 'POST', reason: 'success' },
+    };
+    const crawler = new WellKnownL402Crawler(
+      repo,
+      fakeProber({ 'https://victim.example/api/foo': probe }),
+      ['https://victim.example'],
+    );
+    const r = await crawler.run();
+    expect(r.discovered).toBe(1);
+  });
+
+  it('audit H2 — manifest with >MAX endpoints is truncated to MAX', async () => {
+    // Build 600 endpoints; cap is 500.
+    const endpoints = Array.from({ length: 600 }, (_, i) => ({
+      path: `/api/ep${i}`,
+      method: 'POST',
+    }));
+    global.fetch = manifestResponse({
+      'https://op.example': { provider: { url: 'https://op.example' }, endpoints },
+    });
+    const crawler = new WellKnownL402Crawler(
+      repo,
+      fakeProber({}),
+      ['https://op.example'],
+    );
+    const r = await crawler.run();
+    expect(r.totalEndpointsRaw).toBe(500); // capped at MAX_ENDPOINTS_PER_MANIFEST
+  });
+
   it('endpoint with empty path is treated as malformed, not crashed', async () => {
     global.fetch = manifestResponse({
       'https://op.example': {

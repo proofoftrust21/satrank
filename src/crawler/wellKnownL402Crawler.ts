@@ -17,7 +17,7 @@
 import { logger } from '../logger';
 import type { ServiceEndpointRepository } from '../repositories/serviceEndpointRepository';
 import type { RegistryCrawler, ProbeResult } from './registryCrawler';
-import { isSafeUrl } from '../utils/ssrf';
+import { isSafeUrl, fetchSafeExternal, readBodyCapped } from '../utils/ssrf';
 
 /** A single endpoint inside a /.well-known/l402 manifest. Extra fields beyond
  *  these are accepted but ignored — we only need what feeds discovery. */
@@ -36,6 +36,14 @@ interface WellKnownManifest {
 }
 
 const FETCH_TIMEOUT_MS = 5000;
+/** Sim 8 follow-up audit H2 — hard cap on the manifest body size. Sats4AI's
+ *  current manifest is ~10KB; 1 MB is 100× headroom and well below any
+ *  reasonable interpretation of the /.well-known/l402 spec. */
+const MANIFEST_MAX_BYTES = 1_048_576;
+/** Sim 8 follow-up audit H3 — also limit the per-host endpoint count after
+ *  parse so a hostile manifest can't iterate 50k entries even within the
+ *  byte cap. */
+const MAX_ENDPOINTS_PER_MANIFEST = 500;
 
 /** Default seed list. Each entry is the operator's HTTPS root; we append
  *  `/.well-known/l402` to fetch the manifest. Override via the
@@ -89,10 +97,13 @@ export interface WellKnownL402CrawlResult {
 function parseHosts(): string[] {
   const raw = process.env.WELLKNOWN_L402_HOSTS;
   if (!raw) return DEFAULT_HOSTS;
+  // Audit M4 — defense-in-depth: WELLKNOWN_L402_HOSTS could otherwise be
+  // misconfigured to include a private-IP host, which would let the manifest
+  // fetch land on internal infra. isSafeUrl rejects loopback/RFC1918/CGN.
   return raw
     .split(',')
-    .map(s => s.trim())
-    .filter(s => s.length > 0 && /^https:\/\//.test(s));
+    .map(s => s.trim().replace(/\/$/, ''))
+    .filter(s => s.length > 0 && /^https:\/\//.test(s) && isSafeUrl(s + '/.well-known/l402'));
 }
 
 function hostnameOf(url: string): string {
@@ -170,7 +181,12 @@ export class WellKnownL402Crawler {
 
       let manifest: WellKnownManifest;
       try {
-        const resp = await fetch(manifestUrl, {
+        // Audit H1+M3 — fetchSafeExternal closes the SSRF redirect path
+        // (default redirect: 'manual') and validates the resolved IP at
+        // connect time inside the undici Agent dispatcher. Plain fetch()
+        // would auto-follow 3xx into private IPs and skip DNS-rebinding
+        // protection (TOCTOU between isSafeUrl and connect).
+        const resp = await fetchSafeExternal(manifestUrl, {
           signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
           headers: { 'User-Agent': 'SatRank-WellKnownL402Crawler/1.0' },
         });
@@ -180,7 +196,16 @@ export class WellKnownL402Crawler {
           result.perHost.push(perHostStat);
           continue;
         }
-        manifest = (await resp.json()) as WellKnownManifest;
+        // Audit H2 — hard byte cap before JSON parse so a hostile manifest
+        // can't OOM the crawler.
+        const { body, truncated } = await readBodyCapped(resp, MANIFEST_MAX_BYTES);
+        if (truncated) {
+          logger.warn({ manifestUrl, maxBytes: MANIFEST_MAX_BYTES }, 'WellKnownL402: manifest truncated at byte cap');
+          result.preCapSkipped.malformed_manifest++;
+          result.perHost.push(perHostStat);
+          continue;
+        }
+        manifest = JSON.parse(body.toString('utf8')) as WellKnownManifest;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn({ manifestUrl, error: msg }, 'WellKnownL402: manifest fetch failed');
@@ -190,8 +215,25 @@ export class WellKnownL402Crawler {
         continue;
       }
 
-      const providerUrl = manifest.provider?.url ?? host;
-      const endpoints = Array.isArray(manifest.endpoints) ? manifest.endpoints : [];
+      // Audit H3 — pin providerUrl to the host we just fetched. A compromised
+      // manifest could otherwise set provider.url to attacker-controlled and
+      // cause us to probe an arbitrary domain (turning SatRank into a probe
+      // amplifier against a third party).
+      const declaredProvider = manifest.provider?.url ?? host;
+      const providerUrl =
+        hostnameOf(declaredProvider) === hostnameOf(host)
+          ? declaredProvider
+          : host;
+      if (providerUrl !== declaredProvider) {
+        logger.warn(
+          { manifestUrl, declaredProvider, manifestHost: hostnameOf(host) },
+          'WellKnownL402: provider.url host does not match manifest host — pinned to manifest host',
+        );
+      }
+      const rawEndpoints = Array.isArray(manifest.endpoints) ? manifest.endpoints : [];
+      // Audit H2 — also bound endpoint count so even a small valid-JSON
+      // manifest can't drive an unbounded loop.
+      const endpoints = rawEndpoints.slice(0, MAX_ENDPOINTS_PER_MANIFEST);
       if (endpoints.length === 0) {
         result.preCapSkipped.malformed_manifest++;
         result.perHost.push(perHostStat);

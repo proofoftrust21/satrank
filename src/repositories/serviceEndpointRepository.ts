@@ -40,8 +40,20 @@ export const TRUSTED_SOURCES: ServiceSource[] = [
  *  every discovery / category / Tier-1C query uses this to filter out
  *  ad_hoc rows. Built from TRUSTED_SOURCES so adding a new ServiceSource
  *  value automatically lands in every query without hunting hardcoded strings.
- *  Safe against SQL injection because the values are compile-time constants
- *  defined above. */
+ *
+ *  Safety against SQL injection: every value in TRUSTED_SOURCES is a TypeScript
+ *  string-literal-union member with no special SQL characters. The runtime
+ *  assertion below turns a future drift (someone adding `'evil; DROP TABLE'`
+ *  to the union) into an immediate startup failure rather than a latent
+ *  injection. Audit L1 (2026-04-30). */
+const SAFE_SOURCE_RE = /^[a-z0-9_]+$/;
+for (const s of TRUSTED_SOURCES) {
+  if (!SAFE_SOURCE_RE.test(s)) {
+    throw new Error(
+      `TRUSTED_SOURCES value ${JSON.stringify(s)} fails SQL-safety regex /^[a-z0-9_]+$/ — refusing to start`,
+    );
+  }
+}
 const TRUSTED_SOURCES_SQL_LIST = TRUSTED_SOURCES.map(s => `'${s}'`).join(', ');
 
 /** Vague 3 Phase 3 — trust ranking for the legacy `source` column when an
