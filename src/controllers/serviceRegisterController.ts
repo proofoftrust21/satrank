@@ -216,6 +216,40 @@ export class ServiceRegisterController {
         return;
       }
 
+      // Audit Tier 4N (2026-04-30) — challenge-response ownership proof.
+      // If the endpoint declares a `nostr-pubkey` tag in its WWW-Authenticate
+      // header, that pubkey is the canonical owner. Two enforcement paths:
+      //   - declared && === auth.npub : verified ownership claim (no-op
+      //     here; the existing first-claim flow proceeds and the operator
+      //     gets a verified status downstream).
+      //   - declared && !== auth.npub : the registering npub is sniping an
+      //     endpoint someone else has cryptographically claimed. Reject 403
+      //     and log audit. Even if Mallory had claimed first via legacy
+      //     first-claim semantics, a legitimate operator can dispute by
+      //     adding the tag — the post-tag claim would also be rejected here,
+      //     but a separate revanche path can clear Mallory's claim.
+      //   - declared === null : no tag, fall back to first-claim semantics.
+      const declared = result.declaredNostrPubkey;
+      if (declared && declared !== auth.npub) {
+        await this.safeLog({
+          url,
+          npub: auth.npub,
+          eventId: auth.eventId,
+          action: 'register',
+          success: false,
+          reason: 'ownership_proof_mismatch',
+          payload: { ...parsed.data, declared_owner_pubkey: declared.slice(0, 16) + '…' },
+        });
+        res.status(403).json({
+          error: {
+            code: 'OWNERSHIP_MISMATCH',
+            message: 'This endpoint declares a different Nostr pubkey as its owner via WWW-Authenticate. ' +
+              'Only the declared owner can claim it.',
+          },
+        });
+        return;
+      }
+
       // 4. Claim ownership: set operator_id only if NULL (idempotent re-submit
       // by the same operator is fine). claimEndpoint handles the operator_owns_endpoint
       // mirror with ON CONFLICT DO NOTHING.

@@ -20,6 +20,18 @@ export interface L402Challenge {
   macaroon: string;
   /** BOLT11 invoice — validate separately with bolt11Parser. */
   invoice: string;
+  /** Audit Tier 4N (2026-04-30) — optional ownership-proof tag. When the
+   *  endpoint operator declares their Nostr pubkey here, SatRank uses it
+   *  to gate `/api/services/register` claims: only a NIP-98 signed by
+   *  this pubkey gets a verified claim. Mismatch → registration rejected.
+   *  Absent → unverified first-claim semantics (legacy behavior).
+   *
+   *  Accepted tag names (case-insensitive, first match wins):
+   *    nostr-pubkey, nostr_pubkey, x-nostr-pubkey
+   *  Value must be a 64-char lowercase hex pubkey. Other formats (npub
+   *  bech32, prefixed `npub1…`) are NOT accepted to keep the parser
+   *  predictable; operators normalize to hex on their side. */
+  nostr_pubkey: string | null;
 }
 
 /** Parses a WWW-Authenticate header value into its L402 components.
@@ -38,7 +50,20 @@ export function parseL402Challenge(headerValue: string | undefined | null): L402
   const macaroon = extractKey(body, 'macaroon');
   const invoice = extractKey(body, 'invoice');
   if (!macaroon || !invoice) return null;
-  return { macaroon, invoice };
+
+  // Try the documented spellings in order; ignore values that aren't
+  // strict 64-char lowercase hex — defense-in-depth so an attacker who
+  // controls the WWW-Authenticate header can't smuggle a non-hex value
+  // that happens to match a downstream regex.
+  const npubRaw =
+    extractKey(body, 'nostr-pubkey') ??
+    extractKey(body, 'nostr_pubkey') ??
+    extractKey(body, 'x-nostr-pubkey');
+  const nostr_pubkey = npubRaw && /^[a-f0-9]{64}$/.test(npubRaw)
+    ? npubRaw
+    : null;
+
+  return { macaroon, invoice, nostr_pubkey };
 }
 
 /** Pulls the value of `key=...` from the header body. Accepts both double

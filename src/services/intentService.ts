@@ -285,7 +285,13 @@ export class IntentService {
     // Bayesian/freshness cohorting kept as tiebreaker so honest signals
     // still beat prior-only ones.
     const sorted = [...tierPool].sort(comparatorFor(optimize));
-    const trimmed = sorted.slice(0, limit);
+    // Audit Tier 4M (2026-04-30) — diversity cap. Without this, a single
+    // operator who holds N endpoints in a category (or a single host with
+    // many endpoints) can capture every slot of the response. Live measure
+    // before fix: top-5 in `ai` returned 4 endpoints from one operator on
+    // one host. The cap surfaces ≤2 per operator and ≤2 per host, then
+    // fills remaining slots with overflow if the pool is genuinely thin.
+    const trimmed = applyDiversityCap(sorted, limit);
 
     // Mix A+D — when ?fresh=true, force a synchronous probe on the top-N
     // URLs so the response carries a probe younger than the hot-tier cadence.
@@ -603,6 +609,57 @@ function applyStrictness(
     return { pool: nonRisky, strictness: 'relaxed', warnings: ['FALLBACK_RELAXED'] };
   }
   return { pool: [], strictness: 'degraded', warnings: ['NO_CANDIDATES'] };
+}
+
+/** Audit Tier 4M (2026-04-30) — diversity cap. Iterate the sorted candidates
+ *  and admit each one only if (a) its operator_pubkey appears < MAX_PER_OPERATOR
+ *  times AND (b) its host appears < MAX_PER_HOST times in the accepted set.
+ *  Candidates rejected by the cap are kept aside and re-injected at the tail
+ *  if `limit` isn't reached otherwise — the cap is best-effort, not a hard
+ *  shrink, so a thin pool with a single dominant operator still returns the
+ *  same number of rows the caller asked for, with the diversification applied
+ *  where there's slack.
+ *
+ *  operator_pubkey=null candidates do NOT count toward the operator cap (they
+ *  belong to "unknown operator", which is not a coordinated entity); the host
+ *  cap still applies to them.
+ *
+ *  Pure function for testability. */
+const DIVERSITY_MAX_PER_OPERATOR = 2;
+const DIVERSITY_MAX_PER_HOST = 2;
+
+export function applyDiversityCap(sorted: EnrichedCandidate[], limit: number): EnrichedCandidate[] {
+  if (limit <= 0 || sorted.length === 0) return [];
+  const operatorCounts = new Map<string, number>();
+  const hostCounts = new Map<string, number>();
+  const accepted: EnrichedCandidate[] = [];
+  const overflow: EnrichedCandidate[] = [];
+  const hostOf = (url: string): string => {
+    try { return new URL(url).hostname.toLowerCase(); } catch { return url; }
+  };
+  for (const c of sorted) {
+    if (accepted.length >= limit) break;
+    const host = hostOf(c.svc.url);
+    const hostCount = hostCounts.get(host) ?? 0;
+    let operatorCount = 0;
+    if (c.operatorPubkey) {
+      operatorCount = operatorCounts.get(c.operatorPubkey) ?? 0;
+    }
+    if (
+      hostCount >= DIVERSITY_MAX_PER_HOST ||
+      (c.operatorPubkey != null && operatorCount >= DIVERSITY_MAX_PER_OPERATOR)
+    ) {
+      overflow.push(c);
+      continue;
+    }
+    accepted.push(c);
+    hostCounts.set(host, hostCount + 1);
+    if (c.operatorPubkey) operatorCounts.set(c.operatorPubkey, operatorCount + 1);
+  }
+  while (accepted.length < limit && overflow.length > 0) {
+    accepted.push(overflow.shift()!);
+  }
+  return accepted;
 }
 
 /** Tri canonique (Vague 1 B):

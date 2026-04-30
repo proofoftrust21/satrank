@@ -79,12 +79,20 @@ interface FakeCrawlerCalls {
 
 /** Stand-in for RegistryCrawler that doesn't make HTTP calls. Performs the
  *  same DB-side effects as the real crawler so the controller's downstream
- *  reads find a row to claim. Records invocations for assertions. */
-function buildFakeCrawler(serviceEndpointRepo: ServiceEndpointRepository): {
+ *  reads find a row to claim. Records invocations for assertions.
+ *
+ *  `declaredNostrPubkey` simulates the audit Tier 4N ownership proof tag
+ *  the real crawler extracts from WWW-Authenticate. Default null = legacy
+ *  unverified flow. */
+function buildFakeCrawler(
+  serviceEndpointRepo: ServiceEndpointRepository,
+  options: { declaredNostrPubkey?: string | null } = {},
+): {
   crawler: ConstructorParameters<typeof ServiceRegisterController>[0]['registryCrawler'];
   calls: FakeCrawlerCalls[];
 } {
   const calls: FakeCrawlerCalls[] = [];
+  const declaredNostrPubkey = options.declaredNostrPubkey ?? null;
   const crawler = {
     async registerSelfSubmitted(serviceUrl: string, meta?: FakeCrawlerCalls['meta']) {
       calls.push({ serviceUrl, meta });
@@ -105,7 +113,7 @@ function buildFakeCrawler(serviceEndpointRepo: ServiceEndpointRepository): {
         if (!existing?.provider && patch.provider) updated.push('provider');
         await serviceEndpointRepo.updateMetadata(serviceUrl, patch);
       }
-      return { agentHash, priceSats: 21, fieldsUpdated: updated };
+      return { agentHash, priceSats: 21, fieldsUpdated: updated, declaredNostrPubkey };
     },
   } as unknown as NonNullable<ConstructorParameters<typeof ServiceRegisterController>[0]['registryCrawler']>;
   return { crawler, calls };
@@ -289,6 +297,69 @@ describe('/api/services/register (NIP-98 + audit)', () => {
         .send(body);
       expect(r2.status).toBe(201);
       expect(r2.body.data.operator_id).toBe(first.pubkey);
+    });
+
+    // --- audit Tier 4N: ownership-proof challenge-response ---
+    it('Tier 4N: rejects 403 when WWW-Authenticate declares a different nostr-pubkey', async () => {
+      const declaredOwnerSk = generateSecretKey();
+      const declaredOwnerPubkey = getPublicKey(declaredOwnerSk);
+      const { crawler } = buildFakeCrawler(serviceEndpointRepo, {
+        declaredNostrPubkey: declaredOwnerPubkey,
+      });
+      const app = buildApp(crawler);
+
+      // Sniper signs with a DIFFERENT npub
+      const body = JSON.stringify({ url: TARGET_URL });
+      const { auth, pubkey: sniperPubkey } = signNip98(REGISTER_URL, 'POST', body);
+      expect(sniperPubkey).not.toBe(declaredOwnerPubkey);
+
+      const res = await request(app)
+        .post('/api/services/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('OWNERSHIP_MISMATCH');
+      // operator_id MUST stay null on the row
+      const ep = await serviceEndpointRepo.findByUrl(TARGET_URL);
+      expect(ep?.operator_id).toBeNull();
+    });
+
+    it('Tier 4N: accepts when declared nostr-pubkey matches the signer', async () => {
+      const sk = generateSecretKey();
+      const ownerPubkey = getPublicKey(sk);
+      const { crawler } = buildFakeCrawler(serviceEndpointRepo, {
+        declaredNostrPubkey: ownerPubkey,
+      });
+      const app = buildApp(crawler);
+
+      const body = JSON.stringify({ url: TARGET_URL });
+      const { auth } = signNip98(REGISTER_URL, 'POST', body, sk);
+      const res = await request(app)
+        .post('/api/services/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
+      expect(res.status).toBe(201);
+      expect(res.body.data.operator_id).toBe(ownerPubkey);
+    });
+
+    it('Tier 4N: falls back to first-claim when no nostr-pubkey is declared', async () => {
+      const { crawler } = buildFakeCrawler(serviceEndpointRepo); // no declaredNostrPubkey
+      const app = buildApp(crawler);
+
+      const body = JSON.stringify({ url: TARGET_URL });
+      const { auth, pubkey } = signNip98(REGISTER_URL, 'POST', body);
+      const res = await request(app)
+        .post('/api/services/register')
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
+      expect(res.status).toBe(201);
+      expect(res.body.data.operator_id).toBe(pubkey);
     });
   });
 

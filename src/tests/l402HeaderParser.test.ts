@@ -23,13 +23,13 @@ describe('parseL402Challenge', () => {
   it('parses a canonical L402 challenge (double-quoted)', () => {
     const header = `L402 macaroon="${MAC}", invoice="${INV}"`;
     const r = parseL402Challenge(header);
-    expect(r).toEqual({ macaroon: MAC, invoice: INV });
+    expect(r).toEqual({ macaroon: MAC, invoice: INV, nostr_pubkey: null });
   });
 
   it('parses the LSAT legacy scheme name', () => {
     const header = `LSAT macaroon="${MAC}", invoice="${INV}"`;
     const r = parseL402Challenge(header);
-    expect(r).toEqual({ macaroon: MAC, invoice: INV });
+    expect(r).toEqual({ macaroon: MAC, invoice: INV, nostr_pubkey: null });
   });
 
   it('is case-insensitive on the scheme name', () => {
@@ -42,25 +42,25 @@ describe('parseL402Challenge', () => {
   it('accepts single-quoted values', () => {
     const header = `L402 macaroon='${MAC}', invoice='${INV}'`;
     const r = parseL402Challenge(header);
-    expect(r).toEqual({ macaroon: MAC, invoice: INV });
+    expect(r).toEqual({ macaroon: MAC, invoice: INV, nostr_pubkey: null });
   });
 
   it('accepts bare (unquoted) values terminated by comma', () => {
     const header = `L402 macaroon=${MAC}, invoice=${INV}`;
     const r = parseL402Challenge(header);
-    expect(r).toEqual({ macaroon: MAC, invoice: INV });
+    expect(r).toEqual({ macaroon: MAC, invoice: INV, nostr_pubkey: null });
   });
 
   it('accepts bare values terminated by whitespace', () => {
     const header = `L402 macaroon=${MAC}\tinvoice=${INV}`;
     const r = parseL402Challenge(header);
-    expect(r).toEqual({ macaroon: MAC, invoice: INV });
+    expect(r).toEqual({ macaroon: MAC, invoice: INV, nostr_pubkey: null });
   });
 
   it('tolerates extra whitespace between pairs', () => {
     const header = `L402  macaroon="${MAC}",   invoice="${INV}"`;
     const r = parseL402Challenge(header);
-    expect(r).toEqual({ macaroon: MAC, invoice: INV });
+    expect(r).toEqual({ macaroon: MAC, invoice: INV, nostr_pubkey: null });
   });
 
   it('returns null if only macaroon is present', () => {
@@ -74,7 +74,7 @@ describe('parseL402Challenge', () => {
   it('picks up keys in either order', () => {
     const reversed = `L402 invoice="${INV}", macaroon="${MAC}"`;
     const r = parseL402Challenge(reversed);
-    expect(r).toEqual({ macaroon: MAC, invoice: INV });
+    expect(r).toEqual({ macaroon: MAC, invoice: INV, nostr_pubkey: null });
   });
 
   it('rejects "token=" (non-standard alternative spelling) — strict by design', () => {
@@ -97,5 +97,44 @@ describe('parseL402Challenge', () => {
     const header = `L402 macaroon="first", invoice="${INV}", macaroon="second"`;
     const r = parseL402Challenge(header);
     expect(r?.macaroon).toBe('first');
+  });
+
+  // --- audit Tier 4N: nostr-pubkey ownership tag ---
+  const VALID_NPUB = 'a'.repeat(64);
+
+  it('Tier 4N: extracts nostr-pubkey when declared (canonical spelling)', () => {
+    const header = `L402 macaroon="${MAC}", invoice="${INV}", nostr-pubkey="${VALID_NPUB}"`;
+    const r = parseL402Challenge(header);
+    expect(r?.nostr_pubkey).toBe(VALID_NPUB);
+  });
+
+  it('Tier 4N: accepts nostr_pubkey (underscore alias)', () => {
+    const header = `L402 macaroon="${MAC}", invoice="${INV}", nostr_pubkey="${VALID_NPUB}"`;
+    const r = parseL402Challenge(header);
+    expect(r?.nostr_pubkey).toBe(VALID_NPUB);
+  });
+
+  it('Tier 4N: accepts x-nostr-pubkey (vendor-prefix alias)', () => {
+    const header = `L402 macaroon="${MAC}", invoice="${INV}", x-nostr-pubkey="${VALID_NPUB}"`;
+    const r = parseL402Challenge(header);
+    expect(r?.nostr_pubkey).toBe(VALID_NPUB);
+  });
+
+  it('Tier 4N: rejects malformed nostr-pubkey values (not strict 64 hex)', () => {
+    // Too short
+    const r1 = parseL402Challenge(`L402 macaroon="${MAC}", invoice="${INV}", nostr-pubkey="abc123"`);
+    expect(r1?.nostr_pubkey).toBeNull();
+    // Uppercase hex
+    const r2 = parseL402Challenge(`L402 macaroon="${MAC}", invoice="${INV}", nostr-pubkey="${'A'.repeat(64)}"`);
+    expect(r2?.nostr_pubkey).toBeNull();
+    // npub bech32 form (not accepted; operators must normalize to hex)
+    const r3 = parseL402Challenge(`L402 macaroon="${MAC}", invoice="${INV}", nostr-pubkey="npub1${'a'.repeat(58)}"`);
+    expect(r3?.nostr_pubkey).toBeNull();
+  });
+
+  it('Tier 4N: nostr_pubkey null when tag absent', () => {
+    const header = `L402 macaroon="${MAC}", invoice="${INV}"`;
+    const r = parseL402Challenge(header);
+    expect(r?.nostr_pubkey).toBeNull();
   });
 });

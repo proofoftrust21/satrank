@@ -479,7 +479,7 @@ export class RegistryCrawler {
    *  Anti-vandalism: self-register only fills EMPTY metadata fields. Existing data
    *  from 402index (the trusted crawler source) is never overwritten. This prevents
    *  a random submitter from renaming "Weather Intel: Forecast" to "test". */
-  async registerSelfSubmitted(serviceUrl: string, meta?: { name?: string; description?: string; category?: string; provider?: string }): Promise<{ agentHash: string; priceSats: number | null; fieldsUpdated: string[] } | null> {
+  async registerSelfSubmitted(serviceUrl: string, meta?: { name?: string; description?: string; category?: string; provider?: string }): Promise<{ agentHash: string; priceSats: number | null; fieldsUpdated: string[]; declaredNostrPubkey: string | null } | null> {
     if (!isSafeUrl(serviceUrl)) return null;
     const discovered = await this.discoverNodeFromUrl(serviceUrl);
     if (!discovered?.agentHash) return null;
@@ -515,7 +515,12 @@ export class RegistryCrawler {
       await this.serviceEndpointRepo.updateMetadata(serviceUrl, patch);
     }
     const ep = await this.serviceEndpointRepo.findByUrl(serviceUrl);
-    return { agentHash: discovered.agentHash, priceSats: ep?.service_price_sats ?? null, fieldsUpdated: updated };
+    return {
+      agentHash: discovered.agentHash,
+      priceSats: ep?.service_price_sats ?? null,
+      fieldsUpdated: updated,
+      declaredNostrPubkey: discovered.nostrPubkey,
+    };
   }
 
   /** Vague 3 Phase 3 — public wrapper around `discoverNodeFromUrl` that
@@ -547,7 +552,7 @@ export class RegistryCrawler {
   private async discoverNodeFromUrl(
     serviceUrl: string,
     method: 'GET' | 'POST' = 'GET',
-  ): Promise<{ agentHash: string; priceSats: number | null; latencyMs: number } | null> {
+  ): Promise<{ agentHash: string; priceSats: number | null; latencyMs: number; nostrPubkey: string | null } | null> {
     this.lastDiscoveryOutcome = null;
     const start = Date.now();
     try {
@@ -628,6 +633,14 @@ export class RegistryCrawler {
       }
 
       const wwwAuth = resp.headers.get('www-authenticate') ?? '';
+      // Audit Tier 4N (2026-04-30) — extract optional nostr-pubkey ownership
+      // tag. The endpoint operator declares their Nostr identity here so that
+      // a NIP-98 register call can be cross-validated. Strict 64-char lowercase
+      // hex enforced by the parser; anything else collapses to null. Optional
+      // — endpoints without the tag fall back to first-claim semantics.
+      const declaredNostrPubkeyMatch = wwwAuth.match(/(?:nostr[-_]pubkey|x-nostr-pubkey)="([a-f0-9]{64})"/i);
+      const nostrPubkey = declaredNostrPubkeyMatch ? declaredNostrPubkeyMatch[1].toLowerCase() : null;
+
       // Extract invoice from: L402 macaroon="...", invoice="lnbc..."
       const invoiceMatch = wwwAuth.match(/invoice="(lnbc[a-z0-9]+)"/i);
       if (!invoiceMatch) {
@@ -673,7 +686,7 @@ export class RegistryCrawler {
             const priceSats = decoded.num_satoshis ? parseInt(decoded.num_satoshis, 10) : null;
             this.healthTracker.recordSuccess(serviceUrl);
             this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'success' };
-            return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null, latencyMs };
+            return { agentHash, priceSats: priceSats && priceSats > 0 ? priceSats : null, latencyMs, nostrPubkey };
           }
           this.healthTracker.recordFailure(serviceUrl, 'decode_failed');
           this.lastDiscoveryOutcome = { finalStatus: 402, methodUsed, reason: 'decode_failed' };
