@@ -4,22 +4,61 @@ import { endpointHash } from '../utils/urlCanonical';
 
 type Queryable = Pool | PoolClient;
 
-export type ServiceSource = '402index' | 'l402directory' | 'self_registered' | 'ad_hoc';
+export type ServiceSource =
+  | '402index'
+  | 'l402directory'
+  | 'self_registered'
+  | 'ad_hoc'
+  /** Sim 8 follow-up (2026-04-30) — operator publishes a /.well-known/l402
+   *  manifest. First wired source = sats4ai.com; the crawler is generic
+   *  enough that any operator with the same manifest path can be added by
+   *  config without code change. */
+  | 'wellknown_l402'
+  /** Sim 8 follow-up — change-stream from 402index.io's RSS feed. Same
+   *  upstream truth as the main registry crawl but lighter cadence path
+   *  for new-listing detection between full crawls. */
+  | 'l402index_rss'
+  /** Sim 8 follow-up — Nostr kind 31402 broadcast (forgesworn proposal).
+   *  Lower trust than directories because anyone can publish. */
+  | 'nostr_31402'
+  /** Sim 8 follow-up — Fewsats/awesome-L402 community-curated GitHub list. */
+  | 'awesome_l402';
 
 /** Sources trusted enough to influence the 3D ranking composite.
  *  ad_hoc entries (observed from /api/decide serviceUrl) stay in DB for later
  *  validation but are filtered out of ranking and discovery queries.
- *  Vague 3 Phase 3: l402directory joins as a curated secondary source. */
-export const TRUSTED_SOURCES: ServiceSource[] = ['402index', 'l402directory', 'self_registered'];
+ *  Vague 3 Phase 3: l402directory joins as a curated secondary source.
+ *  Sim 8 follow-up: 4 new sources join — they all surface URLs that pass
+ *  the same RegistryCrawler.probeUrl filter (Tier 1B/C/4M) before being
+ *  trusted, so trust gating happens at probe time, not at source-tag time. */
+export const TRUSTED_SOURCES: ServiceSource[] = [
+  '402index', 'l402directory', 'self_registered',
+  'wellknown_l402', 'l402index_rss', 'nostr_31402', 'awesome_l402',
+];
+
+/** SQL `IN (...)` fragment of every trusted source. Single source of truth —
+ *  every discovery / category / Tier-1C query uses this to filter out
+ *  ad_hoc rows. Built from TRUSTED_SOURCES so adding a new ServiceSource
+ *  value automatically lands in every query without hunting hardcoded strings.
+ *  Safe against SQL injection because the values are compile-time constants
+ *  defined above. */
+const TRUSTED_SOURCES_SQL_LIST = TRUSTED_SOURCES.map(s => `'${s}'`).join(', ');
 
 /** Vague 3 Phase 3 — trust ranking for the legacy `source` column when an
  *  endpoint accumulates multiple sources. Higher rank wins, so a row reaches
  *  the catalogue first via l402directory and later confirmed by 402index
- *  upgrades to source='402index' but keeps both attributions in `sources[]`. */
+ *  upgrades to source='402index' but keeps both attributions in `sources[]`.
+ *  Sim 8 follow-up — new sources slot between l402directory (curated) and
+ *  self_registered (operator-claimed). l402index_rss inherits 402index's rank
+ *  because it's the same upstream truth, just delivered as a change-stream. */
 const SOURCE_TRUST_RANK: Record<ServiceSource, number> = {
   '402index': 4,
+  'l402index_rss': 4,
   'l402directory': 3,
+  'wellknown_l402': 3,
   'self_registered': 2,
+  'awesome_l402': 2,
+  'nostr_31402': 2,
   'ad_hoc': 1,
 };
 
@@ -168,8 +207,12 @@ export class ServiceEndpointRepository {
         source = CASE WHEN $9 > COALESCE((
           CASE service_endpoints.source
             WHEN '402index' THEN 4
+            WHEN 'l402index_rss' THEN 4
             WHEN 'l402directory' THEN 3
+            WHEN 'wellknown_l402' THEN 3
             WHEN 'self_registered' THEN 2
+            WHEN 'awesome_l402' THEN 2
+            WHEN 'nostr_31402' THEN 2
             WHEN 'ad_hoc' THEN 1
             ELSE 0
           END
@@ -216,8 +259,12 @@ export class ServiceEndpointRepository {
           source = CASE WHEN $3 > COALESCE((
             CASE source
               WHEN '402index' THEN 4
+              WHEN 'l402index_rss' THEN 4
               WHEN 'l402directory' THEN 3
+              WHEN 'wellknown_l402' THEN 3
               WHEN 'self_registered' THEN 2
+              WHEN 'awesome_l402' THEN 2
+              WHEN 'nostr_31402' THEN 2
               WHEN 'ad_hoc' THEN 1
               ELSE 0
             END
@@ -268,7 +315,16 @@ export class ServiceEndpointRepository {
     const { rows } = await this.db.query<{ source: ServiceSource; c: string }>(
       'SELECT source, COUNT(*)::text as c FROM service_endpoints GROUP BY source',
     );
-    const out: Record<ServiceSource, number> = { '402index': 0, 'l402directory': 0, 'self_registered': 0, 'ad_hoc': 0 };
+    const out: Record<ServiceSource, number> = {
+      '402index': 0,
+      'l402index_rss': 0,
+      'l402directory': 0,
+      'wellknown_l402': 0,
+      'self_registered': 0,
+      'awesome_l402': 0,
+      'nostr_31402': 0,
+      'ad_hoc': 0,
+    };
     for (const r of rows) out[r.source] = Number(r.c);
     return out;
   }
@@ -289,7 +345,7 @@ export class ServiceEndpointRepository {
    *  index can be added in a later migration if this endpoint ever gets hot. */
   async findByUrlHash(urlHash: string): Promise<ServiceEndpoint | undefined> {
     const { rows } = await this.db.query<ServiceEndpoint>(
-      "SELECT * FROM service_endpoints WHERE source IN ('402index', 'self_registered')",
+      `SELECT * FROM service_endpoints WHERE source IN (${TRUSTED_SOURCES_SQL_LIST})`,
     );
     for (const row of rows) {
       try {
@@ -305,7 +361,7 @@ export class ServiceEndpointRepository {
     // findByAgent excludes ad_hoc entries by default — these aren't trusted enough
     // to influence ranking or discovery (URL→agent binding may be incorrect).
     const { rows } = await this.db.query<ServiceEndpoint>(
-      "SELECT * FROM service_endpoints WHERE agent_hash = $1 AND source IN ('402index', 'self_registered') ORDER BY last_checked_at DESC",
+      `SELECT * FROM service_endpoints WHERE agent_hash = $1 AND source IN (${TRUSTED_SOURCES_SQL_LIST}) ORDER BY last_checked_at DESC`,
       [agentHash],
     );
     return rows;
@@ -800,7 +856,7 @@ export class ServiceEndpointRepository {
     // in line.
     const conditions: string[] = [
       "se.agent_hash IS NOT NULL",
-      "se.source IN ('402index', 'self_registered')",
+      `se.source IN (${TRUSTED_SOURCES_SQL_LIST})`,
       "se.deprecated = FALSE",
       "(se.last_http_status IS NULL OR se.last_http_status = 402 OR se.last_http_status BETWEEN 200 AND 299)",
     ];
@@ -911,7 +967,7 @@ export class ServiceEndpointRepository {
 
   async findCategories(): Promise<Array<{ category: string; count: number }>> {
     const { rows } = await this.db.query<{ category: string; count: string }>(
-      "SELECT category, COUNT(*)::text as count FROM service_endpoints WHERE category IS NOT NULL AND agent_hash IS NOT NULL AND source IN ('402index', 'self_registered') GROUP BY category ORDER BY count DESC",
+      `SELECT category, COUNT(*)::text as count FROM service_endpoints WHERE category IS NOT NULL AND agent_hash IS NOT NULL AND source IN (${TRUSTED_SOURCES_SQL_LIST}) GROUP BY category ORDER BY count DESC`,
     );
     return rows.map((r) => ({ category: r.category, count: Number(r.count) }));
   }
@@ -941,7 +997,7 @@ export class ServiceEndpointRepository {
       FROM service_endpoints
       WHERE category IS NOT NULL
         AND agent_hash IS NOT NULL
-        AND source IN ('402index', 'self_registered')
+        AND source IN (${TRUSTED_SOURCES_SQL_LIST})
         AND deprecated = FALSE
       GROUP BY category
       ORDER BY endpoint_count DESC
@@ -1002,7 +1058,7 @@ export class ServiceEndpointRepository {
    *  négligeable (microsecondes). Ne trust que les sources trusted (pas ad_hoc). */
   async findCategoryByUrlHash(targetHash: string): Promise<string | null> {
     const { rows } = await this.db.query<{ url: string; category: string }>(
-      "SELECT url, category FROM service_endpoints WHERE category IS NOT NULL AND source IN ('402index', 'self_registered')",
+      `SELECT url, category FROM service_endpoints WHERE category IS NOT NULL AND source IN (${TRUSTED_SOURCES_SQL_LIST})`,
     );
     for (const r of rows) {
       if (endpointHash(r.url) === targetHash) return r.category;
@@ -1015,7 +1071,7 @@ export class ServiceEndpointRepository {
    *  hiérarchique (somme des streaming posteriors des siblings). */
   async listUrlHashesByCategory(category: string): Promise<string[]> {
     const { rows } = await this.db.query<{ url: string }>(
-      "SELECT url FROM service_endpoints WHERE category = $1 AND source IN ('402index', 'self_registered')",
+      `SELECT url FROM service_endpoints WHERE category = $1 AND source IN (${TRUSTED_SOURCES_SQL_LIST})`,
       [category],
     );
     return rows.map((r) => endpointHash(r.url));

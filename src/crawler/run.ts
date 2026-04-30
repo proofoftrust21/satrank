@@ -1454,6 +1454,31 @@ async function main(): Promise<void> {
     timerL402Directory.unref?.();
     logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'L402Directory crawler timer started');
 
+    // Sim 8 follow-up — operators that publish /.well-known/l402 manifest
+    // (Sats4AI ships ~32 AI tooling endpoints today; same convention adopts
+    // any new operator with a single env var). Re-uses RegistryCrawler.probeUrl
+    // so trust gating remains single-sourced.
+    const { WellKnownL402Crawler } = await import('./wellKnownL402Crawler');
+    const wellKnownL402Crawler = new WellKnownL402Crawler(serviceEndpointRepo, registryCrawler);
+
+    (async () => {
+      try {
+        await wellKnownL402Crawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial wellknown_l402 crawl error');
+      }
+    })();
+
+    const timerWellKnownL402 = setInterval(async () => {
+      try {
+        await wellKnownL402Crawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'wellknown_l402 crawl error');
+      }
+    }, config.CRAWL_INTERVAL_REGISTRY_MS);
+    timerWellKnownL402.unref?.();
+    logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'WellKnownL402 crawler timer started');
+
     // Retention cleanup — sweep old rows from time-series tables
     // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
     // before the first crawl so we start with a trimmed dataset.
