@@ -524,7 +524,7 @@ curl -H 'Authorization: L402 AGIAJE…:<preimage>' \
         <li>
           <span class="method method-post">POST</span>
           <span class="ep-path">/api/services/register</span>
-          <span class="ep-desc">Operator self-listing. NIP-98 signed; first signer claims the URL. PATCH/DELETE on the same path let the owner update or deprecate</span>
+          <span class="ep-desc">Operator self-listing. NIP-98 signed; the endpoint can declare a <code>nostr-pubkey</code> in its WWW-Authenticate header to lock ownership cryptographically (else first-signer wins). PATCH/DELETE on the same path let the owner update or deprecate</span>
           <span class="ep-cost ep-free">free · NIP-98</span>
         </li>
         <li>

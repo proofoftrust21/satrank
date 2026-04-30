@@ -74,6 +74,9 @@
 
       <div class="doc-toc-heading">Federation</div>
       <a href="#federation">12. Federation, calibration, web of trust</a>
+
+      <div class="doc-toc-heading">Hardening</div>
+      <a href="#hardening">13. Anti-abuse and credibility guards</a>
     </aside>
 
     <main class="doc-main">
@@ -935,6 +938,102 @@ weight ≤ 2.4 (≈ paid probe weight 2.0 in the legacy posterior)</code></pre>
         <p>
           A complete bootstrap guide for any operator wanting to run a SatRank-compatible oracle is at <a href="https://github.com/proofoftrust21/satrank/blob/main/docs/OPERATOR_QUICKSTART.md" rel="noopener noreferrer"><code>docs/OPERATOR_QUICKSTART.md</code></a>: hardware tiers, Postgres + LND macaroon setup, Nostr identity generation, environment variables, federation timeline, and economic break-even analysis.
         </p>
+      </section>
+
+      <!-- 13. HARDENING -->
+      <section class="doc-section" id="hardening">
+        <h2>13. Anti-abuse and credibility guards</h2>
+        <p>
+          A four-tier internal audit (2026-04-30) walked the surface that an adversarial agent or operator could try to bend. Ten hardening fixes were shipped; the table below is the falsifiable index — every row is a defense the code now applies, with a pointer to where to verify it. Anything outside this list is currently <em>not</em> defended; tell the maintainer.
+        </p>
+
+        <h3>13.1 Data integrity (Tier 1 + 5)</h3>
+        <table class="param-table">
+          <thead><tr><th>Guard</th><th>What it does</th><th>Where</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Tier 1C — HTTP-status filter on discovery</td>
+              <td><code>/api/intent</code> and <code>/api/services</code> only return endpoints whose latest crawler probe was <code>{NULL, 402, 200..299}</code>. 4xx (other than 402) and 5xx are excluded so agents never receive recommendations on currently-broken endpoints.</td>
+              <td><code>src/repositories/serviceEndpointRepository.ts</code> — <code>findServices</code> conditions array</td>
+            </tr>
+            <tr>
+              <td>Tier 1B — Calibration moat over all 5 stages</td>
+              <td>Stage 1 (challenge) outcomes are now logged to <code>endpoint_stage_outcomes_log</code> alongside stages 2-5, so the weekly calibration cron exploits the full signal (~8 k probes/day) rather than the paid-probe subset (~50/day). Window minObs lowered 10 → 5 so calibration publishes a real delta even on a small catalogue.</td>
+              <td><code>src/repositories/endpointStagePosteriorsRepository.ts</code> — <code>observe</code> and <code>observeByUrlHash</code></td>
+            </tr>
+            <tr>
+              <td>Tier 5Q — Stats label honesty</td>
+              <td><code>/api/stats</code> now exposes <code>activeAgents</code> and <code>agentsAll</code> alongside the legacy <code>totalAgents</code> alias, so agents know whether they are reading a stale-filtered count or the full index.</td>
+              <td><code>src/services/statsService.ts</code> + <code>src/types/index.ts</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>13.2 Cryptographic defense-in-depth (Tier 2)</h3>
+        <table class="param-table">
+          <thead><tr><th>Guard</th><th>What it does</th><th>Where</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Tier 2F — NIP-98 replay cache</td>
+              <td>An in-process LRU caches every accepted NIP-98 event id for 65 s (= NIP98_MAX_AGE_PAST_SEC + NIP98_MAX_AGE_FUTURE_SEC). Submitting the same Authorization header twice within the window returns 401 NIP98_INVALID. Failed forgeries do <em>not</em> consume cache slots, so an attacker cannot DoS the cache by sending many bad events.</td>
+              <td><code>src/middleware/nip98.ts</code> — sweepReplayCache + post-signature insert</td>
+            </tr>
+            <tr>
+              <td>Tier 2H — Preimage SHA-256 re-verification</td>
+              <td>After LND returns a payment preimage on <code>/api/probe</code> and the paid-probe cron, SatRank recomputes <code>SHA256(preimage)</code> and compares to <code>invoice.payment_hash</code>. Mismatch → <code>pay_other_failure</code>, <code>paymentError = 'preimage_hash_mismatch'</code>, no stage 3-5 success credit. Lightning's atomic-payment guarantee makes this redundant in normal operation; the check defends against a compromised LND RPC or MITM scenario at near-zero cost (one sha256).</td>
+              <td><code>src/services/paidProbeRunner.ts</code> + <code>src/controllers/probeController.ts</code></td>
+            </tr>
+            <tr>
+              <td>Tier 2G — Sybil weighting on kind 7402 (already shipped, audit confirmed strict)</td>
+              <td>Crowd outcome reports are weighted as <code>0.3 × pow_factor × identity_age × preimage_factor</code>, capped at 2.4 (= paid probe weight). PoW is verified from the actual event id (not a self-claimed tag); preimage is checked via <code>sha256(preimage)===payment_hash</code>; identity age is read from first_seen, not a self-claim. Crowd reports land in <code>crowd_outcome_reports</code>, not directly in posteriors — a downstream consolidation cron decides what to integrate.</td>
+              <td><code>src/utils/sybilWeighting.ts</code> + <code>src/services/crowdOutcomeIngestor.ts</code></td>
+            </tr>
+            <tr>
+              <td>Tier 2I — Federation event verification (already shipped, audit confirmed strict)</td>
+              <td>Kind 30784 (oracle announcement) ingestion verifies the Schnorr signature, refuses spoofed <code>oracle_pubkey</code> tags that don't match <code>event.pubkey</code>, regex-validates <code>lnd_pubkey</code> (<code>(02|03)[a-f0-9]{64}</code>), URL-parses <code>onboarding_url</code> with <code>https:</code>-only, clamps <code>catalogue_size</code> to int32 [0, 1M] anti-overflow.</td>
+              <td><code>src/services/oraclePeersDiscovery.ts</code> + <code>src/services/peerCalibrationIngestor.ts</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>13.3 Incentive alignment (Tier 3)</h3>
+        <table class="param-table">
+          <thead><tr><th>Guard</th><th>What it does</th><th>Where</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Tier 3A — Per-target negative-report flood cap</td>
+              <td>The 31<sup>st</sup> negative report (failed_transaction or unresponsive) on the same target within a 1 h rolling window returns 400. Honest agents observing a real outage rarely exceed 30/h on a single target; sustained traffic above signals coordinated reputation censorship.</td>
+              <td><code>src/services/reportService.ts</code> — REPORT_TARGET_FLOOD_MAX</td>
+            </tr>
+            <tr>
+              <td>Tier 3C — Operator cross-reference</td>
+              <td>When the reporter and target are mapped (via <code>operator_owns_node</code>) to the same <code>operator_id</code>, the report is rejected. Blocks self-promotion through multiple LN nodes controlled by a single operator. Fail-open when either side has no operator mapping (legitimate strangers must not be blocked).</td>
+              <td><code>src/services/reportService.ts</code> — operator_id check after <code>reporter !== target</code></td>
+            </tr>
+            <tr>
+              <td>Tier 3E — Calibration moat honesty disclosure (doc-only)</td>
+              <td>Section 12.1 above is explicit that the moat today is self-published. Falsifiability becomes cross-attested when at least one independent SatRank-compatible peer oracle is announcing kind 30783 against an overlapping catalogue. The federation pipeline (kind 30784 discovery, kind 30783 ingestion) is shipped, awaiting peer participation.</td>
+              <td>This page §12.1</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>13.4 Ranking integrity (Tier 4)</h3>
+        <table class="param-table">
+          <thead><tr><th>Guard</th><th>What it does</th><th>Where</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Tier 4M — Diversity cap on intent results</td>
+              <td>The top-N returned by <code>/api/intent</code> is post-processed so no single <code>operator_pubkey</code> appears more than 2× and no single host appears more than 2×. Overflow candidates are appended at tail to honor the requested <code>limit</code>. Without this cap, a dominant operator who holds many endpoints in a category captured every slot of the response.</td>
+              <td><code>src/services/intentService.ts</code> — exported <code>applyDiversityCap</code></td>
+            </tr>
+            <tr>
+              <td>Tier 4N — Endpoint ownership proof via WWW-Authenticate</td>
+              <td>An L402 endpoint can declare its Nostr owner by including a <code>nostr-pubkey="&lt;hex&gt;"</code> tag in the WWW-Authenticate header (alternative spellings <code>nostr_pubkey</code>, <code>x-nostr-pubkey</code>; strict 64-char lowercase hex). When declared, only a NIP-98 register signed by that exact pubkey is accepted (mismatch → 403 OWNERSHIP_MISMATCH). Endpoints without the tag fall back to first-claim semantics. This protects against opportunistic register-sniping by anyone watching new ingestions on 402index.</td>
+              <td><code>src/utils/l402HeaderParser.ts</code> + <code>src/controllers/serviceRegisterController.ts</code></td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
     </main>
