@@ -16,6 +16,15 @@ sdk/*.tgz
 # Local development tooling — not meant to ship in the public repo
 .claude/
 CLAUDE.md
+SESSION-BRIEFING.md
+*-BRIEFING.md
+OBSERVABILITY-*.md
+PHASE-*-REPORT.md
+PHASE-*-DESIGN.md
+SCORING-AUDIT.md
+IMPACT-STATEMENT.md
+REPORT-INCENTIVE-DESIGN.md
+docs/archive/
 scripts/nostr-mappings.json
 scripts/*.json
 infra/phase-12b/secrets/
