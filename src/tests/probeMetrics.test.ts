@@ -23,8 +23,17 @@ let testDb: TestDb;
 // Ephemeral privkey for signing fake BOLT11 invoices. No real sats touch this.
 const TEST_PRIVKEY = crypto.randomBytes(32).toString('hex');
 
+// Audit Tier 2H (2026-04-30) — fixtures must use a preimage / payment_hash
+// pair where SHA256(preimage)===payment_hash, otherwise probeController's
+// new defense-in-depth check rejects pay_ok with preimage_hash_mismatch.
+// Fixed pair shared across the happy-path tests; failure-path tests still
+// override payResult explicitly.
+const FIXED_PREIMAGE = 'c'.repeat(64);
+const FIXED_PAYMENT_HASH = crypto.createHash('sha256')
+  .update(Buffer.from(FIXED_PREIMAGE, 'hex')).digest('hex');
+
 function makeInvoice(amountSats: number, paymentHashHex?: string): string {
-  const paymentHash = paymentHashHex ?? crypto.randomBytes(32).toString('hex');
+  const paymentHash = paymentHashHex ?? FIXED_PAYMENT_HASH;
   const encoded = bolt11.encode({
     satoshis: amountSats,
     timestamp: Math.floor(Date.now() / 1000),
@@ -67,7 +76,7 @@ function makeMockLnd(opts: {
     queryRoutes: vi.fn(),
     canPayInvoices: () => opts.canPay ?? true,
     payInvoice: vi.fn().mockResolvedValue(
-      opts.payResult ?? { paymentPreimage: 'a'.repeat(64), paymentHash: 'b'.repeat(64) },
+      opts.payResult ?? { paymentPreimage: FIXED_PREIMAGE, paymentHash: FIXED_PAYMENT_HASH },
     ),
   } as unknown as LndGraphClient;
 }

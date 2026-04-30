@@ -259,7 +259,12 @@ describe('ProbeController', async () => {
     });
 
     it('completes the full pipeline and returns a secondFetch on success', async () => {
-      const invoice = makeInvoice(10);
+      // Audit Tier 2H (2026-04-30) — fixture must use a preimage that
+      // actually hashes to the invoice payment_hash, otherwise the new
+      // SHA256 re-verification rejects pay_ok.
+      const preimage = 'c'.repeat(64);
+      const paymentHash = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+      const invoice = makeInvoice(10, paymentHash);
       const mac = Buffer.from('real-macaroon-bytes').toString('base64');
       const wwwAuth = `L402 macaroon="${mac}", invoice="${invoice}"`;
       const firstResp = {
@@ -278,14 +283,14 @@ describe('ProbeController', async () => {
 
       const lnd = makeMockLnd({
         canPay: true,
-        payResult: { paymentPreimage: 'c'.repeat(64), paymentHash: 'd'.repeat(64) },
+        payResult: { paymentPreimage: preimage, paymentHash },
       });
       const controller = new ProbeController(db, lnd);
       const result = await controller.performProbe('https://ok.example/');
 
       expect(result.target).toBe('L402');
       expect(result.l402Challenge?.invoiceSats).toBe(10);
-      expect(result.payment?.preimage).toBe('c'.repeat(64));
+      expect(result.payment?.preimage).toBe(preimage);
       expect(result.payment?.paymentError).toBeUndefined();
       expect(result.secondFetch?.status).toBe(200);
       expect(result.secondFetch?.bodyBytes).toBe('hello probe'.length);
