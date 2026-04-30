@@ -1522,6 +1522,32 @@ async function main(): Promise<void> {
     });
     logger.info({ relays: kind31402Relays.length }, 'Sim 8 — Kind 31402 consumer started (Nostr-native L402 discovery)');
 
+    // Sim 8 follow-up — awesome-L402 README scrape. Lowest-yield of the
+    // five new sources (the list is mostly docs/repos/specs) but adds
+    // ~5 services worth probing per cycle (Maximum Sats, L402 Shield,
+    // Hyperdope, etc.). Blocklist filters GitHub/docs/dormant before
+    // probing to keep the cycle fast.
+    const { AwesomeL402Crawler } = await import('./awesomeL402Crawler');
+    const awesomeL402Crawler = new AwesomeL402Crawler(serviceEndpointRepo, registryCrawler);
+
+    (async () => {
+      try {
+        await awesomeL402Crawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Initial awesome_l402 crawl error');
+      }
+    })();
+
+    const timerAwesomeL402 = setInterval(async () => {
+      try {
+        await awesomeL402Crawler.run();
+      } catch (err: unknown) {
+        logger.error({ error: err instanceof Error ? err.message : String(err) }, 'awesome_l402 crawl error');
+      }
+    }, config.CRAWL_INTERVAL_REGISTRY_MS);
+    timerAwesomeL402.unref?.();
+    logger.info({ intervalMs: config.CRAWL_INTERVAL_REGISTRY_MS }, 'AwesomeL402 crawler timer started');
+
     // Retention cleanup — sweep old rows from time-series tables
     // (probe_results, score_snapshots, channel_snapshots, fee_snapshots)
     // before the first crawl so we start with a trimmed dataset.
