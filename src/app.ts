@@ -62,6 +62,8 @@ import { RefundLedgerRepository } from './repositories/refundLedgerRepository';
 import { RefundDisputeRepository } from './repositories/refundDisputeRepository';
 import { RefundEngine } from './services/refundEngine';
 import { DisputeController } from './controllers/disputeController';
+import { EndpointSchemaRepository } from './repositories/endpointSchemaRepository';
+import { SchemaController } from './controllers/schemaController';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -316,12 +318,16 @@ export function createApp() {
   const refundLedgerRepo = new RefundLedgerRepository(pool);
   const refundDisputeRepo = new RefundDisputeRepository(pool);
   const refundEngine = new RefundEngine({ refundLedgerRepo });
+  // Phase 3 — JSON Schema registry. fulfillService consumes when the
+  // request carries expected_schema_hash.
+  const endpointSchemaRepo = new EndpointSchemaRepository(pool);
   const fulfillService = new FulfillService({
     pool,
     fulfillJobRepo,
     intentService,
     lndClient,
     refundEngine,
+    endpointSchemaRepo,
   });
   const fulfillController = new FulfillController({
     fulfillService,
@@ -333,6 +339,9 @@ export function createApp() {
     refundDisputeRepo,
     operatorService,
   });
+  // Phase 3 — JSON Schema registry HTTP surface. POST is NIP-98-gated;
+  // GET is free.
+  const schemaController = new SchemaController({ endpointSchemaRepo });
 
   // Phase 7 — controller pour /api/operator(s) endpoints. operatorService est
   // construit plus haut (avant VerdictService pour les besoins C11/C12).
@@ -745,6 +754,13 @@ export function createApp() {
   // disputability check happen inside the controller.
   api.post('/dispute/:ledger_id', discoveryRateLimit, disputeController.open);
   api.get('/dispute/:dispute_id', discoveryRateLimit, disputeController.show);
+  // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator
+  // identity), GET is free for agents to inspect a schema before fulfill.
+  // List endpoint exposes the 50 most recent so newcomers can discover
+  // canonical schemas.
+  api.post('/schemas', discoveryRateLimit, schemaController.register);
+  api.get('/schemas', discoveryRateLimit, schemaController.list);
+  api.get('/schemas/:hash', discoveryRateLimit, schemaController.show);
   // Phase 1 (2026-05-01) — public observability of the fulfill proxy.
   // Privacy-first: the response only carries aggregate counters, never
   // agent_pubkey or per-job payloads. Agents can use it to confirm the

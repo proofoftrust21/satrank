@@ -95,6 +95,11 @@ export class RefundEngine {
         return 'tier1_recall_network_error';
       case 'delivery_low_quality':
         return 'tier2_body_shape';
+      case 'delivery_schema_violation':
+        // Phase 3 — JSON Schema mismatch. Same Tier 2 classification (the
+        // operator returned a 2xx but the body didn't match the agent's
+        // declared schema), so the dispute path treats it identically.
+        return 'tier2_body_shape';
       case 'delivery_empty_body':
         return 'tier2_empty_body';
       case 'delivery_skipped':

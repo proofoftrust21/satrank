@@ -35,6 +35,8 @@ import type {
   FulfillAttempt,
 } from '../repositories/fulfillJobRepository';
 import type { RefundEngine } from './refundEngine';
+import type { EndpointSchemaRepository } from '../repositories/endpointSchemaRepository';
+import { buildValidatorChain, validateAll } from './responseValidator';
 import type { Pool } from 'pg';
 
 const FETCH_TIMEOUT_MS = 8000;
@@ -49,6 +51,15 @@ export interface FulfillRequest {
   intent: IntentRequest;
   max_sats: number;
   max_latency_ms: number;
+  /** Phase 3 — agent declares the JSON Schema hash they expect the response
+   *  to match. Orchestrator looks up the schema in endpoint_schemas, builds
+   *  a jsonSchemaValidator, and runs it against every successful 2xx body.
+   *  A schema-violating body is treated as delivery failure (Tier 2 refund
+   *  classification, disputable per Phase 2). When the hash is unknown to
+   *  SatRank, fulfill rejects with reason='unknown_schema_hash' rather
+   *  than silently dropping the validation — surfaces operator/agent
+   *  schema-distribution problems early. */
+  expected_schema_hash?: string;
 }
 
 export type FulfillSuccess = {
@@ -97,6 +108,9 @@ export interface FulfillServiceDeps {
    *  Optional for back-compat with the Phase 1 tests; production wiring
    *  always passes a real instance. */
   refundEngine?: RefundEngine;
+  /** Phase 3 — JSON Schema registry. Optional: when omitted, fulfill ignores
+   *  expected_schema_hash and falls back to the heuristic body check. */
+  endpointSchemaRepo?: EndpointSchemaRepository;
   /** Self-pay guard: refuse to pay our own LND node (we already operate it
    *  for the registry crawler probes, see paidProbeRunner.ts:344). */
   selfPubkey?: string;
@@ -172,6 +186,35 @@ export class FulfillService {
         required_sats: requiredSats,
         available_sats: balance,
       };
+    }
+
+    // Phase 3 — schema lookup. Agent declares expected_schema_hash; we look
+    // it up before doing any external work and reject early if unknown
+    // (better UX than silently degrading to heuristics).
+    let schemaJson: object | undefined;
+    if (req.expected_schema_hash) {
+      if (!this.deps.endpointSchemaRepo) {
+        // Caller passed a hash but we have no registry wired — surface
+        // explicitly rather than silently dropping the validation.
+        return {
+          status: 'refunded',
+          job_id: '',
+          attempts: [],
+          reason: 'schema_registry_not_configured',
+        };
+      }
+      const found = await this.deps.endpointSchemaRepo.findByHash(req.expected_schema_hash);
+      if (!found) {
+        return {
+          status: 'refunded',
+          job_id: '',
+          attempts: [],
+          reason: 'unknown_schema_hash',
+        };
+      }
+      // schema_json is JSONB; we trust its shape (registration enforced JSON
+      // Schema validity).
+      schemaJson = found.schema_json as object;
     }
 
     // Phase 2 — per-agent daily refund cap. Drain protection: a malicious
@@ -251,7 +294,7 @@ export class FulfillService {
           continue;
         }
 
-        const attempt = await this.attemptCandidate(cand, req.max_sats - satsSpent);
+        const attempt = await this.attemptCandidate(cand, req.max_sats - satsSpent, schemaJson);
         attempts.push(attempt);
 
         if (attempt.payment_outcome === 'pay_ok' && attempt.delivery_outcome === 'delivery_ok') {
@@ -349,6 +392,7 @@ export class FulfillService {
   private async attemptCandidate(
     cand: IntentCandidate,
     budgetSatsRemaining: number,
+    schemaJson?: object,
   ): Promise<FulfillAttempt> {
     const url = cand.endpoint_url;
     const method = cand.http_method;
@@ -526,14 +570,36 @@ export class FulfillService {
     const body = bodyBuf.toString('utf8');
 
     let delivery: string;
+    let validatorDetail: string | undefined;
     if (status >= 200 && status < 300) {
       delivery = body.length >= 10 ? 'delivery_ok' : 'delivery_empty_body';
       if (delivery === 'delivery_ok') {
         // Tier 2 light — heuristic body shape check. A 2xx that fails the
-        // heuristics gets demoted to delivery_low_quality and the loop
-        // advances to the next candidate (treated as failure for retry).
+        // heuristics gets demoted to delivery_low_quality.
         const evaluated = evaluateBodyQuality({ body, contentType, status });
         if (!evaluated.passed) delivery = 'delivery_low_quality';
+      }
+      // Phase 3 — strict JSON Schema validation overlays the heuristics. If
+      // the agent declared expected_schema_hash and the body parses + matches,
+      // we promote/keep delivery_ok. Otherwise schema_violation classification
+      // (Tier 2, disputable). Schema overrides heuristics — explicit > implicit.
+      if (delivery === 'delivery_ok' && schemaJson) {
+        try {
+          const validators = buildValidatorChain({ schema: schemaJson });
+          const result = validateAll(validators, { body, contentType, status });
+          if (!result.passed) {
+            delivery = 'delivery_schema_violation';
+            validatorDetail = `${result.reason}: ${JSON.stringify(result.details ?? {})}`;
+          }
+        } catch (err) {
+          // Compilation error on a bad schema — should never happen because
+          // registration validates JSON Schema, but defend in depth so a
+          // corrupted DB row doesn't crash the orchestrator.
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'Fulfill: jsonSchemaValidator construction failed — accepting body without schema check',
+          );
+        }
       }
     } else if (status >= 400 && status < 500) {
       delivery = 'delivery_4xx';
@@ -542,6 +608,15 @@ export class FulfillService {
     } else {
       delivery = 'delivery_other';
     }
+
+    // Phase 3 — when schema validation failed, prefer the validator detail
+    // (machine-readable) over the body itself in the attempt.detail slot.
+    // The successful body is only returned on delivery_ok, so we don't lose
+    // information; on failure attempts[].detail surfaces the *reason*.
+    const carryBody = delivery === 'delivery_ok';
+    const detail = !carryBody && validatorDetail
+      ? validatorDetail
+      : truncated ? body + '\n[truncated_at_256kb]' : body;
 
     return baseAttempt(cand, ts_started, this.now(), {
       payment_outcome: 'pay_ok',
@@ -552,7 +627,7 @@ export class FulfillService {
       // Carry the body in the `detail` slot so the orchestrator can return
       // it on success without a second fetch. Truncation is logged but the
       // first 256 KB is enough for any sensible API response.
-      detail: truncated ? body + '\n[truncated_at_256kb]' : body,
+      detail,
     });
   }
 

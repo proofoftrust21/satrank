@@ -812,6 +812,143 @@ describe('FulfillService — Phase 2 refund engine integration', () => {
     expect(result.status).toBe('success');
   });
 
+  it('Phase 3 — expected_schema_hash + matching body → success', async () => {
+    const url = 'https://schema-ok.example/api';
+    const invoice = makeInvoice(5);
+    // Body parses + matches schema { type: object, required: [price] }.
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === url && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === url && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response(JSON.stringify({ price: 1234.56, currency: 'USD' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      },
+    ]);
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+    // Register the schema.
+    const { EndpointSchemaRepository } = await import('../repositories/endpointSchemaRepository');
+    const schemaRepo = new EndpointSchemaRepository(pool);
+    const { schema_hash } = await schemaRepo.register({
+      schema_json: {
+        type: 'object',
+        required: ['price'],
+        properties: { price: { type: 'number' }, currency: { type: 'string' } },
+      },
+      operator_pubkey: 'op-' + 'a'.repeat(60),
+      signed_event_id: 'e'.repeat(64),
+      registered_at: Math.floor(Date.now() / 1000),
+    });
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      endpointSchemaRepo: schemaRepo,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      expected_schema_hash: schema_hash,
+    });
+    expect(result.status).toBe('success');
+  });
+
+  it('Phase 3 — schema-violating body → schema_violation refund', async () => {
+    const url = 'https://schema-violator.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === url && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === url && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        // Body parses as JSON but missing required field `price`.
+        respond: () => new Response(JSON.stringify({ currency: 'USD' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      },
+    ]);
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+    const { EndpointSchemaRepository } = await import('../repositories/endpointSchemaRepository');
+    const schemaRepo = new EndpointSchemaRepository(pool);
+    const { schema_hash } = await schemaRepo.register({
+      schema_json: {
+        type: 'object',
+        required: ['price'],
+        properties: { price: { type: 'number' } },
+      },
+      operator_pubkey: 'op-' + 'b'.repeat(60),
+      signed_event_id: 'f'.repeat(64),
+      registered_at: Math.floor(Date.now() / 1000),
+    });
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      endpointSchemaRepo: schemaRepo,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      expected_schema_hash: schema_hash,
+    });
+    // Single candidate → refund. Attempt should be classified as schema violation.
+    expect(result.status).toBe('refunded');
+    if (result.status !== 'refunded') return;
+    expect(result.attempts[0].delivery_outcome).toBe('delivery_schema_violation');
+    expect(result.attempts[0].detail).toContain('json_schema_violation');
+  });
+
+  it('Phase 3 — unknown schema_hash short-circuits to refund without external work', async () => {
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+    const { EndpointSchemaRepository } = await import('../repositories/endpointSchemaRepository');
+    const schemaRepo = new EndpointSchemaRepository(pool);
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      endpointSchemaRepo: schemaRepo,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      expected_schema_hash: '0'.repeat(64),
+    });
+    expect(result.status).toBe('refunded');
+    if (result.status !== 'refunded') return;
+    expect(result.reason).toBe('unknown_schema_hash');
+  });
+
   it('ledger write failure does not crash the orchestrator (defensive)', async () => {
     const url = 'https://bad.example/api';
     const invoice = makeInvoice(5);

@@ -35,6 +35,11 @@ const fulfillRequestSchema = z.object({
   }),
   max_sats: z.number().int().min(1).max(10000),
   max_latency_ms: z.number().int().min(500).max(30000),
+  // Phase 3 — strict JSON Schema validation. Agent passes the canonical
+  // hash of a previously-registered schema. Orchestrator fetches the
+  // schema, runs ajv on every successful 2xx body, demotes mismatches
+  // to delivery_schema_violation (Tier 2 refund).
+  expected_schema_hash: z.string().regex(/^[a-f0-9]{64}$/, 'must be 64-char hex sha256').optional(),
 });
 
 /** Minimal per-process rate limiter — agent_pubkey → token bucket. Bounds
@@ -163,6 +168,7 @@ export class FulfillController {
         intent: body.intent,
         max_sats: body.max_sats,
         max_latency_ms: body.max_latency_ms,
+        expected_schema_hash: body.expected_schema_hash,
       });
 
       switch (result.status) {
