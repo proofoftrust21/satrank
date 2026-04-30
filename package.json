@@ -50,7 +50,7 @@
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^1.8.0",
     "@types/pg": "^8.20.0",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^12.9.0",
     "bolt11": "^1.4.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
