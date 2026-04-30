@@ -442,6 +442,29 @@ export class ProbeController {
       return result;
     }
 
+    // Audit Tier 2H (2026-04-30) — defense-in-depth re-verification of
+    // SHA256(preimage) === invoice.payment_hash. If LND ever returns a
+    // mismatched preimage (RPC bug, MITM, etc), refusing pay_ok prevents
+    // the user-facing /api/probe from reporting a false success on an
+    // attacker-controlled endpoint. Cheap to verify.
+    const computedPaymentHash = crypto.createHash('sha256')
+      .update(Buffer.from(pay.paymentPreimage, 'hex'))
+      .digest('hex')
+      .toLowerCase();
+    if (computedPaymentHash !== bolt11.paymentHash.toLowerCase()) {
+      result.payment.paymentError = `preimage_hash_mismatch: sha256(preimage)!=invoice.payment_hash`;
+      logger.error(
+        {
+          url,
+          invoicePaymentHash: bolt11.paymentHash,
+          computedFromPreimage: computedPaymentHash,
+        },
+        'probeController: LND preimage does not hash to invoice.payment_hash — refusing pay_ok',
+      );
+      result.totalLatencyMs = Date.now() - t0;
+      return result;
+    }
+
     // --- Step 6: retry with L402 Authorization header ---
     const authHeader = `L402 ${challenge.macaroon}:${pay.paymentPreimage}`;
     const secondStart = Date.now();

@@ -7,18 +7,21 @@
 //   ["payload", "<sha256 of request body in lowercase hex>"]  (optional)
 // and puts the base64-encoded event JSON into `Authorization: Nostr <b64>`.
 //
-// This file intentionally does NOT cache the last-seen events per pubkey yet
-// — the caller should combine the verified pubkey with its own replay mitigation
-// (e.g. the report-service dedup on (reporter, target, hour)) so replayed
-// events cannot compound-credit a bonus. The 60s freshness window already
-// narrows the replay surface significantly.
-//
 // Attack vectors addressed:
 // - Forged signatures: verifyEvent from @noble/secp256k1 (via nostr-tools).
 // - Stale events: created_at must be within NIP98_MAX_AGE_SEC.
 // - URL/method spoofing: u and method tags must match the request.
 // - Body swap: when a body is present, payload tag must match sha256(rawBody).
 // - Wrong kind: event.kind must equal 27235.
+// - Replay: an in-process LRU caches event.id for the past 60s. A second
+//   request carrying the same signed event is rejected as a replay. This
+//   provides exactly-once semantics at the verifier level, on top of the
+//   per-caller dedup (operator_id idempotence, report bonus dailyCap).
+//   The cache is per-process (no cross-instance coordination), which is fine
+//   given (1) the 60s window matches NIP98_MAX_AGE_PAST_SEC so a same event
+//   can't replay past it anyway, (2) load-balancer affinity on a small fleet,
+//   and (3) downstream caller-level dedup catches the residual cross-instance
+//   replay surface.
 import crypto, { webcrypto } from 'node:crypto';
 // nostr-tools expects globalThis.crypto (WebCrypto). Node 20+ has it by
 // default, older releases don't — polyfill defensively so the static import
@@ -41,6 +44,29 @@ const NIP98_KIND = 27235;
 // events 60s into the future, doubling the replay window (audit M1).
 const NIP98_MAX_AGE_PAST_SEC = 60;
 const NIP98_MAX_AGE_FUTURE_SEC = 5;
+
+// Audit Tier 2F (2026-04-30) — in-process replay cache. Keys are event.id,
+// values are the unix-second expiry. We sweep on every miss so the map can
+// never grow unbounded; size is bounded by 60s × max NIP-98 RPS (low for our
+// surface, ~10 req/min/IP rate-limited).
+const NIP98_REPLAY_CACHE = new Map<string, number>();
+const REPLAY_TTL_SEC = NIP98_MAX_AGE_PAST_SEC + NIP98_MAX_AGE_FUTURE_SEC;
+
+function sweepReplayCache(nowSec: number): void {
+  // Remove expired entries. JavaScript Map iterates in insertion order, but
+  // the inserts here can be out-of-order if events arrive with skewed
+  // created_at, so we scan the whole map. Cheap because cache is small.
+  for (const [id, expiresAt] of NIP98_REPLAY_CACHE) {
+    if (expiresAt <= nowSec) NIP98_REPLAY_CACHE.delete(id);
+  }
+}
+
+/** TEST-ONLY hook to wipe the in-process replay cache between cases. Not
+ *  exposed to production callers; importing it from outside `tests/` is
+ *  considered a code smell. */
+export function __resetNip98ReplayCacheForTests(): void {
+  NIP98_REPLAY_CACHE.clear();
+}
 
 /** Public verification result. `reason` is ALWAYS 'invalid' on failure so the
  *  verifier is not an oracle the attacker can use to iterate their forgery
@@ -190,6 +216,16 @@ export async function verifyNip98(
     logger.warn({ error: msg }, 'NIP-98 verify threw — treating as invalid');
     return fail(event.pubkey, event.id ?? null, 'verify_threw');
   }
+
+  // Audit Tier 2F (2026-04-30) — replay protection. Check the cache AFTER
+  // every other gate has passed (otherwise we'd cache failed forgeries and
+  // waste memory). If the event id has been seen within the TTL window,
+  // reject as replayed. Otherwise insert with an expiry = now + TTL.
+  sweepReplayCache(now);
+  if (NIP98_REPLAY_CACHE.has(event.id)) {
+    return fail(event.pubkey, event.id, 'replayed_event');
+  }
+  NIP98_REPLAY_CACHE.set(event.id, now + REPLAY_TTL_SEC);
 
   return { valid: true, pubkey: event.pubkey, event_id: event.id, reason: null };
 }

@@ -19,13 +19,24 @@ const PEER_PUBKEY = '02' + 'b'.repeat(64);
 const PRIV_PEER = Buffer.from('b'.repeat(64), 'hex');
 const PRIV_SELF = Buffer.from('a'.repeat(64), 'hex');
 
+// Audit Tier 2H (2026-04-30) — paidProbeRunner now re-verifies
+// SHA256(preimage)===invoice.payment_hash. Test fixtures must use a
+// matching pair, otherwise every "happy path" test gets pay_other_failure.
+// PREIMAGE_HEX is 64 hex chars (32 raw bytes). PAYMENT_HASH_HEX is its
+// SHA-256 in lowercase hex.
+const PREIMAGE_HEX = 'd'.repeat(64);
+import * as nodeCrypto from 'node:crypto';
+const PAYMENT_HASH_HEX = nodeCrypto.createHash('sha256')
+  .update(Buffer.from(PREIMAGE_HEX, 'hex'))
+  .digest('hex');
+
 function makeMainnetInvoice(amountSats: number, signWith: 'peer' | 'self' = 'peer'): string {
   const data: Record<string, unknown> = {
     coinType: 'bitcoin',
     timestamp: Math.floor(Date.now() / 1000),
     satoshis: amountSats,
     tags: [
-      { tagName: 'payment_hash', data: 'c'.repeat(64) },
+      { tagName: 'payment_hash', data: PAYMENT_HASH_HEX },
       { tagName: 'description', data: 'paid-probe test' },
       { tagName: 'expire_time', data: 3600 },
     ],
@@ -39,6 +50,9 @@ function fakeLnd(behavior: {
   payOk?: boolean;
   routingError?: boolean;
   unwired?: boolean;
+  /** When true, payInvoice returns a preimage that does NOT hash to the
+   *  invoice payment_hash. Used by the audit-r2 mismatch test only. */
+  preimageMismatch?: boolean;
 }): LndGraphClient {
   if (behavior.unwired) {
     return { isConfigured: () => true } as unknown as LndGraphClient;
@@ -52,7 +66,11 @@ function fakeLnd(behavior: {
       if (!behavior.payOk) {
         return { paymentPreimage: '', paymentHash: '', paymentError: 'unknown error' };
       }
-      return { paymentPreimage: 'd'.repeat(64), paymentHash: 'c'.repeat(64) };
+      if (behavior.preimageMismatch) {
+        // Wrong preimage: 'e'*64 hashes to something other than PAYMENT_HASH_HEX.
+        return { paymentPreimage: 'e'.repeat(64), paymentHash: PAYMENT_HASH_HEX };
+      }
+      return { paymentPreimage: PREIMAGE_HEX, paymentHash: PAYMENT_HASH_HEX };
     },
   } as unknown as LndGraphClient;
 }
@@ -78,6 +96,39 @@ describe('PaidProbeRunner', () => {
 
   afterAll(async () => {
     await teardownTestPool(testDb);
+  });
+
+  it('audit Tier 2H: refuse pay_ok when LND preimage does not hash to invoice payment_hash', async () => {
+    // Defense-in-depth: even though Lightning's atomic payment guarantees
+    // sha256(preimage)==payment_hash, SatRank re-verifies. If LND ever
+    // returns a mismatched preimage (RPC compromise, bug), pay_ok is
+    // refused and stages 3/4/5 are not credited as success.
+    const url = 'https://mismatch.test/api';
+    const invoice = makeMainnetInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === url && (init?.method ?? 'GET') === 'GET' && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'WWW-Authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+    ]);
+    const runner = new PaidProbeRunner({
+      stagesRepo,
+      lndClient: fakeLnd({ payOk: true, preimageMismatch: true }),
+      fetchImpl: fetchMock,
+    });
+    const summary = await runner.runOnce({
+      endpoints: [{ url, http_method: 'GET' }],
+      maxPerProbeSats: 10,
+      totalBudgetSats: 100,
+      selfPubkey: SELF_PUBKEY,
+    });
+    expect(summary.outcomes.pay_ok).toBe(0);
+    expect(summary.outcomes.pay_other_failure).toBe(1);
+    expect(summary.totalSpent).toBe(0);
+    expect(summary.results[0].detail).toMatch(/preimage_hash_mismatch/);
   });
 
   it('audit r3: POST-only endpoint — challenge fetch uses http_method=POST', async () => {

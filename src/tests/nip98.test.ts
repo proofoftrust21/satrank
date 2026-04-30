@@ -4,9 +4,9 @@ import { webcrypto } from 'node:crypto';
 if (!(globalThis as { crypto?: unknown }).crypto) {
   (globalThis as { crypto: unknown }).crypto = webcrypto;
 }
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
-import { verifyNip98 } from '../middleware/nip98';
+import { verifyNip98, __resetNip98ReplayCacheForTests } from '../middleware/nip98';
 // @ts-expect-error — ESM subpath
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 
@@ -45,6 +45,13 @@ function signEvent(opts: {
 const URL_OK = 'https://satrank.dev/api/report';
 
 describe('verifyNip98', () => {
+  beforeEach(() => {
+    // Audit Tier 2F — wipe the in-process replay cache so tests stay isolated.
+    // Without this, the replay cases pollute later cases that re-use the same
+    // signed event.
+    __resetNip98ReplayCacheForTests();
+  });
+
   it('accepts a POST with matching body + payload tag', async () => {
     const body = JSON.stringify({ target: 'abc' });
     const { authHeader } = signEvent({ url: URL_OK, method: 'POST', body });
@@ -156,5 +163,34 @@ describe('verifyNip98', () => {
     const result = await verifyNip98('Nostr not-base64!@@', 'POST', URL_OK, Buffer.alloc(0));
     expect(result.valid).toBe(false);
     expect(result.event_id).toBeNull();
+  });
+
+  // --- audit Tier 2F: replay protection ---
+  it('rejects a replayed event (same Authorization header twice within the TTL window)', async () => {
+    const body = JSON.stringify({ x: 1 });
+    const { authHeader } = signEvent({ url: URL_OK, method: 'POST', body });
+    const r1 = await verifyNip98(authHeader, 'POST', URL_OK, Buffer.from(body, 'utf8'));
+    expect(r1.valid).toBe(true);
+    // Second call with the EXACT same signed event = replay attempt.
+    const r2 = await verifyNip98(authHeader, 'POST', URL_OK, Buffer.from(body, 'utf8'));
+    expect(r2.valid).toBe(false);
+    expect(r2.reason).toBe('invalid');
+    expect(r2.detail).toBe('replayed_event');
+    expect(r2.event_id).toBe(r1.event_id);
+  });
+
+  it('does NOT cache failed forgeries (different events still verifiable after a forgery)', async () => {
+    // A failed forgery should not consume a replay-cache slot; otherwise
+    // an attacker could DoS the cache by sending many bad events.
+    const body = JSON.stringify({ x: 1 });
+    // First, a forged event with bad signature (URL mismatch) → fails.
+    const { authHeader: bad } = signEvent({ url: 'https://evil.com/x', method: 'POST', body });
+    const r1 = await verifyNip98(bad, 'POST', URL_OK, Buffer.from(body, 'utf8'));
+    expect(r1.valid).toBe(false);
+    // Now a legit event for the right URL → should still succeed (the
+    // failed forgery did not poison the cache).
+    const { authHeader: ok } = signEvent({ url: URL_OK, method: 'POST', body });
+    const r2 = await verifyNip98(ok, 'POST', URL_OK, Buffer.from(body, 'utf8'));
+    expect(r2.valid).toBe(true);
   });
 });

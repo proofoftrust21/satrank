@@ -27,6 +27,7 @@
 //   maxProbesPerCycle : nombre max d'endpoints à prober (rate-limit)
 //
 // Aucun cron interne — caller (script, controller manuel) appelle runOnce().
+import { createHash } from 'node:crypto';
 import { logger } from '../logger';
 import { fetchSafeExternal, SsrfBlockedError } from '../utils/ssrf';
 import { parseL402Challenge } from '../utils/l402HeaderParser';
@@ -319,10 +320,12 @@ export class PaidProbeRunner {
     // Step 2 — decode invoice.
     let amountSats = 0;
     let payeeNodeKey: string | null = null;
+    let invoicePaymentHash = '';
     try {
       const parsed = parseBolt11(challenge.invoice);
       amountSats = parsed.amountSats ?? 0;
       payeeNodeKey = parsed.payeeNodeKey;
+      invoicePaymentHash = parsed.paymentHash;
     } catch (err) {
       return {
         endpoint_url: url,
@@ -412,6 +415,38 @@ export class PaidProbeRunner {
         quality_score: 0,
         sats_spent: 0, // paiement n'a pas settled
         detail,
+      };
+    }
+
+    // Audit Tier 2H (2026-04-30) — defense-in-depth re-verification of
+    // SHA256(preimage) === invoice.payment_hash. LND should never return a
+    // mismatched preimage (Lightning's atomic-payment guarantee), but if it
+    // ever did (bug, RPC compromise, MITM during HTTPS-to-LND with cert
+    // pinning bypassed), we'd silently mark a paid endpoint as pay_ok and
+    // pollute stage 3 posteriors with false success. Cheap to verify, no
+    // downside on the happy path.
+    const computedPh = createHash('sha256')
+      .update(Buffer.from(pay.paymentPreimage, 'hex'))
+      .digest('hex')
+      .toLowerCase();
+    if (computedPh !== invoicePaymentHash.toLowerCase()) {
+      logger.error(
+        {
+          url,
+          invoicePaymentHash,
+          computedFromPreimage: computedPh,
+          preimage: pay.paymentPreimage.slice(0, 16) + '…',
+        },
+        'PaidProbe: LND returned a preimage that does NOT hash to the invoice payment_hash — refusing pay_ok',
+      );
+      return {
+        endpoint_url: url,
+        payment: 'pay_other_failure',
+        delivery: 'delivery_skipped',
+        quality: 'quality_skipped',
+        quality_score: 0,
+        sats_spent: 0,
+        detail: `preimage_hash_mismatch: sha256(preimage)=${computedPh.slice(0, 16)}… != invoice.payment_hash=${invoicePaymentHash.slice(0, 16)}…`,
       };
     }
 

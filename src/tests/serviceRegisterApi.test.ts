@@ -39,7 +39,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 
 let testDb: TestDb;
 
-function signNip98(url: string, method: string, body: string, sk?: Uint8Array): { auth: string; pubkey: string } {
+function signNip98(url: string, method: string, body: string, sk?: Uint8Array, createdAtSec?: number): { auth: string; pubkey: string } {
   const secret = sk ?? generateSecretKey();
   const pubkey = getPublicKey(secret);
   const tags: string[][] = [
@@ -52,7 +52,11 @@ function signNip98(url: string, method: string, body: string, sk?: Uint8Array): 
   }
   const template = {
     kind: 27235,
-    created_at: Math.floor(Date.now() / 1000),
+    // Audit Tier 2F (2026-04-30) — event.id depends on created_at; tests
+    // that sign multiple events with the same key + body must override
+    // created_at to produce distinct ids, otherwise the new replay cache
+    // rejects the second one (correctly, since it really is the same event).
+    created_at: createdAtSec ?? Math.floor(Date.now() / 1000),
     tags,
     content: '',
   };
@@ -262,7 +266,12 @@ describe('/api/services/register (NIP-98 + audit)', () => {
       const app = buildApp(crawler);
       const body = JSON.stringify({ url: TARGET_URL, name: 'first' });
       const sk = generateSecretKey();
-      const first = signNip98(REGISTER_URL, 'POST', body, sk);
+      const now = Math.floor(Date.now() / 1000);
+      // Use distinct created_at so the two signed events have distinct ids
+      // — otherwise the audit-Tier-2F replay cache would reject the second
+      // call as a replay (correctly, since identical inputs produce
+      // identical event ids under deterministic Schnorr signing).
+      const first = signNip98(REGISTER_URL, 'POST', body, sk, now);
       const r1 = await request(app)
         .post('/api/services/register')
         .set('Host', '127.0.0.1:80')
@@ -271,7 +280,7 @@ describe('/api/services/register (NIP-98 + audit)', () => {
         .send(body);
       expect(r1.status).toBe(201);
 
-      const second = signNip98(REGISTER_URL, 'POST', body, sk);
+      const second = signNip98(REGISTER_URL, 'POST', body, sk, now + 1);
       const r2 = await request(app)
         .post('/api/services/register')
         .set('Host', '127.0.0.1:80')
