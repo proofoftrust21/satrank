@@ -55,6 +55,9 @@ import { ServiceController } from './controllers/serviceController';
 import { IntentController } from './controllers/intentController';
 import { IntentService } from './services/intentService';
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
+import { FulfillController } from './controllers/fulfillController';
+import { FulfillService } from './services/fulfillService';
+import { FulfillJobRepository } from './repositories/fulfillJobRepository';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -299,6 +302,23 @@ export function createApp() {
     operatorService,
   });
 
+  // Phase 1 (2026-05-01) — Fulfill proxy. SatRank's strategic pivot from
+  // oracle (lecture) to execution layer (écriture). See
+  // project_fulfill_proxy_plan.md. Feature-flagged via FULFILL_ENABLED env
+  // var; off → /api/fulfill returns 503. The service is constructed in all
+  // environments so tests can exercise it without app-wide flagging.
+  const fulfillJobRepo = new FulfillJobRepository(pool);
+  const fulfillService = new FulfillService({
+    pool,
+    fulfillJobRepo,
+    intentService,
+    lndClient,
+  });
+  const fulfillController = new FulfillController({
+    fulfillService,
+    enabled: process.env.FULFILL_ENABLED === 'true',
+  });
+
   // Phase 7 — controller pour /api/operator(s) endpoints. operatorService est
   // construit plus haut (avant VerdictService pour les besoins C11/C12).
   const operatorController = new OperatorController({
@@ -315,6 +335,37 @@ export function createApp() {
   // Phase 12B — fire-and-forget since createApp() stays sync; a promise
   // rejection here is already swallowed inside runWarmUp's per-call try/catch.
   void warmUpCaches(statsService, agentController, trendService);
+
+  // Phase 1 (2026-05-01) — fulfill_jobs reconciliation. Every 60s, scan for
+  // jobs stuck in `in_flight` past their max_latency_ms × 5 + 30s safety
+  // margin, mark them aborted with reason='reconciliation_timeout'. This
+  // catches LND outages or process crashes mid-payment so the per-agent
+  // idempotency window doesn't refuse retries forever.
+  const RECONCILIATION_INTERVAL_MS = 60_000;
+  const reconcileTimer = setInterval(async () => {
+    try {
+      // 30s margin past the absolute longest possible job (30s max_latency
+      // × 5 retries + 30s slack) — anything older is definitely orphaned.
+      const stuck = await fulfillJobRepo.findStuckInFlight(Math.floor(Date.now() / 1000), 180);
+      for (const job of stuck) {
+        await fulfillJobRepo.settleAbort({
+          job_id: job.job_id,
+          reason: 'reconciliation_timeout',
+          settled_at: Math.floor(Date.now() / 1000),
+        });
+        logger.warn(
+          { job_id: job.job_id, age_sec: Math.floor(Date.now() / 1000) - job.created_at },
+          'Fulfill: reconciled stuck in_flight job',
+        );
+      }
+    } catch (err) {
+      logger.error(
+        { error: err instanceof Error ? err.message : String(err) },
+        'Fulfill reconciliation cron failed',
+      );
+    }
+  }, RECONCILIATION_INTERVAL_MS);
+  reconcileTimer.unref();
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
   // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.
@@ -656,6 +707,32 @@ export function createApp() {
   };
   api.post('/intent', discoveryRateLimit, conditionalIntentPaidGate, intentController.resolve);
   api.get('/intent/categories', discoveryRateLimit, intentController.categories);
+  // Phase 1 (2026-05-01) — POST /api/fulfill. Strategic pivot endpoint.
+  // NIP-98 auth (handled inside the controller, not via balanceAuth, because
+  // the agent_pubkey is signed identity here, not an L402 macaroon). Same
+  // discoveryRateLimit ceiling as the rest of the surface; per-agent token
+  // bucket inside the controller adds a finer-grained guard.
+  api.post('/fulfill', discoveryRateLimit, fulfillController.handle);
+  // Phase 1 (2026-05-01) — public observability of the fulfill proxy.
+  // Privacy-first: the response only carries aggregate counters, never
+  // agent_pubkey or per-job payloads. Agents can use it to confirm the
+  // proxy is operational + see the system-wide success rate.
+  api.get('/oracle/fulfill', discoveryRateLimit, async (_req, res, next) => {
+    try {
+      const stats = await fulfillJobRepo.statsLast24h(Math.floor(Date.now() / 1000));
+      const success_rate = stats.total > 0 ? Math.round((stats.success / stats.total) * 1000) / 1000 : null;
+      res.json({
+        data: {
+          enabled: process.env.FULFILL_ENABLED === 'true',
+          window_sec: 86400,
+          counters: stats,
+          success_rate,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
   api.post('/services/register', discoveryRateLimit, serviceRegisterController.register);
   api.patch('/services/register', discoveryRateLimit, serviceRegisterController.update);
   api.delete('/services/register', discoveryRateLimit, serviceRegisterController.remove);
