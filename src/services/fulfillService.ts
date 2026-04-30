@@ -34,6 +34,7 @@ import type {
   FulfillJobRepository,
   FulfillAttempt,
 } from '../repositories/fulfillJobRepository';
+import type { RefundEngine } from './refundEngine';
 import type { Pool } from 'pg';
 
 const FETCH_TIMEOUT_MS = 8000;
@@ -74,13 +75,28 @@ export type FulfillInsufficientBalance = {
   available_sats: number;
 };
 
-export type FulfillResult = FulfillSuccess | FulfillRefunded | FulfillInsufficientBalance;
+export type FulfillRateLimited = {
+  status: 'daily_cap_reached';
+  cap_sats: number;
+  used_24h_sats: number;
+  agent_age_bucket: 'fresh' | 'established';
+};
+
+export type FulfillResult =
+  | FulfillSuccess
+  | FulfillRefunded
+  | FulfillInsufficientBalance
+  | FulfillRateLimited;
 
 export interface FulfillServiceDeps {
   pool: Pool;
   fulfillJobRepo: FulfillJobRepository;
   intentService: IntentService;
   lndClient: Pick<LndGraphClient, 'payInvoice'>;
+  /** Phase 2 — refund classification + per-agent daily cap + ledger writes.
+   *  Optional for back-compat with the Phase 1 tests; production wiring
+   *  always passes a real instance. */
+  refundEngine?: RefundEngine;
   /** Self-pay guard: refuse to pay our own LND node (we already operate it
    *  for the registry crawler probes, see paidProbeRunner.ts:344). */
   selfPubkey?: string;
@@ -156,6 +172,41 @@ export class FulfillService {
         required_sats: requiredSats,
         available_sats: balance,
       };
+    }
+
+    // Phase 2 — per-agent daily refund cap. Drain protection: a malicious
+    // agent who keeps choosing intents that map to broken endpoints could
+    // farm refunds at SatRank's expense (we paid the operator, didn't bill
+    // the agent → pool absorbs). The cap bounds that exposure; agents <30d
+    // old get the strict 100-sat cap. See refundEngine.ts.
+    if (this.deps.refundEngine) {
+      // The agent's first-seen timestamp lives on the agents table when
+      // we know them (NIP-98-signing agents are typically recorded by the
+      // upstream pubkey crawl). We treat unknown agents as "fresh" by
+      // default — strict cap.
+      const firstSeen = await this.fetchAgentFirstSeen(req.agent_pubkey);
+      const cap = await this.deps.refundEngine.checkDailyCap({
+        agent_pubkey: req.agent_pubkey,
+        agent_first_seen_at: firstSeen,
+        worst_case_sats: req.max_sats,
+      });
+      if (!cap.allowed) {
+        logger.info(
+          {
+            agent_pubkey: req.agent_pubkey.slice(0, 12),
+            used_24h: cap.used_24h_sats,
+            cap: cap.cap_sats,
+            bucket: cap.agent_age_bucket,
+          },
+          'Fulfill: agent daily refund cap reached',
+        );
+        return {
+          status: 'daily_cap_reached',
+          cap_sats: cap.cap_sats,
+          used_24h_sats: cap.used_24h_sats,
+          agent_age_bucket: cap.agent_age_bucket,
+        };
+      }
     }
 
     // Create the in_flight job. From here every exit must call settle*.
@@ -247,8 +298,31 @@ export class FulfillService {
         // Attempt failed — paid? (then absorb), or not paid? (no impact).
         // Either way, advance to next candidate.
         if (attempt.payment_outcome === 'pay_ok') {
-          // SatRank ate this sats_paid loss as part of the success-only
-          // billing promise. Logged for accounting; not visible to agent.
+          // Phase 2 — record the absorbed-sat event in the refund ledger.
+          // This is the accounting source of truth for SatRank's pool
+          // exposure and feeds the per-agent daily cap on the next call.
+          // Idempotent on (job_id, candidate_url) — re-recording is safe.
+          if (this.deps.refundEngine) {
+            try {
+              await this.deps.refundEngine.recordAttempt({
+                job_id: jobId,
+                agent_pubkey: req.agent_pubkey,
+                attempt,
+              });
+            } catch (err) {
+              // Don't fail the fulfill on a ledger write error — log loud
+              // for ops review. The attempt is still in fulfill_jobs.attempts
+              // so we can backfill from there.
+              logger.error(
+                {
+                  jobId,
+                  candidate: cand.endpoint_url,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+                'Fulfill: refund ledger write failed (continuing — backfill from attempts[])',
+              );
+            }
+          }
           logger.info(
             {
               jobId,
@@ -519,6 +593,21 @@ export class FulfillService {
       sats_paid: 0,
       detail: reason,
     });
+  }
+
+  /** Phase 2 — agent first-seen lookup for the daily cap age bucket. Returns
+   *  the smallest `created_at` from token_balance for this agent's deposit
+   *  rows; null when we have no record (treated as fresh agent → strict cap).
+   *  The pubkey-to-deposit mapping is identical to fetchAgentBalance. */
+  private async fetchAgentFirstSeen(agentPubkey: string): Promise<number | null> {
+    const { rows } = await this.deps.pool.query<{ first_seen: string | null }>(
+      `SELECT MIN(created_at)::text AS first_seen
+         FROM token_balance
+        WHERE payment_hash = $1`,
+      [agentPubkey],
+    );
+    const v = rows[0]?.first_seen;
+    return v == null ? null : Number(v);
   }
 
   /** Reads token_balance.balance_credits + remaining for an agent identified

@@ -58,6 +58,10 @@ import { ServiceRegisterController } from './controllers/serviceRegisterControll
 import { FulfillController } from './controllers/fulfillController';
 import { FulfillService } from './services/fulfillService';
 import { FulfillJobRepository } from './repositories/fulfillJobRepository';
+import { RefundLedgerRepository } from './repositories/refundLedgerRepository';
+import { RefundDisputeRepository } from './repositories/refundDisputeRepository';
+import { RefundEngine } from './services/refundEngine';
+import { DisputeController } from './controllers/disputeController';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -308,15 +312,26 @@ export function createApp() {
   // var; off → /api/fulfill returns 503. The service is constructed in all
   // environments so tests can exercise it without app-wide flagging.
   const fulfillJobRepo = new FulfillJobRepository(pool);
+  // Phase 2 — refund ledger + per-agent daily cap + dispute table.
+  const refundLedgerRepo = new RefundLedgerRepository(pool);
+  const refundDisputeRepo = new RefundDisputeRepository(pool);
+  const refundEngine = new RefundEngine({ refundLedgerRepo });
   const fulfillService = new FulfillService({
     pool,
     fulfillJobRepo,
     intentService,
     lndClient,
+    refundEngine,
   });
   const fulfillController = new FulfillController({
     fulfillService,
     enabled: process.env.FULFILL_ENABLED === 'true',
+  });
+  // Phase 2 — operator dispute surface against Tier 2 refund classifications.
+  const disputeController = new DisputeController({
+    refundLedgerRepo,
+    refundDisputeRepo,
+    operatorService,
   });
 
   // Phase 7 — controller pour /api/operator(s) endpoints. operatorService est
@@ -357,6 +372,18 @@ export function createApp() {
           { job_id: job.job_id, age_sec: Math.floor(Date.now() / 1000) - job.created_at },
           'Fulfill: reconciled stuck in_flight job',
         );
+      }
+      // Phase 2 — auto-reject open disputes older than 24h. Without admin
+      // tooling (Phase 3+), the auto-reject keeps the table from accumulating
+      // perpetual "open" rows. An operator who needs longer can re-open with
+      // a fresh signed event after this resolves.
+      const STALE_DISPUTE_SEC = 24 * 3600;
+      const rejected = await refundDisputeRepo.resolveStale(
+        Math.floor(Date.now() / 1000),
+        STALE_DISPUTE_SEC,
+      );
+      if (rejected > 0) {
+        logger.info({ rejected }, 'Fulfill: auto-rejected stale open disputes');
       }
     } catch (err) {
       logger.error(
@@ -713,20 +740,36 @@ export function createApp() {
   // discoveryRateLimit ceiling as the rest of the surface; per-agent token
   // bucket inside the controller adds a finer-grained guard.
   api.post('/fulfill', discoveryRateLimit, fulfillController.handle);
+  // Phase 2 — operator NIP-98 dispute against Tier 2 refund classifications.
+  // Same discoveryRateLimit ceiling. Owner verification + uniqueness +
+  // disputability check happen inside the controller.
+  api.post('/dispute/:ledger_id', discoveryRateLimit, disputeController.open);
+  api.get('/dispute/:dispute_id', discoveryRateLimit, disputeController.show);
   // Phase 1 (2026-05-01) — public observability of the fulfill proxy.
   // Privacy-first: the response only carries aggregate counters, never
   // agent_pubkey or per-job payloads. Agents can use it to confirm the
   // proxy is operational + see the system-wide success rate.
   api.get('/oracle/fulfill', discoveryRateLimit, async (_req, res, next) => {
     try {
-      const stats = await fulfillJobRepo.statsLast24h(Math.floor(Date.now() / 1000));
+      const nowSec = Math.floor(Date.now() / 1000);
+      const stats = await fulfillJobRepo.statsLast24h(nowSec);
       const success_rate = stats.total > 0 ? Math.round((stats.success / stats.total) * 1000) / 1000 : null;
+      // Phase 2 — pool exposure: how many sats SatRank absorbed in the last
+      // 24h paying operators on agents' behalf without being able to refund
+      // (success-only billing means agents weren't debited). Drives premium
+      // calibration in Phase 4.
+      const pool = await refundLedgerRepo.windowStats(nowSec - 86400);
       res.json({
         data: {
           enabled: process.env.FULFILL_ENABLED === 'true',
           window_sec: 86400,
           counters: stats,
           success_rate,
+          pool_24h: {
+            absorbed_events: pool.total_events,
+            absorbed_sats: pool.sats_absorbed,
+            by_classification: pool.by_classification,
+          },
         },
       });
     } catch (err) {

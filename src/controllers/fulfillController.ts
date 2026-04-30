@@ -194,6 +194,21 @@ export class FulfillController {
             message: 'top up via POST /api/deposit and retry',
           });
           return;
+        case 'daily_cap_reached':
+          // Phase 2 — drain protection. Agent has used too many absorbed
+          // sats from SatRank's pool in the last 24h. Communicate the cap
+          // + how much is left so the agent can plan retries or upgrade.
+          res.status(429).json({
+            error: 'daily_cap_reached',
+            cap_sats: result.cap_sats,
+            used_24h_sats: result.used_24h_sats,
+            agent_age_bucket: result.agent_age_bucket,
+            retry_after_sec: 86400,
+            message: result.agent_age_bucket === 'fresh'
+              ? 'fresh agents (<30d) are limited until trust accumulates'
+              : 'daily cap reached — wait for the rolling window to refresh',
+          });
+          return;
       }
     } catch (err) {
       next(err);

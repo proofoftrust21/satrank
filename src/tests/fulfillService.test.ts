@@ -10,6 +10,8 @@ import * as nodeCrypto from 'node:crypto';
 import { setupTestPool, teardownTestPool, type TestDb } from './helpers/testDatabase';
 import { FulfillService, computePremium, canonicalIntentHash } from '../services/fulfillService';
 import { FulfillJobRepository } from '../repositories/fulfillJobRepository';
+import { RefundLedgerRepository } from '../repositories/refundLedgerRepository';
+import { RefundEngine, DEFAULT_REFUND_ENGINE_CONFIG } from '../services/refundEngine';
 import type { IntentService } from '../services/intentService';
 import type { IntentCandidate, IntentResponse } from '../types/intent';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
@@ -160,11 +162,18 @@ async function seedAgentBalance(pool: Pool, agentPubkey: string, sats: number): 
 describe('FulfillService', () => {
   let pool: Pool;
   let repo: FulfillJobRepository;
+  let refundLedgerRepo: RefundLedgerRepository;
+  let refundEngine: RefundEngine;
 
   beforeAll(async () => {
     testDb = await setupTestPool();
     pool = testDb.pool;
     repo = new FulfillJobRepository(pool);
+    refundLedgerRepo = new RefundLedgerRepository(pool);
+    refundEngine = new RefundEngine({
+      refundLedgerRepo,
+      config: { ...DEFAULT_REFUND_ENGINE_CONFIG, freshAgentDailyCapSats: 1000, establishedAgentDailyCapSats: 100000 },
+    });
   });
 
   afterAll(async () => {
@@ -172,7 +181,8 @@ describe('FulfillService', () => {
   });
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE fulfill_jobs RESTART IDENTITY');
+    await pool.query('TRUNCATE refund_ledger RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE fulfill_jobs RESTART IDENTITY CASCADE');
     await pool.query('TRUNCATE token_balance');
   });
 
@@ -611,6 +621,244 @@ describe('canonicalIntentHash', () => {
     expect(canonicalIntentHash({ category: 'data', max_latency_ms: 100 })).not.toBe(
       canonicalIntentHash({ category: 'data', max_latency_ms: 200 }),
     );
+  });
+});
+
+describe('FulfillService — Phase 2 refund engine integration', () => {
+  let pool: Pool;
+  let repo: FulfillJobRepository;
+  let refundLedgerRepo: RefundLedgerRepository;
+  let refundEngine: RefundEngine;
+
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    repo = new FulfillJobRepository(pool);
+    refundLedgerRepo = new RefundLedgerRepository(pool);
+    refundEngine = new RefundEngine({
+      refundLedgerRepo,
+      config: { ...DEFAULT_REFUND_ENGINE_CONFIG, freshAgentDailyCapSats: 100, establishedAgentDailyCapSats: 10000 },
+    });
+  });
+
+  afterAll(async () => {
+    await teardownTestPool(testDb);
+  });
+
+  beforeEach(async () => {
+    await pool.query('TRUNCATE refund_ledger RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE fulfill_jobs RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE token_balance');
+  });
+
+  it('records ledger entry when paid candidate fails delivery', async () => {
+    const urlBad = 'https://bad.example/api';
+    const urlGood = 'https://good.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === urlBad && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === urlBad && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('boom', { status: 500 }),
+      },
+      {
+        match: (u, init) => u === urlGood && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === urlGood && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('great success body 12345', { status: 200 }),
+      },
+    ]);
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(urlBad, 1), makeCandidate(urlGood, 2)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+    });
+
+    expect(result.status).toBe('success');
+    // The bad candidate's absorbed payment is in the ledger.
+    const stats = await refundLedgerRepo.windowStats(0);
+    expect(stats.total_events).toBe(1);
+    expect(stats.sats_absorbed).toBe(5);
+    expect(stats.by_classification.tier1_http_5xx).toBe(1);
+  });
+
+  it('rejects fulfill when fresh agent daily cap is reached', async () => {
+    // Seed 95 sats already absorbed in ledger for AGENT_HASH (fresh agent).
+    await seedAgentBalance(pool, AGENT_HASH, 1000);
+    await repo.create({
+      job_id: 'prior-job',
+      agent_pubkey: AGENT_HASH,
+      intent_hash: 'h'.repeat(64),
+      max_sats: 100,
+      max_latency_ms: 5000,
+      created_at: Math.floor(Date.now() / 1000) - 100,
+    });
+    await refundLedgerRepo.record({
+      job_id: 'prior-job',
+      candidate_url: 'https://prior.example/api',
+      agent_pubkey: AGENT_HASH,
+      sats_absorbed: 95,
+      classification: 'tier1_http_4xx',
+      ts: Math.floor(Date.now() / 1000) - 100,
+    });
+    // Set agent_first_seen via token_balance.created_at: refresh balance with
+    // a recent timestamp so the agent reads as `fresh`.
+    await pool.query(
+      `UPDATE token_balance SET created_at = $2 WHERE payment_hash = $1`,
+      [AGENT_HASH, Math.floor(Date.now() / 1000) - 86400], // 1 day old → fresh
+    );
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate('https://x.example/api', 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50, // 95 used + 50 worst-case = 145 > cap 100 → blocked
+      max_latency_ms: 5000,
+    });
+
+    expect(result.status).toBe('daily_cap_reached');
+    if (result.status !== 'daily_cap_reached') return;
+    expect(result.cap_sats).toBe(100);
+    expect(result.used_24h_sats).toBe(95);
+    expect(result.agent_age_bucket).toBe('fresh');
+  });
+
+  it('established agent (>30d) escapes the strict cap', async () => {
+    await seedAgentBalance(pool, AGENT_HASH, 1000);
+    await repo.create({
+      job_id: 'old-job',
+      agent_pubkey: AGENT_HASH,
+      intent_hash: 'h'.repeat(64),
+      max_sats: 100,
+      max_latency_ms: 5000,
+      created_at: Math.floor(Date.now() / 1000) - 100,
+    });
+    await refundLedgerRepo.record({
+      job_id: 'old-job',
+      candidate_url: 'https://x.example/old',
+      agent_pubkey: AGENT_HASH,
+      sats_absorbed: 95,
+      classification: 'tier1_http_4xx',
+      ts: Math.floor(Date.now() / 1000) - 100,
+    });
+    // Make the agent established by backdating token_balance.created_at.
+    await pool.query(
+      `UPDATE token_balance SET created_at = $2 WHERE payment_hash = $1`,
+      [AGENT_HASH, Math.floor(Date.now() / 1000) - 60 * 86400], // 60 days
+    );
+
+    // A successful fulfill against a working endpoint to confirm we passed the cap.
+    const url = 'https://ok.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === url && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === url && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('hello world delivered', { status: 200 }),
+      },
+    ]);
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+    });
+    expect(result.status).toBe('success');
+  });
+
+  it('ledger write failure does not crash the orchestrator (defensive)', async () => {
+    const url = 'https://bad.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === url && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === url && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('boom', { status: 500 }),
+      },
+    ]);
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+
+    // Hostile refundEngine: recordAttempt always throws.
+    const brokenEngine = {
+      classifyAttempt: () => 'tier1_http_5xx' as const,
+      recordAttempt: async () => { throw new Error('simulated DB outage'); },
+      checkDailyCap: async () => ({
+        allowed: true,
+        cap_sats: 1000,
+        used_24h_sats: 0,
+        remaining_sats: 1000,
+        agent_age_bucket: 'established' as const,
+      }),
+    };
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine: brokenEngine as unknown as RefundEngine,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+    });
+    // Orchestrator returned refunded cleanly even though ledger write threw.
+    expect(result.status).toBe('refunded');
   });
 });
 
