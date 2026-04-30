@@ -80,7 +80,7 @@ export interface FulfillServiceDeps {
   pool: Pool;
   fulfillJobRepo: FulfillJobRepository;
   intentService: IntentService;
-  lndClient: Pick<LndGraphClient, 'payInvoice'> & { isConfigured(): boolean };
+  lndClient: Pick<LndGraphClient, 'payInvoice'>;
   /** Self-pay guard: refuse to pay our own LND node (we already operate it
    *  for the registry crawler probes, see paidProbeRunner.ts:344). */
   selfPubkey?: string;
@@ -375,8 +375,12 @@ export class FulfillService {
       });
     }
 
-    // Step 3 — pay.
-    if (!this.deps.lndClient.isConfigured() || !this.deps.lndClient.payInvoice) {
+    // Step 3 — pay. Mirrors paidProbeRunner's pattern: gate on the optional
+    // `payInvoice` method rather than a separate isConfigured() check, so a
+    // node where the admin macaroon failed to load (no payInvoice exposed)
+    // gets a clean lnd_not_configured outcome instead of a runtime crash.
+    const payInvoice = this.deps.lndClient.payInvoice;
+    if (!payInvoice) {
       return baseAttempt(cand, ts_started, this.now(), {
         payment_outcome: 'lnd_not_configured',
         delivery_outcome: 'delivery_skipped',
@@ -384,7 +388,7 @@ export class FulfillService {
         sats_paid: 0,
       });
     }
-    const pay = await this.deps.lndClient.payInvoice(challenge.invoice, 10, PAY_TIMEOUT_DEFAULT_SEC);
+    const pay = await payInvoice(challenge.invoice, 10, PAY_TIMEOUT_DEFAULT_SEC);
     if (pay.paymentError || !pay.paymentPreimage) {
       const detail = pay.paymentError ?? 'no preimage returned';
       const isRouting = /no.?route|no_route|FAILURE_REASON_NO_ROUTE|insufficient/i.test(detail);

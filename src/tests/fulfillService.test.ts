@@ -39,12 +39,13 @@ function makeInvoice(amountSats: number): string {
   return signed.paymentRequest;
 }
 
-function fakeLnd(behavior: { payOk?: boolean; routingError?: boolean; unwired?: boolean }): LndGraphClient {
+function fakeLnd(behavior: { payOk?: boolean; routingError?: boolean; unwired?: boolean }): Pick<LndGraphClient, 'payInvoice'> {
   if (behavior.unwired) {
-    return { isConfigured: () => false } as unknown as LndGraphClient;
+    // Mirrors a real LND class where the admin macaroon failed to load:
+    // payInvoice is undefined, the fulfill service short-circuits.
+    return {};
   }
   return {
-    isConfigured: () => true,
     payInvoice: async () => {
       if (behavior.routingError) {
         return { paymentPreimage: '', paymentHash: '', paymentError: 'no_route' };
@@ -54,7 +55,7 @@ function fakeLnd(behavior: { payOk?: boolean; routingError?: boolean; unwired?: 
       }
       return { paymentPreimage: PREIMAGE_HEX, paymentHash: PAYMENT_HASH_HEX };
     },
-  } as unknown as LndGraphClient;
+  };
 }
 
 function makeCandidate(
