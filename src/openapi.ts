@@ -1694,7 +1694,9 @@ export const openapiSpec = {
       NetworkStats: {
         type: 'object',
         properties: {
-          totalAgents: { type: 'integer', description: 'Active Lightning agents indexed across all sources (stale >90d excluded)' },
+          totalAgents: { type: 'integer', description: 'Active Lightning agents indexed (stale=0 filter). Kept as backwards-compat alias for activeAgents — prefer the explicit field on new integrations.' },
+          activeAgents: { type: 'integer', description: 'Active Lightning agents (stale=0). Same value as totalAgents.' },
+          agentsAll: { type: 'integer', description: 'All agents in the index, including stale (=full row count of the agents table). agentsAll - activeAgents = staleAgents.' },
           totalEndpoints: { type: 'integer', description: 'Total registered endpoints (agents + service_endpoints)' },
           nodesProbed: { type: 'integer', description: 'Nodes probed at least once via LND QueryRoutes (used as the denominator for phantomRate)' },
           phantomRate: { type: 'number', description: 'Percentage of probed nodes that are unreachable in routing (0 to 100). Computed live from the last 24h probe window.' },

@@ -167,7 +167,7 @@
 
         <h3>2.6 Database schema</h3>
         <p>
-          Schema version <strong>56</strong>. Consolidated baseline at v41 (PostgreSQL 16, migrated from SQLite in Phase 12B) plus v42 → v56 incremental migrations. Around 30 tables across four families: <em>core</em> (<code>agents</code>, <code>transactions</code>, <code>attestations</code>, <code>score_snapshots</code>, <code>probe_results</code>, <code>channel_snapshots</code>, <code>fee_snapshots</code>) ; <em>L402 economy</em> (<code>service_endpoints</code>, <code>service_probes</code>, <code>token_balance</code>, <code>token_query_log</code>, <code>deposit_tiers</code>, <code>preimage_pool</code>, <code>report_bonus_log</code>, <code>oracle_revenue_log</code>) ; <em>posteriors</em> (<code>endpoint_streaming_posteriors</code>, <code>node_streaming_posteriors</code>, <code>endpoint_stage_posteriors</code>, <code>endpoint_stage_outcomes_log</code>, <code>oracle_calibration_runs</code>, <code>endpoint_daily_buckets</code>, <code>node_daily_buckets</code>) ; <em>federation + crowd</em> (<code>trust_assertions_published</code>, <code>oracle_announcements_published</code>, <code>oracle_peers</code>, <code>peer_calibration_observations</code>, <code>crowd_outcome_reports</code>, <code>nostr_identity_first_seen</code>, <code>nostr_published_events</code>) ; <em>operators</em> (<code>operators</code>, <code>operator_identities</code>, <code>operator_owns_node</code>, <code>operator_owns_endpoint</code>, <code>operator_owns_service</code>). Live state at <code>/api/health</code>.
+          Schema version <strong>57</strong>. Consolidated baseline at v41 (PostgreSQL 16, migrated from SQLite in Phase 12B) plus v42 → v57 incremental migrations. Around 30 tables across four families: <em>core</em> (<code>agents</code>, <code>transactions</code>, <code>attestations</code>, <code>score_snapshots</code>, <code>probe_results</code>, <code>channel_snapshots</code>, <code>fee_snapshots</code>) ; <em>L402 economy</em> (<code>service_endpoints</code>, <code>service_probes</code>, <code>token_balance</code>, <code>token_query_log</code>, <code>deposit_tiers</code>, <code>preimage_pool</code>, <code>report_bonus_log</code>, <code>oracle_revenue_log</code>) ; <em>posteriors</em> (<code>endpoint_streaming_posteriors</code>, <code>node_streaming_posteriors</code>, <code>endpoint_stage_posteriors</code>, <code>endpoint_stage_outcomes_log</code>, <code>oracle_calibration_runs</code>, <code>endpoint_daily_buckets</code>, <code>node_daily_buckets</code>) ; <em>federation + crowd</em> (<code>trust_assertions_published</code>, <code>oracle_announcements_published</code>, <code>oracle_peers</code>, <code>peer_calibration_observations</code>, <code>crowd_outcome_reports</code>, <code>nostr_identity_first_seen</code>, <code>nostr_published_events</code>) ; <em>operators</em> (<code>operators</code>, <code>operator_identities</code>, <code>operator_owns_node</code>, <code>operator_owns_endpoint</code>, <code>operator_owns_service</code>). Live state at <code>/api/health</code>.
         </p>
       </section>
 
@@ -460,7 +460,7 @@ Content-Type: application/json
   "limit":          5
 }</code></pre>
 
-        <p>Valid categories are enumerated at <code>GET /api/intent/categories</code>. The resolver filters <code>service_endpoints</code> by category, then by budget (<code>service_price_sats ≤ budget_sats</code>), then by 7-day median HTTP latency, then enriches each candidate with a Bayesian block, flags, reachability, and advisory, and sorts by <code>(p_success DESC, ci95_low DESC, price_sats ASC)</code> by default.</p>
+        <p>Valid categories are enumerated at <code>GET /api/intent/categories</code>. The resolver filters <code>service_endpoints</code> by category, then by budget (<code>service_price_sats ≤ budget_sats</code>), then excludes endpoints whose latest crawler probe returned a non-recoverable status (<code>last_http_status</code> outside <code>{NULL, 402, 200..299}</code> — e.g. 404, 401, 5xx are dropped immediately, the catalogue is not allowed to recommend currently-broken endpoints), then by 7-day median HTTP latency, then enriches each candidate with a Bayesian block, flags, reachability, and advisory, and sorts by <code>(p_success DESC, ci95_low DESC, price_sats ASC)</code> by default.</p>
 
         <h3>6.1.1 Multi-dimensional ranking via <code>optimize=</code> (Phase 5.8)</h3>
         <p>
@@ -868,11 +868,14 @@ Relays (DEFAULT_NOSTR_RELAYS, src/nostr/relays.ts):
 
         <h3>12.1 Calibration history (kind 30783) — the moat</h3>
         <p>
-          A weekly cron computes, for each (endpoint, stage) with at least 10 outcomes in the rolling 7-day window:
+          A weekly cron computes, for each (endpoint, stage) with at least 5 outcomes in the rolling 7-day window:
         </p>
         <pre><code>p_predicted = posterior reconstructed at window_start (decay-aware)
 p_observed  = success_rate over outcomes_in_window
 delta       = |p_predicted - p_observed|</code></pre>
+        <p>
+          The cron iterates over <strong>all 5 stages</strong>: stage 1 (challenge) draws from the ~340 endpoints probed every minute by <code>serviceHealthCrawler</code> ; stages 2-5 draw from the paid-probe cron. All outcomes are written to a single <code>endpoint_stage_outcomes_log</code> table — the calibration is exhaustive across the 5-stage decomposition, not a paid-only subset.
+        </p>
         <p>
           The aggregate (<code>delta_mean</code>, <code>delta_median</code>, <code>delta_p95</code>, <code>n_endpoints</code>, <code>n_outcomes</code>) is published as a Nostr kind 30783 event signed by the oracle's identity key. The top 20 per-endpoint deltas are embedded in the event content for full audit. Implementation: <code>src/services/calibrationService.ts</code> + <code>calibrationPublisher.ts</code>.
         </p>
