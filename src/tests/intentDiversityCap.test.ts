@@ -16,9 +16,10 @@ function fixture(rank: number, url: string, operatorPubkey: string | null): { sv
 
 // Cast to the helper's input shape — applyDiversityCap is exported but
 // EnrichedCandidate is not, so we pass a structurally-compatible object.
+// Strict tsc requires the unknown bridge; use it explicitly to keep
+// CI lint:tests happy.
 function cap<T extends { svc: ServiceEndpoint; operatorPubkey: string | null }>(items: T[], limit: number): T[] {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return applyDiversityCap(items as any, limit) as T[];
+  return applyDiversityCap(items as unknown as Parameters<typeof applyDiversityCap>[0], limit) as unknown as T[];
 }
 
 const OP_A = '02' + 'a'.repeat(64);
