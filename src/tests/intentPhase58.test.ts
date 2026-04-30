@@ -233,7 +233,10 @@ describe('Phase 5.8 — optimize= parameter', async () => {
     const rL = await svc.resolveIntent({ category: 'data', keywords: [], optimize: 'latency' }, 5);
     const rR = await svc.resolveIntent({ category: 'data', keywords: [], optimize: 'reliability' }, 5);
     const rC = await svc.resolveIntent({ category: 'data', keywords: [], optimize: 'cost' }, 5);
-    expect(rP.meta.ranking_explanation.primary).toMatch(/is_meaningful/);
+    // Sim 8 fix — primary signal for `p_success` axis is now stage-aware
+    // p_e2e (was challenge-only is_meaningful → bayesian.p_success). The
+    // "is_meaningful" gate moved into the bootstrap fallback tiebreaker.
+    expect(rP.meta.ranking_explanation.primary).toMatch(/p_e2e/);
     expect(rL.meta.ranking_explanation.primary).toMatch(/median_latency_ms ASC/);
     expect(rR.meta.ranking_explanation.primary).toMatch(/upstream_reliability_score DESC/);
     expect(rC.meta.ranking_explanation.primary).toMatch(/price_sats ASC/);

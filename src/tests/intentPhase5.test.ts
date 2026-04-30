@@ -244,12 +244,14 @@ describe('Phase 5 — per-endpoint posterior surfacing', async () => {
     });
     const svc = buildIntentService(db);
     const result = await svc.resolveIntent({ category: 'data', keywords: [] }, 5);
-    expect(result.meta.ranking_explanation.primary).toContain('is_meaningful');
+    // Sim 8 fix — ranking primary moved from is_meaningful (challenge-only)
+    // to stage-aware p_e2e. Bootstrap fallback path still mentions
+    // is_meaningful inside the tiebreakers list.
+    expect(result.meta.ranking_explanation.primary).toContain('p_e2e');
     expect(result.meta.ranking_explanation.tiebreakers).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('p_success DESC'),
-        expect.stringContaining('ci95_low DESC'),
         expect.stringContaining('price_sats ASC'),
+        expect.stringContaining('is_meaningful'),
       ]),
     );
   });

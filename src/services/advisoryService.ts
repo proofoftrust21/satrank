@@ -42,6 +42,33 @@ const FRESHNESS_THRESHOLD_SEC = 60 * 60;
 /** Palier thresholds — bumping these shifts the entire population across levels. */
 const LEVEL_THRESHOLDS = { yellow: 0.15, orange: 0.35, red: 0.60 } as const;
 
+/** Sim 8 fix (2026-04-30) — independent escalation thresholds for `p_e2e`,
+ *  the chain-product of meaningful L402 stages. The legacy risk_score formula
+ *  is challenge-only (computed from `bayesian.*` which aggregates HEAD probe
+ *  outcomes) and structurally blind to post-payment failures. When stage
+ *  posteriors expose a low `p_e2e`, we escalate the advisory level via an
+ *  independent override rather than re-weighting the existing factors —
+ *  preserves backwards compat with every freeze-tested formula coefficient
+ *  while plugging the gap that surfaced "green badge + lost sats" in Sim 8.
+ *  Thresholds chosen so:
+ *    p_e2e ≥ 0.70 → no override (challenge signal carries)
+ *    0.50 ≤ p_e2e < 0.70 → at least yellow
+ *    0.30 ≤ p_e2e < 0.50 → at least orange
+ *    p_e2e < 0.30 → red */
+const E2E_THRESHOLDS = { yellow: 0.70, orange: 0.50, red: 0.30 } as const;
+
+/** Total ordering used to merge two AdvisoryLevel candidates (legacy formula
+ *  vs e2e override). `insufficient_freshness` sits just above `green` because
+ *  the freshness gate only ever fires on a would-be green; if a real evidence
+ *  channel (e2e) escalates higher, we trust the evidence. */
+const LEVEL_ORDER: Record<AdvisoryLevel, number> = {
+  green: 0,
+  insufficient_freshness: 1,
+  yellow: 2,
+  orange: 3,
+  red: 4,
+};
+
 /** Flags that make `critical_flags_factor` fire at 1.0. Chosen to match the
  *  overlay path that still escalates the Bayesian verdict to RISKY
  *  (`verdictService.ts` — fraud_reported, negative_reputation) plus the
@@ -79,6 +106,27 @@ export interface AdvisoryInput {
    *  populate this; verdict/nostr callers leave it undefined and skip the
    *  freshness gate. `null` is treated as "never probed" → stale. */
   lastProbeAgeSec?: number | null;
+  /** Sim 8 fix — chain-product end-to-end success probability across the
+   *  L402 stages with n_obs ≥ 3. Source: stagePosteriorComposition.compose…
+   *  Null/undefined when no stage is yet meaningful; the override no-ops in
+   *  that case so cold endpoints keep their legacy classification. */
+  pE2e?: number | null;
+}
+
+/** Resolve a low-p_e2e signal into an escalation level (or null when the
+ *  signal is missing or too high to escalate). Pure helper — exported for
+ *  test ergonomics. */
+export function advisoryLevelFromE2e(pE2e: number | null | undefined): AdvisoryLevel | null {
+  if (pE2e == null) return null;
+  if (pE2e < E2E_THRESHOLDS.red)    return 'red';
+  if (pE2e < E2E_THRESHOLDS.orange) return 'orange';
+  if (pE2e < E2E_THRESHOLDS.yellow) return 'yellow';
+  return null;
+}
+
+function escalateLevel(base: AdvisoryLevel, override: AdvisoryLevel | null): AdvisoryLevel {
+  if (override === null) return base;
+  return LEVEL_ORDER[override] > LEVEL_ORDER[base] ? override : base;
 }
 
 /** Continuous critical-flags factor — 1.0 when *any* critical flag fires.
@@ -128,6 +176,7 @@ function buildAdvisories(
   ci95Low: number,
   ci95High: number,
   operatorLookup: OperatorResourceLookup | null | undefined,
+  pE2e: number | null | undefined,
 ): Advisory[] {
   const advisories: Advisory[] = [];
 
@@ -153,6 +202,30 @@ function buildAdvisories(
   const ciWidth = Math.max(0, ci95High - ci95Low);
   if (ciWidth >= 0.25) {
     advisories.push(info('UNCERTAIN_POSTERIOR', `CI95 width=${ciWidth.toFixed(2)} — low confidence`, uncertaintyFactor(ci95Low, ci95High), { ci95_width: round3(ciWidth) }));
+  }
+
+  // Sim 8 fix — surface low end-to-end success even when the legacy formula
+  // would still grade green. CRITICAL_E2E fires below 0.30 (most paid calls
+  // never deliver), LOW_E2E covers the 0.30-0.60 yellow/orange band. The
+  // override on advisory_level happens in computeAdvisoryReport; this just
+  // emits the human-readable reason so agents can see *why* the level moved.
+  if (pE2e != null && pE2e < E2E_THRESHOLDS.yellow) {
+    const strength = Math.min(1, Math.max(0, 1 - pE2e));
+    if (pE2e < E2E_THRESHOLDS.red) {
+      advisories.push(critical(
+        'CRITICAL_E2E',
+        `End-to-end p=${pE2e.toFixed(2)} — payments rarely fulfill`,
+        strength,
+        { p_e2e: round3(pE2e) },
+      ));
+    } else {
+      advisories.push(warning(
+        'LOW_E2E',
+        `End-to-end p=${pE2e.toFixed(2)} — measured post-payment success below safe threshold`,
+        strength,
+        { p_e2e: round3(pE2e) },
+      ));
+    }
   }
 
   // Phase 7 C12 — operator rattaché mais non-vérifié. 'pending' = info (l'operator
@@ -200,17 +273,24 @@ export function computeAdvisoryReport(input: AdvisoryInput): AdvisoryReport {
     input.bayesian.ci95_low,
     input.bayesian.ci95_high,
     input.operatorLookup,
+    input.pE2e,
   );
 
-  // Axe 1 — freshness gate. Only fires for callers that supplied the probe
-  // age (intent / decide). When the would-be level is `green` but the last
-  // probe is older than the hot-tier cadence, downgrade to
-  // `insufficient_freshness` and emit the advisory. Other levels keep their
-  // verdict — a yellow/orange/red endpoint is already flagged.
-  let advisoryLevel: AdvisoryLevel = baseLevel;
+  // Sim 8 fix — independent escalation channel. We compute the legacy
+  // formula's level first (challenge-only signals) then take the max with
+  // the e2e-derived level. This keeps every existing test invariant on
+  // pE2e=undefined while plugging the surfaced "green badge + lost sats"
+  // pattern when stage_posteriors expose a low post-payment p.
+  const e2eLevel = advisoryLevelFromE2e(input.pE2e);
+  let advisoryLevel: AdvisoryLevel = escalateLevel(baseLevel, e2eLevel);
+
+  // Axe 1 — freshness gate. Stale probes downgrade an otherwise green
+  // verdict to `insufficient_freshness`. We check the post-escalation level
+  // so a low-p_e2e endpoint stays escalated (yellow/orange/red) rather than
+  // getting clobbered back to `insufficient_freshness` by the gate.
   if (input.lastProbeAgeSec !== undefined) {
     const stale = input.lastProbeAgeSec === null || input.lastProbeAgeSec >= FRESHNESS_THRESHOLD_SEC;
-    if (stale && baseLevel === 'green') {
+    if (stale && advisoryLevel === 'green') {
       advisoryLevel = 'insufficient_freshness';
       const ageSec = input.lastProbeAgeSec ?? Number.POSITIVE_INFINITY;
       const strength = Number.isFinite(ageSec)

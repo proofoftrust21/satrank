@@ -488,6 +488,9 @@ export class IntentService {
       delta7d: c.delta7d,
       operatorLookup: c.operatorLookup,
       lastProbeAgeSec: c.lastProbeAgeSec,
+      // Sim 8 fix — feed the chain-product e2e signal so the advisory level
+      // escalates off `green` when post-payment stages reveal a low success.
+      pE2e: c.stagePosteriors?.p_e2e ?? null,
     });
 
     const hasCritical = CRITICAL_FLAGS.some(f => c.flags.includes(f));
@@ -686,11 +689,12 @@ function rankingExplanationFor(axis: 'p_success' | 'latency' | 'reliability' | '
   switch (axis) {
     case 'p_success':
       return {
-        primary: 'is_meaningful=true ranks above is_meaningful=false; an honest score beats a prior-dominated one even when numerically lower (is_meaningful requires n_obs ≥ 3 + freshness recent)',
+        primary: 'stage-aware endpoints (any L402 stage with n_obs ≥ 3) rank above bootstrap endpoints; within the stage-aware tier, candidates sort by stage_posteriors.p_e2e DESC — the chain product across meaningful stages — so post-payment failure rates penalize endpoints whose challenge probe alone looks healthy',
         tiebreakers: [
-          'p_success DESC',
-          'ci95_low DESC (tighter lower bound wins on equal mean)',
+          'meaningful_stages.length DESC (more proven stages wins on tied p_e2e)',
+          'p_e2e_pessimistic DESC (tighter lower bound wins on tied mean)',
           'price_sats ASC (cheapest wins on equal posterior)',
+          'bootstrap fallback: is_meaningful=true first, then bayesian.p_success DESC',
         ],
       };
     case 'latency':
@@ -724,7 +728,52 @@ function isMeaningful(c: EnrichedCandidate): boolean {
   return c.bayesian.n_obs >= IS_MEANINGFUL_MIN_N_OBS;
 }
 
+/** Sim 8 fix (2026-04-30) — return the chain-product end-to-end posterior
+ *  when at least one stage is meaningful, else null. The composer already
+ *  filters non-meaningful stages out of the product (n_obs ≥ 3), so a non-null
+ *  value is always a real signal — never a prior-dominated fallback. */
+function pE2eOrNull(c: EnrichedCandidate): number | null {
+  return c.stagePosteriors?.p_e2e ?? null;
+}
+
+function meaningfulStageCount(c: EnrichedCandidate): number {
+  return c.stagePosteriors?.meaningful_stages.length ?? 0;
+}
+
+/** Sim 8 fix — Tier α / Tier β split. Endpoints with stage-aware evidence
+ *  (any L402 stage with n_obs ≥ 3) form Tier α and rank by p_e2e. Endpoints
+ *  still in bootstrap (no meaningful stage) form Tier β and keep the legacy
+ *  is_meaningful → bayesian.p_success ordering. Tier α always wins over
+ *  Tier β so a measured-honest signal beats a challenge-only fallback even
+ *  when the challenge number is numerically higher. This was the gap Sim 8
+ *  agent 1 flagged on currency-exchange-9b9c (bayesian.p_success=0.84,
+ *  p_e2e=0.43, paid 5 sats, 0/2 success). */
 function compareCandidates(a: EnrichedCandidate, b: EnrichedCandidate): number {
+  const aE2e = pE2eOrNull(a);
+  const bE2e = pE2eOrNull(b);
+  const aHasE2e = aE2e !== null;
+  const bHasE2e = bE2e !== null;
+
+  if (aHasE2e !== bHasE2e) {
+    return aHasE2e ? -1 : 1;
+  }
+
+  if (aHasE2e && bHasE2e) {
+    if (bE2e! !== aE2e!) return bE2e! - aE2e!;
+    const aStages = meaningfulStageCount(a);
+    const bStages = meaningfulStageCount(b);
+    if (aStages !== bStages) return bStages - aStages;
+    const aPess = a.stagePosteriors?.p_e2e_pessimistic ?? 0;
+    const bPess = b.stagePosteriors?.p_e2e_pessimistic ?? 0;
+    if (bPess !== aPess) return bPess - aPess;
+    const priceA = a.svc.service_price_sats ?? Number.MAX_SAFE_INTEGER;
+    const priceB = b.svc.service_price_sats ?? Number.MAX_SAFE_INTEGER;
+    return priceA - priceB;
+  }
+
+  // Tier β — bootstrap candidates with no meaningful stage data. Keep the
+  // pre-Sim-8 ordering: is_meaningful first, then bayesian.p_success, then
+  // ci95_low, then price.
   const aMean = isMeaningful(a);
   const bMean = isMeaningful(b);
   if (aMean !== bMean) {

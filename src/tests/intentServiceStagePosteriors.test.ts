@@ -255,3 +255,109 @@ describe('IntentService — stage_posteriors propagation (Phase 5.14)', () => {
     );
   });
 });
+
+// Sim 8 fix (2026-04-30) — exercise the ranking + advisory wiring against
+// the exact pattern that produced agent 1's "harmful" verdict on
+// currency-exchange-9b9c. Two endpoints share an operator and a category;
+// one has high challenge + low delivery, the other has only challenge data.
+// Pre-fix the high-challenge-low-delivery endpoint ranked first and graded
+// green. Post-fix it ranks behind, and its advisory level escalates.
+describe('IntentService — Sim 8 fix: rank by p_e2e + advisory escalation', () => {
+  let db: Pool;
+  let serviceRepo: ServiceEndpointRepository;
+  let agentRepo: AgentRepository;
+  let stagesRepo: EndpointStagePosteriorsRepository;
+
+  beforeEach(async () => {
+    testDb = await setupTestPool();
+    db = testDb.pool;
+    serviceRepo = new ServiceEndpointRepository(db);
+    agentRepo = new AgentRepository(db);
+    stagesRepo = new EndpointStagePosteriorsRepository(db);
+  });
+
+  afterEach(async () => {
+    await teardownTestPool(testDb);
+  });
+
+  it('endpoint with low p_e2e ranks behind endpoint with higher p_e2e (no recall failure data)', async () => {
+    const hash = sha256('op-rank');
+    await agentRepo.insert(makeAgent(hash));
+
+    const urlBad = 'https://bad.example/rates'; // currency-exchange-9b9c style
+    await serviceRepo.upsert(hash, urlBad, 200, 100, '402index');
+    await serviceRepo.updateMetadata(urlBad, {
+      name: 'bad', description: null, category: 'data', provider: null,
+    });
+    await serviceRepo.updatePrice(urlBad, 1);
+
+    const urlGood = 'https://good.example/rates';
+    await serviceRepo.upsert(hash, urlGood, 200, 100, '402index');
+    await serviceRepo.updateMetadata(urlGood, {
+      name: 'good', description: null, category: 'data', provider: null,
+    });
+    await serviceRepo.updatePrice(urlGood, 1);
+
+    // urlBad : challenge p≈0.85 (n=10), payment p≈0.50 (n=4 → meaningful)
+    //          → p_e2e ≈ 0.43
+    for (let i = 0; i < 9; i++) {
+      await stagesRepo.observe({ endpoint_url: urlBad, stage: STAGE_CHALLENGE, success: true }, NOW);
+    }
+    await stagesRepo.observe({ endpoint_url: urlBad, stage: STAGE_CHALLENGE, success: false }, NOW);
+    for (let i = 0; i < 2; i++) {
+      await stagesRepo.observe({ endpoint_url: urlBad, stage: STAGE_PAYMENT, success: true }, NOW);
+    }
+    for (let i = 0; i < 2; i++) {
+      await stagesRepo.observe({ endpoint_url: urlBad, stage: STAGE_PAYMENT, success: false }, NOW);
+    }
+
+    // urlGood : challenge p≈0.85 (n=10), no payment data
+    //           → p_e2e ≈ 0.85 (challenge-only meaningful)
+    for (let i = 0; i < 9; i++) {
+      await stagesRepo.observe({ endpoint_url: urlGood, stage: STAGE_CHALLENGE, success: true }, NOW);
+    }
+    await stagesRepo.observe({ endpoint_url: urlGood, stage: STAGE_CHALLENGE, success: false }, NOW);
+
+    const svc = buildService(db, true);
+    const result = await svc.resolveIntent({ category: 'data' }, undefined);
+    const ranks = result.candidates.map(c => ({ url: c.endpoint_url, rank: c.rank }));
+    const goodRank = ranks.find(r => r.url === urlGood)?.rank ?? 999;
+    const badRank = ranks.find(r => r.url === urlBad)?.rank ?? 999;
+    expect(goodRank).toBeLessThan(badRank);
+  });
+
+  it('low p_e2e endpoint surfaces advisory_level >= yellow (no longer green)', async () => {
+    const hash = sha256('op-advisory');
+    await agentRepo.insert(makeAgent(hash));
+
+    const url = 'https://low-e2e.example/data';
+    await serviceRepo.upsert(hash, url, 200, 100, '402index');
+    await serviceRepo.updateMetadata(url, {
+      name: 'low', description: null, category: 'data', provider: null,
+    });
+    await serviceRepo.updatePrice(url, 1);
+
+    // Create a challenge×payment composition that lands in the LOW_E2E band.
+    // challenge ≈ 0.85, payment ≈ 0.50 → p_e2e ≈ 0.43.
+    for (let i = 0; i < 9; i++) {
+      await stagesRepo.observe({ endpoint_url: url, stage: STAGE_CHALLENGE, success: true }, NOW);
+    }
+    await stagesRepo.observe({ endpoint_url: url, stage: STAGE_CHALLENGE, success: false }, NOW);
+    for (let i = 0; i < 2; i++) {
+      await stagesRepo.observe({ endpoint_url: url, stage: STAGE_PAYMENT, success: true }, NOW);
+    }
+    for (let i = 0; i < 2; i++) {
+      await stagesRepo.observe({ endpoint_url: url, stage: STAGE_PAYMENT, success: false }, NOW);
+    }
+
+    const svc = buildService(db, true);
+    const result = await svc.resolveIntent({ category: 'data' }, undefined);
+    const cand = result.candidates.find(c => c.endpoint_url === url);
+    expect(cand).toBeDefined();
+    expect(cand!.advisory.advisory_level).not.toBe('green');
+    const e2eAdv = cand!.advisory.advisories.find(
+      a => a.code === 'LOW_E2E' || a.code === 'CRITICAL_E2E',
+    );
+    expect(e2eAdv).toBeDefined();
+  });
+});

@@ -1,7 +1,7 @@
 // Phase 4 — advisoryService is a pure function. Test the 4 factors, the
 // mapping risk_score → advisory_level, and the advisories payload shape.
 import { describe, it, expect } from 'vitest';
-import { applyFreshnessGate, computeAdvisoryReport } from '../services/advisoryService';
+import { advisoryLevelFromE2e, applyFreshnessGate, computeAdvisoryReport } from '../services/advisoryService';
 import type { AdvisoryReport, VerdictFlag } from '../types';
 
 const neutralBayes = {
@@ -351,5 +351,100 @@ describe('advisoryService — applyFreshnessGate helper', () => {
     const out = applyFreshnessGate(orange, 99999);
     expect(out.advisory_level).toBe('orange');
     expect(out.advisories).toHaveLength(0);
+  });
+});
+
+describe('advisoryService — Sim 8 fix: p_e2e escalation', () => {
+  // Build a baseline input that the legacy formula grades green (~0).
+  // Tightening CI to 0.02 keeps uncertainty_factor under the yellow boundary
+  // so any escalation observed in these tests originates from p_e2e alone.
+  const greenBase = {
+    bayesian: { p_success: 0.85, ci95_low: 0.84, ci95_high: 0.86, n_obs: 100 },
+    flags: [] as VerdictFlag[],
+    reachability: 1,
+    delta7d: 0,
+  };
+
+  it('p_e2e=undefined leaves the legacy classification untouched', () => {
+    const r = computeAdvisoryReport({ ...greenBase });
+    expect(r.advisory_level).toBe('green');
+    expect(r.advisories.find(a => a.code === 'LOW_E2E' || a.code === 'CRITICAL_E2E')).toBeUndefined();
+  });
+
+  it('p_e2e=null is equivalent to undefined (cold endpoint, no override)', () => {
+    const r = computeAdvisoryReport({ ...greenBase, pE2e: null });
+    expect(r.advisory_level).toBe('green');
+    expect(r.advisories.find(a => a.code === 'LOW_E2E' || a.code === 'CRITICAL_E2E')).toBeUndefined();
+  });
+
+  it('p_e2e ≥ 0.70 does not escalate (challenge signal carries)', () => {
+    const r = computeAdvisoryReport({ ...greenBase, pE2e: 0.70 });
+    expect(r.advisory_level).toBe('green');
+    expect(r.advisories.find(a => a.code === 'LOW_E2E' || a.code === 'CRITICAL_E2E')).toBeUndefined();
+  });
+
+  it('0.50 ≤ p_e2e < 0.70 escalates green → yellow with LOW_E2E warning', () => {
+    const r = computeAdvisoryReport({ ...greenBase, pE2e: 0.55 });
+    expect(r.advisory_level).toBe('yellow');
+    const adv = r.advisories.find(a => a.code === 'LOW_E2E');
+    expect(adv).toBeDefined();
+    expect(adv!.level).toBe('warning');
+    expect(adv!.data?.p_e2e).toBeCloseTo(0.55, 3);
+  });
+
+  it('0.30 ≤ p_e2e < 0.50 escalates green → orange (currency-exchange-9b9c case)', () => {
+    // Reproduces the exact Sim 8 finding: bayesian.p_success=0.84, p_e2e=0.43
+    // → was green/proceed_with_caution, now orange.
+    const r = computeAdvisoryReport({ ...greenBase, pE2e: 0.43 });
+    expect(r.advisory_level).toBe('orange');
+    const adv = r.advisories.find(a => a.code === 'LOW_E2E');
+    expect(adv).toBeDefined();
+    expect(adv!.level).toBe('warning');
+  });
+
+  it('p_e2e < 0.30 escalates to red with CRITICAL_E2E', () => {
+    const r = computeAdvisoryReport({ ...greenBase, pE2e: 0.20 });
+    expect(r.advisory_level).toBe('red');
+    const adv = r.advisories.find(a => a.code === 'CRITICAL_E2E');
+    expect(adv).toBeDefined();
+    expect(adv!.level).toBe('critical');
+  });
+
+  it('escalation never downgrades — already-red stays red even with p_e2e=0.95', () => {
+    // Critical flag pushes legacy formula to red. p_e2e=0.95 wouldn't
+    // override that downward; escalation is a max, not a replacement.
+    const r = computeAdvisoryReport({
+      bayesian: { p_success: 0.5, ci95_low: 0.0, ci95_high: 1.0, n_obs: 0 },
+      flags: ['fraud_reported'] as VerdictFlag[],
+      reachability: 0,
+      delta7d: -1,
+      pE2e: 0.95,
+    });
+    expect(r.advisory_level).toBe('red');
+  });
+
+  it('low p_e2e wins over freshness gate (real evidence beats stale-probe downgrade)', () => {
+    // Without pE2e, this would land at insufficient_freshness because base
+    // legacy formula is green and probe is stale. With pE2e=0.40, e2e signal
+    // escalates to orange — and the freshness gate must NOT clobber it.
+    const r = computeAdvisoryReport({
+      ...greenBase,
+      pE2e: 0.40,
+      lastProbeAgeSec: 7200,
+    });
+    expect(r.advisory_level).toBe('orange');
+  });
+
+  it('advisoryLevelFromE2e: pure helper boundaries', () => {
+    expect(advisoryLevelFromE2e(null)).toBe(null);
+    expect(advisoryLevelFromE2e(undefined)).toBe(null);
+    expect(advisoryLevelFromE2e(0.0)).toBe('red');
+    expect(advisoryLevelFromE2e(0.299)).toBe('red');
+    expect(advisoryLevelFromE2e(0.30)).toBe('orange');
+    expect(advisoryLevelFromE2e(0.499)).toBe('orange');
+    expect(advisoryLevelFromE2e(0.50)).toBe('yellow');
+    expect(advisoryLevelFromE2e(0.699)).toBe('yellow');
+    expect(advisoryLevelFromE2e(0.70)).toBe(null);
+    expect(advisoryLevelFromE2e(1.0)).toBe(null);
   });
 });

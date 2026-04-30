@@ -512,7 +512,17 @@ export type AdvisoryCode =
   /** Axe 1 — last HTTP probe is older than the hot-tier cadence (1h). The
    *  posterior could be optimistic because we haven't re-verified the
    *  endpoint recently. Drives the `insufficient_freshness` advisory level. */
-  | 'INSUFFICIENT_FRESHNESS';
+  | 'INSUFFICIENT_FRESHNESS'
+  /** End-to-end success probability (chain product across meaningful L402
+   *  stages) is below the safe threshold but not yet critical. Fired by
+   *  intent path when `stage_posteriors.p_e2e` ∈ [0.30, 0.60). Forces the
+   *  advisory level off `green` even when challenge-only signals are clean. */
+  | 'LOW_E2E'
+  /** End-to-end success probability is below the critical threshold (0.30).
+   *  The endpoint accepts payments but recall fails most of the time —
+   *  surfacing this as critical prevents the "green badge + lost sats"
+   *  pattern surfaced by Sim 8 agent 1 on currency-exchange-9b9c. */
+  | 'CRITICAL_E2E';
 
 export interface Advisory {
   code: AdvisoryCode;
