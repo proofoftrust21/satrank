@@ -1,7 +1,7 @@
 {
   "name": "@satrank/sdk",
-  "version": "1.1.0",
-  "description": "SatRank SDK: sr.fulfill() for autonomous agents on Bitcoin Lightning",
+  "version": "1.2.0",
+  "description": "SatRank SDK: sr.fulfill() + sr.register() for autonomous agents on Bitcoin Lightning",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

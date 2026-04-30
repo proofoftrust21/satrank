@@ -24,10 +24,13 @@ from satrank.aggregate import (
 )
 from satrank.client import SatRank
 from satrank.errors import (
+    AlreadyClaimedError,
     BalanceExhaustedError,
     DuplicateReportError,
     NetworkError,
+    Nip98InvalidError,
     NotFoundSatRankError,
+    OwnershipMismatchError,
     PaymentPendingError,
     PaymentRequiredError,
     RateLimitedError,
@@ -63,7 +66,7 @@ from satrank.types import (
     Wallet,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "SatRank",
@@ -103,6 +106,10 @@ __all__ = [
     "ValidationSatRankError",
     "Wallet",
     "WalletError",
+    # SDK 1.2.0 — register surface
+    "AlreadyClaimedError",
+    "Nip98InvalidError",
+    "OwnershipMismatchError",
     "aggregate_oracles",
     "fetch_oracle_peers",
     "filter_by_calibration_error",

@@ -102,6 +102,49 @@ class ApiClient:
             extra_headers={"Authorization": self._deposit_token},
         )
 
+    async def post_services_register(
+        self,
+        *,
+        url: str,
+        authorization: str,
+        name: str | None = None,
+        description: str | None = None,
+        category: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        """SDK 1.2.0 — operator self-listing via NIP-98.
+
+        The Authorization header MUST be pre-signed by the caller (a kind
+        27235 NIP-98 event base64-encoded as `Nostr <b64>`). The SDK is
+        zero-runtime-dep in the TS sibling and likewise minimal here — we
+        do not bundle a Nostr signer; use any of the standard tools
+        (e.g. `nostr-tools` / `pynostr`) to produce the envelope.
+
+        Errors raised:
+        - Nip98InvalidError (401, NIP98_INVALID): signature missing /
+          malformed / expired / replayed.
+        - OwnershipMismatchError (403, OWNERSHIP_MISMATCH): the endpoint
+          declares a different `nostr-pubkey` in WWW-Authenticate
+          (audit Tier 4N — cryptographic ownership proof).
+        - AlreadyClaimedError (409, ALREADY_CLAIMED): the URL was already
+          claimed by another npub under first-claim semantics.
+        """
+        body: dict[str, Any] = {"url": url}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if category is not None:
+            body["category"] = category
+        if provider is not None:
+            body["provider"] = provider
+        return await self._request(
+            "POST",
+            "/api/services/register",
+            json=body,
+            extra_headers={"Authorization": authorization},
+        )
+
     # ---- internals -------------------------------------------------------
 
     async def _request(

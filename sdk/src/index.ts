@@ -27,6 +27,9 @@ export type {
   FulfillErrorShape,
   SelectionExplanation,
   SatRankOptions,
+  // SDK 1.2.0 — register surface
+  RegisterInput,
+  RegisterResponse,
 } from './types';
 
 export {
@@ -43,6 +46,10 @@ export {
   TimeoutError,
   NetworkError,
   WalletError,
+  // SDK 1.2.0 — register-specific error subclasses
+  Nip98InvalidError,
+  AlreadyClaimedError,
+  OwnershipMismatchError,
 } from './errors';
 
 // Phase 7.2 — federation aggregation primitives.

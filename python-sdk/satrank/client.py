@@ -89,6 +89,54 @@ class SatRank:
             limit=limit,
         )
 
+    async def register(
+        self,
+        *,
+        url: str,
+        authorization: str,
+        name: str | None = None,
+        description: str | None = None,
+        category: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        """SDK 1.2.0 — operator self-listing of an L402 endpoint via NIP-98.
+
+        Pre-sign a kind 27235 NIP-98 event externally (the SDK does not
+        bundle a Nostr signer) and pass the resulting
+        ``Authorization: Nostr <base64-event>`` header value as
+        ``authorization``. The signed event MUST bind to:
+          - ``["u", f"{api_base}/api/services/register"]``
+          - ``["method", "POST"]``
+          - ``["payload", sha256-hex(json-body)]``
+
+        See ``register_endpoint()`` for the canonical URL the ``u`` tag
+        must contain. Use ``nostr_tools`` / ``pynostr`` / your own signer.
+
+        Raises (subclasses of SatRankError):
+          * Nip98InvalidError (401, NIP98_INVALID): signature missing,
+            malformed, expired, or replayed.
+          * OwnershipMismatchError (403, OWNERSHIP_MISMATCH): endpoint
+            declares a different ``nostr-pubkey`` in WWW-Authenticate
+            (audit Tier 4N).
+          * AlreadyClaimedError (409, ALREADY_CLAIMED): URL already claimed
+            by another npub under first-claim semantics.
+          * ValidationSatRankError (400, NOT_L402): URL is not a valid L402
+            endpoint.
+        """
+        return await self._api.post_services_register(
+            url=url,
+            authorization=authorization,
+            name=name,
+            description=description,
+            category=category,
+            provider=provider,
+        )
+
+    def register_endpoint(self) -> str:
+        """Canonical URL clients must sign in their NIP-98 ``u`` tag when
+        calling :meth:`register`. SDK 1.2.0."""
+        return f"{self._api_base}/api/services/register"
+
     async def fulfill(
         self,
         *,

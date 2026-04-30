@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "satrank"
-version = "1.1.0"
-description = "SatRank SDK for autonomous agents on Bitcoin Lightning. Discover, score, and pay Lightning-native HTTP services."
+version = "1.2.0"
+description = "SatRank SDK for autonomous agents on Bitcoin Lightning. Discover, pay, and self-list Lightning-native HTTP services."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

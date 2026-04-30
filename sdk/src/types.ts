@@ -127,6 +127,51 @@ export interface ResolvedIntent extends Intent {
   resolved_at: number;
 }
 
+/** Input for SatRank.register() — operator self-listing a new L402 endpoint
+ *  via NIP-98. The Authorization header must be signed by the caller (the
+ *  SDK is zero-dep and does not bundle a Nostr signer); pass any nostr-tools-
+ *  compatible signed envelope as a string in the form `Nostr <base64-event>`. */
+export interface RegisterInput {
+  /** The L402 endpoint URL to register. The server fetches it, parses the
+   *  L402 challenge, and ingests the BOLT11 → agent_hash mapping. */
+  url: string;
+  /** Optional metadata. The server applies a no-overwrite policy: existing
+   *  402index data is never replaced; null fields are filled in. */
+  name?: string;
+  description?: string;
+  category?: string;
+  provider?: string;
+  /** Pre-signed NIP-98 Authorization header value, e.g.
+   *  `Nostr <base64-encoded-kind-27235-event>`. Must be signed with the npub
+   *  that should own the endpoint. The signed event MUST bind to:
+   *  - tag `["u", "<apiBase>/api/services/register"]`
+   *  - tag `["method", "POST"]`
+   *  - tag `["payload", "<sha256-hex of the JSON request body>"]`
+   *  See nostr-tools or the worked example in docs/sdk/register-tutorial.md. */
+  authorization: string;
+}
+
+export interface RegisterResponse {
+  /** Echo of the registered URL. */
+  url: string;
+  /** sha256 hex of the canonicalized URL (= endpoint_hash, the canonical
+   *  identifier used elsewhere in the API). */
+  url_hash: string;
+  /** Always true on a 201 response. */
+  registered: boolean;
+  /** sha256 hex of the LN destination pubkey decoded from the BOLT11 invoice. */
+  agentHash: string;
+  /** Price in sats decoded from the invoice, or null if amount-less. */
+  priceSats: number | null;
+  /** Metadata fields the server actually wrote (no-overwrite policy means
+   *  this can be empty even when the client passed name/description/etc). */
+  fieldsUpdated: string[];
+  /** The npub_hex of the claiming operator (= the signer of the NIP-98). */
+  operator_id: string;
+  /** Human-readable status string. */
+  message: string;
+}
+
 export interface IntentResponse {
   intent: ResolvedIntent;
   candidates: IntentCandidate[];

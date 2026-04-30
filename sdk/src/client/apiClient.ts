@@ -11,6 +11,8 @@ import type {
   IntentCategoriesResponse,
   IntentResponse,
   Intent,
+  RegisterInput,
+  RegisterResponse,
 } from '../types';
 
 export interface ApiClientOptions {
@@ -63,11 +65,36 @@ export class ApiClient {
     });
   }
 
+  /** SDK 1.2.0 — operator self-registers a new L402 endpoint via NIP-98.
+   *  The Authorization header must be pre-signed by the caller and include
+   *  the canonical L402 endpoint URL (= `${apiBase}/api/services/register`)
+   *  in the `u` tag, the HTTP method in the `method` tag, and sha256 of the
+   *  JSON request body in the `payload` tag. The SDK does not bundle a
+   *  Nostr signer (zero-dep policy) — see docs/sdk/register-tutorial.md. */
+  async postServicesRegister(
+    input: Omit<RegisterInput, 'authorization'>,
+    authorizationHeader: string,
+  ): Promise<{ data: RegisterResponse }> {
+    const body = stripUndefined({
+      url: input.url,
+      name: input.name,
+      description: input.description,
+      category: input.category,
+      provider: input.provider,
+    });
+    return this.request<{ data: RegisterResponse }>(
+      'POST',
+      '/api/services/register',
+      body,
+      { customAuthorization: authorizationHeader },
+    );
+  }
+
   private async request<T>(
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
-    flags: { requireAuth?: boolean } = {},
+    flags: { requireAuth?: boolean; customAuthorization?: string } = {},
   ): Promise<T> {
     const url = `${this.opts.apiBase}${path}`;
     const controller = new AbortController();
@@ -80,7 +107,11 @@ export class ApiClient {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
-    if (flags.requireAuth && this.opts.depositToken) {
+    // SDK 1.2.0 — `customAuthorization` overrides the deposit token for
+    // routes that require their own auth scheme (NIP-98, NIP-98 + custom).
+    if (flags.customAuthorization) {
+      headers.Authorization = flags.customAuthorization;
+    } else if (flags.requireAuth && this.opts.depositToken) {
       headers.Authorization = this.opts.depositToken;
     }
 
@@ -144,3 +175,14 @@ export class ApiClient {
 
 // Re-export types so SatRank.ts imports from one module.
 export type { Intent };
+
+/** Strip undefined values so the JSON body has only the keys the caller
+ *  actually set. Keeps the wire payload minimal and lets the server's zod
+ *  schema apply its own defaults / coercions. */
+function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const k of Object.keys(obj) as (keyof T)[]) {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
+}

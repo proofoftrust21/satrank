@@ -43,6 +43,40 @@ export class UnauthorizedError extends SatRankError {
   }
 }
 
+/** SDK 1.2.0 — NIP-98 Authorization missing, malformed, expired, or
+ *  replayed. Server returns the public reason 'NIP98_INVALID' uniformly to
+ *  avoid leaking forgery hints (audit M2). The SDK exposes this as a
+ *  separate catch-target so callers wiring the register surface can
+ *  branch on `instanceof Nip98InvalidError`. */
+export class Nip98InvalidError extends UnauthorizedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'Nip98InvalidError';
+    (this as unknown as { code: string }).code = 'NIP98_INVALID';
+  }
+}
+
+/** SDK 1.2.0 — operator/endpoint claim already taken by another npub
+ *  under first-claim semantics. Returned 409 with code 'ALREADY_CLAIMED'.
+ *  Distinct from `DuplicateReportError` (which is also 409 but on /report). */
+export class AlreadyClaimedError extends SatRankError {
+  constructor(message: string) {
+    super(message, 409, 'ALREADY_CLAIMED');
+    this.name = 'AlreadyClaimedError';
+  }
+}
+
+/** SDK 1.2.0 — register attempt rejected because the L402 endpoint declares
+ *  a different Nostr pubkey as its owner via the `nostr-pubkey` tag in
+ *  WWW-Authenticate (audit Tier 4N). Cryptographic proof of ownership
+ *  takes precedence over first-claim. */
+export class OwnershipMismatchError extends SatRankError {
+  constructor(message: string) {
+    super(message, 403, 'OWNERSHIP_MISMATCH');
+    this.name = 'OwnershipMismatchError';
+  }
+}
+
 export class PaymentRequiredError extends SatRankError {
   constructor(message: string, code = 'PAYMENT_REQUIRED') {
     super(message, 402, code);
@@ -126,14 +160,24 @@ export function errorFromResponse(
 ): SatRankError {
   const msg = message || `HTTP ${status}`;
   if (status === 400) return new ValidationSatRankError(msg);
-  if (status === 401) return new UnauthorizedError(msg);
+  if (status === 401) {
+    if (code === 'NIP98_INVALID') return new Nip98InvalidError(msg);
+    return new UnauthorizedError(msg);
+  }
   if (status === 402) {
     if (code === 'BALANCE_EXHAUSTED') return new BalanceExhaustedError(msg);
     if (code === 'PAYMENT_PENDING') return new PaymentPendingError(msg);
     return new PaymentRequiredError(msg);
   }
+  if (status === 403) {
+    if (code === 'OWNERSHIP_MISMATCH') return new OwnershipMismatchError(msg);
+    return new SatRankError(msg, 403, code ?? 'FORBIDDEN');
+  }
   if (status === 404) return new NotFoundSatRankError(msg);
-  if (status === 409) return new DuplicateReportError(msg);
+  if (status === 409) {
+    if (code === 'ALREADY_CLAIMED') return new AlreadyClaimedError(msg);
+    return new DuplicateReportError(msg);
+  }
   if (status === 429) return new RateLimitedError(msg);
   if (status === 503) return new ServiceUnavailableError(msg);
   if (status === 504) return new TimeoutError(msg);
