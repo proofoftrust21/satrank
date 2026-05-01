@@ -245,7 +245,17 @@ export class HttpLndGraphClient implements LndGraphClient {
     // residue scenario). LND ignores `amt` if the BOLT11 already fixes the
     // amount, but for any-amount invoices it's the only way to pay an
     // explicit value. Validated upstream so we trust it here.
-    const bodyObj: Record<string, unknown> = { payment_request: paymentRequest, fee_limit: { fixed: String(feeLimitSat) } };
+    //
+    // allow_self_payment=true is a permission flag (not an action): it only
+    // takes effect if the destination is our own node. For external payments
+    // it has no effect. Set always so smoke tests + ops scenarios that
+    // exercise self-payment work; the self-pay guard in fulfillService still
+    // refuses to pay candidate operators that match our own pubkey.
+    const bodyObj: Record<string, unknown> = {
+      payment_request: paymentRequest,
+      fee_limit: { fixed: String(feeLimitSat) },
+      allow_self_payment: true,
+    };
     if (amtSatOverride != null && amtSatOverride > 0) {
       bodyObj.amt = String(amtSatOverride);
     }
