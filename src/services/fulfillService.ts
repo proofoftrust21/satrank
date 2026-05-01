@@ -1129,10 +1129,25 @@ export class FulfillService {
     // can't continue to the next candidate because the outer try-catch
     // fires. Smoke E2E surfaced this when readBodyCapped threw on a real
     // L402 candidate's response.
+    // Sim 9 Fix 2 follow-up — readBodyCapped does NOT honor AbortSignal on
+    // its stream loop, so a slow/stuck upstream body hangs forever. Race the
+    // body read against the deadline; on timeout abort the response and
+    // record a recall_body_timeout attempt. Stuck-in-flight jobs caught by
+    // the reconciliation cron at 180s+ age are exactly this scenario.
     let body: string;
     let truncated: boolean;
     try {
-      const read = await readBodyCapped(recallResp, RECALL_BODY_MAX_BYTES);
+      const readBodyMs = remainingMs(FETCH_TIMEOUT_MS);
+      const read = await Promise.race([
+        readBodyCapped(recallResp, RECALL_BODY_MAX_BYTES),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            // Cancel the underlying stream so resources are freed.
+            try { recallResp.body?.cancel().catch(() => { /* ignore */ }); } catch { /* ignore */ }
+            reject(new Error(`readBodyCapped timeout after ${readBodyMs}ms (deadline)`));
+          }, readBodyMs).unref();
+        }),
+      ]);
       body = read.body.toString('utf8');
       truncated = read.truncated;
     } catch (err) {
