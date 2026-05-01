@@ -1,0 +1,4 @@
+node_modules/
+runs/*/keys/
+runs/*/verdicts.json
+runs/*/summary.md

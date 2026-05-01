@@ -1,0 +1,11 @@
+{
+  "name": "satrank-sim",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SatRank simulation harness — runs N agents in parallel via Anthropic Messages API to test indispensability criteria. Writes versioned runs/<sim-N>-<date>/ with verdicts.json + summary.md.",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "nostr-tools": "^2.0.0"
+  }
+}
