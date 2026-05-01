@@ -64,7 +64,7 @@ const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 // Phase 9.0/9.1 : v55 (consolidated_at + peer_calibration_observations).
 // Security audit : v56 (anti-double-revenue payment_hash UNIQUE).
 // Excellence pass : v57 (service_register_log, audit trail for self-registration).
-const EXPECTED_SCHEMA_VERSION = 62;
+const EXPECTED_SCHEMA_VERSION = 63;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that
