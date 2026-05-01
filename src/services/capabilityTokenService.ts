@@ -20,10 +20,25 @@
 
 import { randomBytes } from 'node:crypto';
 
+/** Audit H1 — typed error so the controller can map to 503/quota_exhausted
+ *  (vs a generic 500 that masks the cause). */
+export class TokenQuotaExhausted extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TokenQuotaExhausted';
+  }
+}
+
 const DEFAULT_TTL_SEC = 300;        // 5 min default
 const DEFAULT_MAX_CALLS = 50;       // 50 calls per token default
 const HARD_TTL_SEC = 1800;          // 30 min absolute cap
 const HARD_MAX_CALLS = 500;         // 500 calls absolute cap
+/** Audit H1 (2026-05-01) — global heap-DoS guard. With NIP-98 + per-IP
+ *  rate-limit we'd already throttle a single attacker, but residential-proxy
+ *  fan-outs can still hit `issue()` faster than the 60s prune cron. Cap the
+ *  in-memory Map ; once full, `issue()` calls `pruneExpired()` inline and
+ *  if still over throws, the controller maps to 503 token_quota_exhausted. */
+const MAX_TOKEN_MAP_SIZE = 10_000;
 
 export interface CapabilityToken {
   token: string;
@@ -48,6 +63,15 @@ export class CapabilityTokenService {
     const ttl = Math.min(opts.ttl_sec ?? DEFAULT_TTL_SEC, HARD_TTL_SEC);
     const max = Math.min(opts.max_calls ?? DEFAULT_MAX_CALLS, HARD_MAX_CALLS);
     const now = opts.now_sec ?? Math.floor(Date.now() / 1000);
+    // Audit H1 — global cap with self-prune on overflow.
+    if (this.tokens.size >= MAX_TOKEN_MAP_SIZE) {
+      this.pruneExpired(now);
+      if (this.tokens.size >= MAX_TOKEN_MAP_SIZE) {
+        throw new TokenQuotaExhausted(
+          `token map at MAX_TOKEN_MAP_SIZE=${MAX_TOKEN_MAP_SIZE}; retry after expiry`,
+        );
+      }
+    }
     const token = randomBytes(32).toString('hex');
     const cap: CapabilityToken = {
       token,

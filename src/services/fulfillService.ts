@@ -343,6 +343,13 @@ export class FulfillService {
             await this.deps.intentCacheRepo.incrementHit(cached.cache_id);
             const cacheAgeSec = nowSec - cached.created_at;
             // Sign freshness attestation if signer is wired.
+            // Audit M1 (2026-05-01) — source_preimage is NEVER included in
+            // the consumer-facing payload. The original preimage proves the
+            // *source* agent paid, but cache consumers haven't paid that
+            // invoice — exposing it would let them lie to downstream
+            // verifiers ("look, I have the preimage, ergo I paid"). The
+            // body_sha256 + source_job_id + SatRank signature are the
+            // canonical freshness signal here.
             let attestation: FulfillSuccess['freshness_attestation'];
             if (this.deps.signer && this.deps.signer.isAvailable()) {
               const payload = canonicalJson({
@@ -354,7 +361,6 @@ export class FulfillService {
                 source_body_sha256: cached.body_sha256,
                 source_candidate_url: cached.source_candidate_url,
                 source_job_id: cached.source_job_id,
-                source_preimage: cached.source_preimage,
                 source_sats_paid: cached.source_sats_paid,
                 satrank_version: 'phase9.3',
               });
@@ -387,7 +393,11 @@ export class FulfillService {
               status: 'success',
               job_id: `cache:${cached.cache_id}`,
               body: cached.body,
-              preimage: cached.source_preimage,
+              // Audit M1 — preimage is the empty string for cache hits ;
+              // the consumer didn't pay an LN invoice. Downstream verifiers
+              // should rely on freshness_attestation (Ed25519-signed) for
+              // proof of legitimate delivery, not the preimage.
+              preimage: '',
               candidate_url: cached.source_candidate_url,
               attempts: [],
               sats_spent: 0,
@@ -604,6 +614,9 @@ export class FulfillService {
       const intentResp = await this.deps.intentService.resolveIntent(req.intent, undefined);
       const candidates = intentResp.candidates.slice(0, MAX_CANDIDATES);
       if (candidates.length === 0) {
+        // Audit C1 — repay credit borrow on every failure exit (the deficit
+        // covered an unrealised cost ; without repay the agent's debt sticks).
+        await this.repayBorrowOnFailure(req.agent_pubkey, creditBorrowed);
         return await this.refund(jobId, attempts, 'no_candidates_for_intent');
       }
 
@@ -630,8 +643,23 @@ export class FulfillService {
         } catch (err) {
           // All probes failed — fall through to serial loop, which will
           // re-probe and produce per-candidate skip attempts as usual.
+          // Audit M2 (2026-05-01) — surface each sub-error from
+          // AggregateError so post-mortem diagnostics can show which
+          // candidates failed how. Previously the bare `err.message` for
+          // AggregateError was the unhelpful "All promises were rejected".
+          let probeErrors: string[] | undefined;
+          if (err instanceof AggregateError && Array.isArray(err.errors)) {
+            probeErrors = err.errors.map(e =>
+              e instanceof Error ? e.message : String(e),
+            );
+          }
           logger.debug(
-            { jobId, error: err instanceof Error ? err.message : String(err) },
+            {
+              jobId,
+              error: err instanceof Error ? err.message : String(err),
+              probe_errors: probeErrors,
+              parallel_n: N,
+            },
             'Fulfill: parallel probe race surfaced no winner — falling back to serial',
           );
         }
@@ -641,6 +669,7 @@ export class FulfillService {
         // Latency budget — give up before the next candidate if we're already
         // over the agent's max_latency_ms.
         if (Date.now() - startMs > req.max_latency_ms) {
+          await this.repayBorrowOnFailure(req.agent_pubkey, creditBorrowed);
           return await this.refund(jobId, attempts, 'max_latency_exceeded');
         }
 
@@ -678,6 +707,7 @@ export class FulfillService {
               { jobId, agent_pubkey: req.agent_pubkey.slice(0, 12), needed: totalDebit },
               'Fulfill: token_balance debit failed at settle time — aborting and not returning body',
             );
+            await this.repayBorrowOnFailure(req.agent_pubkey, creditBorrowed);
             return await this.abort(jobId, attempts, 'token_balance_debit_failed');
           }
 
@@ -713,17 +743,35 @@ export class FulfillService {
           // Phase 9.3 — write to cache for cross-agent amortization. TTL
           // depends on category : volatile categories (bitcoin) get short
           // TTL ; stable docs (data/government) longer. Hard-coded for v1.
-          if (this.deps.intentCacheRepo) {
+          // Audit M4 (2026-05-01) — explicit body validation gate before
+          // cache write. The orchestrator already only enters this branch
+          // for delivery_outcome=delivery_ok, but the body itself may be
+          // empty (bug somewhere upstream) or pathologically large (memory
+          // amplification: one 50MB delivery × N consumers per TTL window).
+          // Reject below 16 bytes (empty pings) and above 1MB to keep cache
+          // entries useful AND bounded.
+          const cacheBody = attempt.detail ?? '';
+          const cacheBodyBytes = Buffer.byteLength(cacheBody, 'utf8');
+          const CACHE_MIN_BYTES = 16;
+          const CACHE_MAX_BYTES = 1_048_576;
+          if (
+            this.deps.intentCacheRepo &&
+            cacheBodyBytes >= CACHE_MIN_BYTES &&
+            cacheBodyBytes <= CACHE_MAX_BYTES
+          ) {
             try {
               const ttlSec = ttlForCategory(req.intent.category);
               await this.deps.intentCacheRepo.create({
                 intent_hash: intentHash,
-                body: attempt.detail ?? '',
+                body: cacheBody,
                 body_sha256: bodyHash,
                 source_job_id: jobId,
                 source_attempt_index: attempts.length - 1,
                 source_candidate_url: cand.endpoint_url,
                 source_operator_pubkey: cand.operator_pubkey,
+                // Audit M1 — preimage stored for source-agent-only audit
+                // trail, never re-emitted to consumers. See cache-hit
+                // response at line ~390 which forces preimage='' on read.
                 source_preimage: attempt.preimage ?? '',
                 source_sats_paid: attempt.sats_paid,
                 source_agent_pubkey: req.agent_pubkey,
@@ -736,6 +784,11 @@ export class FulfillService {
                 'Fulfill: intent_result_cache.create failed (continuing — non-fatal)',
               );
             }
+          } else if (this.deps.intentCacheRepo) {
+            logger.debug(
+              { jobId, cacheBodyBytes, CACHE_MIN_BYTES, CACHE_MAX_BYTES },
+              'Fulfill: cache write skipped — body outside [min,max] gate',
+            );
           }
           return {
             status: 'success',
@@ -801,12 +854,14 @@ export class FulfillService {
       }
 
       // Every candidate exhausted without success.
+      await this.repayBorrowOnFailure(req.agent_pubkey, creditBorrowed);
       return await this.refund(jobId, attempts, 'all_candidates_failed');
     } catch (err) {
       logger.error(
         { jobId, error: err instanceof Error ? err.message : String(err) },
         'Fulfill: orchestrator threw — aborting',
       );
+      await this.repayBorrowOnFailure(req.agent_pubkey, creditBorrowed);
       return await this.abort(jobId, attempts, 'orchestrator_exception');
     }
   }
@@ -1158,6 +1213,23 @@ export class FulfillService {
       reserve_sats_max: reserve,
       circuit_breaker_open: circuitOpen,
     };
+  }
+
+  /** Audit C1 (2026-05-01) — repay a credit-line borrow when a fulfill exits
+   *  on a failure path. Without this the deficit-covering loan sticks
+   *  permanently in `borrowed_sats`, eventually trapping the agent under
+   *  their own credit ceiling. Non-fatal: log and continue if the repay
+   *  query itself fails (the agent's success path will retry). */
+  private async repayBorrowOnFailure(agentPubkey: string, creditBorrowed: number): Promise<void> {
+    if (creditBorrowed <= 0 || !this.deps.agentCreditRepo) return;
+    try {
+      await this.deps.agentCreditRepo.repay(agentPubkey, creditBorrowed, this.now());
+    } catch (err) {
+      logger.error(
+        { agent_pubkey: agentPubkey.slice(0, 12), creditBorrowed, error: err instanceof Error ? err.message : String(err) },
+        'Fulfill: credit repay on failure path failed (non-fatal — debt sticks until next success)',
+      );
+    }
   }
 
   /** Phase 9.1 — race fetchSafeExternal probes on N candidates, return the

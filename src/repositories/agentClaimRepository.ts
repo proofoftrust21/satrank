@@ -95,6 +95,29 @@ export class AgentClaimRepository {
     return rows[0] ? rowToClaim(rows[0]) : null;
   }
 
+  /** Audit H4 (2026-05-01) — single-query lookup that hides existence
+   *  from the operator-mismatch path. The dispute controller previously
+   *  did two sequential queries (findById claim → findById bond), which
+   *  let an attacker probe whether a claim_id exists by measuring response
+   *  timing between "claim missing" and "claim+bond mismatch" branches.
+   *  This method JOINs claim+bond in one round-trip and returns the claim
+   *  iff both rows exist AND the operator owns the bond. Cases (a) claim
+   *  missing, (b) bond missing, (c) operator mismatch all collapse to the
+   *  same null-return + one DB round-trip. */
+  async findDisputableByOperator(
+    claimId: number,
+    operatorPubkey: string,
+  ): Promise<AgentClaim | null> {
+    const { rows } = await this.db.query<AgentClaimRow>(
+      `SELECT c.*
+         FROM agent_claims c
+         JOIN operator_bonds b ON b.bond_id = c.bond_id
+        WHERE c.claim_id = $1 AND b.operator_pubkey = $2`,
+      [claimId, operatorPubkey],
+    );
+    return rows[0] ? rowToClaim(rows[0]) : null;
+  }
+
   /** Cron : pending claims whose dispute window has elapsed → ready to pay. */
   async findReadyForPayout(nowSec: number): Promise<AgentClaim[]> {
     const { rows } = await this.db.query<AgentClaimRow>(
@@ -173,10 +196,18 @@ export class AgentClaimRepository {
       total: 0, pending: 0, paid: 0, disputed: 0, upheld: 0, rejected: 0,
       sats_paid_total: 0, sats_slashed_total: 0,
     };
+    // Audit M5 — type-guard the state value before indexing into `out`. A
+    // mid-flight schema migration that adds a new state would otherwise let
+    // it appear as an arbitrary key on the response payload.
+    const KNOWN_STATES = new Set<AgentClaimState>([
+      'pending', 'paid', 'disputed', 'upheld', 'rejected',
+    ]);
     for (const r of rows) {
       const c = Number(r.c);
       out.total += c;
-      out[r.state] = c;
+      if (KNOWN_STATES.has(r.state)) {
+        out[r.state] = c;
+      }
       out.sats_paid_total += Number(r.sats_paid_total ?? 0);
       out.sats_slashed_total += Number(r.sats_slashed_total ?? 0);
     }

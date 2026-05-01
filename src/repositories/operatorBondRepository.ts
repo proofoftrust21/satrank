@@ -105,12 +105,18 @@ export class OperatorBondRepository {
   }
 
   /** Release a previously-reserved pending without slashing (claim rejected
-   *  or disputed-upheld-for-operator). */
+   *  or disputed-upheld-for-operator). Audit L2 (2026-05-01) — refuse to
+   *  decrement pending on a `released` bond ; the bond's funds have already
+   *  been returned and pending should be 0 there anyway. The state filter
+   *  also defends against accidental double-release if a claim resolves
+   *  twice. Active and frozen bonds may legitimately drop pending (frozen
+   *  bonds keep accumulating disputes that resolve). */
   async releasePending(bondId: number, sats: number): Promise<boolean> {
     const { rowCount } = await this.db.query(
       `UPDATE operator_bonds
           SET bond_pending_sats = GREATEST(0, bond_pending_sats - $2)
-        WHERE bond_id = $1`,
+        WHERE bond_id = $1
+          AND state IN ('active', 'frozen')`,
       [bondId, sats],
     );
     return (rowCount ?? 0) === 1;
@@ -134,10 +140,37 @@ export class OperatorBondRepository {
     return (rowCount ?? 0) === 1;
   }
 
-  async setState(bondId: number, state: OperatorBondState): Promise<boolean> {
+  /** Audit C2 — explicit state-machine transitions. Without this guard a
+   *  released bond could be re-frozen, or a frozen bond re-released without
+   *  the lifecycle invariant. Returns false on illegal transitions.
+   *
+   *  Audit L3 (2026-05-01) — freeze policy with in-flight claims:
+   *  Freezing an active bond with bond_pending_sats > 0 is allowed and is
+   *  the intended behaviour. An admin freezes a bond when an operator
+   *  goes rogue or files a clearly-bad-faith dispute ; pending claims
+   *  continue to resolve normally (commitSlash / releasePending still
+   *  permitted on frozen state — see those methods' state filters). The
+   *  frozen state only prevents NEW pending reservations (reservePending
+   *  filters state='active') and prevents the cron from auto-releasing.
+   *  When all in-flight pendings resolve and admin clears the issue,
+   *  unfreeze (frozen → active) restores normal operation. */
+  async setState(bondId: number, newState: OperatorBondState): Promise<boolean> {
+    // Legal transitions:
+    //   active → frozen | released
+    //   frozen → active | released
+    //   released → (none)  ← terminal
+    const allowedFrom: Record<OperatorBondState, OperatorBondState[]> = {
+      active: ['frozen', 'released'],
+      frozen: ['active', 'released'],
+      released: [],
+    };
+    const fromStates = (Object.entries(allowedFrom) as [OperatorBondState, OperatorBondState[]][])
+      .filter(([, targets]) => targets.includes(newState))
+      .map(([from]) => from);
+    if (fromStates.length === 0) return false;
     const { rowCount } = await this.db.query(
-      'UPDATE operator_bonds SET state = $2 WHERE bond_id = $1',
-      [bondId, state],
+      `UPDATE operator_bonds SET state = $2 WHERE bond_id = $1 AND state = ANY($3::text[])`,
+      [bondId, newState, fromStates],
     );
     return (rowCount ?? 0) === 1;
   }

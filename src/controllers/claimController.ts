@@ -16,6 +16,8 @@ import type { OperatorBondRepository } from '../repositories/operatorBondReposit
 
 export interface ClaimControllerDeps {
   claimRepo: AgentClaimRepository;
+  // bondRepo retained for backward compatibility ; dispute path now uses
+  // claimRepo.findDisputableByOperator (single-query JOIN, audit H4).
   bondRepo: OperatorBondRepository;
   enabled: boolean;
 }
@@ -53,20 +55,20 @@ export class ClaimController {
         return;
       }
 
-      const claim = await this.deps.claimRepo.findById(claimId);
+      // Audit H4 — single JOIN query collapses (claim missing) + (bond
+      // missing) + (operator mismatch) into one constant-time path. State
+      // check happens AFTER the existence/ownership gate so we don't
+      // leak "claim exists in unexpected state" via differential responses.
+      const claim = await this.deps.claimRepo.findDisputableByOperator(
+        claimId,
+        auth.pubkey,
+      );
       if (!claim) {
         res.status(404).json({ error: 'claim_not_found' });
         return;
       }
       if (claim.state !== 'pending') {
         res.status(409).json({ error: 'claim_not_disputable', current_state: claim.state });
-        return;
-      }
-      const bond = await this.deps.bondRepo.findById(claim.bond_id);
-      if (!bond || bond.operator_pubkey !== auth.pubkey) {
-        // Owner mismatch: hide existence (treat like not_found rather than 403
-        // to avoid leaking whether the bond exists).
-        res.status(404).json({ error: 'claim_not_found' });
         return;
       }
 

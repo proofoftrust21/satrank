@@ -131,12 +131,39 @@ export function generateSigningKeypair(): { privateKeyHex: string; publicKeyHex:
   };
 }
 
+/** Audit L1 (2026-05-01) — typed error so the caller can fail fast on
+ *  un-serializable values rather than silently colliding. JSON.stringify
+ *  maps NaN / Infinity / -Infinity all to `null`, so two distinct payloads
+ *  could produce identical canonical bytes ⇒ identical signature. The
+ *  signer service is strict : reject these values up-front. */
+export class CanonicalJsonError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CanonicalJsonError';
+  }
+}
+
 /** Canonical JSON: deterministic key order, no whitespace, sorted Object
  *  keys at every depth, arrays preserved order. Numbers serialize via JSON.
  *  Used by EvidenceService so two implementations of the same payload
- *  hash to the same sha256. */
+ *  hash to the same sha256. Rejects NaN/Infinity (collision risk) and
+ *  bigint/undefined/symbol (not JSON-serializable). */
 export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (value === null) return 'null';
+  const t = typeof value;
+  if (t === 'number') {
+    if (!Number.isFinite(value as number)) {
+      throw new CanonicalJsonError(`non-finite number ${String(value)} cannot be canonicalized`);
+    }
+    return JSON.stringify(value);
+  }
+  if (t === 'string' || t === 'boolean') return JSON.stringify(value);
+  if (t === 'bigint') {
+    throw new CanonicalJsonError('bigint cannot be canonicalized — convert to string first');
+  }
+  if (t === 'undefined' || t === 'symbol' || t === 'function') {
+    throw new CanonicalJsonError(`${t} cannot be canonicalized`);
+  }
   if (Array.isArray(value)) {
     return '[' + value.map(canonicalJson).join(',') + ']';
   }

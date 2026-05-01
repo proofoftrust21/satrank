@@ -18,6 +18,99 @@ import type {
 const TXT_PREFIX = 'satrank-operator-pubkey=';
 const ATTESTATION_RECHECK_TTL_SEC = 90 * 86400;
 
+/** Audit H2 (2026-05-01) — domain validation before DNS lookup.
+ *  The crawler queries `_satrank-operator.<a.domain>` ; without validation an
+ *  attacker can register `localhost` (or a private-IP literal in CNAME form)
+ *  to make our resolver hit internal infra, or stuff label-injection like
+ *  `evil.com\n_satrank-operator.victim.com` to cross-write records. We
+ *  enforce: (a) RFC 1035/3696 LDH labels, (b) ≥2 labels, (c) public TLD shape,
+ *  (d) reject reserved/internal/loopback names + RFC 1918 / ULA / link-local
+ *  literals, (e) total length cap. */
+export class InvalidDomainError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidDomainError';
+  }
+}
+
+const DOMAIN_MAX_LEN = 253;
+const LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
+const TLD_RE = /^[a-z]{2,63}$/i;
+const RESERVED_TLDS = new Set([
+  'local',
+  'localhost',
+  'internal',
+  'intranet',
+  'lan',
+  'corp',
+  'home',
+  'private',
+  'test',
+  'example',
+  'invalid',
+  'onion',
+]);
+const RESERVED_DOMAINS = new Set([
+  'localhost',
+  'localhost.localdomain',
+  'broadcasthost',
+]);
+const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+
+export function validateOperatorDomain(input: string): string {
+  if (typeof input !== 'string') {
+    throw new InvalidDomainError('domain must be a string');
+  }
+  const domain = input.trim().toLowerCase();
+  if (domain.length === 0) {
+    throw new InvalidDomainError('domain cannot be empty');
+  }
+  if (domain.length > DOMAIN_MAX_LEN) {
+    throw new InvalidDomainError(`domain exceeds ${DOMAIN_MAX_LEN} chars`);
+  }
+  // Reject any whitespace / control / DNS-illegal characters before split
+  // (catches CR/LF injection, tabs, NUL). LDH check on each label below would
+  // also reject these but explicit guard is clearer.
+  if (/[\s\x00-\x1f\x7f]/.test(domain)) {
+    throw new InvalidDomainError('domain contains whitespace or control char');
+  }
+  // Reject brackets / colons / slashes / @ — common in URLs, IPv6 literals,
+  // and userinfo injection. Only LDH + dot are valid here.
+  if (/[:/@\[\]?#]/.test(domain)) {
+    throw new InvalidDomainError('domain contains URL or IPv6 syntax');
+  }
+  if (RESERVED_DOMAINS.has(domain)) {
+    throw new InvalidDomainError(`domain ${domain} is reserved`);
+  }
+  if (IPV4_RE.test(domain)) {
+    throw new InvalidDomainError('IPv4 literals are not allowed');
+  }
+  const labels = domain.split('.');
+  if (labels.length < 2) {
+    throw new InvalidDomainError('domain must have ≥ 2 labels (sub.tld)');
+  }
+  for (const label of labels) {
+    if (label.length === 0 || label.length > 63) {
+      throw new InvalidDomainError(`invalid label length: "${label.slice(0, 64)}"`);
+    }
+    if (!LABEL_RE.test(label)) {
+      throw new InvalidDomainError(`invalid label chars: "${label.slice(0, 64)}"`);
+    }
+  }
+  const tld = labels[labels.length - 1];
+  if (!TLD_RE.test(tld)) {
+    throw new InvalidDomainError(`TLD must be alpha-only: "${tld}"`);
+  }
+  if (RESERVED_TLDS.has(tld)) {
+    throw new InvalidDomainError(`reserved TLD: ".${tld}"`);
+  }
+  // Block RFC 1918 / 100.64/10 / link-local / loopback patterns expressed as
+  // sub-labels (e.g. `10-0-0-1.attacker.com` is fine ; `10.0.0.1.attacker.com`
+  // is just a domain — but `localhost.attacker.com` is suspicious yet legal,
+  // so we only block when the LAST label set is reserved, handled above).
+  return domain;
+}
+
 export interface OperatorAttestationServiceDeps {
   repo: OperatorAttestationRepository;
   /** Optional override for tests — must satisfy dns.resolveTxt's signature. */
@@ -36,11 +129,13 @@ export class OperatorAttestationService {
 
   /** Operator-side : declare a new (operator_pubkey, domain) pair. State
    *  starts `pending` ; the crawler will re-check shortly and mark verified
-   *  iff the DNS TXT record is published correctly. */
+   *  iff the DNS TXT record is published correctly. Audit H2 — validate
+   *  domain shape + reject reserved/loopback/IPv4 literal before persisting. */
   async declareDomain(operatorPubkey: string, domain: string): Promise<OperatorAttestation> {
+    const safeDomain = validateOperatorDomain(domain);
     return this.deps.repo.createOrGet({
       operator_pubkey: operatorPubkey,
-      domain,
+      domain: safeDomain,
       verification_method: 'dns_txt',
       created_at: this.now(),
     });

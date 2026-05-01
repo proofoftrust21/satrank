@@ -192,28 +192,81 @@ export function hasFieldValidator(fieldPath: string): ResponseValidator {
   };
 }
 
-/** Phase 7.4 — validator that fails if the body does not contain a substring. */
+/** Phase 7.4 — validator that fails if the body does not contain a substring.
+ *  Audit M3 (2026-05-01) — needle is truncated + sanitized in the failure
+ *  reason. The agent supplies the needle ; without truncation a 10kB needle
+ *  would balloon the attempts log + dispute payload. Stripping control chars
+ *  also stops log-injection (CR/LF in needle → fake log lines downstream). */
+const NEEDLE_PREVIEW_MAX = 64;
+function previewNeedle(needle: string): string {
+  const stripped = needle.replace(/[\x00-\x1f\x7f]/g, '?');
+  return stripped.length > NEEDLE_PREVIEW_MAX
+    ? `${stripped.slice(0, NEEDLE_PREVIEW_MAX)}...`
+    : stripped;
+}
+
 export function containsValidator(needle: string): ResponseValidator {
+  const preview = previewNeedle(needle);
   return {
-    name: `contains:${needle}`,
+    name: `contains:${preview}`,
     validate: ({ body }) => body.includes(needle)
       ? { passed: true }
-      : { passed: false, reason: `body does not contain '${needle}'` },
+      : { passed: false, reason: `body does not contain '${preview}'` },
   };
 }
 
-/** Parse the agent-supplied validator DSL into ResponseValidators. */
+/** Audit H5 (2026-05-01) — typed error so the controller / orchestrator
+ *  can convert to 400 invalid_validator. Previously unknown ops were
+ *  silently dropped, which let an agent submit `validators:
+ *  ['regex_match:^pwn$']` and pay full price for *no validation* — the
+ *  fulfill would succeed against any 200 body. Strict parse + explicit
+ *  rejection is the safer default ; SDK typo turns into a clear 400 the
+ *  client can fix instead of a silent bypass. */
+export class InvalidValidatorDslError extends Error {
+  public readonly entry: string;
+  constructor(entry: string, reason: string) {
+    super(`invalid validator DSL "${entry.slice(0, 64)}": ${reason}`);
+    this.name = 'InvalidValidatorDslError';
+    this.entry = entry;
+  }
+}
+
+const KNOWN_VALIDATOR_OPS = new Set(['min_bytes', 'content_type', 'has_field', 'contains']);
+
+/** Parse the agent-supplied validator DSL into ResponseValidators. Throws
+ *  InvalidValidatorDslError on malformed entries (missing arg, unknown op).
+ *  Caller in fulfillService is wrapped in try/catch and converts to a
+ *  Tier-1 attempt failure with an explicit detail. */
 export function parseValidatorDsl(entries: string[]): ResponseValidator[] {
   const out: ResponseValidator[] = [];
   for (const entry of entries) {
+    if (typeof entry !== 'string') {
+      throw new InvalidValidatorDslError(String(entry), 'entry must be a string');
+    }
     const colonIdx = entry.indexOf(':');
-    if (colonIdx === -1) continue;
+    if (colonIdx === -1) {
+      throw new InvalidValidatorDslError(entry, 'missing ":" separator');
+    }
     const op = entry.slice(0, colonIdx).trim().toLowerCase();
     const arg = entry.slice(colonIdx + 1).trim();
-    if (!arg) continue;
+    if (!op) {
+      throw new InvalidValidatorDslError(entry, 'empty operator');
+    }
+    if (!arg) {
+      throw new InvalidValidatorDslError(entry, 'empty argument');
+    }
+    if (!KNOWN_VALIDATOR_OPS.has(op)) {
+      throw new InvalidValidatorDslError(
+        entry,
+        `unknown operator "${op}"; supported: ${[...KNOWN_VALIDATOR_OPS].join(', ')}`,
+      );
+    }
     if (op === 'min_bytes') {
       const n = Number.parseInt(arg, 10);
-      if (Number.isFinite(n) && n > 0) out.push(minBytesValidator(n));
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new InvalidValidatorDslError(entry, 'min_bytes argument must be positive integer');
+      }
+      out.push(minBytesValidator(n));
     } else if (op === 'content_type') {
       out.push(contentTypeValidator([arg]));
     } else if (op === 'has_field') {
@@ -221,8 +274,6 @@ export function parseValidatorDsl(entries: string[]): ResponseValidator[] {
     } else if (op === 'contains') {
       out.push(containsValidator(arg));
     }
-    // Unknown ops silently skipped — agent gets no validation but no error
-    // (so an SDK hint typo doesn't break the fulfill).
   }
   return out;
 }
