@@ -128,10 +128,24 @@ def error_from_response(
     Used for register-surface error codes (NIP98_INVALID, ALREADY_CLAIMED,
     OWNERSHIP_MISMATCH).
     """
-    err_block = (payload or {}).get("error") or {}
-    code = err_block.get("code")
-    message = err_block.get("message") or f"HTTP {status}"
-    data = err_block.get("data")
+    # Two server-side shapes coexist:
+    #   {"error": {"code": "X", "message": "Y", "data": ...}}  (legacy / register)
+    #   {"error": "X", "message": "Y", ...}                    (SDK 1.3+ fulfill)
+    # Tolerate both so neither caller has to special-case the wire format.
+    raw_err = (payload or {}).get("error")
+    if isinstance(raw_err, dict):
+        err_block = raw_err
+        code = err_block.get("code")
+        message = err_block.get("message") or f"HTTP {status}"
+        data = err_block.get("data")
+    elif isinstance(raw_err, str):
+        code = raw_err
+        message = (payload or {}).get("message") or f"HTTP {status}"
+        data = None
+    else:
+        code = None
+        message = (payload or {}).get("message") or f"HTTP {status}"
+        data = None
 
     # Code-driven dispatch first (most specific). Falls through to the
     # status-driven map when the server didn't surface a known code.

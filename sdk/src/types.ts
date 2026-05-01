@@ -302,6 +302,113 @@ export interface FulfillResult {
   error?: FulfillErrorShape;
 }
 
+// ─── SDK 1.3.0 — server-side fulfill proxy ────────────────────────────────
+//
+// `sr.proxyFulfill()` is the Phase 1+ flow: agent prepays SatRank with a
+// deposit, sends an intent + max budget, SatRank picks the candidate, pays
+// the operator on the agent's behalf, validates the response, returns the
+// body OR refunds. The agent never touches Lightning, retries, macaroons,
+// or pay-gap upstream. This is the indispensability primitive (success-only
+// billing). See docs/FULFILL.md.
+
+export interface ProxyFulfillInput {
+  /** Same intent shape as resolveIntent — category + optional filters. */
+  intent: {
+    category: string;
+    keywords?: string[];
+    budget_sats?: number;
+    max_latency_ms?: number;
+    optimize?: 'p_success' | 'latency' | 'reliability' | 'cost';
+  };
+  /** Hard cap on sats the agent will spend on candidate invoices. SatRank
+   *  refuses to start any candidate whose decoded invoice exceeds the
+   *  remaining budget. */
+  max_sats: number;
+  /** Total time budget for the entire fulfill (probe + pay + recall +
+   *  retries across candidates). 5000–30000 ms typical. */
+  max_latency_ms: number;
+  /** Optional canonical sha256 hex of a JSON Schema previously registered
+   *  via POST /api/schemas. When supplied, the orchestrator validates each
+   *  successful 2xx body against the schema; mismatches are treated as
+   *  delivery failures (Tier 2 refund). */
+  expected_schema_hash?: string;
+  /** Pre-signed `Authorization: Nostr <base64-event>` header. The signed
+   *  NIP-98 event MUST bind to:
+   *    - `u` tag = `${apiBase}/api/fulfill`
+   *    - `method` tag = `POST`
+   *    - `payload` tag = sha256 of the raw JSON body the SDK will send
+   *  See docs/FULFILL.md for a worked end-to-end example. The SDK is
+   *  zero-dep and does not bundle a Nostr signer. */
+  authorization: string;
+}
+
+export type ProxyFulfillStatus =
+  | 'success'
+  | 'refunded'
+  | 'insufficient_balance'
+  | 'daily_cap_reached'
+  | 'circuit_breaker_open';
+
+export interface ProxyFulfillAttempt {
+  candidate_url: string;
+  rank: number;
+  payment_outcome: string;
+  delivery_outcome: string;
+  http_status: number | null;
+  sats_paid: number;
+  detail?: string;
+  preimage?: string;
+}
+
+export interface ProxyFulfillResult {
+  status: ProxyFulfillStatus;
+  /** Present when status='success': the validated 2xx body the operator
+   *  returned, the Lightning preimage that proves payment, and the
+   *  candidate URL that delivered. */
+  job_id?: string;
+  body?: string;
+  preimage?: string;
+  candidate_url?: string;
+  attempts?: ProxyFulfillAttempt[];
+  sats_spent?: number;
+  premium_sats?: number;
+  /** Present when status='refunded': diagnostics about why every candidate
+   *  failed. The agent was NOT debited (success-only billing). */
+  reason?: string;
+  /** Present when status='insufficient_balance': how many sats the agent
+   *  needs to top up. */
+  required_sats?: number;
+  available_sats?: number;
+  /** Present when status='daily_cap_reached': drain protection ceiling
+   *  hit. retry_after_sec tells the agent how long to back off. */
+  cap_sats?: number;
+  used_24h_sats?: number;
+  agent_age_bucket?: 'fresh' | 'established';
+  retry_after_sec?: number;
+  /** Present when status='circuit_breaker_open': SatRank's pool is below
+   *  the safe floor. /api/oracle/fulfill exposes the live balance. */
+  pool_balance_sats?: number;
+  min_pool_sats?: number;
+}
+
+export interface ProxyFulfillQuoteCandidate {
+  rank: number;
+  endpoint_url: string;
+  operator_pubkey: string | null;
+  invoice_sats_estimate: number;
+  premium_estimate: number;
+  total_estimate: number;
+  p_e2e: number | null;
+  p_e2e_pessimistic: number | null;
+  median_latency_ms: number | null;
+}
+
+export interface ProxyFulfillQuoteResult {
+  candidates: ProxyFulfillQuoteCandidate[];
+  reserve_sats_max: number;
+  circuit_breaker_open: boolean;
+}
+
 /** Constructor options for the SatRank client. */
 export interface SatRankOptions {
   apiBase: string;

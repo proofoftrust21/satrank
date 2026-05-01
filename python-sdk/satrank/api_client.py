@@ -145,6 +145,50 @@ class ApiClient:
             extra_headers={"Authorization": authorization},
         )
 
+    async def post_fulfill(
+        self,
+        *,
+        intent: dict[str, Any],
+        max_sats: int,
+        max_latency_ms: int,
+        authorization: str,
+        expected_schema_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """SDK 1.2.0 — server-side fulfill proxy.
+
+        Surface the typed business outcomes returned by the server (200,
+        402, 429, 502, 503-with-circuit-breaker) as a discriminated dict
+        instead of throwing. Genuine errors (401 invalid auth, 503
+        fulfill_disabled, network/timeout) still raise.
+        """
+        body: dict[str, Any] = {
+            "intent": intent,
+            "max_sats": max_sats,
+            "max_latency_ms": max_latency_ms,
+        }
+        if expected_schema_hash is not None:
+            body["expected_schema_hash"] = expected_schema_hash
+        return await self._request_business_failures(
+            "POST",
+            "/api/fulfill",
+            json=body,
+            authorization=authorization,
+        )
+
+    async def post_fulfill_quote(
+        self,
+        *,
+        intent: dict[str, Any],
+        max_sats: int,
+    ) -> dict[str, Any]:
+        """SDK 1.2.0 — preview a fulfill cost, no engagement, no auth."""
+        body: dict[str, Any] = {"intent": intent, "max_sats": max_sats}
+        wrapped = await self._request("POST", "/api/fulfill/quote", json=body)
+        # /quote returns { data: {...} } — _request unwraps only when the
+        # only key is "data"; we stay explicit here in case the server
+        # ever adds sibling fields.
+        return wrapped if "candidates" in wrapped else wrapped.get("data", wrapped)
+
     # ---- internals -------------------------------------------------------
 
     async def _request(
@@ -195,3 +239,74 @@ class ApiClient:
             if isinstance(inner, dict):
                 return inner
         return body or {}
+
+    async def _request_business_failures(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any],
+        authorization: str,
+    ) -> dict[str, Any]:
+        """SDK 1.2.0 — POST that maps fulfill's known business-failure codes
+        to typed dicts instead of raising. 200/402/429/502/503-circuit are
+        treated as outcomes; everything else raises."""
+        url = self._api_base + path
+        headers: dict[str, str] = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": authorization,
+        }
+        try:
+            res = await self._client.request(
+                method,
+                url,
+                headers=headers,
+                json=json,
+                timeout=self._timeout,
+            )
+        except httpx.TimeoutException as exc:
+            raise SatRankTimeout(f"request to {url} timed out") from exc
+        except httpx.RequestError as exc:
+            raise NetworkError(f"network error calling {url}: {exc}") from exc
+
+        body: dict[str, Any] | None = None
+        if res.content:
+            ct = res.headers.get("content-type", "")
+            if "application/json" in ct:
+                try:
+                    body = res.json()
+                except ValueError:
+                    body = None
+
+        if res.status_code == 200 and isinstance(body, dict):
+            return body
+        if res.status_code == 402 and isinstance(body, dict):
+            return {
+                "status": "insufficient_balance",
+                "required_sats": body.get("required_sats"),
+                "available_sats": body.get("available_sats"),
+            }
+        if res.status_code == 429 and isinstance(body, dict):
+            return {
+                "status": "daily_cap_reached",
+                "cap_sats": body.get("cap_sats"),
+                "used_24h_sats": body.get("used_24h_sats"),
+                "agent_age_bucket": body.get("agent_age_bucket"),
+                "retry_after_sec": body.get("retry_after_sec"),
+            }
+        if res.status_code == 502 and isinstance(body, dict):
+            return body  # already carries status='refunded'
+        if (
+            res.status_code == 503
+            and isinstance(body, dict)
+            and body.get("error") == "circuit_breaker_open"
+        ):
+            return {
+                "status": "circuit_breaker_open",
+                "pool_balance_sats": body.get("pool_balance_sats"),
+                "min_pool_sats": body.get("min_pool_sats"),
+                "retry_after_sec": body.get("retry_after_sec"),
+            }
+        # Genuine error — raise.
+        raise error_from_response(res.status_code, body)

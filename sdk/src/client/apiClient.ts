@@ -13,6 +13,9 @@ import type {
   Intent,
   RegisterInput,
   RegisterResponse,
+  ProxyFulfillInput,
+  ProxyFulfillResult,
+  ProxyFulfillQuoteResult,
 } from '../types';
 
 export interface ApiClientOptions {
@@ -88,6 +91,158 @@ export class ApiClient {
       body,
       { customAuthorization: authorizationHeader },
     );
+  }
+
+  /** SDK 1.3.0 — server-side fulfill proxy. Unlike postIntent (which only
+   *  ranks), this hands SatRank the entire intent + budget, lets it pay
+   *  candidates on the agent's behalf, retry on failure, validate the body,
+   *  and either deliver-or-refund. Returns the typed result for every
+   *  business outcome (success / refunded / insufficient_balance /
+   *  daily_cap_reached / circuit_breaker_open) without throwing. Genuine
+   *  errors (401 invalid auth, 503 fulfill_disabled, 5xx server errors,
+   *  network timeouts) still throw via SatRankError. */
+  async postFulfill(
+    input: Omit<ProxyFulfillInput, 'authorization'>,
+    authorizationHeader: string,
+  ): Promise<ProxyFulfillResult> {
+    const body = stripUndefined({
+      intent: input.intent,
+      max_sats: input.max_sats,
+      max_latency_ms: input.max_latency_ms,
+      expected_schema_hash: input.expected_schema_hash,
+    });
+    return this.requestAcceptingBusinessFailures<ProxyFulfillResult>(
+      'POST',
+      '/api/fulfill',
+      body,
+      authorizationHeader,
+    );
+  }
+
+  /** SDK 1.3.0 — preview a fulfill without engagement. No NIP-98 (read-only)
+   *  but the server still applies the discoveryRateLimit ceiling. Returns
+   *  candidate-by-candidate invoice + premium estimates so the agent can
+   *  decide whether to launch the actual fulfill (and whether to top up). */
+  async postFulfillQuote(input: {
+    intent: ProxyFulfillInput['intent'];
+    max_sats: number;
+  }): Promise<ProxyFulfillQuoteResult> {
+    const body = stripUndefined({
+      intent: input.intent,
+      max_sats: input.max_sats,
+    });
+    const wrapped = await this.request<{ data: ProxyFulfillQuoteResult }>(
+      'POST',
+      '/api/fulfill/quote',
+      body,
+    );
+    return wrapped.data;
+  }
+
+  /** Internal — POST that maps known business-failure status codes (402, 429,
+   *  502, 503-with-circuit-breaker) into typed return values instead of
+   *  throwing. Used by postFulfill to surface the structured agent-facing
+   *  outcomes without forcing a try/catch on every call site. */
+  private async requestAcceptingBusinessFailures<T>(
+    method: 'POST',
+    path: string,
+    body: unknown,
+    authorizationHeader: string,
+  ): Promise<T> {
+    const url = `${this.opts.apiBase}${path}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      this.opts.request_timeout_ms,
+    );
+    let res: Response;
+    try {
+      res = await this.opts.fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: authorizationHeader,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeout);
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new TimeoutError(
+          `Request to ${path} timed out after ${this.opts.request_timeout_ms}ms`,
+        );
+      }
+      throw new NetworkError(
+        `Network error calling ${path}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+    const text = await res.text();
+    let parsed: unknown = null;
+    if (text.length > 0) {
+      try { parsed = JSON.parse(text); } catch { /* fall through */ }
+    }
+    // Status codes that carry typed business outcomes:
+    //   200 → status='success'
+    //   402 → status='insufficient_balance' (with required/available)
+    //   429 → status='daily_cap_reached'
+    //   502 → status='refunded'
+    //   503 + body.error='circuit_breaker_open' → status='circuit_breaker_open'
+    // Anything else (401, 503 fulfill_disabled, 5xx, malformed) → throw.
+    if (res.status === 200 && parsed && typeof parsed === 'object') {
+      return parsed as T;
+    }
+    if (res.status === 402 && parsed && typeof parsed === 'object') {
+      const o = parsed as { required_sats?: number; available_sats?: number };
+      return {
+        status: 'insufficient_balance',
+        required_sats: o.required_sats,
+        available_sats: o.available_sats,
+      } as unknown as T;
+    }
+    if (res.status === 429 && parsed && typeof parsed === 'object') {
+      const o = parsed as {
+        cap_sats?: number;
+        used_24h_sats?: number;
+        agent_age_bucket?: 'fresh' | 'established';
+        retry_after_sec?: number;
+      };
+      return {
+        status: 'daily_cap_reached',
+        cap_sats: o.cap_sats,
+        used_24h_sats: o.used_24h_sats,
+        agent_age_bucket: o.agent_age_bucket,
+        retry_after_sec: o.retry_after_sec,
+      } as unknown as T;
+    }
+    if (res.status === 502 && parsed && typeof parsed === 'object') {
+      // refunded shape — pass through verbatim (already includes status).
+      return parsed as T;
+    }
+    if (
+      res.status === 503 &&
+      parsed &&
+      typeof parsed === 'object' &&
+      (parsed as { error?: string }).error === 'circuit_breaker_open'
+    ) {
+      const o = parsed as { pool_balance_sats?: number; min_pool_sats?: number; retry_after_sec?: number };
+      return {
+        status: 'circuit_breaker_open',
+        pool_balance_sats: o.pool_balance_sats,
+        min_pool_sats: o.min_pool_sats,
+        retry_after_sec: o.retry_after_sec,
+      } as unknown as T;
+    }
+    // Unrecognised — bubble up as a SatRankError.
+    const errBody = parsed as { error?: string | { code?: string; message?: string }; message?: string } | null;
+    const code = typeof errBody?.error === 'string' ? errBody.error : errBody?.error?.code;
+    const message = typeof errBody?.error === 'string'
+      ? errBody.message ?? errBody.error
+      : errBody?.error?.message ?? `HTTP ${res.status} at ${path}`;
+    throw errorFromResponse(res.status, code, message);
   }
 
   private async request<T>(

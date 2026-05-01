@@ -30,6 +30,13 @@ export type {
   // SDK 1.2.0 — register surface
   RegisterInput,
   RegisterResponse,
+  // SDK 1.3.0 — server-side fulfill proxy
+  ProxyFulfillInput,
+  ProxyFulfillResult,
+  ProxyFulfillStatus,
+  ProxyFulfillAttempt,
+  ProxyFulfillQuoteResult,
+  ProxyFulfillQuoteCandidate,
 } from './types';
 
 export {

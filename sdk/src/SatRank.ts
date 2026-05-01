@@ -11,6 +11,9 @@ import type {
   RegisterInput,
   RegisterResponse,
   SatRankOptions,
+  ProxyFulfillInput,
+  ProxyFulfillResult,
+  ProxyFulfillQuoteResult,
 } from './types';
 
 interface InternalOptions {
@@ -123,6 +126,48 @@ export class SatRank {
    *  hard-coding string concatenation themselves. */
   registerEndpoint(): string {
     return `${this.options.apiBase}/api/services/register`;
+  }
+
+  /** SDK 1.3.0 — server-side fulfill proxy.
+   *
+   *  This is the Phase 1+ flow: the agent prepays SatRank with a deposit,
+   *  signs an NIP-98 envelope binding the request, and SatRank pays the
+   *  candidate operator on the agent's behalf. The proxy retries on
+   *  failure, validates the body (heuristics + optional JSON Schema
+   *  via expected_schema_hash), and returns the body OR refunds. The
+   *  agent never touches Lightning, retries, macaroons, or pay-gap
+   *  upstream — that's the indispensability primitive.
+   *
+   *  Five lines, end-to-end:
+   *
+   *    const sr = new SatRank({ apiBase: 'https://satrank.dev' });
+   *    const auth = signNip98({ url: sr.fulfillEndpoint(), method: 'POST', body });
+   *    const result = await sr.proxyFulfill({ ...body, authorization: auth });
+   *    if (result.status === 'success') console.log(result.body);
+   *    else console.warn('refunded:', result.reason);
+   *
+   *  The result is a discriminated union — switch on `result.status` to
+   *  handle each business outcome. Genuine errors (auth invalid, network
+   *  timeout) throw via SatRankError. See docs/FULFILL.md. */
+  async proxyFulfill(input: ProxyFulfillInput): Promise<ProxyFulfillResult> {
+    const { authorization, ...body } = input;
+    return this.api.postFulfill(body, authorization);
+  }
+
+  /** SDK 1.3.0 — preview the cost of a proxyFulfill without engagement.
+   *  No NIP-98 needed (the endpoint is read-only). Returns the top
+   *  candidates with invoice + premium estimates and a `reserve_sats_max`
+   *  the agent should pre-deposit before launching the actual fulfill. */
+  async proxyFulfillQuote(input: {
+    intent: ProxyFulfillInput['intent'];
+    max_sats: number;
+  }): Promise<ProxyFulfillQuoteResult> {
+    return this.api.postFulfillQuote(input);
+  }
+
+  /** SDK 1.3.0 — canonical URL for proxyFulfill's NIP-98 `u` tag. */
+  fulfillEndpoint(): string {
+    return `${this.options.apiBase}/api/fulfill`;
   }
 
   _options(): Readonly<InternalOptions> {

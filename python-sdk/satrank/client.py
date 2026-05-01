@@ -137,6 +137,59 @@ class SatRank:
         calling :meth:`register`. SDK 1.2.0."""
         return f"{self._api_base}/api/services/register"
 
+    async def proxy_fulfill(
+        self,
+        *,
+        intent: dict[str, Any],
+        max_sats: int,
+        max_latency_ms: int,
+        authorization: str,
+        expected_schema_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """SDK 1.2.0 — server-side fulfill proxy.
+
+        Phase 1+ flow: agent prepays SatRank with a deposit, signs an
+        NIP-98 envelope binding this request, SatRank pays the candidate
+        operator, retries on failure, validates the body, returns the
+        body OR refunds. The agent never touches Lightning, retries,
+        macaroons, or pay-gap upstream — that's the indispensability
+        primitive (success-only billing).
+
+        Returns a discriminated dict — switch on result["status"]:
+          * "success": body / preimage / candidate_url / sats_spent / premium_sats
+          * "refunded": attempts / reason — agent NOT debited
+          * "insufficient_balance": required_sats / available_sats
+          * "daily_cap_reached": cap_sats / used_24h_sats / agent_age_bucket / retry_after_sec
+          * "circuit_breaker_open": pool_balance_sats / min_pool_sats / retry_after_sec
+
+        Genuine errors (auth invalid, fulfill_disabled, network/timeout)
+        raise. The SDK is zero-dep on Nostr; pre-sign the NIP-98 event
+        externally — see :meth:`fulfill_endpoint`.
+        """
+        return await self._api.post_fulfill(
+            intent=intent,
+            max_sats=max_sats,
+            max_latency_ms=max_latency_ms,
+            authorization=authorization,
+            expected_schema_hash=expected_schema_hash,
+        )
+
+    async def proxy_fulfill_quote(
+        self,
+        *,
+        intent: dict[str, Any],
+        max_sats: int,
+    ) -> dict[str, Any]:
+        """SDK 1.2.0 — preview the cost of a proxy_fulfill without engagement.
+        Read-only, no NIP-98. Returns top candidates with invoice + premium
+        estimates plus reserve_sats_max + circuit_breaker_open flag."""
+        return await self._api.post_fulfill_quote(intent=intent, max_sats=max_sats)
+
+    def fulfill_endpoint(self) -> str:
+        """Canonical URL the NIP-98 ``u`` tag must contain when calling
+        :meth:`proxy_fulfill`. SDK 1.2.0."""
+        return f"{self._api_base}/api/fulfill"
+
     async def fulfill(
         self,
         *,
