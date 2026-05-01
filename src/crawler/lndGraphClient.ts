@@ -80,7 +80,7 @@ export interface LndGraphClient {
    *  backfill uses this to classify errors (malformed BOLT11 vs LND unreachable
    *  vs network mismatch) instead of getting a uniform null. */
   decodePayReqStrict?(payReq: string): Promise<{ destination: string; num_satoshis?: string }>;
-  payInvoice?(paymentRequest: string, feeLimitSat?: number, timeoutSec?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
+  payInvoice?(paymentRequest: string, feeLimitSat?: number, timeoutSec?: number, amtSatOverride?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }>;
   canPayInvoices?(): boolean;
 }
 
@@ -234,14 +234,22 @@ export class HttpLndGraphClient implements LndGraphClient {
     return { destination: data.destination, num_satoshis: data.num_satoshis };
   }
 
-  async payInvoice(paymentRequest: string, feeLimitSat: number = 10, timeoutSec: number = 60): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }> {
+  async payInvoice(paymentRequest: string, feeLimitSat: number = 10, timeoutSec: number = 60, amtSatOverride?: number): Promise<{ paymentPreimage: string; paymentHash: string; paymentError?: string }> {
     // Must use the admin-scoped macaroon — the readonly one lacks
     // offchain:write and would return 401/permission-denied from lnd.
     if (!this.adminMacaroonHex) {
       return { paymentPreimage: '', paymentHash: '', paymentError: 'LND admin macaroon not loaded — payInvoice unavailable' };
     }
     const url = `${this.restUrl}/v1/channels/transactions`;
-    const body = JSON.stringify({ payment_request: paymentRequest, fee_limit: { fixed: String(feeLimitSat) } });
+    // Phase 6.1 — amtSatOverride lets us pay an open-amount BOLT11 (refund
+    // residue scenario). LND ignores `amt` if the BOLT11 already fixes the
+    // amount, but for any-amount invoices it's the only way to pay an
+    // explicit value. Validated upstream so we trust it here.
+    const bodyObj: Record<string, unknown> = { payment_request: paymentRequest, fee_limit: { fixed: String(feeLimitSat) } };
+    if (amtSatOverride != null && amtSatOverride > 0) {
+      bodyObj.amt = String(amtSatOverride);
+    }
+    const body = JSON.stringify(bodyObj);
     const controller = new AbortController();
     // Security audit (Finding 2) — caller-controlled timeout so the paid
     // probe cron doesn't stall the crawler event loop for 60s × N hostile

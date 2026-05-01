@@ -146,6 +146,7 @@ class SatRank:
         authorization: str,
         expected_schema_hash: str | None = None,
         mode: str | None = None,
+        refund_bolt11: str | None = None,
     ) -> dict[str, Any]:
         """SDK 1.2.0 — server-side fulfill proxy.
 
@@ -172,6 +173,10 @@ class SatRank:
 
         SDK 1.4.0 — ``mode`` arg ('deposit' default, 'hold' for the
         non-custodial Phase 6 flow).
+
+        SDK 1.4.1 (Phase 6.1) — ``refund_bolt11`` arg lets agents receive
+        the residue (=reserve_sats_max − sats_spent − premium) when mode='hold'
+        succeeds. Must be open-amount BOLT11.
         """
         return await self._api.post_fulfill(
             intent=intent,
@@ -180,6 +185,7 @@ class SatRank:
             authorization=authorization,
             expected_schema_hash=expected_schema_hash,
             mode=mode,
+            refund_bolt11=refund_bolt11,
         )
 
     async def proxy_fulfill_execute(
@@ -225,8 +231,14 @@ class SatRank:
     def fulfill_execute_endpoint(self, job_id: str) -> str:
         """SDK 1.4.0 — canonical URL the NIP-98 ``u`` tag must contain when
         calling :meth:`proxy_fulfill_execute`. ``job_id`` comes from the
-        prior ``proxy_fulfill(mode='hold')`` response."""
-        return f"{self._api_base}/api/fulfill/{job_id}/execute"
+        prior ``proxy_fulfill(mode='hold')`` response.
+
+        Audit M2 (SDK 1.4.1) — URL-encodes ``job_id`` so the value matches
+        what the server sees in ``req.originalUrl`` for NIP-98 verification.
+        UUIDs only contain ``[0-9a-f-]`` today, but future format changes
+        (prefixed IDs, etc.) will not silently break signing."""
+        from urllib.parse import quote
+        return f"{self._api_base}/api/fulfill/{quote(job_id, safe='')}/execute"
 
     async def fulfill(
         self,

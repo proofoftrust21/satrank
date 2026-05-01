@@ -21,7 +21,7 @@
 // Premium formula:
 //   premium = max(1, ceil(invoice_sats × 0.10 × (1 - p_e2e_pessimistic)))
 // Charged success-only: if every candidate fails → no premium debit.
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { logger } from '../logger';
 import { fetchSafeExternal, SsrfBlockedError, readBodyCapped } from '../utils/ssrf';
 import { parseL402Challenge } from '../utils/l402HeaderParser';
@@ -38,6 +38,7 @@ import type { RefundEngine } from './refundEngine';
 import type { EndpointSchemaRepository } from '../repositories/endpointSchemaRepository';
 import type { PoolAccountingService } from './poolAccountingService';
 import type { LndHoldInvoiceService } from './lndHoldInvoiceService';
+import { InvoiceAlreadyCanceledError } from './lndHoldInvoiceService';
 import { buildValidatorChain, validateAll } from './responseValidator';
 import type { Pool } from 'pg';
 
@@ -47,6 +48,10 @@ const RECALL_BODY_MAX_BYTES = 256 * 1024;
 const IDEMPOTENCY_WINDOW_SEC = 60;
 const MAX_CANDIDATES = 4;
 const PREMIUM_FLOOR_SATS = 1;
+/** Phase 6.1 — outbound refund retries. Each cron tick attempts one pay;
+ *  after this cap we mark the residue failed_absorbed (kept by SatRank
+ *  pool) so the queue never blocks indefinitely on a hostile invoice. */
+const RESIDUE_REFUND_MAX_ATTEMPTS = 5;
 
 export interface FulfillRequest {
   agent_pubkey: string;
@@ -67,6 +72,12 @@ export interface FulfillRequest {
    *  fulfill() call returns a hold_invoice_required result with the BOLT11
    *  to pay; the agent then calls executeHoldFulfill() to trigger orchestrator. */
   mode?: 'deposit' | 'hold';
+  /** Phase 6.1 — agent-supplied open-amount BOLT11 to receive the residue
+   *  refund (= reserve_sats_max − sats_spent − premium) when mode='hold'
+   *  succeeds. Optional; absent means residue is absorbed by the SatRank pool
+   *  (the agent agreed to the worst-case price up-front). The invoice MUST be
+   *  open-amount or the residue will fail to pay. Validated at create time. */
+  refund_bolt11?: string;
 }
 
 export type FulfillSuccess = {
@@ -78,6 +89,12 @@ export type FulfillSuccess = {
   attempts: FulfillAttempt[];
   sats_spent: number;
   premium_sats: number;
+  /** Phase 6.1 — populated when mode='hold' and we settled a residue refund.
+   *  refund_state telegrams the outbound-pay outcome to the SDK so agents can
+   *  detect a stuck residue (failed_absorbed) without polling. Absent for
+   *  deposit mode and for hold-mode jobs without refund_bolt11. */
+  residue_sats?: number;
+  refund_state?: 'not_required' | 'pending' | 'paid' | 'failed_absorbed';
 };
 
 export type FulfillRefunded = {
@@ -113,6 +130,9 @@ export type FulfillHoldInvoiceRequired = {
   payment_hash: string;
   invoice_amount_sats: number;
   expires_at: number;
+  /** Phase 6.1 — surfaces back to the agent so they can confirm SatRank
+   *  recorded the right destination. Empty string when none was supplied. */
+  refund_bolt11?: string;
 };
 
 export type FulfillHoldUnavailable = {
@@ -133,6 +153,9 @@ export interface FulfillServiceDeps {
   pool: Pool;
   fulfillJobRepo: FulfillJobRepository;
   intentService: IntentService;
+  /** Audit Phase 6.1 — payInvoice is reused for outbound residue refunds
+   *  (`amtSatOverride` lets us pay an open-amount BOLT11). The optional
+   *  signature lives in LndGraphClient. */
   lndClient: Pick<LndGraphClient, 'payInvoice'>;
   /** Phase 2 — refund classification + per-agent daily cap + ledger writes.
    *  Optional for back-compat with the Phase 1 tests; production wiring
@@ -202,6 +225,27 @@ export class FulfillService {
           reason: existing.reason ?? 'idempotent replay of prior failure',
         };
       }
+      // Audit M1 (2026-05-01) — for hold-mode jobs still awaiting payment,
+      // return the existing BOLT11 instead of refusing as 'duplicate_in_flight'.
+      // Agents who lost the response from the first call need the invoice
+      // back; otherwise they wait 60s for the idempotency window to expire,
+      // by which point the unpaid invoice is dangling on LND.
+      if (
+        existing.mode === 'hold'
+        && existing.hold_invoice_state === 'awaiting_payment'
+        && existing.hold_invoice_payment_request
+        && existing.hold_invoice_payment_hash
+      ) {
+        return {
+          status: 'hold_invoice_required',
+          job_id: existing.job_id,
+          payment_request: existing.hold_invoice_payment_request,
+          payment_hash: existing.hold_invoice_payment_hash,
+          invoice_amount_sats: existing.max_sats,
+          expires_at: existing.hold_invoice_expires_at ?? 0,
+          refund_bolt11: existing.refund_bolt11 ?? undefined,
+        };
+      }
       // in_flight on idempotency hit → caller should retry shortly. We treat
       // it as a hard refusal rather than racing two settles.
       return {
@@ -246,6 +290,27 @@ export class FulfillService {
           reason: 'LND hold-invoice service not configured (admin macaroon missing)',
         };
       }
+      // Phase 6.1 — validate refund_bolt11 at create time so we don't
+      // accept hold orders whose residue can't be refunded later. Open-
+      // amount BOLT11 (no `amount` in the encoded invoice) is required
+      // because we pay an arbitrary residue at settle time. parseBolt11
+      // throws InvalidBolt11Error on malformed invoices.
+      if (req.refund_bolt11) {
+        try {
+          const decoded = parseBolt11(req.refund_bolt11);
+          if (decoded.amountSats != null && decoded.amountSats > 0) {
+            return {
+              status: 'hold_mode_unavailable',
+              reason: 'refund_bolt11 must be an open-amount invoice (no amount encoded)',
+            };
+          }
+        } catch (err) {
+          return {
+            status: 'hold_mode_unavailable',
+            reason: `refund_bolt11 decode failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
       // Reservation = max_sats + worst-case premium for any candidate at
       // p_e2e_pessimistic=0 (most expensive case). The actual settle will
       // be ≤ this. SatRank cancels and refunds residue automatically.
@@ -287,6 +352,7 @@ export class FulfillService {
         hold_invoice_preimage: invoice.preimage,
         hold_invoice_state: 'awaiting_payment',
         hold_invoice_expires_at: expiresAt,
+        refund_bolt11: req.refund_bolt11,
       });
       return {
         status: 'hold_invoice_required',
@@ -295,6 +361,7 @@ export class FulfillService {
         payment_hash: invoice.payment_hash,
         invoice_amount_sats: reserveSats,
         expires_at: expiresAt,
+        refund_bolt11: req.refund_bolt11,
       };
     }
 
@@ -511,21 +578,32 @@ export class FulfillService {
     }
   }
 
-  /** Phase 6 — second step of hold-invoice fulfill. Agent paid the
-   *  hold-invoice generated by fulfill(); now they call this to trigger
-   *  the orchestrator. Idempotent: re-calling after settle/refund returns
-   *  the prior result.
+  /** Phase 6 / 6.1 — second step of hold-invoice fulfill.
    *
-   *  Settlement model (MVP): SatRank claims the FULL reserve_sats_max on
-   *  success — that's the worst-case price the agent agreed to up-front.
-   *  Phase 6.1 follow-up will refund residue (actual_spent + premium <
-   *  reserve_sats_max) by issuing an outgoing refund invoice to the
-   *  agent's pubkey. For now the agent overpays bounded by the worst-case
-   *  premium (~10% of max_sats), which is documented in /api/oracle/fulfill
-   *  and the SDK doc comments. */
+   *  Audit C2 (2026-05-01): the intent must be re-supplied (server stores
+   *  only intent_hash) AND the orchestrator MUST verify the supplied intent
+   *  hashes to the same value as job.intent_hash. Otherwise a malicious
+   *  agent could pay a cheap hold invoice on category=data then redirect
+   *  /execute to category=finance keywords=[exchange] and have SatRank pay
+   *  an adversary-controlled high-priced operator with the same money.
+   *
+   *  Audit M3 (2026-05-01): intent is now first-class on the signature
+   *  (no more cast through `as unknown`). Controller passes it explicitly.
+   *
+   *  Audit C1 (2026-05-01): settle is wrapped to detect the cron beating
+   *  us to cancel — InvoiceAlreadyCanceledError aborts the orchestrator
+   *  before we return a body. settleSuccess return value is checked in
+   *  the hold path (was only logged in deposit path).
+   *
+   *  Phase 6.1: on success, settle full reserve_sats_max (LND hold-invoice
+   *  is binary), then if refund_bolt11 was supplied issue an outbound pay
+   *  for residue = reserve_sats_max − sats_spent − premium. Failure mode
+   *  is bounded: cron retries pending refunds; after MAX retries we mark
+   *  failed_absorbed and the residue stays in pool. */
   async executeHoldFulfill(req: {
     job_id: string;
     agent_pubkey: string;
+    intent: IntentRequest;
   }): Promise<FulfillResult> {
     if (!this.deps.holdInvoiceService) {
       return { status: 'hold_mode_unavailable', reason: 'LND hold-invoice service not configured' };
@@ -541,6 +619,38 @@ export class FulfillService {
       // Owner mismatch — never reveal whether the job exists, just refuse.
       return { status: 'refunded', job_id: req.job_id, attempts: [], reason: 'owner_mismatch' };
     }
+
+    // Audit C2 — verify the supplied intent hashes to job.intent_hash.
+    // Constant-time comparison; both values are fixed-length sha256 hex.
+    const suppliedHash = canonicalIntentHash(req.intent);
+    const a = Buffer.from(suppliedHash, 'hex');
+    const b = Buffer.from(job.intent_hash, 'hex');
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      logger.warn(
+        {
+          jobId: req.job_id,
+          agent_pubkey: req.agent_pubkey.slice(0, 12),
+          job_intent_hash_first8: job.intent_hash.slice(0, 8),
+          supplied_intent_hash_first8: suppliedHash.slice(0, 8),
+        },
+        'Fulfill: /execute intent hash mismatch — refusing to redirect orchestrator',
+      );
+      // Cancel the hold-invoice so the agent's HTLC unblocks; never run
+      // the orchestrator on a divergent intent.
+      if (job.hold_invoice_payment_hash) {
+        try {
+          await this.deps.holdInvoiceService.cancel(job.hold_invoice_payment_hash);
+          await this.deps.fulfillJobRepo.setHoldInvoiceState(job.job_id, 'cancelled');
+        } catch (err) {
+          logger.warn(
+            { jobId: req.job_id, error: err instanceof Error ? err.message : String(err) },
+            'Fulfill: cancel-after-intent-mismatch failed; cron will retry',
+          );
+        }
+      }
+      return await this.abort(req.job_id, [], 'intent_hash_mismatch');
+    }
+
     // Idempotent terminal states.
     if (job.status === 'success') {
       return {
@@ -597,23 +707,14 @@ export class FulfillService {
     let satsSpent = 0;
 
     try {
-      // Optional schema lookup (same shape as deposit-mode fulfill).
-      let schemaJson: object | undefined;
-      // The job stores the intent as a hash but not the original — for
-      // hold mode we re-resolve from req.intent stored on job? We don't
-      // store it. So in MVP, hold mode does NOT support expected_schema_hash
-      // re-validation on /execute. Document this; Phase 6.1 follow-up.
+      // Hold mode does not support expected_schema_hash because the original
+      // request payload is hashed-only; agents who need schema validation must
+      // use deposit mode for now (Phase 6.2 follow-up).
+      const schemaJson: object | undefined = undefined;
 
-      const intentRequest: IntentRequest = { category: 'data' };
-      // We need the intent to be derivable. Phase 6 MVP limitation: we
-      // serialize the intent at create time — but we only stored intent_hash.
-      // Re-resolution by hash isn't possible. Workaround for MVP: caller
-      // must submit /execute with the SAME intent so we can resolve again.
-      // Implemented in the controller (it forwards intent if supplied).
-      // The fulfillService.executeHoldFulfill keeps API-only; the
-      // controller passes intent via a wider signature in Phase 6.1.
-      const resolvedReq = (req as { intent?: IntentRequest }).intent ?? intentRequest;
-      const intentResp = await this.deps.intentService.resolveIntent(resolvedReq, undefined);
+      // Audit M3 — req.intent is first-class now; no more `as unknown` cast.
+      // We already verified it canonical-hashes to job.intent_hash above.
+      const intentResp = await this.deps.intentService.resolveIntent(req.intent, undefined);
       const candidates = intentResp.candidates.slice(0, MAX_CANDIDATES);
       if (candidates.length === 0) {
         await this.deps.holdInvoiceService.cancel(job.hold_invoice_payment_hash);
@@ -639,22 +740,44 @@ export class FulfillService {
           satsSpent += attempt.sats_paid;
           const premium = computePremium(attempt.sats_paid, cand);
 
-          // Settle the agent's hold-invoice. MVP: claim the full reserve
-          // (no residue refund); the agent agreed to that worst case
-          // up-front when paying the invoice.
+          // Audit C1 — try to settle, BUT distinguish "already settled"
+          // (idempotent no-op, ok) from "already canceled" (cron beat us;
+          // agent's HTLC unblocked; SatRank gets nothing). On the latter
+          // we MUST abort before returning the body so SatRank doesn't
+          // leak the body without payment.
           try {
             await this.deps.holdInvoiceService.settle(job.hold_invoice_preimage);
           } catch (err) {
+            if (err instanceof InvoiceAlreadyCanceledError) {
+              logger.error(
+                { jobId: job.job_id, preimage_prefix: err.preimagePrefix },
+                'Fulfill: hold invoice was canceled before settle (cron race) — aborting',
+              );
+              await this.deps.fulfillJobRepo.setHoldInvoiceState(job.job_id, 'cancelled');
+              return await this.abort(job.job_id, attempts, 'hold_invoice_canceled_before_settle');
+            }
             logger.error(
               { jobId: job.job_id, error: err instanceof Error ? err.message : String(err) },
               'Fulfill: settleInvoice failed mid-success — aborting before returning body',
             );
             return await this.abort(job.job_id, attempts, 'settle_invoice_failed');
           }
-          await this.deps.fulfillJobRepo.setHoldInvoiceState(job.job_id, 'settled');
+          // Audit H4 — strict state-machine transition. False return means
+          // a concurrent writer landed first; abort defensively.
+          const stateOk = await this.deps.fulfillJobRepo.setHoldInvoiceState(job.job_id, 'settled');
+          if (!stateOk) {
+            logger.error(
+              { jobId: job.job_id },
+              'Fulfill: hold_invoice_state transition to settled rejected — aborting',
+            );
+            return await this.abort(job.job_id, attempts, 'hold_state_transition_rejected');
+          }
 
+          // Audit C1 — settleSuccess affected-rows check (was only in deposit
+          // path). 0 rows = the cron already wrote a terminal status; we must
+          // abort and not return the body.
           const bodyHash = sha256OfBuffer(Buffer.from(attempt.detail ?? '', 'utf8'));
-          await this.deps.fulfillJobRepo.settleSuccess({
+          const stored = await this.deps.fulfillJobRepo.settleSuccess({
             job_id: job.job_id,
             attempts,
             sats_spent: satsSpent,
@@ -663,6 +786,45 @@ export class FulfillService {
             result_body_sha256: bodyHash,
             settled_at: this.now(),
           });
+          if (!stored) {
+            logger.error(
+              { jobId: job.job_id },
+              'Fulfill: settleSuccess affected 0 rows in hold mode — terminal race, aborting',
+            );
+            return await this.abort(job.job_id, attempts, 'hold_settle_race_terminal');
+          }
+
+          // Phase 6.1 — residue refund. settle claimed the full reserveSats;
+          // residue = reserveSats − sats_spent − premium. Pay it out via
+          // payInvoice(refund_bolt11, amt=residue) when the agent supplied
+          // an open-amount BOLT11. On failure we mark refund_state='pending'
+          // so the cron retries.
+          const reserveSats = job.max_sats + Math.max(
+            PREMIUM_FLOOR_SATS,
+            Math.ceil(job.max_sats * 0.10),
+          );
+          const residueSats = Math.max(0, reserveSats - satsSpent - premium);
+          let refundState: 'not_required' | 'pending' | 'paid' | 'failed_absorbed' = 'not_required';
+          if (residueSats > 0 && job.refund_bolt11) {
+            refundState = await this.payResidueRefund(job.job_id, job.refund_bolt11, residueSats);
+          } else if (residueSats > 0) {
+            refundState = 'failed_absorbed';
+            await this.deps.fulfillJobRepo.setRefundState({
+              job_id: job.job_id,
+              state: 'failed_absorbed',
+              refund_amount_sats: residueSats,
+              refund_last_error: 'no_refund_bolt11_supplied',
+              settled_at: this.now(),
+            });
+          } else {
+            await this.deps.fulfillJobRepo.setRefundState({
+              job_id: job.job_id,
+              state: 'not_required',
+              refund_amount_sats: 0,
+              settled_at: this.now(),
+            });
+          }
+
           return {
             status: 'success',
             job_id: job.job_id,
@@ -672,6 +834,8 @@ export class FulfillService {
             attempts,
             sats_spent: satsSpent,
             premium_sats: premium,
+            residue_sats: residueSats,
+            refund_state: refundState,
           };
         }
 
@@ -985,6 +1149,93 @@ export class FulfillService {
       // first 256 KB is enough for any sensible API response.
       detail,
     });
+  }
+
+  /** Phase 6.1 — outbound residue refund. Returns the resulting refund_state.
+   *  On transient failure marks 'pending'; on permanent failure (including
+   *  decode error or LND error after retries) marks 'failed_absorbed'.
+   *
+   *  Single attempt here — the cron retries 'pending' on subsequent ticks.
+   *  After RESIDUE_REFUND_MAX_ATTEMPTS the cron escalates to failed_absorbed
+   *  so the residue stops blocking the queue. */
+  private async payResidueRefund(
+    jobId: string,
+    refundBolt11: string,
+    residueSats: number,
+  ): Promise<'pending' | 'paid' | 'failed_absorbed'> {
+    const payInvoice = this.deps.lndClient.payInvoice;
+    if (!payInvoice) {
+      logger.warn({ jobId }, 'Residue refund: payInvoice unavailable — marking failed_absorbed');
+      await this.deps.fulfillJobRepo.setRefundState({
+        job_id: jobId,
+        state: 'failed_absorbed',
+        refund_amount_sats: residueSats,
+        refund_last_error: 'lnd_payInvoice_unavailable',
+        settled_at: this.now(),
+      });
+      return 'failed_absorbed';
+    }
+    let pay;
+    try {
+      pay = await payInvoice(refundBolt11, 10, PAY_TIMEOUT_DEFAULT_SEC, residueSats);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ jobId, error: msg }, 'Residue refund: payInvoice threw — marking pending for cron retry');
+      await this.deps.fulfillJobRepo.setRefundState({
+        job_id: jobId,
+        state: 'pending',
+        refund_amount_sats: residueSats,
+        refund_last_error: msg.slice(0, 200),
+        increment_attempts: true,
+      });
+      return 'pending';
+    }
+    if (pay.paymentError || !pay.paymentPreimage) {
+      const detail = pay.paymentError ?? 'no preimage returned';
+      logger.warn({ jobId, error: detail }, 'Residue refund: payInvoice failed — marking pending');
+      await this.deps.fulfillJobRepo.setRefundState({
+        job_id: jobId,
+        state: 'pending',
+        refund_amount_sats: residueSats,
+        refund_last_error: detail.slice(0, 200),
+        increment_attempts: true,
+      });
+      return 'pending';
+    }
+    await this.deps.fulfillJobRepo.setRefundState({
+      job_id: jobId,
+      state: 'paid',
+      refund_amount_sats: residueSats,
+      refund_payment_preimage: pay.paymentPreimage,
+      settled_at: this.now(),
+    });
+    return 'paid';
+  }
+
+  /** Phase 6.1 — cron entry point: retry one pending residue refund.
+   *  Returns the resulting state so callers can log/tally outcomes. After
+   *  RESIDUE_REFUND_MAX_ATTEMPTS attempts the residue is absorbed (becomes
+   *  permanent revenue) and we surface failed_absorbed in /api/oracle/fulfill. */
+  async retryPendingRefund(job: { job_id: string; refund_bolt11: string | null; refund_amount_sats: number | null; refund_attempts: number }): Promise<'pending' | 'paid' | 'failed_absorbed'> {
+    if (job.refund_attempts >= RESIDUE_REFUND_MAX_ATTEMPTS) {
+      await this.deps.fulfillJobRepo.setRefundState({
+        job_id: job.job_id,
+        state: 'failed_absorbed',
+        refund_last_error: `exceeded ${RESIDUE_REFUND_MAX_ATTEMPTS} attempts`,
+        settled_at: this.now(),
+      });
+      return 'failed_absorbed';
+    }
+    if (!job.refund_bolt11 || job.refund_amount_sats == null) {
+      await this.deps.fulfillJobRepo.setRefundState({
+        job_id: job.job_id,
+        state: 'failed_absorbed',
+        refund_last_error: 'no_refund_bolt11_or_amount',
+        settled_at: this.now(),
+      });
+      return 'failed_absorbed';
+    }
+    return this.payResidueRefund(job.job_id, job.refund_bolt11, job.refund_amount_sats);
   }
 
   private async refund(

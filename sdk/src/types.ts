@@ -338,6 +338,12 @@ export interface ProxyFulfillInput {
    *  {status: 'hold_invoice_required'} with the BOLT11; the agent pays it
    *  then calls proxyFulfillExecute() to trigger orchestrator. */
   mode?: 'deposit' | 'hold';
+  /** SDK 1.4.1 (Phase 6.1) — open-amount BOLT11 the agent owns; SatRank
+   *  pays the residue (= reserve_sats_max − sats_spent − premium) here on
+   *  a hold-mode success. Must be open-amount: encoded BOLT11 amount must
+   *  be 0 or omitted, otherwise the orchestrator rejects with
+   *  hold_mode_unavailable. Without it, residue is absorbed by the pool. */
+  refund_bolt11?: string;
   /** Pre-signed `Authorization: Nostr <base64-event>` header. The signed
    *  NIP-98 event MUST bind to:
    *    - `u` tag = `${apiBase}/api/fulfill`
@@ -416,6 +422,18 @@ export interface ProxyFulfillResult {
   invoice_amount_sats?: number;
   expires_at?: number;
   execute_endpoint?: string;
+  /** SDK 1.4.1 (Phase 6.1) — echoes back the refund_bolt11 the server stored,
+   *  for the agent to confirm. Empty / undefined when none was supplied. */
+  refund_bolt11?: string;
+  /** SDK 1.4.1 (Phase 6.1) — populated on hold-mode success when residue > 0.
+   *  refund_state telegrams the outbound-pay outcome:
+   *    - 'paid'           : residue paid to refund_bolt11 (single attempt OK)
+   *    - 'pending'        : residue pay failed transiently; cron retries
+   *    - 'failed_absorbed': retries exhausted OR no refund_bolt11 supplied;
+   *                         residue stays in SatRank pool (audit-visible)
+   *    - 'not_required'   : residue == 0 (rare, only when reserve == actual) */
+  residue_sats?: number;
+  refund_state?: 'paid' | 'pending' | 'failed_absorbed' | 'not_required';
 }
 
 export interface ProxyFulfillQuoteCandidate {

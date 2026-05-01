@@ -7,6 +7,7 @@ Mirrors @satrank/sdk/client/apiClient.ts.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -154,6 +155,7 @@ class ApiClient:
         authorization: str,
         expected_schema_hash: str | None = None,
         mode: str | None = None,
+        refund_bolt11: str | None = None,
     ) -> dict[str, Any]:
         """SDK 1.2.0 — server-side fulfill proxy.
 
@@ -164,6 +166,11 @@ class ApiClient:
 
         SDK 1.4.0 — ``mode`` param ('deposit' default, 'hold' for the
         non-custodial Phase 6 flow).
+
+        SDK 1.4.1 (Phase 6.1) — ``refund_bolt11`` lets agents receive the
+        residue (= reserve_sats_max − sats_spent − premium) on a hold-mode
+        success. Must be an open-amount BOLT11; without one the residue is
+        absorbed by the SatRank pool.
         """
         body: dict[str, Any] = {
             "intent": intent,
@@ -174,6 +181,8 @@ class ApiClient:
             body["expected_schema_hash"] = expected_schema_hash
         if mode is not None:
             body["mode"] = mode
+        if refund_bolt11 is not None:
+            body["refund_bolt11"] = refund_bolt11
         return await self._request_business_failures(
             "POST",
             "/api/fulfill",
@@ -195,9 +204,11 @@ class ApiClient:
         to trigger the orchestrator. Intent must be re-supplied because
         the server keeps only intent_hash between the two calls.
         """
+        # Audit M2 — URL-encode job_id so any future format change can't
+        # silently break NIP-98 binding. UUIDs only contain [0-9a-f-] today.
         return await self._request_business_failures(
             "POST",
-            f"/api/fulfill/{job_id}/execute",
+            f"/api/fulfill/{quote(job_id, safe='')}/execute",
             json={"intent": intent},
             authorization=authorization,
         )

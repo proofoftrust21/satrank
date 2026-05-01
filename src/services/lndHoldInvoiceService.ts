@@ -52,6 +52,16 @@ export interface AddHoldInvoiceResult {
  *  string for log clarity. */
 export type LndInvoiceState = 'OPEN' | 'ACCEPTED' | 'SETTLED' | 'CANCELED' | 'EXPIRED' | 'UNKNOWN';
 
+/** Audit C1/H3 (2026-05-01) — settle() called against an invoice the cron
+ *  already canceled. Caller must abort the orchestrator and refund the
+ *  attempt rather than treating the LND no-op as success. */
+export class InvoiceAlreadyCanceledError extends Error {
+  constructor(public readonly preimagePrefix: string) {
+    super(`hold invoice already canceled before settle (preimage prefix=${preimagePrefix})`);
+    this.name = 'InvoiceAlreadyCanceledError';
+  }
+}
+
 export interface LndV2InvoiceLookup {
   state: LndInvoiceState;
   amt_paid_sat: number;
@@ -177,11 +187,16 @@ export class LndHoldInvoiceService {
     });
     if (!resp.ok) {
       const text = await resp.text();
-      // LND returns specific errors when the invoice is already settled —
-      // bubble those as a logical no-op rather than throw.
-      if (/already settled|invoice already canceled/i.test(text)) {
-        logger.info({ preimage_hex_first8: preimageHex.slice(0, 8) }, 'settle: invoice already terminal');
+      // Audit C1/H3 fix — distinguish "already settled" (idempotent no-op,
+      // we already claimed the HTLC) from "already canceled" (the cron beat
+      // us; the agent's HTLC was released and SatRank gets nothing). Only
+      // the first is safe to treat as success.
+      if (/already settled/i.test(text)) {
+        logger.info({ preimage_hex_first8: preimageHex.slice(0, 8) }, 'settle: invoice already settled (idempotent)');
         return;
+      }
+      if (/invoice already canceled|already canceled|invoice not found/i.test(text)) {
+        throw new InvoiceAlreadyCanceledError(preimageHex.slice(0, 8));
       }
       throw new Error(`LND settleInvoice failed: ${resp.status} ${text.slice(0, 200)}`);
     }

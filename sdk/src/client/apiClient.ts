@@ -111,6 +111,7 @@ export class ApiClient {
       max_latency_ms: input.max_latency_ms,
       expected_schema_hash: input.expected_schema_hash,
       mode: input.mode,
+      refund_bolt11: input.refund_bolt11,
     });
     return this.requestAcceptingBusinessFailures<ProxyFulfillResult>(
       'POST',
@@ -238,6 +239,7 @@ export class ApiClient {
           invoice_amount_sats: o.invoice_amount_sats,
           expires_at: o.expires_at,
           execute_endpoint: o.execute_endpoint,
+          refund_bolt11: (o as { refund_bolt11?: string }).refund_bolt11,
         } as unknown as T;
       }
       return {

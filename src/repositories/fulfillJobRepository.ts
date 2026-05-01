@@ -30,6 +30,27 @@ export type HoldInvoiceState =
   | 'cancelled'
   | 'expired';
 
+/** Phase 6.1 — outbound residue refund pay-out state.
+ *
+ *  not_required   — agent didn't supply refund_bolt11 OR residue == 0
+ *  pending        — settle ok, refund pay scheduled (cron retries on transient)
+ *  paid           — outbound payInvoice ok, agent received residue
+ *  failed_absorbed — N retries failed; residue stays in pool, agent informed */
+export type RefundState = 'not_required' | 'pending' | 'paid' | 'failed_absorbed';
+
+/** Audit C1/H4 — illegal hold-invoice state transitions are rejected by
+ *  setHoldInvoiceState rather than silently overwriting. The orchestrator
+ *  and cron can both write to the same row in either order; the guard
+ *  ensures a 'cancelled' state can't be overwritten by 'settled' (and vice
+ *  versa). Strictly forward-only outside the awaiting/accepted prefix. */
+const HOLD_INVOICE_STATE_TRANSITIONS: Record<HoldInvoiceState, ReadonlyArray<HoldInvoiceState>> = {
+  awaiting_payment: ['accepted', 'cancelled', 'expired', 'settled'],
+  accepted: ['settled', 'cancelled', 'expired'],
+  settled: [],
+  cancelled: [],
+  expired: [],
+};
+
 /** A single attempt against one candidate, persisted in attempts[]. The
  *  outcome strings reuse paidProbeRunner's vocabulary for consistency
  *  across the codebase (helps grep + log correlation). */
@@ -73,6 +94,14 @@ export interface FulfillJob {
   hold_invoice_preimage: string | null;
   hold_invoice_state: HoldInvoiceState | null;
   hold_invoice_expires_at: number | null;
+  /** Phase 6.1 — residue refund (outbound pay back to agent). */
+  refund_bolt11: string | null;
+  refund_state: RefundState | null;
+  refund_amount_sats: number | null;
+  refund_payment_preimage: string | null;
+  refund_attempts: number;
+  refund_last_error: string | null;
+  refund_settled_at: number | null;
 }
 
 export interface CreateJobInput {
@@ -90,6 +119,8 @@ export interface CreateJobInput {
   hold_invoice_preimage?: string;
   hold_invoice_state?: HoldInvoiceState;
   hold_invoice_expires_at?: number;
+  /** Phase 6.1 — agent-supplied open-amount BOLT11 for residue refund. */
+  refund_bolt11?: string;
 }
 
 export interface SettleSuccessInput {
@@ -158,9 +189,10 @@ export class FulfillJobRepository {
         (job_id, agent_pubkey, intent_hash, max_sats, max_latency_ms,
          status, attempts, sats_spent, sats_refunded, premium_sats, created_at,
          mode, hold_invoice_payment_request, hold_invoice_payment_hash,
-         hold_invoice_preimage, hold_invoice_state, hold_invoice_expires_at)
+         hold_invoice_preimage, hold_invoice_state, hold_invoice_expires_at,
+         refund_bolt11)
        VALUES ($1, $2, $3, $4, $5, 'in_flight', '[]'::jsonb, 0, 0, 0, $6,
-               $7, $8, $9, $10, $11, $12)`,
+               $7, $8, $9, $10, $11, $12, $13)`,
       [
         input.job_id,
         input.agent_pubkey,
@@ -174,34 +206,108 @@ export class FulfillJobRepository {
         input.hold_invoice_preimage ?? null,
         input.hold_invoice_state ?? null,
         input.hold_invoice_expires_at ?? null,
+        input.refund_bolt11 ?? null,
       ],
     );
   }
 
-  /** Phase 6 — update hold invoice state without touching the orchestrator
-   *  status. Used when LND reports the invoice transitioned (awaiting →
-   *  accepted, accepted → settled, etc.). Returns the new row. */
+  /** Phase 6 — update hold invoice state with strict state-machine guard.
+   *
+   *  Audit C1/H4 (2026-05-01) — the previous unconditional UPDATE allowed
+   *  the cron and orchestrator to clobber each other's state ('cancelled'
+   *  → 'settled' or vice-versa). The transition table HOLD_INVOICE_STATE_TRANSITIONS
+   *  encodes which moves are legal. SQL adds a WHERE clause that enforces
+   *  the same set so a concurrent writer racing past our application-level
+   *  read-then-update can't slip through.
+   *
+   *  Returns false when the transition is rejected (caller can log + abort
+   *  rather than assume success). */
   async setHoldInvoiceState(jobId: string, state: HoldInvoiceState): Promise<boolean> {
+    // Build the WHERE filter from the transition table — every state that
+    // is allowed to advance INTO `state`.
+    const allowedFrom = (Object.entries(HOLD_INVOICE_STATE_TRANSITIONS) as [HoldInvoiceState, ReadonlyArray<HoldInvoiceState>][])
+      .filter(([, targets]) => targets.includes(state))
+      .map(([from]) => from);
+    // Allow the initial NULL → state transition (job created, first state set).
     const { rowCount } = await this.db.query(
-      'UPDATE fulfill_jobs SET hold_invoice_state = $2 WHERE job_id = $1',
-      [jobId, state],
+      `UPDATE fulfill_jobs
+          SET hold_invoice_state = $2
+        WHERE job_id = $1
+          AND (hold_invoice_state IS NULL OR hold_invoice_state = ANY($3::text[]))`,
+      [jobId, state, allowedFrom],
     );
     return (rowCount ?? 0) === 1;
   }
 
   /** Phase 6 — find hold-mode jobs that are still awaiting/accepted past
    *  their expires_at. Used by the reconciliation cron to issue cancel
-   *  before LND auto-expires. */
+   *  before LND auto-expires.
+   *
+   *  Audit H2 — also filters status='in_flight' so terminal jobs whose
+   *  hold_invoice_state was not updated (crash mid-transition) do not get
+   *  re-cancelled. */
   async findExpiredHoldInvoices(nowSec: number): Promise<FulfillJob[]> {
     const { rows } = await this.db.query<FulfillJobRow>(
       `SELECT * FROM fulfill_jobs
        WHERE mode = 'hold'
+         AND status = 'in_flight'
          AND hold_invoice_state IN ('awaiting_payment', 'accepted')
          AND hold_invoice_expires_at IS NOT NULL
          AND hold_invoice_expires_at < $1
        ORDER BY hold_invoice_expires_at ASC
        LIMIT 50`,
       [nowSec],
+    );
+    return rows.map(rowToJob);
+  }
+
+  /** Phase 6.1 — residue refund state writer. Atomic so the cron retry path
+   *  and the orchestrator settle path don't clobber each other.
+   *
+   *  Legal transitions:
+   *    null → not_required | pending
+   *    pending → paid | failed_absorbed | pending (on retry, attempts++ )
+   *    paid / failed_absorbed → terminal */
+  async setRefundState(input: {
+    job_id: string;
+    state: RefundState;
+    refund_amount_sats?: number;
+    refund_payment_preimage?: string;
+    refund_last_error?: string;
+    increment_attempts?: boolean;
+    settled_at?: number;
+  }): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE fulfill_jobs
+          SET refund_state = $2,
+              refund_amount_sats = COALESCE($3, refund_amount_sats),
+              refund_payment_preimage = COALESCE($4, refund_payment_preimage),
+              refund_last_error = $5,
+              refund_attempts = refund_attempts + CASE WHEN $6 THEN 1 ELSE 0 END,
+              refund_settled_at = COALESCE($7, refund_settled_at)
+        WHERE job_id = $1
+          AND (refund_state IS NULL OR refund_state IN ('pending', 'not_required'))`,
+      [
+        input.job_id,
+        input.state,
+        input.refund_amount_sats ?? null,
+        input.refund_payment_preimage ?? null,
+        input.refund_last_error ?? null,
+        input.increment_attempts === true,
+        input.settled_at ?? null,
+      ],
+    );
+    return (rowCount ?? 0) === 1;
+  }
+
+  /** Phase 6.1 — find hold jobs whose residue refund is still pending so
+   *  the cron can retry an outbound pay. Capped at 50/tick. */
+  async findPendingRefunds(): Promise<FulfillJob[]> {
+    const { rows } = await this.db.query<FulfillJobRow>(
+      `SELECT * FROM fulfill_jobs
+       WHERE refund_state = 'pending'
+       ORDER BY settled_at ASC NULLS LAST
+       LIMIT 50`,
     );
     return rows.map(rowToJob);
   }
@@ -351,6 +457,13 @@ interface FulfillJobRow {
   hold_invoice_preimage: string | null;
   hold_invoice_state: HoldInvoiceState | null;
   hold_invoice_expires_at: number | null;
+  refund_bolt11: string | null;
+  refund_state: RefundState | null;
+  refund_amount_sats: number | null;
+  refund_payment_preimage: string | null;
+  refund_attempts: number | null;
+  refund_last_error: string | null;
+  refund_settled_at: number | null;
 }
 
 function rowToJob(row: FulfillJobRow): FulfillJob {
@@ -381,5 +494,14 @@ function rowToJob(row: FulfillJobRow): FulfillJob {
     hold_invoice_state: row.hold_invoice_state,
     hold_invoice_expires_at:
       row.hold_invoice_expires_at != null ? Number(row.hold_invoice_expires_at) : null,
+    refund_bolt11: row.refund_bolt11,
+    refund_state: row.refund_state,
+    refund_amount_sats:
+      row.refund_amount_sats != null ? Number(row.refund_amount_sats) : null,
+    refund_payment_preimage: row.refund_payment_preimage,
+    refund_attempts: Number(row.refund_attempts ?? 0),
+    refund_last_error: row.refund_last_error,
+    refund_settled_at:
+      row.refund_settled_at != null ? Number(row.refund_settled_at) : null,
   };
 }

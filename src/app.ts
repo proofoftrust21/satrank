@@ -410,7 +410,9 @@ export function createApp() {
       }
       // Phase 6 — cancel hold-invoices past their expires_at. We do this
       // proactively (vs waiting for LND auto-expire) so the agent's HTLC
-      // unblocks as soon as we know the orchestrator won't run.
+      // unblocks as soon as we know the orchestrator won't run. Audit H2:
+      // the SQL filters status='in_flight' so we never re-cancel terminal
+      // jobs whose hold_invoice_state didn't get the final transition.
       const expired = await fulfillJobRepo.findExpiredHoldInvoices(
         Math.floor(Date.now() / 1000),
       );
@@ -429,6 +431,25 @@ export function createApp() {
           logger.warn(
             { jobId: job.job_id, error: err instanceof Error ? err.message : String(err) },
             'Fulfill: hold invoice cancel-on-expiry failed (will retry next tick)',
+          );
+        }
+      }
+      // Phase 6.1 — retry pending residue refunds. Each tick attempts one
+      // outbound pay per pending job; after RESIDUE_REFUND_MAX_ATTEMPTS the
+      // refund is marked failed_absorbed so the queue doesn't block.
+      const pendingRefunds = await fulfillJobRepo.findPendingRefunds();
+      for (const job of pendingRefunds) {
+        try {
+          await fulfillService.retryPendingRefund({
+            job_id: job.job_id,
+            refund_bolt11: job.refund_bolt11,
+            refund_amount_sats: job.refund_amount_sats,
+            refund_attempts: job.refund_attempts,
+          });
+        } catch (err) {
+          logger.warn(
+            { jobId: job.job_id, error: err instanceof Error ? err.message : String(err) },
+            'Fulfill: residue refund retry threw (will retry next tick)',
           );
         }
       }

@@ -45,6 +45,10 @@ const fulfillRequestSchema = z.object({
   // agent pays per-call (non-custodial). Defaults to 'deposit' for
   // back-compat.
   mode: z.enum(['deposit', 'hold']).optional(),
+  // Phase 6.1 — agent-supplied open-amount BOLT11 to receive the residue
+  // refund when mode='hold' succeeds. Loose length check; fulfillService
+  // calls parseBolt11 to validate semantically.
+  refund_bolt11: z.string().min(20).max(2048).optional(),
 });
 
 /** Phase 6 — body for POST /api/fulfill/:job_id/execute. The intent must
@@ -83,6 +87,25 @@ function envFloat(name: string, fallback: number): number {
 interface RateBucketState {
   tokens: number;
   lastRefill: number;
+}
+
+/** Audit L2 — strict UUID v4 format check on the :job_id path segment. */
+const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Audit L1 — whitelisted reason strings the controller is willing to
+ *  pass through verbatim. Anything outside this set is bucketed under
+ *  'unavailable' so future code paths can't silently leak LND internals. */
+const ALLOWED_HOLD_UNAVAILABLE_REASONS = new Set<string>([
+  'LND hold-invoice service not configured',
+  'LND hold-invoice service not configured (admin macaroon missing)',
+  'addHoldInvoice failed — see server logs',
+]);
+function sanitizeHoldUnavailableReason(raw: string | undefined): string {
+  if (!raw) return 'unavailable';
+  // Allow refund_bolt11 validation messages through verbatim — they are
+  // produced server-side from a tight set of static strings + decode error.
+  if (raw.startsWith('refund_bolt11 ')) return raw;
+  return ALLOWED_HOLD_UNAVAILABLE_REASONS.has(raw) ? raw : 'unavailable';
 }
 
 export interface FulfillControllerDeps {
@@ -162,7 +185,9 @@ export class FulfillController {
       }
       const jobIdParam = req.params.job_id;
       const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
-      if (!jobId || typeof jobId !== 'string' || jobId.length < 8 || jobId.length > 64) {
+      // Audit L2 — strict UUID v4 format. The job_id we mint is randomUUID(),
+      // anything else is invalid input we can reject at the boundary.
+      if (!jobId || typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) {
         res.status(400).json({ error: 'invalid_job_id' });
         return;
       }
@@ -170,14 +195,25 @@ export class FulfillController {
       if (!parsed.success) {
         throw new ValidationError(formatZodError(parsed.error, req.body));
       }
+      // Audit H1 — per-agent rate limit. Without this a NIP-98-authed agent
+      // can hammer /execute on one job_id and amplify orchestrator + LND
+      // fan-out. Bucket size + refill mirror the /api/fulfill handler.
+      if (!this.consumeRateToken(auth.pubkey)) {
+        res.status(429).json({
+          error: 'rate_limited',
+          message: 'too many concurrent execute calls — back off and retry',
+          retry_after_sec: Math.ceil(1 / this.refillPerSec),
+        });
+        return;
+      }
       const result = await this.fulfillService.executeHoldFulfill({
         job_id: jobId,
         agent_pubkey: auth.pubkey,
-        // Phase 6 MVP: intent re-supplied by caller; service uses it to
-        // re-resolve candidates. Intent re-validation against stored
-        // intent_hash is a Phase 6.1 follow-up.
+        // Audit C2 + M3 — intent first-class. fulfillService verifies its
+        // canonical hash against job.intent_hash before running the
+        // orchestrator (no more silent redirect to a different category).
         intent: parsed.data.intent,
-      } as Parameters<typeof this.fulfillService.executeHoldFulfill>[0]);
+      });
       switch (result.status) {
         case 'success':
           res.status(200).json({
@@ -189,6 +225,8 @@ export class FulfillController {
             attempts: result.attempts,
             sats_spent: result.sats_spent,
             premium_sats: result.premium_sats,
+            residue_sats: result.residue_sats,
+            refund_state: result.refund_state,
           });
           return;
         case 'refunded':
@@ -208,13 +246,14 @@ export class FulfillController {
             payment_hash: result.payment_hash,
             invoice_amount_sats: result.invoice_amount_sats,
             expires_at: result.expires_at,
+            refund_bolt11: result.refund_bolt11,
             message: 'pay the hold invoice first then call /execute again',
           });
           return;
         case 'hold_mode_unavailable':
           res.status(503).json({
             error: 'hold_mode_unavailable',
-            reason: result.reason,
+            reason: sanitizeHoldUnavailableReason(result.reason),
           });
           return;
         default:
@@ -323,6 +362,7 @@ export class FulfillController {
         max_latency_ms: body.max_latency_ms,
         expected_schema_hash: body.expected_schema_hash,
         mode: body.mode,
+        refund_bolt11: body.refund_bolt11,
       });
 
       switch (result.status) {
@@ -336,6 +376,8 @@ export class FulfillController {
             attempts: result.attempts,
             sats_spent: result.sats_spent,
             premium_sats: result.premium_sats,
+            residue_sats: result.residue_sats,
+            refund_state: result.refund_state,
           });
           return;
         case 'refunded':
@@ -392,6 +434,7 @@ export class FulfillController {
             payment_hash: result.payment_hash,
             invoice_amount_sats: result.invoice_amount_sats,
             expires_at: result.expires_at,
+            refund_bolt11: result.refund_bolt11,
             execute_endpoint: `/api/fulfill/${result.job_id}/execute`,
             message: 'pay the hold invoice and POST {intent} to execute_endpoint',
           });
@@ -399,7 +442,7 @@ export class FulfillController {
         case 'hold_mode_unavailable':
           res.status(503).json({
             error: 'hold_mode_unavailable',
-            reason: result.reason,
+            reason: sanitizeHoldUnavailableReason(result.reason),
             message: 'try mode=deposit or contact ops',
           });
           return;

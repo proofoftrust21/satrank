@@ -97,6 +97,7 @@ function buildApp(
   app.set('trust proxy', 1);
   app.post('/api/fulfill', controller.handle);
   app.post('/api/fulfill/quote', controller.quote);
+  app.post('/api/fulfill/:job_id/execute', controller.executeHold);
   app.use(errorHandler);
   return app;
 }
@@ -370,5 +371,75 @@ describe('/api/fulfill controller', () => {
     expect(firstStatus).toBe(200);
     expect(secondStatus).toBe(200);
     expect(thirdStatus).toBe(429);
+  });
+
+  // ----- Audit fixes (Phase 6.1) on /api/fulfill/:job_id/execute -----
+
+  it('audit L2 — non-UUID :job_id is rejected with 400 invalid_job_id', async () => {
+    const { service } = makeStubService({ status: 'success' } as unknown as FulfillResult);
+    const app = buildApp(service, true);
+    const url = `${BASE_URL}/api/fulfill/not-a-uuid-format/execute`;
+    const body = JSON.stringify({ intent: { category: 'data' } });
+    const { auth } = signNip98(url, 'POST', body);
+    const res = await request(app)
+      .post('/api/fulfill/not-a-uuid-format/execute')
+      .set('Host', '127.0.0.1:80')
+      .set('Authorization', auth)
+      .set('Content-Type', 'application/json')
+      .send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_job_id');
+  });
+
+  it('audit H1 — /execute rate-limits per-agent (token bucket separate from /api/fulfill)', async () => {
+    // Stub returns a refunded result quickly so we can hammer the bucket.
+    const fakeService = {
+      executeHoldFulfill: async () => ({
+        status: 'refunded' as const,
+        job_id: '00000000-0000-0000-0000-000000000000',
+        attempts: [],
+        reason: 'job_not_found',
+      }),
+    } as unknown as FulfillService;
+    const app = buildApp(fakeService, true, { rateBucketSize: 2, rateRefillPerSec: 0.001 });
+    const jobId = '11111111-2222-3333-4444-555555555555';
+    const url = `${BASE_URL}/api/fulfill/${jobId}/execute`;
+    const body = JSON.stringify({ intent: { category: 'data' } });
+    const sk = generateSecretKey();
+    const baseTs = Math.floor(Date.now() / 1000);
+    let third = 0;
+    for (let i = 0; i < 3; i++) {
+      const { auth } = signNip98(url, 'POST', body, sk, baseTs + i);
+      const res = await request(app)
+        .post(`/api/fulfill/${jobId}/execute`)
+        .set('Host', '127.0.0.1:80')
+        .set('Authorization', auth)
+        .set('Content-Type', 'application/json')
+        .send(body);
+      if (i === 2) third = res.status;
+    }
+    expect(third).toBe(429);
+  });
+
+  it('audit L1 — hold_mode_unavailable with unknown reason is sanitized to "unavailable"', async () => {
+    const fakeService = {
+      executeHoldFulfill: async () => ({
+        status: 'hold_mode_unavailable' as const,
+        reason: 'leaky LND error: rpc error: code=Unavailable desc=...',
+      }),
+    } as unknown as FulfillService;
+    const app = buildApp(fakeService, true);
+    const jobId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const url = `${BASE_URL}/api/fulfill/${jobId}/execute`;
+    const body = JSON.stringify({ intent: { category: 'data' } });
+    const { auth } = signNip98(url, 'POST', body);
+    const res = await request(app)
+      .post(`/api/fulfill/${jobId}/execute`)
+      .set('Host', '127.0.0.1:80')
+      .set('Authorization', auth)
+      .set('Content-Type', 'application/json')
+      .send(body);
+    expect(res.status).toBe(503);
+    expect(res.body.reason).toBe('unavailable');
   });
 });
