@@ -1017,8 +1017,13 @@ export class FulfillService {
     // `payInvoice` method rather than a separate isConfigured() check, so a
     // node where the admin macaroon failed to load (no payInvoice exposed)
     // gets a clean lnd_not_configured outcome instead of a runtime crash.
-    const payInvoice = this.deps.lndClient.payInvoice;
-    if (!payInvoice) {
+    //
+    // Smoke E2E (2026-05-01) discovered: destructuring `payInvoice` loses
+    // its `this` binding to HttpLndGraphClient, which uses `this.adminMacaroonHex`
+    // internally. Call directly via `this.deps.lndClient.payInvoice(...)` so
+    // `this` resolves correctly at runtime. Unit tests didn't catch it
+    // because the mock impl doesn't depend on `this`.
+    if (!this.deps.lndClient.payInvoice) {
       return baseAttempt(cand, ts_started, this.now(), {
         payment_outcome: 'lnd_not_configured',
         delivery_outcome: 'delivery_skipped',
@@ -1026,7 +1031,7 @@ export class FulfillService {
         sats_paid: 0,
       });
     }
-    const pay = await payInvoice(challenge.invoice, 10, PAY_TIMEOUT_DEFAULT_SEC);
+    const pay = await this.deps.lndClient.payInvoice(challenge.invoice, 10, PAY_TIMEOUT_DEFAULT_SEC);
     if (pay.paymentError || !pay.paymentPreimage) {
       const detail = pay.paymentError ?? 'no preimage returned';
       const isRouting = /no.?route|no_route|FAILURE_REASON_NO_ROUTE|insufficient/i.test(detail);
@@ -1201,8 +1206,7 @@ export class FulfillService {
     refundBolt11: string,
     residueSats: number,
   ): Promise<'pending' | 'paid' | 'failed_absorbed'> {
-    const payInvoice = this.deps.lndClient.payInvoice;
-    if (!payInvoice) {
+    if (!this.deps.lndClient.payInvoice) {
       logger.warn({ jobId }, 'Residue refund: payInvoice unavailable — marking failed_absorbed');
       await this.deps.fulfillJobRepo.setRefundState({
         job_id: jobId,
@@ -1215,7 +1219,9 @@ export class FulfillService {
     }
     let pay;
     try {
-      pay = await payInvoice(refundBolt11, 10, PAY_TIMEOUT_DEFAULT_SEC, residueSats);
+      // Direct call to preserve `this` binding to HttpLndGraphClient (smoke
+      // E2E 2026-05-01 surfaced the unbound-method bug — see attemptCandidate).
+      pay = await this.deps.lndClient.payInvoice(refundBolt11, 10, PAY_TIMEOUT_DEFAULT_SEC, residueSats);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ jobId, error: msg }, 'Residue refund: payInvoice threw — marking pending for cron retry');
