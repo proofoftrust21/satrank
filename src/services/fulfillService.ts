@@ -36,6 +36,10 @@ import type {
 } from '../repositories/fulfillJobRepository';
 import type { RefundEngine } from './refundEngine';
 import type { ClaimEngine } from './claimEngine';
+import type { AgentCreditRepository } from '../repositories/agentCreditRepository';
+import type { IntentResultCacheRepository } from '../repositories/intentResultCacheRepository';
+import type { SignerService } from './signerService';
+import { canonicalJson } from './signerService';
 import type { EndpointSchemaRepository } from '../repositories/endpointSchemaRepository';
 import type { PoolAccountingService } from './poolAccountingService';
 import type { LndHoldInvoiceService } from './lndHoldInvoiceService';
@@ -75,6 +79,13 @@ export interface FulfillRequest {
    *  Failure ⇒ delivery_validator_violation classification ⇒ ClaimEngine
    *  opens a 5× multiplier claim against the operator bond. Caps: 10 entries. */
   validators?: string[];
+  /** Phase 9.1 — race the L402 probe (free 402 fetch) across the top N
+   *  candidates in parallel and pay the first one that returns a valid
+   *  challenge. Bounds latency to fastest probe + pay+recall, vs serial
+   *  iteration that pays the latency of the SUM of slow candidates.
+   *  Default 1 (serial, Phase 1-8 behavior). Cap 4. NO parallel pay :
+   *  only one candidate is ever paid (the fastest probe winner). */
+  parallel_probe?: number;
   /** Phase 6 — payment mode. 'deposit' (default, custodial via token_balance)
    *  or 'hold' (non-custodial via Lightning hold invoice). When 'hold', the
    *  fulfill() call returns a hold_invoice_required result with the BOLT11
@@ -97,6 +108,17 @@ export type FulfillSuccess = {
   attempts: FulfillAttempt[];
   sats_spent: number;
   premium_sats: number;
+  /** Phase 9.3 — populated when the body was served from intent_result_cache
+   *  (cross-agent amortization). Agent paid 10% premium ; original preimage
+   *  + body_sha256 are still authoritative. */
+  cache_hit?: boolean;
+  cache_age_sec?: number;
+  freshness_attestation?: {
+    signature_b64: string;
+    satrank_pubkey: string;
+    signed_at_iso: string;
+    payload_canonical_json: string;
+  };
   /** Sim 9 Fix 1 (2026-05-01) — sha256 of the delivered body, hex. Already
    *  computed server-side and stored in fulfill_jobs.result_body_sha256.
    *  Compliance / lineage agents (Sim 9 a08, a09, a10) need this to bind
@@ -178,6 +200,14 @@ export interface FulfillServiceDeps {
   /** Phase 7.3 — opens agent_claims on Tier-2 outcomes against operator
    *  bonds. Optional ; absent means no claims (Phase 1-6 behavior). */
   claimEngine?: ClaimEngine;
+  /** Phase 9.4 — reputation credit line. +1 sat per delivery_ok ;
+   *  borrowable against future fulfills. Optional. */
+  agentCreditRepo?: AgentCreditRepository;
+  /** Phase 9.3 — intent-keyed result cache + signed freshness attestation.
+   *  Optional (absent → no caching, every call hits real upstream). */
+  intentCacheRepo?: IntentResultCacheRepository;
+  /** Phase 9.3 — signer for cache freshness attestations. */
+  signer?: SignerService;
   /** Phase 3 — JSON Schema registry. Optional: when omitted, fulfill ignores
    *  expected_schema_hash and falls back to the heuristic body check. */
   endpointSchemaRepo?: EndpointSchemaRepository;
@@ -297,6 +327,84 @@ export class FulfillService {
 
     const mode: 'deposit' | 'hold' = req.mode ?? 'deposit';
 
+    // Phase 9.3 — intent-keyed cache lookup. Deposit mode only for v1 ; hold
+    // mode coexistence with cached cross-agent fulfills is more involved
+    // (would require refunding the hold-invoice). On cache hit, agent pays
+    // 10% of the original sats_paid + premium floor, gets the cached body
+    // plus a SatRank-signed freshness attestation.
+    if (mode === 'deposit' && this.deps.intentCacheRepo) {
+      const cached = await this.deps.intentCacheRepo.lookup(intentHash, nowSec);
+      if (cached) {
+        const cacheHitFee = Math.max(PREMIUM_FLOOR_SATS, Math.ceil(cached.source_sats_paid * 0.10));
+        const balance = await this.fetchAgentBalance(req.agent_pubkey);
+        if (balance >= cacheHitFee) {
+          const debited = await this.debitAgentBalance(req.agent_pubkey, cacheHitFee);
+          if (debited) {
+            await this.deps.intentCacheRepo.incrementHit(cached.cache_id);
+            const cacheAgeSec = nowSec - cached.created_at;
+            // Sign freshness attestation if signer is wired.
+            let attestation: FulfillSuccess['freshness_attestation'];
+            if (this.deps.signer && this.deps.signer.isAvailable()) {
+              const payload = canonicalJson({
+                cache_age_sec: cacheAgeSec,
+                cache_id: cached.cache_id,
+                cache_served_at: nowSec,
+                consumer_agent_pubkey: req.agent_pubkey,
+                intent_hash: intentHash,
+                source_body_sha256: cached.body_sha256,
+                source_candidate_url: cached.source_candidate_url,
+                source_job_id: cached.source_job_id,
+                source_preimage: cached.source_preimage,
+                source_sats_paid: cached.source_sats_paid,
+                satrank_version: 'phase9.3',
+              });
+              const signed = this.deps.signer.sign(payload);
+              attestation = {
+                signature_b64: signed.signature,
+                satrank_pubkey: signed.satrank_pubkey,
+                signed_at_iso: signed.signed_at,
+                payload_canonical_json: signed.payload_canonical,
+              };
+            }
+            // Phase 9.4 reward also fires on cache hits — the agent benefited
+            // from a delivery, so credit accrues.
+            if (this.deps.agentCreditRepo) {
+              try {
+                await this.deps.agentCreditRepo.incrementOnSuccess(req.agent_pubkey, this.now());
+              } catch { /* non-fatal */ }
+            }
+            logger.info(
+              {
+                cache_id: cached.cache_id,
+                consumer: req.agent_pubkey.slice(0, 12),
+                cacheHitFee,
+                cacheAgeSec,
+                source_job_id: cached.source_job_id,
+              },
+              'Fulfill: cache hit (Phase 9.3)',
+            );
+            return {
+              status: 'success',
+              job_id: `cache:${cached.cache_id}`,
+              body: cached.body,
+              preimage: cached.source_preimage,
+              candidate_url: cached.source_candidate_url,
+              attempts: [],
+              sats_spent: 0,
+              premium_sats: cacheHitFee,
+              body_sha256: cached.body_sha256,
+              cache_hit: true,
+              cache_age_sec: cacheAgeSec,
+              freshness_attestation: attestation,
+            };
+          }
+        }
+        // Insufficient balance for cache hit fee → fall through to full
+        // fulfill (which will hit the same insufficient_balance gate below
+        // and may borrow against credit line).
+      }
+    }
+
     // Phase 6 — hold-invoice mode. Generate a hold-invoice on LND, store
     // the job in 'awaiting_payment' state, return 402-equivalent shape so
     // the agent can pay then call executeHoldFulfill().
@@ -386,12 +494,28 @@ export class FulfillService {
     // floor premium. We check before doing any external work.
     const balance = await this.fetchAgentBalance(req.agent_pubkey);
     const requiredSats = req.max_sats + PREMIUM_FLOOR_SATS;
+    let creditBorrowed = 0;
     if (balance < requiredSats) {
-      return {
-        status: 'insufficient_balance',
-        required_sats: requiredSats,
-        available_sats: balance,
-      };
+      // Phase 9.4 — try to borrow against the agent's reputation credit line
+      // before refusing. Borrowing only covers the deficit ; the agent must
+      // still have most of the balance available. We charge against accumulated
+      // delivery_credits earned from past successful fulfills.
+      const deficit = requiredSats - balance;
+      const borrowed = this.deps.agentCreditRepo
+        ? await this.deps.agentCreditRepo.borrow(req.agent_pubkey, deficit, this.now())
+        : false;
+      if (!borrowed) {
+        return {
+          status: 'insufficient_balance',
+          required_sats: requiredSats,
+          available_sats: balance,
+        };
+      }
+      creditBorrowed = deficit;
+      logger.info(
+        { agent_pubkey: req.agent_pubkey.slice(0, 12), deficit, balance, requiredSats },
+        'Fulfill: agent borrowed against credit line (Phase 9.4)',
+      );
     }
 
     // Phase 3 — schema lookup. Agent declares expected_schema_hash; we look
@@ -483,6 +607,36 @@ export class FulfillService {
         return await this.refund(jobId, attempts, 'no_candidates_for_intent');
       }
 
+      // Phase 9.1 — speculative parallel probe. Race the L402 probe step
+      // (free GET → 402) on the top N candidates, reorder so the fastest
+      // valid-challenge candidate runs first. Pay-step is still serial
+      // (only the winner pays). N capped at 4 ; default 1 (legacy serial).
+      if (req.parallel_probe && req.parallel_probe > 1 && candidates.length > 1) {
+        const N = Math.min(req.parallel_probe, candidates.length, 4);
+        try {
+          const winnerIdx = await this.raceParallelProbe(
+            candidates.slice(0, N),
+            startMs + req.max_latency_ms,
+          );
+          if (winnerIdx > 0 && winnerIdx < N) {
+            // Move the winner to position 0 (preserves original order beyond).
+            const [winner] = candidates.splice(winnerIdx, 1);
+            candidates.unshift(winner);
+            logger.debug(
+              { jobId, winner_url: winner.endpoint_url, parallel_n: N },
+              'Fulfill: parallel probe race winner reordered to head',
+            );
+          }
+        } catch (err) {
+          // All probes failed — fall through to serial loop, which will
+          // re-probe and produce per-candidate skip attempts as usual.
+          logger.debug(
+            { jobId, error: err instanceof Error ? err.message : String(err) },
+            'Fulfill: parallel probe race surfaced no winner — falling back to serial',
+          );
+        }
+      }
+
       for (const cand of candidates) {
         // Latency budget — give up before the next candidate if we're already
         // over the agent's max_latency_ms.
@@ -539,6 +693,49 @@ export class FulfillService {
           });
           if (!stored) {
             logger.warn({ jobId }, 'Fulfill: settleSuccess affected 0 rows — race detected');
+          }
+          // Phase 9.4 — reward delivery_ok with +1 reputation sat. Auto-repay
+          // any prior borrow that was used to fund this very call (deficit
+          // covered, agent net : balance + earnings).
+          if (this.deps.agentCreditRepo) {
+            try {
+              await this.deps.agentCreditRepo.incrementOnSuccess(req.agent_pubkey, this.now());
+              if (creditBorrowed > 0) {
+                await this.deps.agentCreditRepo.repay(req.agent_pubkey, creditBorrowed, this.now());
+              }
+            } catch (err) {
+              logger.error(
+                { jobId, error: err instanceof Error ? err.message : String(err) },
+                'Fulfill: agent_credits update failed (continuing — non-fatal)',
+              );
+            }
+          }
+          // Phase 9.3 — write to cache for cross-agent amortization. TTL
+          // depends on category : volatile categories (bitcoin) get short
+          // TTL ; stable docs (data/government) longer. Hard-coded for v1.
+          if (this.deps.intentCacheRepo) {
+            try {
+              const ttlSec = ttlForCategory(req.intent.category);
+              await this.deps.intentCacheRepo.create({
+                intent_hash: intentHash,
+                body: attempt.detail ?? '',
+                body_sha256: bodyHash,
+                source_job_id: jobId,
+                source_attempt_index: attempts.length - 1,
+                source_candidate_url: cand.endpoint_url,
+                source_operator_pubkey: cand.operator_pubkey,
+                source_preimage: attempt.preimage ?? '',
+                source_sats_paid: attempt.sats_paid,
+                source_agent_pubkey: req.agent_pubkey,
+                created_at: this.now(),
+                expires_at: this.now() + ttlSec,
+              });
+            } catch (err) {
+              logger.error(
+                { jobId, error: err instanceof Error ? err.message : String(err) },
+                'Fulfill: intent_result_cache.create failed (continuing — non-fatal)',
+              );
+            }
           }
           return {
             status: 'success',
@@ -961,6 +1158,45 @@ export class FulfillService {
       reserve_sats_max: reserve,
       circuit_breaker_open: circuitOpen,
     };
+  }
+
+  /** Phase 9.1 — race fetchSafeExternal probes on N candidates, return the
+   *  index (within the input slice) of the first one that returned 402 with
+   *  a parseable L402 challenge. Throws when none succeed. The promises
+   *  not-yet-resolved are not cancelled (their fetches will complete and
+   *  drop on the floor) ; AbortSignal.timeout caps each at deadline. */
+  private async raceParallelProbe(
+    cands: IntentCandidate[],
+    deadlineMs: number,
+  ): Promise<number> {
+    const probes = cands.map((cand, idx) => (async () => {
+      const remaining = Math.max(50, deadlineMs - Date.now());
+      const url = cand.endpoint_url;
+      const method = cand.http_method;
+      const resp = await this.fetchImpl(url, {
+        method,
+        signal: AbortSignal.timeout(Math.min(FETCH_TIMEOUT_MS, remaining)),
+        headers: {
+          'User-Agent': 'SatRank-Fulfill/1.0',
+          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(method === 'POST' ? { body: '{}' } : {}),
+      });
+      if (resp.status !== 402) {
+        throw new Error(`probe[${idx}] ${url} → ${resp.status}`);
+      }
+      const wwwAuth = resp.headers.get('www-authenticate');
+      const challenge = parseL402Challenge(wwwAuth);
+      if (!challenge) {
+        throw new Error(`probe[${idx}] ${url} no_l402_challenge`);
+      }
+      // Best-effort body discard so the connection can be reused.
+      try { await resp.body?.cancel(); } catch { /* ignore */ }
+      return idx;
+    })());
+    // Promise.any returns the first fulfilled promise ; rejections are
+    // ignored unless ALL reject (AggregateError, which we throw upward).
+    return await Promise.any(probes);
   }
 
   private async attemptCandidate(
@@ -1464,6 +1700,18 @@ export class FulfillService {
     );
     return (rowCount ?? 0) === 1;
   }
+}
+
+/** Phase 9.3 — cache TTL per category. Volatile categories get short TTL ;
+ *  stable categories longer. Hard-cap 1 hour. Defaults to 5 min. */
+function ttlForCategory(category: string): number {
+  const c = category.toLowerCase();
+  if (c.startsWith('bitcoin') || c.startsWith('crypto') || c.includes('price') || c.includes('exchange')) return 30;
+  if (c.startsWith('data/finance') || c.startsWith('data/markets')) return 60;
+  if (c.includes('news') || c.startsWith('search')) return 300;
+  if (c.startsWith('data/government') || c.startsWith('data/legal')) return 1800;
+  if (c.startsWith('ai')) return 600;  // LLM responses cached 10 min
+  return 300;  // 5 min default
 }
 
 /** Premium formula. Floor 1 sat, scales 10% × invoice × (1 - p_e2e_pess). */

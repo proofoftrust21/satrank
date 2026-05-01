@@ -50,6 +50,8 @@ const fulfillRequestSchema = z.object({
       'must match `<op>:<arg>` for op in {min_bytes,content_type,has_field,contains}',
     ),
   ).max(10).optional(),
+  // Phase 9.1 — speculative parallel probe. Default 1 (serial). Range [1,4].
+  parallel_probe: z.number().int().min(1).max(4).optional(),
   // Phase 6 — payment mode. 'deposit' uses the custodial token_balance
   // path (Phase 1 default); 'hold' uses a Lightning hold invoice the
   // agent pays per-call (non-custodial). Defaults to 'deposit' for
@@ -125,6 +127,9 @@ export interface FulfillControllerDeps {
    *  / FULFILL_RATE_REFILL_PER_SEC env vars at construction time. */
   rateBucketSize?: number;
   rateRefillPerSec?: number;
+  /** Phase 9.2 — capability token service for Bearer-token bypass of the
+   *  per-call NIP-98 round-trip. Optional ; absent = NIP-98 only. */
+  capabilityTokens?: import('../services/capabilityTokenService').CapabilityTokenService;
 }
 
 export class FulfillController {
@@ -133,13 +138,67 @@ export class FulfillController {
   private readonly bucketSize: number;
   private readonly refillPerSec: number;
   private readonly buckets = new Map<string, RateBucketState>();
+  private readonly capabilityTokens?: import('../services/capabilityTokenService').CapabilityTokenService;
 
   constructor(deps: FulfillControllerDeps) {
     this.fulfillService = deps.fulfillService;
     this.enabled = deps.enabled;
     this.bucketSize = deps.rateBucketSize ?? envInt('FULFILL_RATE_BUCKET', 5);
     this.refillPerSec = deps.rateRefillPerSec ?? envFloat('FULFILL_RATE_REFILL_PER_SEC', 0.5);
+    this.capabilityTokens = deps.capabilityTokens;
   }
+
+  /** Phase 9.2 — Bearer token alternative to NIP-98 ; resolves the
+   *  capability and returns the underlying agent_pubkey on success. */
+  private resolveAuth(authHeader: string | undefined): { agent_pubkey: string } | null {
+    if (!authHeader || !this.capabilityTokens) return null;
+    const m = authHeader.match(/^Bearer\s+([0-9a-f]{64})$/i);
+    if (!m) return null;
+    const cap = this.capabilityTokens.consume(m[1]);
+    if (!cap) return null;
+    return { agent_pubkey: cap.agent_pubkey };
+  }
+
+  /** POST /api/fulfill/session — exchange a NIP-98 envelope for a short-lived
+   *  Bearer token. Bypass of per-call NIP-98 dance for SLA-critical agents.
+   *  Body : { ttl_sec?: number, max_calls?: number }. Returns { token,
+   *  expires_at, max_calls }. */
+  issueSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!this.enabled || !this.capabilityTokens) {
+        res.status(503).json({ error: 'fulfill_disabled' });
+        return;
+      }
+      const authHeader = req.headers.authorization;
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody ?? null;
+      const auth = await verifyNip98(authHeader, 'POST', this.fullUrl(req), rawBody);
+      if (!auth.valid || !auth.pubkey) {
+        res.status(401).json({ error: 'invalid_auth' });
+        return;
+      }
+      const sessionSchema = z.object({
+        ttl_sec: z.number().int().min(60).max(1800).optional(),
+        max_calls: z.number().int().min(1).max(500).optional(),
+      });
+      const parsed = sessionSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new ValidationError(formatZodError(parsed.error, req.body));
+      }
+      const cap = this.capabilityTokens.issue({
+        agent_pubkey: auth.pubkey,
+        ttl_sec: parsed.data.ttl_sec,
+        max_calls: parsed.data.max_calls,
+      });
+      res.status(200).json({
+        token: cap.token,
+        expires_at: cap.expires_at,
+        max_calls: cap.max_calls,
+        token_type: 'Bearer',
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
 
   /** Build the absolute URL the NIP-98 client should have signed. */
   private fullUrl(req: Request): string {
@@ -325,19 +384,27 @@ export class FulfillController {
         return;
       }
 
-      // Step 1 — NIP-98 auth, agent_pubkey provenance.
+      // Step 1 — auth. Phase 9.2 fast-path : Bearer capability token first
+      // (single ~5µs Map lookup), fall back to full NIP-98 verification on
+      // miss. Both surfaces yield the same agent_pubkey provenance.
       const authHeader = req.headers.authorization;
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody ?? null;
-      const auth = await verifyNip98(authHeader, 'POST', this.fullUrl(req), rawBody);
-      if (!auth.valid || !auth.pubkey) {
-        logger.warn(
-          { detail: auth.detail, route: '/api/fulfill' },
-          'NIP-98 rejected on /api/fulfill',
-        );
-        res.status(401).json({ error: 'invalid_auth', message: 'NIP-98 verification failed' });
-        return;
+      let agentPubkey: string;
+      const cap = this.resolveAuth(authHeader);
+      if (cap) {
+        agentPubkey = cap.agent_pubkey;
+      } else {
+        const auth = await verifyNip98(authHeader, 'POST', this.fullUrl(req), rawBody);
+        if (!auth.valid || !auth.pubkey) {
+          logger.warn(
+            { detail: auth.detail, route: '/api/fulfill' },
+            'NIP-98 rejected on /api/fulfill',
+          );
+          res.status(401).json({ error: 'invalid_auth', message: 'NIP-98 verification failed' });
+          return;
+        }
+        agentPubkey = auth.pubkey;
       }
-      const agentPubkey = auth.pubkey;
 
       // Step 2 — body validation.
       const parsed = fulfillRequestSchema.safeParse(req.body);
@@ -375,6 +442,7 @@ export class FulfillController {
         mode: body.mode,
         refund_bolt11: body.refund_bolt11,
         validators: body.validators,
+        parallel_probe: body.parallel_probe,
       });
 
       switch (result.status) {

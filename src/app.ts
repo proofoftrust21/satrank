@@ -77,6 +77,9 @@ import { EvidenceService } from './services/evidenceService';
 import { EvidenceController } from './controllers/evidenceController';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
+import { AgentCreditRepository } from './repositories/agentCreditRepository';
+import { IntentResultCacheRepository } from './repositories/intentResultCacheRepository';
+import { CapabilityTokenService } from './services/capabilityTokenService';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -358,6 +361,12 @@ export function createApp() {
     claimRepo: agentClaimRepo,
     bondRepo: operatorBondRepo,
   });
+  // Phase 9.4 — agent credit line.
+  const agentCreditRepo = new AgentCreditRepository(pool);
+  // Phase 9.3 — intent-keyed result cache.
+  const intentCacheRepo = new IntentResultCacheRepository(pool);
+  // Phase 9.2 — capability token in-memory store for Bearer bypass.
+  const capabilityTokens = new CapabilityTokenService();
   // Phase 8.1 (2026-05-01) — Ed25519 signer. Loads from SATRANK_SIGNING_SK/PK
   // env. Disabled (returns 503 from /api/.well-known/satrank-key + evidence
   // endpoints) when not configured — fully back-compat with pre-Phase-8 prod.
@@ -389,10 +398,14 @@ export function createApp() {
     poolAccounting,
     holdInvoiceService,
     claimEngine,
+    agentCreditRepo,
+    intentCacheRepo,
+    signer: signerService,
   });
   const fulfillController = new FulfillController({
     fulfillService,
     enabled: process.env.FULFILL_ENABLED === 'true',
+    capabilityTokens,
   });
   const claimController = new ClaimController({
     claimRepo: agentClaimRepo,
@@ -516,6 +529,30 @@ export function createApp() {
         logger.error(
           { error: err instanceof Error ? err.message : String(err) },
           'ClaimEngine: payout cron threw — will retry',
+        );
+      }
+      // Phase 9.2 — capability token in-memory cache prune.
+      try {
+        const dropped = capabilityTokens.pruneExpired();
+        if (dropped > 0) {
+          logger.info({ dropped, remaining: capabilityTokens.size() }, 'CapabilityTokenService: pruned expired tokens');
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'CapabilityTokenService: prune threw',
+        );
+      }
+      // Phase 9.3 — intent_result_cache prune of expired rows.
+      try {
+        const pruned = await intentCacheRepo.pruneExpired(Math.floor(Date.now() / 1000));
+        if (pruned > 0) {
+          logger.info({ pruned }, 'IntentResultCache: pruned expired rows');
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'IntentResultCache: prune cron threw',
         );
       }
       // Phase 8.4 — operator domain attestation crawler. Verifies pending
@@ -925,6 +962,8 @@ export function createApp() {
   // Phase 6 — second step of hold-invoice mode. Agent paid the invoice
   // returned by /fulfill (mode=hold), now triggers orchestrator.
   api.post('/fulfill/:job_id/execute', discoveryRateLimit, fulfillController.executeHold);
+  // Phase 9.2 — capability/session token issuance.
+  api.post('/fulfill/session', discoveryRateLimit, fulfillController.issueSession);
   // Phase 2 — operator NIP-98 dispute against Tier 2 refund classifications.
   // Same discoveryRateLimit ceiling. Owner verification + uniqueness +
   // disputability check happen inside the controller.
