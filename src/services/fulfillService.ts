@@ -89,6 +89,12 @@ export type FulfillSuccess = {
   attempts: FulfillAttempt[];
   sats_spent: number;
   premium_sats: number;
+  /** Sim 9 Fix 1 (2026-05-01) — sha256 of the delivered body, hex. Already
+   *  computed server-side and stored in fulfill_jobs.result_body_sha256.
+   *  Compliance / lineage agents (Sim 9 a08, a09, a10) need this to bind
+   *  the body cryptographically to the preimage without recomputing client-
+   *  side. Returned on `success` only (refunded paths never deliver a body). */
+  body_sha256?: string;
   /** Phase 6.1 — populated when mode='hold' and we settled a residue refund.
    *  refund_state telegrams the outbound-pay outcome to the SDK so agents can
    *  detect a stuck residue (failed_absorbed) without polling. Absent for
@@ -483,7 +489,9 @@ export class FulfillService {
           continue;
         }
 
-        const attempt = await this.attemptCandidate(cand, req.max_sats - satsSpent, schemaJson);
+        // Sim 9 Fix 2 — pass absolute deadline so attemptCandidate can bound
+        // its fetch + payInvoice + recall timeouts to remaining budget.
+        const attempt = await this.attemptCandidate(cand, req.max_sats - satsSpent, schemaJson, startMs + req.max_latency_ms);
         attempts.push(attempt);
 
         if (attempt.payment_outcome === 'pay_ok' && attempt.delivery_outcome === 'delivery_ok') {
@@ -525,6 +533,7 @@ export class FulfillService {
             attempts,
             sats_spent: finalSpent,
             premium_sats: premium,
+            body_sha256: bodyHash,
           };
         }
         // Attempt failed — paid? (then absorb), or not paid? (no impact).
@@ -662,6 +671,7 @@ export class FulfillService {
         attempts: job.attempts,
         sats_spent: job.sats_spent,
         premium_sats: job.premium_sats,
+        body_sha256: job.result_body_sha256 ?? undefined,
       };
     }
     if (job.status === 'refunded' || job.status === 'aborted') {
@@ -733,7 +743,8 @@ export class FulfillService {
           attempts.push(this.skippedAttempt(cand, 'over_max_sats_hint'));
           continue;
         }
-        const attempt = await this.attemptCandidate(cand, job.max_sats - satsSpent, schemaJson);
+        // Sim 9 Fix 2 — pass deadline (hold mode same as deposit).
+        const attempt = await this.attemptCandidate(cand, job.max_sats - satsSpent, schemaJson, startMs + job.max_latency_ms);
         attempts.push(attempt);
 
         if (attempt.payment_outcome === 'pay_ok' && attempt.delivery_outcome === 'delivery_ok') {
@@ -836,6 +847,7 @@ export class FulfillService {
             premium_sats: premium,
             residue_sats: residueSats,
             refund_state: refundState,
+            body_sha256: bodyHash,
           };
         }
 
@@ -913,10 +925,25 @@ export class FulfillService {
     cand: IntentCandidate,
     budgetSatsRemaining: number,
     schemaJson?: object,
+    deadlineMs?: number,
   ): Promise<FulfillAttempt> {
     const url = cand.endpoint_url;
     const method = cand.http_method;
     const ts_started = this.now();
+
+    // Sim 9 Fix 2 (2026-05-01) — hard deadline enforcement. The orchestrator
+    // passes an absolute deadlineMs; each I/O step uses the lesser of its
+    // default timeout and the remaining budget. This stops a single slow
+    // candidate from blowing through the agent's max_latency_ms.
+    //
+    // remainingMs() returns the budget left (or default fetch timeout when
+    // no deadline was passed). Always returns a positive integer so
+    // AbortSignal.timeout never gets 0 (which fires immediately).
+    const remainingMs = (defaultMs: number): number => {
+      if (deadlineMs == null) return defaultMs;
+      const left = deadlineMs - Date.now();
+      return Math.max(50, Math.min(defaultMs, left));
+    };
 
     // Step 1 — challenge fetch. Same shape as paidProbeRunner.probeOne so
     // we get identical SSRF + timeout + content-type semantics.
@@ -924,7 +951,7 @@ export class FulfillService {
     try {
       firstResp = await this.fetchImpl(url, {
         method,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(remainingMs(FETCH_TIMEOUT_MS)),
         headers: {
           'User-Agent': 'SatRank-Fulfill/1.0',
           ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
@@ -1031,7 +1058,9 @@ export class FulfillService {
         sats_paid: 0,
       });
     }
-    const pay = await this.deps.lndClient.payInvoice(challenge.invoice, 10, PAY_TIMEOUT_DEFAULT_SEC);
+    // Sim 9 Fix 2 — bound payInvoice timeout to remaining budget too.
+    const paySec = Math.max(1, Math.ceil(remainingMs(PAY_TIMEOUT_DEFAULT_SEC * 1000) / 1000));
+    const pay = await this.deps.lndClient.payInvoice(challenge.invoice, 10, paySec);
     if (pay.paymentError || !pay.paymentPreimage) {
       const detail = pay.paymentError ?? 'no preimage returned';
       const isRouting = /no.?route|no_route|FAILURE_REASON_NO_ROUTE|insufficient/i.test(detail);
@@ -1064,13 +1093,13 @@ export class FulfillService {
       });
     }
 
-    // Step 4 — recall with L402 token.
+    // Step 4 — recall with L402 token. Sim 9 Fix 2 — bounded by remaining budget.
     const token = `L402 ${challenge.macaroon}:${pay.paymentPreimage}`;
     let recallResp: Response;
     try {
       recallResp = await this.fetchImpl(url, {
         method,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(remainingMs(FETCH_TIMEOUT_MS)),
         headers: {
           'User-Agent': 'SatRank-Fulfill/1.0',
           Authorization: token,

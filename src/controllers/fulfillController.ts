@@ -227,6 +227,7 @@ export class FulfillController {
             premium_sats: result.premium_sats,
             residue_sats: result.residue_sats,
             refund_state: result.refund_state,
+            body_sha256: result.body_sha256,
           });
           return;
         case 'refunded':
@@ -378,6 +379,7 @@ export class FulfillController {
             premium_sats: result.premium_sats,
             residue_sats: result.residue_sats,
             refund_state: result.refund_state,
+            body_sha256: result.body_sha256,
           });
           return;
         case 'refunded':

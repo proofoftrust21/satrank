@@ -37,6 +37,11 @@ export type IntentOptimizeAxis = 'p_success' | 'latency' | 'reliability' | 'cost
  *  puisse vérifier ce que le serveur a effectivement résolu. */
 export interface ResolvedIntent {
   category: string;
+  /** Sim 9 Fix 3 (2026-05-01) — populated when the requested category was
+   *  empty and a synonym fallback was used. Absent when the requested
+   *  category itself returned candidates. Lets clients debug "I asked for
+   *  finance and got data/finance results". */
+  resolved_category?: string;
   keywords: string[];
   budget_sats: number | null;
   max_latency_ms: number | null;

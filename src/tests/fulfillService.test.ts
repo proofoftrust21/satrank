@@ -232,6 +232,9 @@ describe('FulfillService', () => {
     expect(result.candidate_url).toBe(url);
     expect(result.sats_spent).toBe(5);
     expect(result.premium_sats).toBeGreaterThanOrEqual(1);
+    // Sim 9 Fix 1 — body_sha256 returned in success response so compliance
+    // agents can bind body to preimage without recomputing client-side.
+    expect(result.body_sha256).toMatch(/^[0-9a-f]{64}$/);
 
     // Agent balance was debited atomically.
     const { rows } = await pool.query<{ b: string }>(

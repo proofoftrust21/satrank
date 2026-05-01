@@ -90,6 +90,43 @@ const FRESHNESS_VERY_STALE_THRESHOLD_SEC = 24 * 60 * 60;
  *  verdict semantics. */
 const IS_MEANINGFUL_MIN_N_OBS = 3;
 
+/** Sim 9 Fix 3 (2026-05-01) — common-vocabulary aliases. Maps user-typed
+ *  category names to the canonical taxonomy. Order matters — first match
+ *  with non-empty pool wins (see resolveIntent). Lowercase keys; we lower
+ *  the input before lookup. */
+const CATEGORY_SYNONYMS: Record<string, string[]> = {
+  finance: ['data/finance'],
+  crypto: ['bitcoin'],
+  llm: ['ai/text', 'ai'],
+  language: ['ai/text', 'ai'],
+  text: ['ai/text', 'ai'],
+  image: ['ai/image', 'ai'],
+  code: ['ai/code', 'ai'],
+  weather: ['data', 'energy/intelligence'],
+  news: ['data'],
+  market: ['data/finance', 'data'],
+  stocks: ['data/finance'],
+  forex: ['data/finance'],
+  exchange: ['data/finance'],
+  search: ['tools/search', 'search'],
+  'data/news': ['data'],
+};
+
+/** Sim 9 Fix 3 — return ordered list of categories to try for a given user
+ *  input. The exact input goes first (preserves backwards compat for clients
+ *  that already use canonical taxonomy), then synonym alternatives. */
+export function expandCategory(input: string): string[] {
+  const lc = input.toLowerCase();
+  const synonyms = CATEGORY_SYNONYMS[lc] ?? [];
+  // Dedupe while preserving order.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of [input, ...synonyms]) {
+    if (!seen.has(c)) { seen.add(c); out.push(c); }
+  }
+  return out;
+}
+
 function freshnessStatusFromAge(ageSec: number | null): FreshnessStatus {
   if (ageSec == null) return 'very_stale';
   if (ageSec < FRESHNESS_RECENT_THRESHOLD_SEC) return 'fresh';
@@ -247,13 +284,30 @@ export class IntentService {
     // `p_success` (Bayesian) preserves Phase 5.6 behavior. Other axes
     // dispatch to deterministic ORDER BYs against existing columns.
     const optimize = req.optimize ?? 'p_success';
-    const poolResult = await this.deps.serviceEndpointRepo.findServices({
-      category: req.category,
-      sort: optimize,
-      limit: MAX_POOL_SCAN,
-      offset: 0,
-    });
-    const pool = poolResult.services;
+
+    // Sim 9 Fix 3 (2026-05-01) — category synonym fallback. Sim 9 a02 used
+    // "finance" (no canonical match) and a03 used "weather" (zero coverage),
+    // both received opaque no_candidates_for_intent. Try the requested
+    // category first; if empty, fall through to the next synonym in
+    // CATEGORY_SYNONYMS so common-vocabulary mismatches still produce
+    // a candidate set. The chosen-category is reported in the response
+    // so the agent can adjust.
+    const categoriesToTry = expandCategory(req.category);
+    let pool: ServiceEndpoint[] = [];
+    let resolvedCategory = req.category;
+    for (const cat of categoriesToTry) {
+      const r = await this.deps.serviceEndpointRepo.findServices({
+        category: cat,
+        sort: optimize,
+        limit: MAX_POOL_SCAN,
+        offset: 0,
+      });
+      if (r.services.length > 0) {
+        pool = r.services;
+        resolvedCategory = cat;
+        break;
+      }
+    }
 
     // Filter matches — sequential because each iteration may hit the DB for
     // median latency. Keep order deterministic and respect pool-max.
@@ -340,6 +394,8 @@ export class IntentService {
     const response: IntentResponse = {
       intent: {
         category: req.category,
+        // Sim 9 Fix 3 — only populate when synonym fallback was used.
+        ...(resolvedCategory !== req.category ? { resolved_category: resolvedCategory } : {}),
         keywords,
         budget_sats: req.budget_sats ?? null,
         max_latency_ms: req.max_latency_ms ?? null,
