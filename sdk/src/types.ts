@@ -469,3 +469,27 @@ export interface SatRankOptions {
   /** Request timeout for individual API calls (ms). Default 10_000. */
   request_timeout_ms?: number;
 }
+
+
+/** SDK 1.5.0 (Phase 8.3) — SatRank-signed evidence receipt for a successful
+ *  fulfill_jobs.job_id. Verifiers fetch SatRank's pubkey from
+ *  /.well-known/satrank-key and validate offline. */
+export interface EvidenceReceipt {
+  receipt_id: number;
+  job_id: string;
+  attempt_index: number;
+  /** Canonical (deterministic-key-order) JSON the signature was computed
+   *  over. Verifiers reconstruct + sha256 + ed25519.verify against
+   *  satrank_pubkey. */
+  payload_canonical_json: string;
+  payload_sha256: string;
+  signature_b64: string;
+  satrank_pubkey: string;
+  signed_at_iso: string;
+  /** Optional RFC-3161 timestamp authority countersignature (Phase 8.2.1+). */
+  tsa_token_b64: string | null;
+  tsa_authority_url: string | null;
+  algorithm: 'ed25519';
+  verifier_doc: string;
+  well_known_pubkey_url: string;
+}

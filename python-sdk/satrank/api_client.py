@@ -213,6 +213,24 @@ class ApiClient:
             authorization=authorization,
         )
 
+    async def get_evidence(
+        self,
+        *,
+        job_id: str,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """SDK 1.5.0 (Phase 8.3) — fetch the SatRank-signed evidence receipt
+        for a successful fulfill_jobs.job_id. NIP-98 by the agent_pubkey owning
+        the job. Server lazy-issues + caches; subsequent GETs return the same
+        signed bytes.
+        """
+        wrapped = await self._request(
+            "GET",
+            f"/api/fulfill/{quote(job_id, safe='')}/evidence",
+            extra_headers={"Authorization": authorization},
+        )
+        return wrapped.get("data", wrapped)
+
     async def post_fulfill_quote(
         self,
         *,

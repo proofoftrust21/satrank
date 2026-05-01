@@ -39,6 +39,8 @@ export type {
   ProxyFulfillQuoteCandidate,
   // SDK 1.4.0 — hold-invoice mode (Phase 6)
   ProxyFulfillExecuteInput,
+  // SDK 1.5.0 — evidence receipts (Phase 8.3)
+  EvidenceReceipt,
 } from './types';
 
 export {

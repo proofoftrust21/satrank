@@ -1,6 +1,6 @@
 {
   "name": "@satrank/sdk",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "SatRank SDK: sr.fulfill() + sr.proxyFulfill() (deposit + hold modes) + sr.register() for autonomous agents on Bitcoin Lightning",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

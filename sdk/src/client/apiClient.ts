@@ -16,6 +16,7 @@ import type {
   ProxyFulfillInput,
   ProxyFulfillResult,
   ProxyFulfillQuoteResult,
+  EvidenceReceipt,
 } from '../types';
 
 export interface ApiClientOptions {
@@ -137,6 +138,22 @@ export class ApiClient {
       body,
       authorizationHeader,
     );
+  }
+
+  /** SDK 1.5.0 (Phase 8.3) — fetch the SatRank-signed evidence receipt for
+   *  a successful job. NIP-98-gated: the agent who originated the job must
+   *  sign with their pubkey. Server lazy-issues + caches the receipt. */
+  async getEvidence(
+    jobId: string,
+    authorizationHeader: string,
+  ): Promise<EvidenceReceipt> {
+    const wrapped = await this.request<{ data: EvidenceReceipt }>(
+      'GET',
+      `/api/fulfill/${encodeURIComponent(jobId)}/evidence`,
+      undefined,
+      { customAuthorization: authorizationHeader },
+    );
+    return wrapped.data;
   }
 
   /** SDK 1.3.0 — preview a fulfill without engagement. No NIP-98 (read-only)

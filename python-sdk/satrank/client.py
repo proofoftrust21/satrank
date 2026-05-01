@@ -228,6 +228,30 @@ class SatRank:
         :meth:`proxy_fulfill`. SDK 1.2.0."""
         return f"{self._api_base}/api/fulfill"
 
+    async def evidence(
+        self,
+        *,
+        job_id: str,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """SDK 1.5.0 (Phase 8.3) — fetch SatRank-signed evidence receipt.
+
+        Returns a dict with payload_canonical_json + payload_sha256 +
+        signature_b64 + satrank_pubkey + signed_at_iso. Fetch SatRank's
+        public key once from /.well-known/satrank-key (no auth) and verify
+        offline with any Ed25519 library.
+
+        NIP-98 sign for ``evidence_endpoint(job_id)`` with method='GET'.
+        Body is empty.
+        """
+        return await self._api.get_evidence(job_id=job_id, authorization=authorization)
+
+    def evidence_endpoint(self, job_id: str) -> str:
+        """SDK 1.5.0 — canonical URL the NIP-98 ``u`` tag must contain when
+        calling :meth:`evidence`."""
+        from urllib.parse import quote
+        return f"{self._api_base}/api/fulfill/{quote(job_id, safe='')}/evidence"
+
     def fulfill_execute_endpoint(self, job_id: str) -> str:
         """SDK 1.4.0 — canonical URL the NIP-98 ``u`` tag must contain when
         calling :meth:`proxy_fulfill_execute`. ``job_id`` comes from the

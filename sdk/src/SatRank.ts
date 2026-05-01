@@ -15,6 +15,7 @@ import type {
   ProxyFulfillResult,
   ProxyFulfillQuoteResult,
   ProxyFulfillExecuteInput,
+  EvidenceReceipt,
 } from './types';
 
 interface InternalOptions {
@@ -190,6 +191,25 @@ export class SatRank {
    *  response (status='hold_invoice_required'). */
   fulfillExecuteEndpoint(jobId: string): string {
     return `${this.options.apiBase}/api/fulfill/${encodeURIComponent(jobId)}/execute`;
+  }
+
+  /** SDK 1.5.0 (Phase 8.3) — fetch the SatRank-signed evidence receipt for
+   *  a successful fulfill_jobs.job_id. Receipt binds preimage + body_sha256
+   *  + intent_hash + operator_pubkey + timestamps under SatRank's Ed25519
+   *  identity. Verifiers fetch the public key from /.well-known/satrank-key
+   *  and validate offline.
+   *
+   *  NIP-98 sign for `evidenceEndpoint(jobId)` with method='GET'. Body is empty.
+   *  The receipt is lazy-issued + cached server-side, so re-calling returns
+   *  the same signed bytes. */
+  async evidence(input: { job_id: string; authorization: string }): Promise<EvidenceReceipt> {
+    return this.api.getEvidence(input.job_id, input.authorization);
+  }
+
+  /** SDK 1.5.0 — canonical URL agents must sign in their NIP-98 `u` tag for
+   *  evidence(). */
+  evidenceEndpoint(jobId: string): string {
+    return `${this.options.apiBase}/api/fulfill/${encodeURIComponent(jobId)}/evidence`;
   }
 
   _options(): Readonly<InternalOptions> {

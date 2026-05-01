@@ -71,6 +71,12 @@ import { AgentClaimRepository } from './repositories/agentClaimRepository';
 import { OperatorBondService } from './services/operatorBondService';
 import { ClaimEngine } from './services/claimEngine';
 import { ClaimController } from './controllers/claimController';
+import { SignerService } from './services/signerService';
+import { EvidenceReceiptRepository } from './repositories/evidenceReceiptRepository';
+import { EvidenceService } from './services/evidenceService';
+import { EvidenceController } from './controllers/evidenceController';
+import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
+import { OperatorAttestationService } from './services/operatorAttestationService';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -352,6 +358,27 @@ export function createApp() {
     claimRepo: agentClaimRepo,
     bondRepo: operatorBondRepo,
   });
+  // Phase 8.1 (2026-05-01) — Ed25519 signer. Loads from SATRANK_SIGNING_SK/PK
+  // env. Disabled (returns 503 from /api/.well-known/satrank-key + evidence
+  // endpoints) when not configured — fully back-compat with pre-Phase-8 prod.
+  const signerService = new SignerService();
+  // Phase 8.3 — evidence receipt service + controller.
+  const evidenceReceiptRepo = new EvidenceReceiptRepository(pool);
+  const evidenceService = new EvidenceService({
+    fulfillJobRepo,
+    receiptRepo: evidenceReceiptRepo,
+    signer: signerService,
+  });
+  const evidenceController = new EvidenceController({
+    evidenceService,
+    fulfillJobRepo,
+    enabled: process.env.FULFILL_ENABLED === 'true',
+  });
+  // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
+  const operatorAttestationRepo = new OperatorAttestationRepository(pool);
+  const operatorAttestationService = new OperatorAttestationService({
+    repo: operatorAttestationRepo,
+  });
   const fulfillService = new FulfillService({
     pool,
     fulfillJobRepo,
@@ -491,6 +518,19 @@ export function createApp() {
           'ClaimEngine: payout cron threw — will retry',
         );
       }
+      // Phase 8.4 — operator domain attestation crawler. Verifies pending
+      // declarations + re-verifies expiring ones via DNS TXT records.
+      try {
+        const att = await operatorAttestationService.runVerificationCycle();
+        if (att.verified + att.failed > 0) {
+          logger.info(att, 'OperatorAttestationService: verification cycle complete');
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'OperatorAttestationService: verification cycle threw',
+        );
+      }
       // Phase 7.5 — surface underfunded operators (logging only for v1 ; the
       // catalogue ranking integration is a Phase 7.5.1 follow-up).
       try {
@@ -602,6 +642,26 @@ export function createApp() {
       relays: {
         '5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4': [...DEFAULT_NOSTR_RELAYS],
       },
+    });
+  });
+
+  // Phase 8.1 (2026-05-01) — SatRank's Ed25519 signing public key for
+  // evidence-receipt verifiers. Public, no auth, no rate limit (response
+  // is static + small). Verifiers fetch this once and cache.
+  app.get('/.well-known/satrank-key', (_req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    const pk = signerService.publicKeyHex();
+    if (!pk) {
+      res.status(503).json({ error: 'signing_disabled', message: 'SatRank signer is not configured' });
+      return;
+    }
+    res.json({
+      satrank_pubkey: pk,
+      algorithm: 'ed25519',
+      use: 'evidence_receipt',
+      verifier_doc: 'https://satrank.dev/docs/evidence-verification',
     });
   });
 
@@ -874,6 +934,8 @@ export function createApp() {
   // POST is NIP-98 by the operator owning the bond.
   api.post('/operator/claim/:claim_id/dispute', discoveryRateLimit, claimController.fileDispute);
   api.get('/oracle/claims', discoveryRateLimit, claimController.oracleClaims);
+  // Phase 8.3 — evidence receipt for compliance/regulator agents.
+  api.get('/fulfill/:job_id/evidence', discoveryRateLimit, evidenceController.show);
   // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator
   // identity), GET is free for agents to inspect a schema before fulfill.
   // List endpoint exposes the 50 most recent so newcomers can discover
