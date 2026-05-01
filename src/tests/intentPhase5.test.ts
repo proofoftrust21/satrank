@@ -354,18 +354,19 @@ describe('Phase 5 — median_latency_ms fallback', async () => {
 /** Scrub fields that depend on Date.now() — the alias-vs-canonical-route
  *  contract is shape-equality, not wall-clock equality. Two requests issued
  *  ~ms apart can compute different age-from-now values when they straddle
- *  a second boundary on fast CI runners. */
+ *  a second boundary on fast CI runners. Recursive: strips any key matching
+ *  /(?:age|elapsed)_?sec|_age$|_at_iso$|generated_at|asOf|as_of/i at any
+ *  depth, plus any value that looks like a recent epoch second/ms. */
+const VOLATILE_KEY_RE = /(?:age|elapsed)_?sec|_age$|_at_iso$|generated_at|asOf|as_of/i;
 function stripVolatileEndpointFields(body: unknown): unknown {
+  if (Array.isArray(body)) return body.map(stripVolatileEndpointFields);
   if (!body || typeof body !== 'object') return body;
-  const data = (body as { data?: unknown }).data;
-  if (!data || typeof data !== 'object') return body;
-  const http = (data as { http?: { lastProbeAgeSec?: unknown } }).http;
-  if (http && 'lastProbeAgeSec' in http) {
-    const cleaned = { ...http };
-    delete (cleaned as Record<string, unknown>).lastProbeAgeSec;
-    return { ...(body as Record<string, unknown>), data: { ...(data as Record<string, unknown>), http: cleaned } };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (VOLATILE_KEY_RE.test(k)) continue;
+    out[k] = stripVolatileEndpointFields(v);
   }
-  return body;
+  return out;
 }
 
 describe('Phase 5 — /api/services/:url_hash alias', async () => {
