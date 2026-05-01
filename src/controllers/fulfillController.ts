@@ -112,6 +112,42 @@ export class FulfillController {
     return true;
   }
 
+  /** Phase 4 — POST /api/fulfill/quote. Preview without engagement.
+   *  Returns top candidates with invoice estimates + premium estimates so
+   *  the agent can decide whether to launch the actual fulfill. No NIP-98
+   *  required (read-only) but rate-limited the same way to deter scraping
+   *  the candidate-pricing surface. */
+  quote = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!this.enabled) {
+        res.status(503).json({
+          error: 'fulfill_disabled',
+          message: 'POST /api/fulfill/quote is gated behind FULFILL_ENABLED.',
+        });
+        return;
+      }
+      // Same body schema as /fulfill minus expected_schema_hash + max_latency_ms.
+      const quoteSchema = z.object({
+        intent: z.object({
+          category: z.string().min(1).max(64),
+          keywords: z.array(z.string().max(64)).max(10).optional(),
+          budget_sats: z.number().int().nonnegative().max(100000).optional(),
+          max_latency_ms: z.number().int().min(100).max(60000).optional(),
+          optimize: z.enum(['p_success', 'latency', 'reliability', 'cost']).optional(),
+        }),
+        max_sats: z.number().int().min(1).max(10000),
+      });
+      const parsed = quoteSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ValidationError(formatZodError(parsed.error, req.body));
+      }
+      const result = await this.fulfillService.quote(parsed.data);
+      res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  };
+
   handle = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!this.enabled) {
@@ -213,6 +249,18 @@ export class FulfillController {
             message: result.agent_age_bucket === 'fresh'
               ? 'fresh agents (<30d) are limited until trust accumulates'
               : 'daily cap reached — wait for the rolling window to refresh',
+          });
+          return;
+        case 'circuit_breaker_open':
+          // Phase 4 — pool exposure exceeded the safe floor. Refuse new
+          // jobs so SatRank doesn't take on more risk than capital backs.
+          // /api/oracle/fulfill exposes the live balance for diagnostics.
+          res.status(503).json({
+            error: 'circuit_breaker_open',
+            pool_balance_sats: result.pool_balance_sats,
+            min_pool_sats: result.min_pool_sats,
+            retry_after_sec: 300,
+            message: 'fulfill pool below safe floor — agents may retry once balance recovers (see /api/oracle/fulfill)',
           });
           return;
       }

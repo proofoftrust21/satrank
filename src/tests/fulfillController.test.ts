@@ -96,6 +96,7 @@ function buildApp(
   }));
   app.set('trust proxy', 1);
   app.post('/api/fulfill', controller.handle);
+  app.post('/api/fulfill/quote', controller.quote);
   app.use(errorHandler);
   return app;
 }
@@ -272,6 +273,73 @@ describe('/api/fulfill controller', () => {
     expect(res.body.error).toBe('insufficient_balance');
     expect(res.body.required_sats).toBe(11);
     expect(res.body.available_sats).toBe(3);
+  });
+
+  it('Phase 4 — POST /fulfill/quote returns 503 when feature flag is off', async () => {
+    const { service } = makeStubService({
+      status: 'success', job_id: 'x', body: 'b', preimage: 'p',
+      candidate_url: 'u', attempts: [], sats_spent: 0, premium_sats: 0,
+    });
+    const app = buildApp(service, false);
+    const res = await request(app).post('/api/fulfill/quote').send(BASE_BODY);
+    expect(res.status).toBe(503);
+  });
+
+  it('Phase 4 — POST /fulfill/quote dispatches to service.quote() and forwards data', async () => {
+    const calls: Array<{ intent: unknown; max_sats: number }> = [];
+    const stub = {
+      fulfill: async () => ({}) as never,
+      quote: async (req: { intent: unknown; max_sats: number }) => {
+        calls.push(req);
+        return {
+          candidates: [
+            {
+              rank: 1,
+              endpoint_url: 'https://x.example/a',
+              operator_pubkey: 'op-' + 'a'.repeat(60),
+              invoice_sats_estimate: 7,
+              premium_estimate: 1,
+              total_estimate: 8,
+              p_e2e: 0.7,
+              p_e2e_pessimistic: 0.5,
+              median_latency_ms: 50,
+            },
+          ],
+          reserve_sats_max: 11,
+          circuit_breaker_open: false,
+        };
+      },
+    };
+    const app = buildApp(stub as unknown as FulfillService, true);
+    const res = await request(app).post('/api/fulfill/quote').send(BASE_BODY);
+    expect(res.status).toBe(200);
+    expect(res.body.data.candidates).toHaveLength(1);
+    expect(res.body.data.candidates[0].total_estimate).toBe(8);
+    expect(res.body.data.reserve_sats_max).toBe(11);
+    expect(res.body.data.circuit_breaker_open).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].max_sats).toBe(BASE_BODY.max_sats);
+  });
+
+  it('Phase 4 — circuit_breaker_open from fulfill maps to 503 with breaker context', async () => {
+    const { service } = makeStubService({
+      status: 'circuit_breaker_open',
+      pool_balance_sats: -42,
+      min_pool_sats: 10000,
+    });
+    const app = buildApp(service, true);
+    const body = JSON.stringify(BASE_BODY);
+    const { auth } = signNip98(FULFILL_URL, 'POST', body);
+    const res = await request(app)
+      .post('/api/fulfill')
+      .set('Host', '127.0.0.1:80')
+      .set('Authorization', auth)
+      .set('Content-Type', 'application/json')
+      .send(body);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe('circuit_breaker_open');
+    expect(res.body.pool_balance_sats).toBe(-42);
+    expect(res.body.min_pool_sats).toBe(10000);
   });
 
   it('rate-limits more than the bucket size of fulfill calls per agent', async () => {

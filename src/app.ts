@@ -64,6 +64,7 @@ import { RefundEngine } from './services/refundEngine';
 import { DisputeController } from './controllers/disputeController';
 import { EndpointSchemaRepository } from './repositories/endpointSchemaRepository';
 import { SchemaController } from './controllers/schemaController';
+import { PoolAccountingService } from './services/poolAccountingService';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -321,6 +322,9 @@ export function createApp() {
   // Phase 3 — JSON Schema registry. fulfillService consumes when the
   // request carries expected_schema_hash.
   const endpointSchemaRepo = new EndpointSchemaRepository(pool);
+  // Phase 4 — pool accounting + circuit breaker. Reads premium_revenue
+  // from fulfill_jobs.success and sats_absorbed from refund_ledger.
+  const poolAccounting = new PoolAccountingService({ pool });
   const fulfillService = new FulfillService({
     pool,
     fulfillJobRepo,
@@ -328,6 +332,7 @@ export function createApp() {
     lndClient,
     refundEngine,
     endpointSchemaRepo,
+    poolAccounting,
   });
   const fulfillController = new FulfillController({
     fulfillService,
@@ -749,6 +754,9 @@ export function createApp() {
   // discoveryRateLimit ceiling as the rest of the surface; per-agent token
   // bucket inside the controller adds a finer-grained guard.
   api.post('/fulfill', discoveryRateLimit, fulfillController.handle);
+  // Phase 4 — preview the cost of a fulfill without engagement.
+  // Read-only, same rate ceiling as /fulfill.
+  api.post('/fulfill/quote', discoveryRateLimit, fulfillController.quote);
   // Phase 2 — operator NIP-98 dispute against Tier 2 refund classifications.
   // Same discoveryRateLimit ceiling. Owner verification + uniqueness +
   // disputability check happen inside the controller.
@@ -768,19 +776,36 @@ export function createApp() {
   api.get('/oracle/fulfill', discoveryRateLimit, async (_req, res, next) => {
     try {
       const nowSec = Math.floor(Date.now() / 1000);
-      const stats = await fulfillJobRepo.statsLast24h(nowSec);
+      const [stats, pool, balance] = await Promise.all([
+        fulfillJobRepo.statsLast24h(nowSec),
+        refundLedgerRepo.windowStats(nowSec - 86400),
+        poolAccounting.getBalance(),
+      ]);
       const success_rate = stats.total > 0 ? Math.round((stats.success / stats.total) * 1000) / 1000 : null;
-      // Phase 2 — pool exposure: how many sats SatRank absorbed in the last
-      // 24h paying operators on agents' behalf without being able to refund
-      // (success-only billing means agents weren't debited). Drives premium
-      // calibration in Phase 4.
-      const pool = await refundLedgerRepo.windowStats(nowSec - 86400);
+      const refund_rate = stats.total > 0 ? Math.round((stats.refunded / stats.total) * 1000) / 1000 : null;
       res.json({
         data: {
           enabled: process.env.FULFILL_ENABLED === 'true',
           window_sec: 86400,
+          // Phase 4 — solvency snapshot. circuit_breaker_open flag tells
+          // agents whether new /api/fulfill calls are currently accepted.
+          // headroom_sats = how much exposure SatRank can still take on
+          // before hitting the floor.
+          pool: {
+            balance_sats: balance.balance_sats,
+            min_pool_sats: balance.min_pool_sats,
+            headroom_sats: balance.headroom_sats,
+            circuit_breaker_open: balance.circuit_breaker_open,
+            premium_revenue_sats: balance.premium_revenue_sats,
+            sats_absorbed_sats: balance.sats_absorbed_sats,
+            premium_revenue_24h: balance.premium_revenue_24h,
+            sats_absorbed_24h: balance.sats_absorbed_24h,
+          },
           counters: stats,
           success_rate,
+          refund_rate,
+          // Phase 2 — refund classification breakdown over 24h. Drives
+          // operator dashboards + premium calibration cron (Phase 4.5).
           pool_24h: {
             absorbed_events: pool.total_events,
             absorbed_sats: pool.sats_absorbed,

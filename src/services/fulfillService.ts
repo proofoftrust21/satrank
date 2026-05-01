@@ -36,6 +36,7 @@ import type {
 } from '../repositories/fulfillJobRepository';
 import type { RefundEngine } from './refundEngine';
 import type { EndpointSchemaRepository } from '../repositories/endpointSchemaRepository';
+import type { PoolAccountingService } from './poolAccountingService';
 import { buildValidatorChain, validateAll } from './responseValidator';
 import type { Pool } from 'pg';
 
@@ -93,11 +94,18 @@ export type FulfillRateLimited = {
   agent_age_bucket: 'fresh' | 'established';
 };
 
+export type FulfillCircuitOpen = {
+  status: 'circuit_breaker_open';
+  pool_balance_sats: number;
+  min_pool_sats: number;
+};
+
 export type FulfillResult =
   | FulfillSuccess
   | FulfillRefunded
   | FulfillInsufficientBalance
-  | FulfillRateLimited;
+  | FulfillRateLimited
+  | FulfillCircuitOpen;
 
 export interface FulfillServiceDeps {
   pool: Pool;
@@ -111,6 +119,9 @@ export interface FulfillServiceDeps {
   /** Phase 3 — JSON Schema registry. Optional: when omitted, fulfill ignores
    *  expected_schema_hash and falls back to the heuristic body check. */
   endpointSchemaRepo?: EndpointSchemaRepository;
+  /** Phase 4 — pool accounting + circuit breaker. Optional: when omitted,
+   *  no breaker is enforced (Phase 1 tests stay green without wiring). */
+  poolAccounting?: PoolAccountingService;
   /** Self-pay guard: refuse to pay our own LND node (we already operate it
    *  for the registry crawler probes, see paidProbeRunner.ts:344). */
   selfPubkey?: string;
@@ -174,6 +185,28 @@ export class FulfillService {
         attempts: [],
         reason: 'duplicate_in_flight',
       };
+    }
+
+    // Phase 4 — circuit breaker. Pool balance below the configured floor
+    // means SatRank can't safely take on new exposure: refuse atomically
+    // before any external work. Returns 503 at the controller layer.
+    if (this.deps.poolAccounting) {
+      const pool = await this.deps.poolAccounting.getBalance();
+      if (pool.circuit_breaker_open) {
+        logger.warn(
+          {
+            agent_pubkey: req.agent_pubkey.slice(0, 12),
+            balance_sats: pool.balance_sats,
+            min_pool_sats: pool.min_pool_sats,
+          },
+          'Fulfill: rejected because pool circuit breaker is open',
+        );
+        return {
+          status: 'circuit_breaker_open',
+          pool_balance_sats: pool.balance_sats,
+          min_pool_sats: pool.min_pool_sats,
+        };
+      }
     }
 
     // Token balance gate — agent must have prepaid at least max_sats + 1 sat
@@ -387,6 +420,45 @@ export class FulfillService {
       );
       return await this.abort(jobId, attempts, 'orchestrator_exception');
     }
+  }
+
+  /** Phase 4 — preview the cost of a fulfill without executing it. Pure
+   *  read on intentService + computePremium. Does NOT verify token_balance
+   *  (the agent may quote without prepaying), does NOT consume rate-limit
+   *  tokens at the controller level (separate budget). The reserve_sats_max
+   *  is what an agent should ensure is available before submitting fulfill. */
+  async quote(req: { intent: IntentRequest; max_sats: number }): Promise<QuoteResult> {
+    const intentResp = await this.deps.intentService.resolveIntent(req.intent, undefined);
+    const top = intentResp.candidates.slice(0, MAX_CANDIDATES);
+    const candidates: QuoteCandidate[] = top.map(c => {
+      const invoice = c.price_sats ?? 0;
+      const premium = computePremium(Math.max(1, invoice), c);
+      return {
+        rank: c.rank,
+        endpoint_url: c.endpoint_url,
+        operator_pubkey: c.operator_pubkey,
+        invoice_sats_estimate: invoice,
+        premium_estimate: premium,
+        total_estimate: invoice + premium,
+        p_e2e: c.stage_posteriors?.p_e2e ?? null,
+        p_e2e_pessimistic: c.stage_posteriors?.p_e2e_pessimistic ?? null,
+        median_latency_ms: c.median_latency_ms,
+      };
+    });
+    const reserve = Math.min(
+      req.max_sats + PREMIUM_FLOOR_SATS,
+      candidates.reduce((acc, c) => acc + c.total_estimate, 0) || PREMIUM_FLOOR_SATS,
+    );
+    let circuitOpen = false;
+    if (this.deps.poolAccounting) {
+      const pool = await this.deps.poolAccounting.getBalance();
+      circuitOpen = pool.circuit_breaker_open;
+    }
+    return {
+      candidates,
+      reserve_sats_max: reserve,
+      circuit_breaker_open: circuitOpen,
+    };
   }
 
   private async attemptCandidate(
@@ -725,6 +797,38 @@ export function computePremium(invoiceSats: number, cand: IntentCandidate): numb
   const risk = 1 - Math.max(0, Math.min(1, pPess));
   const proportional = Math.ceil(invoiceSats * 0.10 * risk);
   return Math.max(PREMIUM_FLOOR_SATS, proportional);
+}
+
+/** Phase 4 — quote a fulfill without engagement. Resolves the intent,
+ *  surfaces the top candidates with invoice estimates + premium estimates
+ *  + the worst-case max_total agents should reserve. No external HTTP,
+ *  no LND, no DB writes — pure read on the intentService output.
+ *
+ *  invoice_sats_estimate uses cand.price_sats (catalogue value). The actual
+ *  invoice from the L402 challenge can differ; this is a hint, not a quote
+ *  in the legal sense. We document the difference in the response. */
+export interface QuoteCandidate {
+  rank: number;
+  endpoint_url: string;
+  operator_pubkey: string | null;
+  invoice_sats_estimate: number;
+  premium_estimate: number;
+  total_estimate: number;
+  p_e2e: number | null;
+  p_e2e_pessimistic: number | null;
+  median_latency_ms: number | null;
+}
+
+export interface QuoteResult {
+  candidates: QuoteCandidate[];
+  /** Worst-case total the agent should reserve in token_balance to make
+   *  this fulfill possible (sum of top-K invoice estimates capped at
+   *  max_sats + worst-case premium for the highest-risk candidate). */
+  reserve_sats_max: number;
+  /** True when the quote ran with circuit_breaker_open=true. The /quote
+   *  call still succeeds (it's read-only), but the agent should treat it
+   *  as advisory: a fulfill submitted now will return 503. */
+  circuit_breaker_open: boolean;
 }
 
 /** Stable sha256 of the resolved intent — used as the idempotency key. The

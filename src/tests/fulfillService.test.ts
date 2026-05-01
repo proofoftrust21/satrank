@@ -12,6 +12,7 @@ import { FulfillService, computePremium, canonicalIntentHash } from '../services
 import { FulfillJobRepository } from '../repositories/fulfillJobRepository';
 import { RefundLedgerRepository } from '../repositories/refundLedgerRepository';
 import { RefundEngine, DEFAULT_REFUND_ENGINE_CONFIG } from '../services/refundEngine';
+import { PoolAccountingService } from '../services/poolAccountingService';
 import type { IntentService } from '../services/intentService';
 import type { IntentCandidate, IntentResponse } from '../types/intent';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
@@ -921,6 +922,105 @@ describe('FulfillService — Phase 2 refund engine integration', () => {
     if (result.status !== 'refunded') return;
     expect(result.attempts[0].delivery_outcome).toBe('delivery_schema_violation');
     expect(result.attempts[0].detail).toContain('json_schema_violation');
+  });
+
+  it('Phase 4 — circuit breaker open → returns circuit_breaker_open status', async () => {
+    await seedAgentBalance(pool, AGENT_HASH, 1000);
+    // Seed 50 sats absorbed, 0 premium → balance -50 → breaker open at min=100.
+    await repo.create({
+      job_id: 'cb-prior',
+      agent_pubkey: AGENT_HASH,
+      intent_hash: 'h'.repeat(64),
+      max_sats: 100,
+      max_latency_ms: 5000,
+      created_at: Math.floor(Date.now() / 1000) - 100,
+    });
+    await refundLedgerRepo.record({
+      job_id: 'cb-prior',
+      candidate_url: 'https://x.example/cb',
+      agent_pubkey: AGENT_HASH,
+      sats_absorbed: 50,
+      classification: 'tier1_http_5xx',
+      ts: Math.floor(Date.now() / 1000),
+    });
+    const poolAccounting = new PoolAccountingService({ pool, minPoolSats: 100 });
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      poolAccounting,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+    });
+    expect(result.status).toBe('circuit_breaker_open');
+    if (result.status !== 'circuit_breaker_open') return;
+    expect(result.pool_balance_sats).toBe(-50);
+    expect(result.min_pool_sats).toBe(100);
+  });
+
+  it('Phase 4 — quote returns top candidates with invoice + premium estimates', async () => {
+    const url = 'https://quote.example/api';
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([
+        makeCandidate(url, 1, { price_sats: 7, p_e2e_pess: 0.50 }),
+      ]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const q = await svc.quote({ intent: { category: 'data' }, max_sats: 50 });
+    expect(q.candidates).toHaveLength(1);
+    expect(q.candidates[0].invoice_sats_estimate).toBe(7);
+    // Premium = max(1, ceil(7 × 0.10 × (1 - 0.50))) = max(1, ceil(0.35)) = 1
+    expect(q.candidates[0].premium_estimate).toBe(1);
+    expect(q.candidates[0].total_estimate).toBe(8);
+    expect(q.reserve_sats_max).toBeLessThanOrEqual(51);
+  });
+
+  it('Phase 4 — quote surfaces circuit_breaker_open without rejecting', async () => {
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+    await repo.create({
+      job_id: 'cb-q',
+      agent_pubkey: AGENT_HASH,
+      intent_hash: 'h'.repeat(64),
+      max_sats: 100,
+      max_latency_ms: 5000,
+      created_at: Math.floor(Date.now() / 1000) - 100,
+    });
+    await refundLedgerRepo.record({
+      job_id: 'cb-q',
+      candidate_url: 'https://x.example/cbq',
+      agent_pubkey: AGENT_HASH,
+      sats_absorbed: 200,
+      classification: 'tier1_http_4xx',
+      ts: Math.floor(Date.now() / 1000),
+    });
+    const poolAccounting = new PoolAccountingService({ pool, minPoolSats: 50 });
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([
+        makeCandidate('https://x.example/api', 1),
+      ]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      poolAccounting,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const q = await svc.quote({ intent: { category: 'data' }, max_sats: 50 });
+    expect(q.circuit_breaker_open).toBe(true);
+    expect(q.candidates.length).toBe(1); // quote still returns the data
   });
 
   it('Phase 3 — unknown schema_hash short-circuits to refund without external work', async () => {
