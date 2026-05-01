@@ -35,6 +35,7 @@ import type {
   FulfillAttempt,
 } from '../repositories/fulfillJobRepository';
 import type { RefundEngine } from './refundEngine';
+import type { ClaimEngine } from './claimEngine';
 import type { EndpointSchemaRepository } from '../repositories/endpointSchemaRepository';
 import type { PoolAccountingService } from './poolAccountingService';
 import type { LndHoldInvoiceService } from './lndHoldInvoiceService';
@@ -67,6 +68,13 @@ export interface FulfillRequest {
    *  than silently dropping the validation — surfaces operator/agent
    *  schema-distribution problems early. */
   expected_schema_hash?: string;
+  /** Phase 7.4 — agent-supplied validator DSL strings layered ON TOP of the
+   *  schema_hash check (which is operator-side semantic). Examples:
+   *    `min_bytes:500`, `has_field:text`, `has_field:data.results`,
+   *    `contains:meme`, `content_type:application/json`.
+   *  Failure ⇒ delivery_validator_violation classification ⇒ ClaimEngine
+   *  opens a 5× multiplier claim against the operator bond. Caps: 10 entries. */
+  validators?: string[];
   /** Phase 6 — payment mode. 'deposit' (default, custodial via token_balance)
    *  or 'hold' (non-custodial via Lightning hold invoice). When 'hold', the
    *  fulfill() call returns a hold_invoice_required result with the BOLT11
@@ -167,6 +175,9 @@ export interface FulfillServiceDeps {
    *  Optional for back-compat with the Phase 1 tests; production wiring
    *  always passes a real instance. */
   refundEngine?: RefundEngine;
+  /** Phase 7.3 — opens agent_claims on Tier-2 outcomes against operator
+   *  bonds. Optional ; absent means no claims (Phase 1-6 behavior). */
+  claimEngine?: ClaimEngine;
   /** Phase 3 — JSON Schema registry. Optional: when omitted, fulfill ignores
    *  expected_schema_hash and falls back to the heuristic body check. */
   endpointSchemaRepo?: EndpointSchemaRepository;
@@ -489,9 +500,14 @@ export class FulfillService {
           continue;
         }
 
-        // Sim 9 Fix 2 — pass absolute deadline so attemptCandidate can bound
-        // its fetch + payInvoice + recall timeouts to remaining budget.
-        const attempt = await this.attemptCandidate(cand, req.max_sats - satsSpent, schemaJson, startMs + req.max_latency_ms);
+        // Sim 9 Fix 2 — pass absolute deadline + Phase 7.4 validators DSL.
+        const attempt = await this.attemptCandidate(
+          cand,
+          req.max_sats - satsSpent,
+          schemaJson,
+          startMs + req.max_latency_ms,
+          req.validators,
+        );
         attempts.push(attempt);
 
         if (attempt.payment_outcome === 'pay_ok' && attempt.delivery_outcome === 'delivery_ok') {
@@ -540,9 +556,6 @@ export class FulfillService {
         // Either way, advance to next candidate.
         if (attempt.payment_outcome === 'pay_ok') {
           // Phase 2 — record the absorbed-sat event in the refund ledger.
-          // This is the accounting source of truth for SatRank's pool
-          // exposure and feeds the per-agent daily cap on the next call.
-          // Idempotent on (job_id, candidate_url) — re-recording is safe.
           if (this.deps.refundEngine) {
             try {
               await this.deps.refundEngine.recordAttempt({
@@ -551,16 +564,30 @@ export class FulfillService {
                 attempt,
               });
             } catch (err) {
-              // Don't fail the fulfill on a ledger write error — log loud
-              // for ops review. The attempt is still in fulfill_jobs.attempts
-              // so we can backfill from there.
               logger.error(
-                {
-                  jobId,
-                  candidate: cand.endpoint_url,
-                  error: err instanceof Error ? err.message : String(err),
-                },
+                { jobId, candidate: cand.endpoint_url, error: err instanceof Error ? err.message : String(err) },
                 'Fulfill: refund ledger write failed (continuing — backfill from attempts[])',
+              );
+            }
+          }
+          // Phase 7.3 — open an agent_claims row against the operator bond,
+          // if claimEngine is wired and operator has an active bond. Idempotent
+          // on (job_id, attempt_index). Failure is non-fatal — the orchestrator
+          // continues to the next candidate regardless.
+          if (this.deps.claimEngine) {
+            try {
+              const job = await this.deps.fulfillJobRepo.findById(jobId);
+              if (job) {
+                await this.deps.claimEngine.openClaimForAttempt({
+                  job,
+                  attempt_index: attempts.length - 1,  // we just pushed this attempt
+                  attempt,
+                });
+              }
+            } catch (err) {
+              logger.error(
+                { jobId, candidate: cand.endpoint_url, error: err instanceof Error ? err.message : String(err) },
+                'Fulfill: claim engine openClaim failed (Phase 7.3 — non-fatal)',
               );
             }
           }
@@ -865,6 +892,21 @@ export class FulfillService {
             );
           }
         }
+        // Phase 7.3 — claim engine hook for hold mode.
+        if (attempt.payment_outcome === 'pay_ok' && this.deps.claimEngine) {
+          try {
+            await this.deps.claimEngine.openClaimForAttempt({
+              job,
+              attempt_index: attempts.length - 1,
+              attempt,
+            });
+          } catch (err) {
+            logger.error(
+              { jobId: job.job_id, error: err instanceof Error ? err.message : String(err) },
+              'Fulfill: claim engine openClaim failed (hold mode, Phase 7.3 — non-fatal)',
+            );
+          }
+        }
       }
 
       // Every candidate failed — cancel the hold-invoice; agent gets refund.
@@ -926,6 +968,7 @@ export class FulfillService {
     budgetSatsRemaining: number,
     schemaJson?: object,
     deadlineMs?: number,
+    validators?: string[],
   ): Promise<FulfillAttempt> {
     const url = cand.endpoint_url;
     const method = cand.http_method;
@@ -1176,21 +1219,30 @@ export class FulfillService {
         // the agent declared expected_schema_hash and the body parses + matches,
         // we promote/keep delivery_ok. Otherwise schema_violation classification
         // (Tier 2, disputable). Schema overrides heuristics — explicit > implicit.
-        if (delivery === 'delivery_ok' && schemaJson) {
+        // Phase 7.4 — agent-supplied validator DSL is layered with schema check.
+        // Both run if both supplied. Schema failure → delivery_schema_violation
+        // (Tier 2). Validator DSL failure → delivery_validator_violation (5x
+        // multiplier in ClaimEngine — punitive because operator violated an
+        // explicit declared contract).
+        if (delivery === 'delivery_ok' && (schemaJson || (validators && validators.length > 0))) {
           try {
-            const validators = buildValidatorChain({ schema: schemaJson });
-            const result = validateAll(validators, { body, contentType, status });
+            const chain = buildValidatorChain({ schema: schemaJson, validators });
+            const result = validateAll(chain, { body, contentType, status });
             if (!result.passed) {
-              delivery = 'delivery_schema_violation';
+              // Phase 7.4 — distinguish schema violation (Tier 2 — operator
+              // didn't match registered schema, semi-blame) from validator
+              // DSL violation (operator violated an explicit agent contract,
+              // 5x multiplier punitive). Failed validator name tells us which.
+              const failedName = (result.details as { validator?: string } | undefined)?.validator ?? '';
+              delivery = failedName.startsWith('json_schema')
+                ? 'delivery_schema_violation'
+                : 'delivery_validator_violation';
               validatorDetail = `${result.reason}: ${JSON.stringify(result.details ?? {})}`;
             }
           } catch (err) {
-            // Compilation error on a bad schema — should never happen because
-            // registration validates JSON Schema, but defend in depth so a
-            // corrupted DB row doesn't crash the orchestrator.
             logger.error(
               { error: err instanceof Error ? err.message : String(err) },
-              'Fulfill: jsonSchemaValidator construction failed — accepting body without schema check',
+              'Fulfill: validator chain construction failed — accepting body without check',
             );
           }
         }
@@ -1491,6 +1543,7 @@ function baseAttempt(
     rank: cand.rank,
     ts_started,
     ts_finished,
+    operator_pubkey: cand.operator_pubkey,  // Phase 7.3 — for ClaimEngine bond resolution
     ...rest,
   };
 }

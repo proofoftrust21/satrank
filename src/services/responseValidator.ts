@@ -161,6 +161,70 @@ export interface BuildValidatorChainInput {
   schema?: object;
   minBytes?: number;
   contentTypes?: string[];
+  /** Phase 7.4 — agent-supplied validator DSL strings. Format examples:
+   *    'min_bytes:500', 'content_type:application/json',
+   *    'has_field:text', 'has_field:data.results',
+   *    'contains:meme'. Unrecognised entries are skipped silently. */
+  validators?: string[];
+}
+
+/** Phase 7.4 — validator returning failure if the JSON body lacks a given
+ *  field (dot-notation path). For non-JSON bodies, fails. */
+export function hasFieldValidator(fieldPath: string): ResponseValidator {
+  return {
+    name: `has_field:${fieldPath}`,
+    validate: ({ body }) => {
+      let parsed: unknown;
+      try { parsed = JSON.parse(body); } catch {
+        return { passed: false, reason: `body is not JSON; cannot check field '${fieldPath}'` };
+      }
+      const parts = fieldPath.split('.');
+      let cursor: unknown = parsed;
+      for (const p of parts) {
+        if (cursor && typeof cursor === 'object' && p in (cursor as Record<string, unknown>)) {
+          cursor = (cursor as Record<string, unknown>)[p];
+        } else {
+          return { passed: false, reason: `body missing field '${fieldPath}' (failed at '${p}')` };
+        }
+      }
+      return { passed: true };
+    },
+  };
+}
+
+/** Phase 7.4 — validator that fails if the body does not contain a substring. */
+export function containsValidator(needle: string): ResponseValidator {
+  return {
+    name: `contains:${needle}`,
+    validate: ({ body }) => body.includes(needle)
+      ? { passed: true }
+      : { passed: false, reason: `body does not contain '${needle}'` },
+  };
+}
+
+/** Parse the agent-supplied validator DSL into ResponseValidators. */
+export function parseValidatorDsl(entries: string[]): ResponseValidator[] {
+  const out: ResponseValidator[] = [];
+  for (const entry of entries) {
+    const colonIdx = entry.indexOf(':');
+    if (colonIdx === -1) continue;
+    const op = entry.slice(0, colonIdx).trim().toLowerCase();
+    const arg = entry.slice(colonIdx + 1).trim();
+    if (!arg) continue;
+    if (op === 'min_bytes') {
+      const n = Number.parseInt(arg, 10);
+      if (Number.isFinite(n) && n > 0) out.push(minBytesValidator(n));
+    } else if (op === 'content_type') {
+      out.push(contentTypeValidator([arg]));
+    } else if (op === 'has_field') {
+      out.push(hasFieldValidator(arg));
+    } else if (op === 'contains') {
+      out.push(containsValidator(arg));
+    }
+    // Unknown ops silently skipped — agent gets no validation but no error
+    // (so an SDK hint typo doesn't break the fulfill).
+  }
+  return out;
 }
 
 export function buildValidatorChain(input: BuildValidatorChainInput): ResponseValidator[] {
@@ -173,6 +237,9 @@ export function buildValidatorChain(input: BuildValidatorChainInput): ResponseVa
   }
   if (input.schema) {
     chain.push(jsonSchemaValidator(input.schema));
+  }
+  if (input.validators && input.validators.length > 0) {
+    chain.push(...parseValidatorDsl(input.validators));
   }
   return chain;
 }

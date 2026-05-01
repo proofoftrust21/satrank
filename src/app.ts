@@ -66,6 +66,11 @@ import { EndpointSchemaRepository } from './repositories/endpointSchemaRepositor
 import { SchemaController } from './controllers/schemaController';
 import { PoolAccountingService } from './services/poolAccountingService';
 import { LndHoldInvoiceService } from './services/lndHoldInvoiceService';
+import { OperatorBondRepository } from './repositories/operatorBondRepository';
+import { AgentClaimRepository } from './repositories/agentClaimRepository';
+import { OperatorBondService } from './services/operatorBondService';
+import { ClaimEngine } from './services/claimEngine';
+import { ClaimController } from './controllers/claimController';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -333,6 +338,20 @@ export function createApp() {
     restUrl: config.LND_REST_URL,
     adminMacaroonPath: config.LND_ADMIN_MACAROON_PATH,
   });
+  // Phase 7 (2026-05-01) — Operator bond + agent claims. ClaimEngine opens
+  // pending claims on Tier-2 delivery outcomes ; cron pays out after 24h
+  // dispute window. See project_indispensability_audit_20260501.md.
+  const operatorBondRepo = new OperatorBondRepository(pool);
+  const agentClaimRepo = new AgentClaimRepository(pool);
+  const operatorBondService = new OperatorBondService({
+    bondRepo: operatorBondRepo,
+    holdInvoiceService,
+  });
+  const claimEngine = new ClaimEngine({
+    pool,
+    claimRepo: agentClaimRepo,
+    bondRepo: operatorBondRepo,
+  });
   const fulfillService = new FulfillService({
     pool,
     fulfillJobRepo,
@@ -342,9 +361,15 @@ export function createApp() {
     endpointSchemaRepo,
     poolAccounting,
     holdInvoiceService,
+    claimEngine,
   });
   const fulfillController = new FulfillController({
     fulfillService,
+    enabled: process.env.FULFILL_ENABLED === 'true',
+  });
+  const claimController = new ClaimController({
+    claimRepo: agentClaimRepo,
+    bondRepo: operatorBondRepo,
     enabled: process.env.FULFILL_ENABLED === 'true',
   });
   // Phase 2 — operator dispute surface against Tier 2 refund classifications.
@@ -452,6 +477,32 @@ export function createApp() {
             'Fulfill: residue refund retry threw (will retry next tick)',
           );
         }
+      }
+      // Phase 7.5 — claim payout cron. Pending claims past 24h dispute window
+      // → commit bond slash + credit agent token_balance + transition `paid`.
+      try {
+        const out = await claimEngine.payoutReadyClaims();
+        if (out.paid > 0 || out.failed > 0) {
+          logger.info(out, 'ClaimEngine: payout cycle complete');
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'ClaimEngine: payout cron threw — will retry',
+        );
+      }
+      // Phase 7.5 — surface underfunded operators (logging only for v1 ; the
+      // catalogue ranking integration is a Phase 7.5.1 follow-up).
+      try {
+        const underfunded = await operatorBondService.findUnderfundedOperators();
+        if (underfunded.length > 0) {
+          logger.warn({ underfunded_count: underfunded.length }, 'OperatorBondService: operators below floor — should be deprioritized in catalogue');
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'OperatorBondService: findUnderfundedOperators threw',
+        );
       }
     } catch (err) {
       logger.error(
@@ -819,6 +870,10 @@ export function createApp() {
   // disputability check happen inside the controller.
   api.post('/dispute/:ledger_id', discoveryRateLimit, disputeController.open);
   api.get('/dispute/:dispute_id', discoveryRateLimit, disputeController.show);
+  // Phase 7.5 (2026-05-01) — claim dispute (operator-side) + public stats.
+  // POST is NIP-98 by the operator owning the bond.
+  api.post('/operator/claim/:claim_id/dispute', discoveryRateLimit, claimController.fileDispute);
+  api.get('/oracle/claims', discoveryRateLimit, claimController.oracleClaims);
   // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator
   // identity), GET is free for agents to inspect a schema before fulfill.
   // List endpoint exposes the 50 most recent so newcomers can discover

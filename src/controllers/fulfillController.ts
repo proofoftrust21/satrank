@@ -40,6 +40,16 @@ const fulfillRequestSchema = z.object({
   // schema, runs ajv on every successful 2xx body, demotes mismatches
   // to delivery_schema_violation (Tier 2 refund).
   expected_schema_hash: z.string().regex(/^[a-f0-9]{64}$/, 'must be 64-char hex sha256').optional(),
+  // Phase 7.4 — validator DSL strings. Format: `op:arg`. Allowed ops:
+  // min_bytes, content_type, has_field, contains. Up to 10 entries. The
+  // orchestrator runs them post-recall ; failure ⇒ delivery_validator_violation
+  // ⇒ ClaimEngine opens a 5× multiplier claim against the operator bond.
+  validators: z.array(
+    z.string().regex(
+      /^(min_bytes|content_type|has_field|contains):.{1,200}$/,
+      'must match `<op>:<arg>` for op in {min_bytes,content_type,has_field,contains}',
+    ),
+  ).max(10).optional(),
   // Phase 6 — payment mode. 'deposit' uses the custodial token_balance
   // path (Phase 1 default); 'hold' uses a Lightning hold invoice the
   // agent pays per-call (non-custodial). Defaults to 'deposit' for
@@ -364,6 +374,7 @@ export class FulfillController {
         expected_schema_hash: body.expected_schema_hash,
         mode: body.mode,
         refund_bolt11: body.refund_bolt11,
+        validators: body.validators,
       });
 
       switch (result.status) {

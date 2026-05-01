@@ -76,7 +76,8 @@ COMMENT ON TABLE operator_bonds IS
 CREATE TABLE IF NOT EXISTS agent_claims (
   claim_id BIGSERIAL PRIMARY KEY,
   -- The fulfill_jobs.job_id and per-attempt index that triggered this claim.
-  job_id UUID NOT NULL REFERENCES fulfill_jobs(job_id) ON DELETE CASCADE,
+  -- fulfill_jobs.job_id is TEXT (we store UUIDs as strings) ; match the type.
+  job_id TEXT NOT NULL REFERENCES fulfill_jobs(job_id) ON DELETE CASCADE,
   attempt_index INTEGER NOT NULL,    -- 0-based index into fulfill_jobs.attempts JSONB
   -- The agent who paid for the failed delivery.
   agent_pubkey TEXT NOT NULL,

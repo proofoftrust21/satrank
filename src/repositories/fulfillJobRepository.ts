@@ -65,6 +65,10 @@ export interface FulfillAttempt {
   sats_paid: number;
   preimage?: string;
   detail?: string;
+  /** Phase 7.3 — operator pubkey owning the candidate at attempt time, used
+   *  by ClaimEngine to resolve which bond to slash on Tier 2 outcomes.
+   *  Optional for back-compat with attempts persisted before Phase 7. */
+  operator_pubkey?: string | null;
 }
 
 export interface FulfillJob {
