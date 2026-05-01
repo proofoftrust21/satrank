@@ -21,6 +21,15 @@ type Queryable = Pool | PoolClient;
 
 export type FulfillStatus = 'in_flight' | 'success' | 'refunded' | 'aborted';
 
+export type FulfillMode = 'deposit' | 'hold';
+
+export type HoldInvoiceState =
+  | 'awaiting_payment'
+  | 'accepted'
+  | 'settled'
+  | 'cancelled'
+  | 'expired';
+
 /** A single attempt against one candidate, persisted in attempts[]. The
  *  outcome strings reuse paidProbeRunner's vocabulary for consistency
  *  across the codebase (helps grep + log correlation). */
@@ -53,6 +62,17 @@ export interface FulfillJob {
   reason: string | null;
   created_at: number;
   settled_at: number | null;
+  /** Phase 6 — fulfill mode picked at create time. 'deposit' uses the
+   *  custodial token_balance flow (Phase 1); 'hold' uses a Lightning hold
+   *  invoice the agent pays per-call (non-custodial). */
+  mode: FulfillMode;
+  /** Phase 6 — hold-invoice fields (null when mode='deposit'). */
+  hold_invoice_payment_request: string | null;
+  hold_invoice_payment_hash: string | null;
+  /** Stored only server-side; never returned to the agent before settle. */
+  hold_invoice_preimage: string | null;
+  hold_invoice_state: HoldInvoiceState | null;
+  hold_invoice_expires_at: number | null;
 }
 
 export interface CreateJobInput {
@@ -62,6 +82,14 @@ export interface CreateJobInput {
   max_sats: number;
   max_latency_ms: number;
   created_at: number;
+  /** Phase 6 — defaults to 'deposit' for back-compat. */
+  mode?: FulfillMode;
+  /** Phase 6 — populated only when mode='hold'. */
+  hold_invoice_payment_request?: string;
+  hold_invoice_payment_hash?: string;
+  hold_invoice_preimage?: string;
+  hold_invoice_state?: HoldInvoiceState;
+  hold_invoice_expires_at?: number;
 }
 
 export interface SettleSuccessInput {
@@ -128,8 +156,11 @@ export class FulfillJobRepository {
     await this.db.query(
       `INSERT INTO fulfill_jobs
         (job_id, agent_pubkey, intent_hash, max_sats, max_latency_ms,
-         status, attempts, sats_spent, sats_refunded, premium_sats, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'in_flight', '[]'::jsonb, 0, 0, 0, $6)`,
+         status, attempts, sats_spent, sats_refunded, premium_sats, created_at,
+         mode, hold_invoice_payment_request, hold_invoice_payment_hash,
+         hold_invoice_preimage, hold_invoice_state, hold_invoice_expires_at)
+       VALUES ($1, $2, $3, $4, $5, 'in_flight', '[]'::jsonb, 0, 0, 0, $6,
+               $7, $8, $9, $10, $11, $12)`,
       [
         input.job_id,
         input.agent_pubkey,
@@ -137,8 +168,42 @@ export class FulfillJobRepository {
         input.max_sats,
         input.max_latency_ms,
         input.created_at,
+        input.mode ?? 'deposit',
+        input.hold_invoice_payment_request ?? null,
+        input.hold_invoice_payment_hash ?? null,
+        input.hold_invoice_preimage ?? null,
+        input.hold_invoice_state ?? null,
+        input.hold_invoice_expires_at ?? null,
       ],
     );
+  }
+
+  /** Phase 6 — update hold invoice state without touching the orchestrator
+   *  status. Used when LND reports the invoice transitioned (awaiting →
+   *  accepted, accepted → settled, etc.). Returns the new row. */
+  async setHoldInvoiceState(jobId: string, state: HoldInvoiceState): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      'UPDATE fulfill_jobs SET hold_invoice_state = $2 WHERE job_id = $1',
+      [jobId, state],
+    );
+    return (rowCount ?? 0) === 1;
+  }
+
+  /** Phase 6 — find hold-mode jobs that are still awaiting/accepted past
+   *  their expires_at. Used by the reconciliation cron to issue cancel
+   *  before LND auto-expires. */
+  async findExpiredHoldInvoices(nowSec: number): Promise<FulfillJob[]> {
+    const { rows } = await this.db.query<FulfillJobRow>(
+      `SELECT * FROM fulfill_jobs
+       WHERE mode = 'hold'
+         AND hold_invoice_state IN ('awaiting_payment', 'accepted')
+         AND hold_invoice_expires_at IS NOT NULL
+         AND hold_invoice_expires_at < $1
+       ORDER BY hold_invoice_expires_at ASC
+       LIMIT 50`,
+      [nowSec],
+    );
+    return rows.map(rowToJob);
   }
 
   /** Atomic settle from `in_flight` → `success`. Refuses to update a job
@@ -280,6 +345,12 @@ interface FulfillJobRow {
   reason: string | null;
   created_at: number;
   settled_at: number | null;
+  mode: FulfillMode | null;
+  hold_invoice_payment_request: string | null;
+  hold_invoice_payment_hash: string | null;
+  hold_invoice_preimage: string | null;
+  hold_invoice_state: HoldInvoiceState | null;
+  hold_invoice_expires_at: number | null;
 }
 
 function rowToJob(row: FulfillJobRow): FulfillJob {
@@ -303,5 +374,12 @@ function rowToJob(row: FulfillJobRow): FulfillJob {
     reason: row.reason,
     created_at: Number(row.created_at),
     settled_at: row.settled_at != null ? Number(row.settled_at) : null,
+    mode: row.mode ?? 'deposit',
+    hold_invoice_payment_request: row.hold_invoice_payment_request,
+    hold_invoice_payment_hash: row.hold_invoice_payment_hash,
+    hold_invoice_preimage: row.hold_invoice_preimage,
+    hold_invoice_state: row.hold_invoice_state,
+    hold_invoice_expires_at:
+      row.hold_invoice_expires_at != null ? Number(row.hold_invoice_expires_at) : null,
   };
 }

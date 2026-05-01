@@ -181,3 +181,117 @@ async def test_proxy_fulfill_quote_returns_data_block() -> None:
 def test_fulfill_endpoint_returns_canonical_url() -> None:
     sr = SatRank(api_base="https://api.test")
     assert sr.fulfill_endpoint() == "https://api.test/api/fulfill"
+
+
+# ---- SDK 1.4.0 — Phase 6 hold-invoice mode ------------------------------
+
+
+HOLD_SAMPLE = {
+    "intent": {"category": "data"},
+    "max_sats": 50,
+    "max_latency_ms": 5000,
+    "authorization": "Nostr xxx",
+    "mode": "hold",
+}
+
+
+@respx.mock
+async def test_proxy_fulfill_hold_invoice_required_returns_typed_status() -> None:
+    route = respx.post("https://api.test/api/fulfill").mock(
+        return_value=httpx.Response(
+            402,
+            json={
+                "status": "hold_invoice_required",
+                "job_id": "h1",
+                "payment_request": "lnbc1...",
+                "payment_hash": "a" * 64,
+                "invoice_amount_sats": 12,
+                "expires_at": 1714500000,
+                "execute_endpoint": "/api/fulfill/h1/execute",
+            },
+        )
+    )
+    async with SatRank(api_base="https://api.test") as sr:
+        result = await sr.proxy_fulfill(**HOLD_SAMPLE)
+    # mode=hold forwarded in body
+    import json as _json
+    sent_body = _json.loads(route.calls[0].request.content)
+    assert sent_body["mode"] == "hold"
+    assert result["status"] == "hold_invoice_required"
+    assert result["payment_request"] == "lnbc1..."
+    assert result["payment_hash"] == "a" * 64
+    assert result["invoice_amount_sats"] == 12
+    assert result["job_id"] == "h1"
+
+
+@respx.mock
+async def test_proxy_fulfill_402_insufficient_balance_still_routes_correctly_with_mode_hold() -> None:
+    # Regression — the 402 dispatch must distinguish insufficient_balance
+    # from hold_invoice_required by the body's `status` field, not the code.
+    respx.post("https://api.test/api/fulfill").mock(
+        return_value=httpx.Response(
+            402,
+            json={
+                "error": "insufficient_balance",
+                "required_sats": 51,
+                "available_sats": 3,
+            },
+        )
+    )
+    async with SatRank(api_base="https://api.test") as sr:
+        result = await sr.proxy_fulfill(**HOLD_SAMPLE)
+    assert result["status"] == "insufficient_balance"
+    assert result["required_sats"] == 51
+
+
+@respx.mock
+async def test_proxy_fulfill_hold_mode_unavailable_returns_typed_status() -> None:
+    respx.post("https://api.test/api/fulfill").mock(
+        return_value=httpx.Response(
+            503,
+            json={"error": "hold_mode_unavailable", "reason": "lnd_invoicesrpc_offline"},
+        )
+    )
+    async with SatRank(api_base="https://api.test") as sr:
+        result = await sr.proxy_fulfill(**HOLD_SAMPLE)
+    assert result["status"] == "hold_mode_unavailable"
+
+
+@respx.mock
+async def test_proxy_fulfill_execute_success() -> None:
+    route = respx.post("https://api.test/api/fulfill/h1/execute").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "job_id": "h1",
+                "body": "world",
+                "preimage": "p" * 64,
+                "candidate_url": "https://x.example/api",
+                "attempts": [],
+                "sats_spent": 11,
+                "premium_sats": 1,
+            },
+        )
+    )
+    async with SatRank(api_base="https://api.test") as sr:
+        result = await sr.proxy_fulfill_execute(
+            job_id="h1",
+            intent={"category": "data"},
+            authorization="Nostr yyy",
+        )
+    sent = route.calls[0].request
+    assert sent.headers.get("authorization") == "Nostr yyy"
+    import json as _json
+    sent_body = _json.loads(sent.content)
+    assert sent_body == {"intent": {"category": "data"}}
+    assert result["status"] == "success"
+    assert result["body"] == "world"
+
+
+def test_fulfill_execute_endpoint_returns_canonical_url() -> None:
+    sr = SatRank(api_base="https://api.test")
+    assert (
+        sr.fulfill_execute_endpoint("h1")
+        == "https://api.test/api/fulfill/h1/execute"
+    )

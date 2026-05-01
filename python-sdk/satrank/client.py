@@ -145,6 +145,7 @@ class SatRank:
         max_latency_ms: int,
         authorization: str,
         expected_schema_hash: str | None = None,
+        mode: str | None = None,
     ) -> dict[str, Any]:
         """SDK 1.2.0 — server-side fulfill proxy.
 
@@ -161,10 +162,16 @@ class SatRank:
           * "insufficient_balance": required_sats / available_sats
           * "daily_cap_reached": cap_sats / used_24h_sats / agent_age_bucket / retry_after_sec
           * "circuit_breaker_open": pool_balance_sats / min_pool_sats / retry_after_sec
+          * SDK 1.4.0 — "hold_invoice_required": payment_request / payment_hash /
+            invoice_amount_sats / expires_at — pay then call proxy_fulfill_execute
+          * SDK 1.4.0 — "hold_mode_unavailable": LND hold-invoice surface offline
 
         Genuine errors (auth invalid, fulfill_disabled, network/timeout)
         raise. The SDK is zero-dep on Nostr; pre-sign the NIP-98 event
         externally — see :meth:`fulfill_endpoint`.
+
+        SDK 1.4.0 — ``mode`` arg ('deposit' default, 'hold' for the
+        non-custodial Phase 6 flow).
         """
         return await self._api.post_fulfill(
             intent=intent,
@@ -172,6 +179,31 @@ class SatRank:
             max_latency_ms=max_latency_ms,
             authorization=authorization,
             expected_schema_hash=expected_schema_hash,
+            mode=mode,
+        )
+
+    async def proxy_fulfill_execute(
+        self,
+        *,
+        job_id: str,
+        intent: dict[str, Any],
+        authorization: str,
+    ) -> dict[str, Any]:
+        """SDK 1.4.0 — second step of hold-invoice fulfill (Phase 6).
+
+        After ``proxy_fulfill(mode='hold')`` returns
+        ``{"status": "hold_invoice_required", ...}``, the agent pays the
+        BOLT11 with their wallet and calls this method to trigger the
+        orchestrator. The intent must be re-supplied because the server
+        keeps only intent_hash between the two calls.
+
+        Returns the same discriminated dict shape as ``proxy_fulfill``.
+        Sign the NIP-98 envelope against ``fulfill_execute_endpoint(job_id)``.
+        """
+        return await self._api.post_fulfill_execute(
+            job_id=job_id,
+            intent=intent,
+            authorization=authorization,
         )
 
     async def proxy_fulfill_quote(
@@ -189,6 +221,12 @@ class SatRank:
         """Canonical URL the NIP-98 ``u`` tag must contain when calling
         :meth:`proxy_fulfill`. SDK 1.2.0."""
         return f"{self._api_base}/api/fulfill"
+
+    def fulfill_execute_endpoint(self, job_id: str) -> str:
+        """SDK 1.4.0 — canonical URL the NIP-98 ``u`` tag must contain when
+        calling :meth:`proxy_fulfill_execute`. ``job_id`` comes from the
+        prior ``proxy_fulfill(mode='hold')`` response."""
+        return f"{self._api_base}/api/fulfill/{job_id}/execute"
 
     async def fulfill(
         self,

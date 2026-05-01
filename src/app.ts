@@ -65,6 +65,7 @@ import { DisputeController } from './controllers/disputeController';
 import { EndpointSchemaRepository } from './repositories/endpointSchemaRepository';
 import { SchemaController } from './controllers/schemaController';
 import { PoolAccountingService } from './services/poolAccountingService';
+import { LndHoldInvoiceService } from './services/lndHoldInvoiceService';
 import { ServiceRegisterLogRepository } from './repositories/serviceRegisterLogRepository';
 import { OperatorController } from './controllers/operatorController';
 import { OperatorService } from './services/operatorService';
@@ -325,6 +326,13 @@ export function createApp() {
   // Phase 4 — pool accounting + circuit breaker. Reads premium_revenue
   // from fulfill_jobs.success and sats_absorbed from refund_ledger.
   const poolAccounting = new PoolAccountingService({ pool });
+  // Phase 6 — LND hold-invoice service for non-custodial mode='hold'.
+  // Uses the admin macaroon (invoicesrpc.write); when not configured,
+  // hold-mode requests get 503 hold_mode_unavailable cleanly.
+  const holdInvoiceService = new LndHoldInvoiceService({
+    restUrl: config.LND_REST_URL,
+    adminMacaroonPath: config.LND_ADMIN_MACAROON_PATH,
+  });
   const fulfillService = new FulfillService({
     pool,
     fulfillJobRepo,
@@ -333,6 +341,7 @@ export function createApp() {
     refundEngine,
     endpointSchemaRepo,
     poolAccounting,
+    holdInvoiceService,
   });
   const fulfillController = new FulfillController({
     fulfillService,
@@ -398,6 +407,30 @@ export function createApp() {
       );
       if (rejected > 0) {
         logger.info({ rejected }, 'Fulfill: auto-rejected stale open disputes');
+      }
+      // Phase 6 — cancel hold-invoices past their expires_at. We do this
+      // proactively (vs waiting for LND auto-expire) so the agent's HTLC
+      // unblocks as soon as we know the orchestrator won't run.
+      const expired = await fulfillJobRepo.findExpiredHoldInvoices(
+        Math.floor(Date.now() / 1000),
+      );
+      for (const job of expired) {
+        if (!job.hold_invoice_payment_hash) continue;
+        try {
+          await holdInvoiceService.cancel(job.hold_invoice_payment_hash);
+          await fulfillJobRepo.setHoldInvoiceState(job.job_id, 'expired');
+          await fulfillJobRepo.settleAbort({
+            job_id: job.job_id,
+            reason: 'hold_invoice_expired',
+            settled_at: Math.floor(Date.now() / 1000),
+            attempts: job.attempts,
+          });
+        } catch (err) {
+          logger.warn(
+            { jobId: job.job_id, error: err instanceof Error ? err.message : String(err) },
+            'Fulfill: hold invoice cancel-on-expiry failed (will retry next tick)',
+          );
+        }
       }
     } catch (err) {
       logger.error(
@@ -757,6 +790,9 @@ export function createApp() {
   // Phase 4 — preview the cost of a fulfill without engagement.
   // Read-only, same rate ceiling as /fulfill.
   api.post('/fulfill/quote', discoveryRateLimit, fulfillController.quote);
+  // Phase 6 — second step of hold-invoice mode. Agent paid the invoice
+  // returned by /fulfill (mode=hold), now triggers orchestrator.
+  api.post('/fulfill/:job_id/execute', discoveryRateLimit, fulfillController.executeHold);
   // Phase 2 — operator NIP-98 dispute against Tier 2 refund classifications.
   // Same discoveryRateLimit ceiling. Owner verification + uniqueness +
   // disputability check happen inside the controller.

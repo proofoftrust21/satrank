@@ -13,6 +13,7 @@ import { FulfillJobRepository } from '../repositories/fulfillJobRepository';
 import { RefundLedgerRepository } from '../repositories/refundLedgerRepository';
 import { RefundEngine, DEFAULT_REFUND_ENGINE_CONFIG } from '../services/refundEngine';
 import { PoolAccountingService } from '../services/poolAccountingService';
+import type { LndHoldInvoiceService, AddHoldInvoiceResult, LndV2InvoiceLookup } from '../services/lndHoldInvoiceService';
 import type { IntentService } from '../services/intentService';
 import type { IntentCandidate, IntentResponse } from '../types/intent';
 import type { LndGraphClient } from '../crawler/lndGraphClient';
@@ -605,6 +606,343 @@ describe('computePremium', () => {
   it('default 0.5 pessimistic when stage_posteriors missing', () => {
     // No stage_posteriors → risk = 0.5 → 200 × 0.10 × 0.5 = 10 sats.
     expect(computePremium(200, makeCandidate('x', 1))).toBe(10);
+  });
+});
+
+describe('FulfillService — Phase 6 hold-invoice mode', () => {
+  let pool: Pool;
+  let repo: FulfillJobRepository;
+  let refundLedgerRepo: RefundLedgerRepository;
+  let refundEngine: RefundEngine;
+
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    repo = new FulfillJobRepository(pool);
+    refundLedgerRepo = new RefundLedgerRepository(pool);
+    refundEngine = new RefundEngine({ refundLedgerRepo });
+  });
+
+  afterAll(async () => {
+    await teardownTestPool(testDb);
+  });
+
+  beforeEach(async () => {
+    await pool.query('TRUNCATE refund_ledger RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE fulfill_jobs RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE token_balance');
+  });
+
+  /** Stub hold-invoice service — records calls so tests can assert what
+   *  the orchestrator did with the LND surface. */
+  function stubHoldInvoice(opts: {
+    available?: boolean;
+    addResult?: Partial<AddHoldInvoiceResult>;
+    lookupState?: LndV2InvoiceLookup;
+    settleThrows?: Error;
+    cancelThrows?: Error;
+  } = {}): {
+    svc: LndHoldInvoiceService;
+    calls: { addInvoice: number; settle: number; cancel: number; lookup: number };
+  } {
+    const calls = { addInvoice: 0, settle: 0, cancel: 0, lookup: 0 };
+    const svc: Pick<LndHoldInvoiceService, 'isAvailable' | 'addHoldInvoice' | 'lookupState' | 'settle' | 'cancel'> = {
+      isAvailable: () => opts.available !== false,
+      async addHoldInvoice() {
+        calls.addInvoice++;
+        return {
+          payment_request: opts.addResult?.payment_request ?? 'lnbc500000n1...mock-bolt11',
+          payment_hash: opts.addResult?.payment_hash ?? 'a'.repeat(64),
+          preimage: opts.addResult?.preimage ?? 'b'.repeat(64),
+        };
+      },
+      async lookupState() {
+        calls.lookup++;
+        return opts.lookupState ?? { state: 'ACCEPTED', amt_paid_sat: 100 };
+      },
+      async settle() {
+        calls.settle++;
+        if (opts.settleThrows) throw opts.settleThrows;
+      },
+      async cancel() {
+        calls.cancel++;
+        if (opts.cancelThrows) throw opts.cancelThrows;
+      },
+    };
+    return { svc: svc as LndHoldInvoiceService, calls };
+  }
+
+  it('mode=hold returns hold_invoice_required without external work', async () => {
+    const { svc: holdInvoiceService, calls } = stubHoldInvoice();
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate('https://x.example/api', 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      mode: 'hold',
+    });
+    expect(result.status).toBe('hold_invoice_required');
+    if (result.status !== 'hold_invoice_required') return;
+    expect(result.payment_request).toContain('lnbc');
+    expect(result.invoice_amount_sats).toBeGreaterThanOrEqual(50);
+    expect(calls.addInvoice).toBe(1);
+    expect(calls.settle).toBe(0);
+    expect(calls.cancel).toBe(0);
+    // Job persisted in awaiting_payment state.
+    const job = await repo.findById(result.job_id);
+    expect(job?.mode).toBe('hold');
+    expect(job?.hold_invoice_state).toBe('awaiting_payment');
+    expect(job?.hold_invoice_preimage).toBeTruthy();
+  });
+
+  it('mode=hold + holdInvoiceService unavailable → hold_mode_unavailable', async () => {
+    const { svc: holdInvoiceService } = stubHoldInvoice({ available: false });
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      mode: 'hold',
+    });
+    expect(result.status).toBe('hold_mode_unavailable');
+  });
+
+  it('executeHoldFulfill — invoice still OPEN → hold_invoice_required (idempotent re-prompt)', async () => {
+    const { svc: holdInvoiceService } = stubHoldInvoice({
+      lookupState: { state: 'OPEN', amt_paid_sat: 0 },
+    });
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate('https://x.example/api', 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const created = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      mode: 'hold',
+    });
+    if (created.status !== 'hold_invoice_required') throw new Error('expected hold_invoice_required');
+    const exec = await svc.executeHoldFulfill({ job_id: created.job_id, agent_pubkey: AGENT_HASH });
+    expect(exec.status).toBe('hold_invoice_required');
+  });
+
+  it('executeHoldFulfill — invoice ACCEPTED + delivery success → settled', async () => {
+    const url = 'https://hold-ok.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === url && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === url && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('hold-mode delivered body', { status: 200 }),
+      },
+    ]);
+    const { svc: holdInvoiceService, calls } = stubHoldInvoice({
+      lookupState: { state: 'ACCEPTED', amt_paid_sat: 55 },
+    });
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const created = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      mode: 'hold',
+    });
+    if (created.status !== 'hold_invoice_required') throw new Error('expected hold_invoice_required');
+    const exec = await svc.executeHoldFulfill({
+      job_id: created.job_id,
+      agent_pubkey: AGENT_HASH,
+      // Pass the intent so the orchestrator can re-resolve.
+      intent: { category: 'data' },
+    } as unknown as { job_id: string; agent_pubkey: string });
+    expect(exec.status).toBe('success');
+    if (exec.status !== 'success') return;
+    expect(exec.body).toContain('hold-mode delivered');
+    expect(calls.settle).toBe(1);
+    expect(calls.cancel).toBe(0);
+    const job = await repo.findById(created.job_id);
+    expect(job?.hold_invoice_state).toBe('settled');
+    expect(job?.status).toBe('success');
+  });
+
+  it('executeHoldFulfill — all candidates fail → invoice cancelled, refunded', async () => {
+    const url = 'https://hold-bad.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: u => u === url,
+        respond: (init) => {
+          const auth = (init?.headers as Record<string, string> | undefined)?.['Authorization'];
+          if (!auth) return new Response('', {
+            status: 402,
+            headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+          });
+          return new Response('boom', { status: 500 });
+        },
+      },
+    ]);
+    const { svc: holdInvoiceService, calls } = stubHoldInvoice({
+      lookupState: { state: 'ACCEPTED', amt_paid_sat: 55 },
+    });
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const created = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      mode: 'hold',
+    });
+    if (created.status !== 'hold_invoice_required') throw new Error('expected hold_invoice_required');
+    const exec = await svc.executeHoldFulfill({
+      job_id: created.job_id,
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+    } as unknown as { job_id: string; agent_pubkey: string });
+    expect(exec.status).toBe('refunded');
+    expect(calls.cancel).toBe(1);
+    expect(calls.settle).toBe(0);
+    const job = await repo.findById(created.job_id);
+    expect(job?.hold_invoice_state).toBe('cancelled');
+  });
+
+  it('executeHoldFulfill — agent_pubkey mismatch returns refunded with owner_mismatch', async () => {
+    const { svc: holdInvoiceService } = stubHoldInvoice();
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate('https://x.example/api', 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const created = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      mode: 'hold',
+    });
+    if (created.status !== 'hold_invoice_required') throw new Error('expected hold_invoice_required');
+    const exec = await svc.executeHoldFulfill({
+      job_id: created.job_id,
+      agent_pubkey: 'wrong-pubkey',
+    });
+    expect(exec.status).toBe('refunded');
+    if (exec.status !== 'refunded') return;
+    expect(exec.reason).toBe('owner_mismatch');
+  });
+
+  it('executeHoldFulfill — invoice CANCELED on LND → aborted', async () => {
+    const { svc: holdInvoiceService } = stubHoldInvoice({
+      lookupState: { state: 'CANCELED', amt_paid_sat: 0 },
+    });
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate('https://x.example/api', 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: makeFetch([]) as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const created = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      mode: 'hold',
+    });
+    if (created.status !== 'hold_invoice_required') throw new Error('expected hold_invoice_required');
+    const exec = await svc.executeHoldFulfill({
+      job_id: created.job_id,
+      agent_pubkey: AGENT_HASH,
+    });
+    expect(exec.status).toBe('refunded');
+  });
+
+  it('mode=deposit (default) still works after hold infrastructure added', async () => {
+    const url = 'https://deposit-still-works.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: u => u === url,
+        respond: (init) => {
+          const auth = (init?.headers as Record<string, string> | undefined)?.['Authorization'];
+          if (!auth) return new Response('', {
+            status: 402,
+            headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+          });
+          return new Response('deposit-mode delivered body', { status: 200 });
+        },
+      },
+    ]);
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+    const { svc: holdInvoiceService, calls } = stubHoldInvoice();
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      holdInvoiceService,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+      // No mode → defaults to 'deposit'
+    });
+    expect(result.status).toBe('success');
+    expect(calls.addInvoice).toBe(0);
+    expect(calls.settle).toBe(0);
   });
 });
 

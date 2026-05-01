@@ -153,6 +153,7 @@ class ApiClient:
         max_latency_ms: int,
         authorization: str,
         expected_schema_hash: str | None = None,
+        mode: str | None = None,
     ) -> dict[str, Any]:
         """SDK 1.2.0 — server-side fulfill proxy.
 
@@ -160,6 +161,9 @@ class ApiClient:
         402, 429, 502, 503-with-circuit-breaker) as a discriminated dict
         instead of throwing. Genuine errors (401 invalid auth, 503
         fulfill_disabled, network/timeout) still raise.
+
+        SDK 1.4.0 — ``mode`` param ('deposit' default, 'hold' for the
+        non-custodial Phase 6 flow).
         """
         body: dict[str, Any] = {
             "intent": intent,
@@ -168,10 +172,33 @@ class ApiClient:
         }
         if expected_schema_hash is not None:
             body["expected_schema_hash"] = expected_schema_hash
+        if mode is not None:
+            body["mode"] = mode
         return await self._request_business_failures(
             "POST",
             "/api/fulfill",
             json=body,
+            authorization=authorization,
+        )
+
+    async def post_fulfill_execute(
+        self,
+        *,
+        job_id: str,
+        intent: dict[str, Any],
+        authorization: str,
+    ) -> dict[str, Any]:
+        """SDK 1.4.0 — second step of hold-mode fulfill (Phase 6).
+
+        After post_fulfill(mode='hold') returns status='hold_invoice_required',
+        the agent pays the BOLT11 with their wallet and calls this method
+        to trigger the orchestrator. Intent must be re-supplied because
+        the server keeps only intent_hash between the two calls.
+        """
+        return await self._request_business_failures(
+            "POST",
+            f"/api/fulfill/{job_id}/execute",
+            json={"intent": intent},
             authorization=authorization,
         )
 
@@ -282,6 +309,18 @@ class ApiClient:
         if res.status_code == 200 and isinstance(body, dict):
             return body
         if res.status_code == 402 and isinstance(body, dict):
+            # SDK 1.4.0 — 402 carries two distinct shapes: deposit-mode
+            # insufficient_balance OR hold-mode hold_invoice_required.
+            if body.get("status") == "hold_invoice_required":
+                return {
+                    "status": "hold_invoice_required",
+                    "job_id": body.get("job_id"),
+                    "payment_request": body.get("payment_request"),
+                    "payment_hash": body.get("payment_hash"),
+                    "invoice_amount_sats": body.get("invoice_amount_sats"),
+                    "expires_at": body.get("expires_at"),
+                    "execute_endpoint": body.get("execute_endpoint"),
+                }
             return {
                 "status": "insufficient_balance",
                 "required_sats": body.get("required_sats"),
@@ -307,6 +346,15 @@ class ApiClient:
                 "pool_balance_sats": body.get("pool_balance_sats"),
                 "min_pool_sats": body.get("min_pool_sats"),
                 "retry_after_sec": body.get("retry_after_sec"),
+            }
+        if (
+            res.status_code == 503
+            and isinstance(body, dict)
+            and body.get("error") == "hold_mode_unavailable"
+        ):
+            return {
+                "status": "hold_mode_unavailable",
+                "reason": body.get("reason"),
             }
         # Genuine error — raise.
         raise error_from_response(res.status_code, body)

@@ -126,6 +126,126 @@ describe('SatRank.proxyFulfill', () => {
   });
 });
 
+describe('SatRank.proxyFulfill (mode=hold) — SDK 1.4.0', () => {
+  const holdSample = {
+    intent: { category: 'data' },
+    max_sats: 50,
+    max_latency_ms: 5000,
+    authorization: 'Nostr xxx',
+    mode: 'hold' as const,
+  };
+
+  it('mode=hold is forwarded in the request body', async () => {
+    let capturedBody: unknown = null;
+    const fetchMock = mockFetch((url, init) => {
+      capturedBody = JSON.parse(init.body as string);
+      return new Response(JSON.stringify({
+        status: 'hold_invoice_required',
+        job_id: 'h1',
+        payment_request: 'lnbc1...',
+        payment_hash: 'a'.repeat(64),
+        invoice_amount_sats: 12,
+        expires_at: 1714500000,
+        execute_endpoint: '/api/fulfill/h1/execute',
+      }), { status: 402, headers: { 'content-type': 'application/json' } });
+    });
+    const sr = new SatRank({ apiBase: BASE, fetch: fetchMock });
+    const r = await sr.proxyFulfill(holdSample);
+    expect((capturedBody as { mode?: string }).mode).toBe('hold');
+    expect(r.status).toBe('hold_invoice_required');
+    expect(r.payment_request).toBe('lnbc1...');
+    expect(r.payment_hash).toBe('a'.repeat(64));
+    expect(r.invoice_amount_sats).toBe(12);
+    expect(r.job_id).toBe('h1');
+  });
+
+  it('402 with insufficient_balance shape still maps to insufficient_balance', async () => {
+    // Regression — the 402 dispatch must NOT misroute insufficient_balance to
+    // hold_invoice_required just because both share the status code.
+    const fetchMock = mockFetch(() => new Response(JSON.stringify({
+      error: 'insufficient_balance',
+      required_sats: 51,
+      available_sats: 3,
+    }), { status: 402 }));
+    const sr = new SatRank({ apiBase: BASE, fetch: fetchMock });
+    const r = await sr.proxyFulfill(holdSample);
+    expect(r.status).toBe('insufficient_balance');
+    expect(r.required_sats).toBe(51);
+  });
+
+  it('503 hold_mode_unavailable → typed status, not thrown', async () => {
+    const fetchMock = mockFetch(() => new Response(JSON.stringify({
+      error: 'hold_mode_unavailable',
+      reason: 'lnd_invoicesrpc_offline',
+    }), { status: 503 }));
+    const sr = new SatRank({ apiBase: BASE, fetch: fetchMock });
+    const r = await sr.proxyFulfill(holdSample);
+    expect(r.status).toBe('hold_mode_unavailable');
+  });
+});
+
+describe('SatRank.proxyFulfillExecute — SDK 1.4.0', () => {
+  it('POSTs to /api/fulfill/:job_id/execute with intent + auth, returns success', async () => {
+    let capturedUrl = '';
+    let capturedAuth: string | undefined;
+    let capturedBody: unknown = null;
+    const fetchMock = mockFetch((url, init) => {
+      capturedUrl = url;
+      capturedAuth = (init.headers as Record<string, string>).Authorization;
+      capturedBody = JSON.parse(init.body as string);
+      return new Response(JSON.stringify({
+        status: 'success',
+        job_id: 'h1',
+        body: 'world',
+        preimage: 'p'.repeat(64),
+        candidate_url: 'https://x.example/api',
+        attempts: [],
+        sats_spent: 11,
+        premium_sats: 1,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const sr = new SatRank({ apiBase: BASE, fetch: fetchMock });
+    const r = await sr.proxyFulfillExecute({
+      job_id: 'h1',
+      intent: { category: 'data' },
+      authorization: 'Nostr yyy',
+    });
+    expect(capturedUrl).toBe(`${BASE}/api/fulfill/h1/execute`);
+    expect(capturedAuth).toBe('Nostr yyy');
+    expect((capturedBody as { intent?: unknown }).intent).toEqual({ category: 'data' });
+    expect(r.status).toBe('success');
+    expect(r.body).toBe('world');
+  });
+
+  it('encodes job_id segment safely (path traversal guard)', async () => {
+    let capturedUrl = '';
+    const fetchMock = mockFetch((url) => {
+      capturedUrl = url;
+      return new Response(JSON.stringify({
+        status: 'refunded',
+        job_id: 'weird/id',
+        attempts: [],
+        reason: 'all_candidates_failed',
+      }), { status: 502 });
+    });
+    const sr = new SatRank({ apiBase: BASE, fetch: fetchMock });
+    await sr.proxyFulfillExecute({
+      job_id: 'weird/id',
+      intent: { category: 'data' },
+      authorization: 'Nostr zzz',
+    });
+    expect(capturedUrl).toBe(`${BASE}/api/fulfill/weird%2Fid/execute`);
+  });
+
+  it('fulfillExecuteEndpoint() returns the canonical URL agents must sign', () => {
+    const sr = new SatRank({ apiBase: BASE });
+    expect(sr.fulfillExecuteEndpoint('h1')).toBe(`${BASE}/api/fulfill/h1/execute`);
+    expect(sr.fulfillExecuteEndpoint('weird/id')).toBe(
+      `${BASE}/api/fulfill/weird%2Fid/execute`,
+    );
+  });
+});
+
 describe('SatRank.proxyFulfillQuote', () => {
   it('returns the quote payload, no auth required', async () => {
     const fetchMock = mockFetch((url, init) => {

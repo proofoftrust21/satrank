@@ -37,6 +37,8 @@ export type {
   ProxyFulfillAttempt,
   ProxyFulfillQuoteResult,
   ProxyFulfillQuoteCandidate,
+  // SDK 1.4.0 — hold-invoice mode (Phase 6)
+  ProxyFulfillExecuteInput,
 } from './types';
 
 export {

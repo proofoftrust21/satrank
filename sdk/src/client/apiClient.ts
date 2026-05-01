@@ -110,10 +110,29 @@ export class ApiClient {
       max_sats: input.max_sats,
       max_latency_ms: input.max_latency_ms,
       expected_schema_hash: input.expected_schema_hash,
+      mode: input.mode,
     });
     return this.requestAcceptingBusinessFailures<ProxyFulfillResult>(
       'POST',
       '/api/fulfill',
+      body,
+      authorizationHeader,
+    );
+  }
+
+  /** SDK 1.4.0 — second step of hold-mode fulfill. Agent paid the
+   *  hold-invoice from a prior postFulfill({mode:'hold'}); this triggers
+   *  the orchestrator. The intent must be re-supplied because the server
+   *  stores only intent_hash between the two calls. */
+  async postFulfillExecute(
+    jobId: string,
+    intent: ProxyFulfillInput['intent'],
+    authorizationHeader: string,
+  ): Promise<ProxyFulfillResult> {
+    const body = { intent };
+    return this.requestAcceptingBusinessFailures<ProxyFulfillResult>(
+      'POST',
+      `/api/fulfill/${encodeURIComponent(jobId)}/execute`,
       body,
       authorizationHeader,
     );
@@ -196,7 +215,31 @@ export class ApiClient {
       return parsed as T;
     }
     if (res.status === 402 && parsed && typeof parsed === 'object') {
-      const o = parsed as { required_sats?: number; available_sats?: number };
+      // SDK 1.4.0 — 402 carries two distinct shapes: deposit-mode
+      // insufficient_balance OR hold-mode hold_invoice_required. The
+      // server's `status` field tells us which.
+      const o = parsed as {
+        status?: string;
+        required_sats?: number;
+        available_sats?: number;
+        job_id?: string;
+        payment_request?: string;
+        payment_hash?: string;
+        invoice_amount_sats?: number;
+        expires_at?: number;
+        execute_endpoint?: string;
+      };
+      if (o.status === 'hold_invoice_required') {
+        return {
+          status: 'hold_invoice_required',
+          job_id: o.job_id,
+          payment_request: o.payment_request,
+          payment_hash: o.payment_hash,
+          invoice_amount_sats: o.invoice_amount_sats,
+          expires_at: o.expires_at,
+          execute_endpoint: o.execute_endpoint,
+        } as unknown as T;
+      }
       return {
         status: 'insufficient_balance',
         required_sats: o.required_sats,
@@ -234,6 +277,18 @@ export class ApiClient {
         pool_balance_sats: o.pool_balance_sats,
         min_pool_sats: o.min_pool_sats,
         retry_after_sec: o.retry_after_sec,
+      } as unknown as T;
+    }
+    if (
+      res.status === 503 &&
+      parsed &&
+      typeof parsed === 'object' &&
+      (parsed as { error?: string }).error === 'hold_mode_unavailable'
+    ) {
+      const o = parsed as { reason?: string };
+      return {
+        status: 'hold_mode_unavailable',
+        reason: o.reason,
       } as unknown as T;
     }
     // Unrecognised — bubble up as a SatRankError.

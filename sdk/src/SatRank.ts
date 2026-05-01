@@ -14,6 +14,7 @@ import type {
   ProxyFulfillInput,
   ProxyFulfillResult,
   ProxyFulfillQuoteResult,
+  ProxyFulfillExecuteInput,
 } from './types';
 
 interface InternalOptions {
@@ -168,6 +169,27 @@ export class SatRank {
   /** SDK 1.3.0 — canonical URL for proxyFulfill's NIP-98 `u` tag. */
   fulfillEndpoint(): string {
     return `${this.options.apiBase}/api/fulfill`;
+  }
+
+  /** SDK 1.4.0 — second step of hold-invoice fulfill (Phase 6).
+   *
+   *  After proxyFulfill({mode:'hold'}) returns {status:'hold_invoice_required'},
+   *  the agent pays the BOLT11 with their wallet, then calls this to trigger
+   *  the orchestrator. The intent must be re-supplied (server stores
+   *  intent_hash, not the full intent shape, between the two calls).
+   *
+   *  Returns the same discriminated ProxyFulfillResult as proxyFulfill —
+   *  switch on `result.status` for success / refunded / hold_invoice_required
+   *  (still awaiting payment) / hold_mode_unavailable. */
+  async proxyFulfillExecute(input: ProxyFulfillExecuteInput): Promise<ProxyFulfillResult> {
+    return this.api.postFulfillExecute(input.job_id, input.intent, input.authorization);
+  }
+
+  /** SDK 1.4.0 — canonical URL the NIP-98 `u` tag must contain when calling
+   *  proxyFulfillExecute. The job_id comes from the prior proxyFulfill
+   *  response (status='hold_invoice_required'). */
+  fulfillExecuteEndpoint(jobId: string): string {
+    return `${this.options.apiBase}/api/fulfill/${encodeURIComponent(jobId)}/execute`;
   }
 
   _options(): Readonly<InternalOptions> {

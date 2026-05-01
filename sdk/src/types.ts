@@ -332,6 +332,12 @@ export interface ProxyFulfillInput {
    *  successful 2xx body against the schema; mismatches are treated as
    *  delivery failures (Tier 2 refund). */
   expected_schema_hash?: string;
+  /** SDK 1.4.0 — payment mode. 'deposit' (default, custodial via
+   *  /api/deposit + token_balance) or 'hold' (non-custodial via Lightning
+   *  hold invoice). When 'hold', proxyFulfill returns
+   *  {status: 'hold_invoice_required'} with the BOLT11; the agent pays it
+   *  then calls proxyFulfillExecute() to trigger orchestrator. */
+  mode?: 'deposit' | 'hold';
   /** Pre-signed `Authorization: Nostr <base64-event>` header. The signed
    *  NIP-98 event MUST bind to:
    *    - `u` tag = `${apiBase}/api/fulfill`
@@ -347,7 +353,20 @@ export type ProxyFulfillStatus =
   | 'refunded'
   | 'insufficient_balance'
   | 'daily_cap_reached'
-  | 'circuit_breaker_open';
+  | 'circuit_breaker_open'
+  | 'hold_invoice_required'
+  | 'hold_mode_unavailable';
+
+/** SDK 1.4.0 — input for the second step of hold-mode fulfill. The agent
+ *  has paid the hold-invoice from a prior proxyFulfill({mode:'hold'})
+ *  call; this triggers the orchestrator. The intent must be re-supplied
+ *  because SatRank stores intent_hash, not the full intent shape, between
+ *  the two calls. */
+export interface ProxyFulfillExecuteInput {
+  job_id: string;
+  intent: ProxyFulfillInput['intent'];
+  authorization: string;
+}
 
 export interface ProxyFulfillAttempt {
   candidate_url: string;
@@ -389,6 +408,14 @@ export interface ProxyFulfillResult {
    *  the safe floor. /api/oracle/fulfill exposes the live balance. */
   pool_balance_sats?: number;
   min_pool_sats?: number;
+  /** SDK 1.4.0 — present when status='hold_invoice_required'. The agent
+   *  pays this BOLT11, then calls proxyFulfillExecute(job_id, intent,
+   *  authorization) to trigger the orchestrator. */
+  payment_request?: string;
+  payment_hash?: string;
+  invoice_amount_sats?: number;
+  expires_at?: number;
+  execute_endpoint?: string;
 }
 
 export interface ProxyFulfillQuoteCandidate {
