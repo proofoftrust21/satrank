@@ -1086,47 +1086,85 @@ export class FulfillService {
 
     const status = recallResp.status;
     const contentType = recallResp.headers.get('content-type');
-    const { body: bodyBuf, truncated } = await readBodyCapped(recallResp, RECALL_BODY_MAX_BYTES);
-    const body = bodyBuf.toString('utf8');
+
+    // Audit Phase 6.1 (2026-05-01): wrap the entire post-pay body processing
+    // in a try-catch that returns an attempt rather than throwing. Otherwise
+    // a malformed response stream / quality heuristic crash leaves the
+    // orchestrator with a paid operator but no recorded attempt — the
+    // refund_engine misses the absorbed-sats ledger record AND the for-loop
+    // can't continue to the next candidate because the outer try-catch
+    // fires. Smoke E2E surfaced this when readBodyCapped threw on a real
+    // L402 candidate's response.
+    let body: string;
+    let truncated: boolean;
+    try {
+      const read = await readBodyCapped(recallResp, RECALL_BODY_MAX_BYTES);
+      body = read.body.toString('utf8');
+      truncated = read.truncated;
+    } catch (err) {
+      return baseAttempt(cand, ts_started, this.now(), {
+        payment_outcome: 'pay_ok',
+        delivery_outcome: 'recall_body_read_error',
+        http_status: status,
+        sats_paid: amountSats,
+        preimage: pay.paymentPreimage,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     let delivery: string;
     let validatorDetail: string | undefined;
-    if (status >= 200 && status < 300) {
-      delivery = body.length >= 10 ? 'delivery_ok' : 'delivery_empty_body';
-      if (delivery === 'delivery_ok') {
-        // Tier 2 light — heuristic body shape check. A 2xx that fails the
-        // heuristics gets demoted to delivery_low_quality.
-        const evaluated = evaluateBodyQuality({ body, contentType, status });
-        if (!evaluated.passed) delivery = 'delivery_low_quality';
-      }
-      // Phase 3 — strict JSON Schema validation overlays the heuristics. If
-      // the agent declared expected_schema_hash and the body parses + matches,
-      // we promote/keep delivery_ok. Otherwise schema_violation classification
-      // (Tier 2, disputable). Schema overrides heuristics — explicit > implicit.
-      if (delivery === 'delivery_ok' && schemaJson) {
-        try {
-          const validators = buildValidatorChain({ schema: schemaJson });
-          const result = validateAll(validators, { body, contentType, status });
-          if (!result.passed) {
-            delivery = 'delivery_schema_violation';
-            validatorDetail = `${result.reason}: ${JSON.stringify(result.details ?? {})}`;
-          }
-        } catch (err) {
-          // Compilation error on a bad schema — should never happen because
-          // registration validates JSON Schema, but defend in depth so a
-          // corrupted DB row doesn't crash the orchestrator.
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err) },
-            'Fulfill: jsonSchemaValidator construction failed — accepting body without schema check',
-          );
+    try {
+      if (status >= 200 && status < 300) {
+        delivery = body.length >= 10 ? 'delivery_ok' : 'delivery_empty_body';
+        if (delivery === 'delivery_ok') {
+          // Tier 2 light — heuristic body shape check. A 2xx that fails the
+          // heuristics gets demoted to delivery_low_quality.
+          const evaluated = evaluateBodyQuality({ body, contentType, status });
+          if (!evaluated.passed) delivery = 'delivery_low_quality';
         }
+        // Phase 3 — strict JSON Schema validation overlays the heuristics. If
+        // the agent declared expected_schema_hash and the body parses + matches,
+        // we promote/keep delivery_ok. Otherwise schema_violation classification
+        // (Tier 2, disputable). Schema overrides heuristics — explicit > implicit.
+        if (delivery === 'delivery_ok' && schemaJson) {
+          try {
+            const validators = buildValidatorChain({ schema: schemaJson });
+            const result = validateAll(validators, { body, contentType, status });
+            if (!result.passed) {
+              delivery = 'delivery_schema_violation';
+              validatorDetail = `${result.reason}: ${JSON.stringify(result.details ?? {})}`;
+            }
+          } catch (err) {
+            // Compilation error on a bad schema — should never happen because
+            // registration validates JSON Schema, but defend in depth so a
+            // corrupted DB row doesn't crash the orchestrator.
+            logger.error(
+              { error: err instanceof Error ? err.message : String(err) },
+              'Fulfill: jsonSchemaValidator construction failed — accepting body without schema check',
+            );
+          }
+        }
+      } else if (status >= 400 && status < 500) {
+        delivery = 'delivery_4xx';
+      } else if (status >= 500 && status < 600) {
+        delivery = 'delivery_5xx';
+      } else {
+        delivery = 'delivery_other';
       }
-    } else if (status >= 400 && status < 500) {
-      delivery = 'delivery_4xx';
-    } else if (status >= 500 && status < 600) {
-      delivery = 'delivery_5xx';
-    } else {
-      delivery = 'delivery_other';
+    } catch (err) {
+      // evaluateBodyQuality / buildValidatorChain / validateAll may throw on
+      // pathological bodies (binary content tagged as application/json,
+      // gigantic JSON, etc.). Fail-soft: classify as delivery_classification_error
+      // so the attempt is still recorded.
+      return baseAttempt(cand, ts_started, this.now(), {
+        payment_outcome: 'pay_ok',
+        delivery_outcome: 'delivery_classification_error',
+        http_status: status,
+        sats_paid: amountSats,
+        preimage: pay.paymentPreimage,
+        detail: err instanceof Error ? err.message : String(err),
+      });
     }
 
     // Phase 3 — when schema validation failed, prefer the validator detail

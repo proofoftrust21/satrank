@@ -1761,6 +1761,62 @@ describe('FulfillService — Phase 2 refund engine integration', () => {
     // Orchestrator returned refunded cleanly even though ledger write threw.
     expect(result.status).toBe('refunded');
   });
+
+  // ----- Audit Phase 6.1 (2026-05-01): post-pay throw paths -----
+
+  it('audit Phase 6.1 — recall body read throw → attempt recorded with delivery_outcome=recall_body_read_error', async () => {
+    // The recall fetch returns a Response whose body stream throws on read.
+    // Without the post-pay try/catch around readBodyCapped, this would
+    // bubble up as orchestrator_exception with empty attempts (smoke E2E
+    // discovered this in prod). With the fix, we get a proper attempt
+    // recorded with payment_outcome=pay_ok + delivery_outcome=recall_body_read_error.
+    const url = 'https://recall-throws.example/api';
+    const invoice = makeInvoice(5);
+    const fetchMock = makeFetch([
+      {
+        match: (u, init) => u === url && !((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `L402 macaroon="m", invoice="${invoice}"` },
+        }),
+      },
+      {
+        match: (u, init) => u === url && !!((init?.headers as Record<string, string> | undefined)?.['Authorization']),
+        respond: () => {
+          // Return a Response whose body stream errors when consumed.
+          const stream = new ReadableStream({
+            start(controller) { controller.error(new Error('simulated stream error')); },
+          });
+          return new Response(stream, { status: 200 });
+        },
+      },
+    ]);
+    await seedAgentBalance(pool, AGENT_HASH, 100);
+
+    const svc = new FulfillService({
+      pool,
+      fulfillJobRepo: repo,
+      intentService: fakeIntent([makeCandidate(url, 1)]) as IntentService,
+      lndClient: fakeLnd({ payOk: true }),
+      refundEngine,
+      fetchImpl: fetchMock as unknown as typeof import('../utils/ssrf').fetchSafeExternal,
+    });
+    const result = await svc.fulfill({
+      agent_pubkey: AGENT_HASH,
+      intent: { category: 'data' },
+      max_sats: 50,
+      max_latency_ms: 5000,
+    });
+    // The orchestrator returns refunded (no successful candidate) but
+    // CRUCIALLY the attempt was recorded with the correct shape so the
+    // refund_engine ledgered the absorbed sats.
+    expect(result.status).toBe('refunded');
+    if (result.status !== 'refunded') return;
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts[0].payment_outcome).toBe('pay_ok');
+    expect(result.attempts[0].delivery_outcome).toBe('recall_body_read_error');
+    expect(result.attempts[0].sats_paid).toBe(5);
+  });
 });
 
 /** Helper for the zero-amount invoice test — bolt11 lib accepts an

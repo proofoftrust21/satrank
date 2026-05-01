@@ -93,6 +93,17 @@ export class RefundEngine {
         return 'tier1_http_other';
       case 'recall_network_error':
         return 'tier1_recall_network_error';
+      case 'recall_body_read_error':
+        // Audit Phase 6.1 — operator returned a Response whose body stream
+        // failed to read (truncated, malformed transfer-encoding, etc.).
+        // Same root cause class as recall_network_error: we paid but the
+        // upstream couldn't deliver a usable body.
+        return 'tier1_recall_network_error';
+      case 'delivery_classification_error':
+        // Audit Phase 6.1 — body read OK but heuristics/validators threw on
+        // a pathological body (binary content as application/json, etc.).
+        // Tier 1 because the upstream's behaviour is at fault.
+        return 'tier1_http_other';
       case 'delivery_low_quality':
         return 'tier2_body_shape';
       case 'delivery_schema_violation':
