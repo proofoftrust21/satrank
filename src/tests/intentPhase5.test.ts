@@ -351,6 +351,23 @@ describe('Phase 5 — median_latency_ms fallback', async () => {
   });
 });
 
+/** Scrub fields that depend on Date.now() — the alias-vs-canonical-route
+ *  contract is shape-equality, not wall-clock equality. Two requests issued
+ *  ~ms apart can compute different age-from-now values when they straddle
+ *  a second boundary on fast CI runners. */
+function stripVolatileEndpointFields(body: unknown): unknown {
+  if (!body || typeof body !== 'object') return body;
+  const data = (body as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return body;
+  const http = (data as { http?: { lastProbeAgeSec?: unknown } }).http;
+  if (http && 'lastProbeAgeSec' in http) {
+    const cleaned = { ...http };
+    delete (cleaned as Record<string, unknown>).lastProbeAgeSec;
+    return { ...(body as Record<string, unknown>), data: { ...(data as Record<string, unknown>), http: cleaned } };
+  }
+  return body;
+}
+
 describe('Phase 5 — /api/services/:url_hash alias', async () => {
   let db: Pool;
   let agentRepo: AgentRepository;
@@ -384,7 +401,12 @@ describe('Phase 5 — /api/services/:url_hash alias', async () => {
     const canonResp = await request(app).get(`/api/endpoint/${hash}`);
     expect(aliasResp.status).toBe(200);
     expect(canonResp.status).toBe(200);
-    expect(aliasResp.body).toEqual(canonResp.body);
+    // The two requests are issued ~ms apart, so age-from-now fields can
+    // differ by 1 (CI runners cross a second boundary, observed flake on
+    // commit afef5a8). Scrub time-volatile fields before comparing — the
+    // alias contract is "same shape, same data", not "same wall-clock view".
+    expect(stripVolatileEndpointFields(aliasResp.body))
+      .toEqual(stripVolatileEndpointFields(canonResp.body));
   });
 });
 
