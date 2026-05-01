@@ -33,6 +33,14 @@ services:
       #     offchain:read offchain:write
       # Excluded from rsync (*.macaroon) so the file is per-host.
       - ./probe-pay.macaroon:/app/macaroons/probe-pay.macaroon:ro
+      # Phase 6.1 — fulfill macaroon (offchain:* + invoices:* — needed for
+      # mode=hold addHoldInvoice/settle/cancel + outbound residue refund
+      # via payInvoice). Baked out-of-band via:
+      #   lncli bakemacaroon --save_to <remote_dir>/fulfill.macaroon \
+      #     offchain:read offchain:write invoices:read invoices:write
+      # Optional — when missing, fulfill mode=hold returns clean 503
+      # hold_mode_unavailable rather than crashing.
+      - ./fulfill.macaroon:/app/macaroons/fulfill.macaroon:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>r.json()).then(j=>{process.exit(j.data.status==='ok'?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s

@@ -86,7 +86,7 @@ deploy:
 		echo "REFUSING: REMOTE_DIR='$(REMOTE_DIR)' contains characters outside [A-Za-z0-9_/.-]"; \
 		exit 1; \
 	fi
-	ssh $(SATRANK_HOST) "chown -R root:root $(REMOTE_DIR) && chmod 600 $(REMOTE_DIR)/.env.production 2>/dev/null && chown 1001:1001 $(REMOTE_DIR)/probe-pay.macaroon $(REMOTE_DIR)/invoice.macaroon 2>/dev/null || true"
+	ssh $(SATRANK_HOST) "chown -R root:root $(REMOTE_DIR) && chmod 600 $(REMOTE_DIR)/.env.production 2>/dev/null && chown 1001:1001 $(REMOTE_DIR)/probe-pay.macaroon $(REMOTE_DIR)/invoice.macaroon $(REMOTE_DIR)/fulfill.macaroon 2>/dev/null || true"
 
 # Cleanup
 clean:
