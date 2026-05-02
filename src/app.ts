@@ -907,9 +907,26 @@ export function createApp() {
   api.use('/version', versionRateLimit);
   api.use(createHealthRoutes(healthController));          // health, stats, version
   // Free discovery/monitoring endpoints — own rate limits (expensive SQL, no L402 gate)
+  // Sim 11 Fix 4 (2026-05-02) — Sim 11 a03 (HARMFUL) hit 429 on 26s spacing:
+  // multiple agents sharing the same outgoing NAT IP collectively tripped
+  // the per-IP 10/min limit. Two changes:
+  //   1. Bump max 10 → 30/min — still aggressive enough to block unauthenticated
+  //      SQL fan-out while letting an agent fleet (10 personas × ~3 calls each
+  //      per minute = 30) breathe.
+  //   2. When a NIP-98 Authorization header is present, key by a stable hash
+  //      of its first 32 chars — distinct agents behind the same NAT now
+  //      get separate quota buckets. Full crypto verify can't run inline
+  //      (sync limit), but the header shape per agent is unique. Defense in
+  //      depth: full NIP-98 verify still happens at the controller layer.
   const discoveryRateLimit = rateLimit({
-    windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false,
-    keyGenerator: (req) => req.ip ?? '0.0.0.0',
+    windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false,
+    keyGenerator: (req) => {
+      const auth = req.headers.authorization;
+      if (auth && auth.toLowerCase().startsWith('nostr ')) {
+        return `nostr:${auth.slice(6, 38)}`;
+      }
+      return req.ip ?? '0.0.0.0';
+    },
     skip: () => config.L402_BYPASS,
     message: { error: { code: 'RATE_LIMITED', message: 'Too many discovery requests, please try again later' } },
     handler: (req, res, _next, options) => {

@@ -332,7 +332,17 @@ export class FulfillService {
     // (would require refunding the hold-invoice). On cache hit, agent pays
     // 10% of the original sats_paid + premium floor, gets the cached body
     // plus a SatRank-signed freshness attestation.
-    if (mode === 'deposit' && this.deps.intentCacheRepo) {
+    //
+    // Sim 11 Fix 2 (2026-05-02) — refuse cache lookup when the intent has
+    // no keywords. Sim 11 a06 (HARMFUL) hit a cache that returned an L402
+    // directory uptime report when asking for "realtime news" — both
+    // queries had `category=data` + empty keywords[], so the same
+    // intent_hash collided across semantically-divergent missions. With
+    // category alone the cache can't be safely shared cross-agent ; require
+    // ≥1 keyword (or, in the future, a query field) before serving cache.
+    const hasSemanticKeywords =
+      Array.isArray(req.intent.keywords) && req.intent.keywords.length > 0;
+    if (mode === 'deposit' && hasSemanticKeywords && this.deps.intentCacheRepo) {
       const cached = await this.deps.intentCacheRepo.lookup(intentHash, nowSec);
       if (cached) {
         const cacheHitFee = Math.max(PREMIUM_FLOOR_SATS, Math.ceil(cached.source_sats_paid * 0.10));
@@ -665,10 +675,22 @@ export class FulfillService {
         }
       }
 
+      // Sim 11 Fix 1 (2026-05-02) — pre-emptive SLA enforcement. Sim 11 a06
+      // RealtimeNewsAI (HARMFUL verdict) saw 3/4 calls overshoot a 6000ms
+      // budget by 400-1200ms. Root cause: the orchestrator only checked
+      // "is current elapsed > budget" between candidates, but once
+      // attemptCandidate started, the 4 internal stages (probe/pay/recall/
+      // body-read) had a 50ms floor each, accumulating up to ~200ms past
+      // deadline + body-read tail. Stop starting new candidates if there
+      // isn't enough budget left to attempt one cleanly. 1500ms covers a
+      // fast probe (300ms) + pay (500ms) + recall (300ms) + body (400ms)
+      // with no slack ; well-behaved candidates fit, slow ones don't even
+      // start (refund_max_latency_preempt instead of breach).
+      const MIN_BUDGET_PER_CANDIDATE_MS = 1500;
       for (const cand of candidates) {
-        // Latency budget — give up before the next candidate if we're already
-        // over the agent's max_latency_ms.
-        if (Date.now() - startMs > req.max_latency_ms) {
+        const elapsed = Date.now() - startMs;
+        const remaining = req.max_latency_ms - elapsed;
+        if (remaining < MIN_BUDGET_PER_CANDIDATE_MS) {
           await this.repayBorrowOnFailure(req.agent_pubkey, creditBorrowed);
           return await this.refund(jobId, attempts, 'max_latency_exceeded');
         }
@@ -754,8 +776,15 @@ export class FulfillService {
           const cacheBodyBytes = Buffer.byteLength(cacheBody, 'utf8');
           const CACHE_MIN_BYTES = 16;
           const CACHE_MAX_BYTES = 1_048_576;
+          // Sim 11 Fix 2 — same keyword guard on the write path. If the
+          // request had no keywords, the cache key is too-loose and
+          // serving it later would risk an off-topic hit. Don't pollute
+          // the cache with these entries either.
+          const writeIntentHasKeywords =
+            Array.isArray(req.intent.keywords) && req.intent.keywords.length > 0;
           if (
             this.deps.intentCacheRepo &&
+            writeIntentHasKeywords &&
             cacheBodyBytes >= CACHE_MIN_BYTES &&
             cacheBodyBytes <= CACHE_MAX_BYTES
           ) {
@@ -1290,10 +1319,15 @@ export class FulfillService {
     // remainingMs() returns the budget left (or default fetch timeout when
     // no deadline was passed). Always returns a positive integer so
     // AbortSignal.timeout never gets 0 (which fires immediately).
+    // Sim 11 Fix 1 (2026-05-02) — drop the 50ms floor down to 10ms so once
+    // the deadline elapses the next stage aborts almost immediately rather
+    // than buying another 50ms × 4 stages = 200ms slack. The orchestrator
+    // already pre-empts at 1500ms remaining, so this only matters when
+    // a single stage takes longer than expected.
     const remainingMs = (defaultMs: number): number => {
       if (deadlineMs == null) return defaultMs;
       const left = deadlineMs - Date.now();
-      return Math.max(50, Math.min(defaultMs, left));
+      return Math.max(10, Math.min(defaultMs, left));
     };
 
     // Step 1 — challenge fetch. Same shape as paidProbeRunner.probeOne so
@@ -1415,8 +1449,22 @@ export class FulfillService {
     if (pay.paymentError || !pay.paymentPreimage) {
       const detail = pay.paymentError ?? 'no preimage returned';
       const isRouting = /no.?route|no_route|FAILURE_REASON_NO_ROUTE|insufficient/i.test(detail);
+      // Sim 11 Fix 3 (2026-05-02) — operator-side L402 invoice replay.
+      // Sim 11 a03 (HARMFUL) + a04 mention "invoice is already paid" mid-
+      // orchestration: an L402 server reused a payment_hash that LND has
+      // already settled. No sats moved (LND rejected) but the agent's
+      // attempt is wasted. Classify separately so:
+      //   - the orchestrator can de-prioritise this operator for the next
+      //     candidate-loop iteration (set in caller), and
+      //   - downstream telemetry distinguishes operator-side state bugs
+      //     from real routing/liquidity failures.
+      const isReplay = /already.?paid|already.?settled|payment_hash.*already|invoice.?already/i.test(detail);
+      let outcome: string;
+      if (isReplay) outcome = 'pay_invoice_replayed';
+      else if (isRouting) outcome = 'pay_routing_failed';
+      else outcome = 'pay_other_failure';
       return baseAttempt(cand, ts_started, this.now(), {
-        payment_outcome: isRouting ? 'pay_routing_failed' : 'pay_other_failure',
+        payment_outcome: outcome,
         delivery_outcome: 'delivery_skipped',
         http_status: 402,
         sats_paid: 0,
