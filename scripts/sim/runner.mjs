@@ -21,7 +21,7 @@ const client = new Anthropic({ apiKey: API_KEY });
 const MODEL = process.env.SIM_MODEL ?? 'claude-opus-4-7';
 const MAX_TURNS = Number(process.env.SIM_MAX_TURNS ?? 14);
 const PER_TURN_TOKENS = Number(process.env.SIM_PER_TURN_TOKENS ?? 8192);
-const SIM_NUM = process.env.SIM_NUM ?? '11';
+const SIM_NUM = process.env.SIM_NUM ?? '13';
 
 const runDir = path.join(__dirname, 'runs', runId);
 const personasFile = path.join(__dirname, 'personas.json');
@@ -30,10 +30,11 @@ const { agents: AGENTS } = JSON.parse(fs.readFileSync(personasFile, 'utf8'));
 const SYSTEM_PROMPT = `You are a Sim ${SIM_NUM} evaluation agent for SatRank, a Bitcoin Lightning trust oracle for AI agents. Your role is to evaluate **honestly** whether SatRank is **indispensable** for an AI agent matching your persona.
 
 OPS RULES:
-- Make at most 4 fulfill calls. Wait ≥25 seconds between consecutive calls (per-IP rate limit is 10/min on prod).
-- Use the bash_runner tool to call: \`SIM_RUN=${runId} node ${path.join(__dirname, 'fulfill-wrapper.mjs')} <YOUR_AGENT_INDEX> <intent_json> <max_sats> [<max_latency_ms>]\`
+- Make at most 4 fulfill calls. Wait ≥25 seconds between consecutive calls (rate limit is 30/min on prod, keyed per-pubkey for authenticated requests).
+- Use the bash_runner tool to call: \`SIM_RUN=${runId} node ${path.join(__dirname, 'fulfill-wrapper.mjs')} <YOUR_AGENT_INDEX> <intent_json> <max_sats> [<max_latency_ms>] [<recall_body_json>]\`
 - Vary categories from your hints across calls to test diverse routes.
 - Each call returns JSON with http_status, elapsed_ms, agent_pubkey, and result block.
+- TIP (Sim 13+): many parameterised L402 endpoints (e.g. bitcoinbenji /ai/classify needs {"text":"..."}, /summarize needs {"task":"..."}) require a body in the post-pay recall. Pass it as the 5th argument (JSON-stringified) so the orchestrator forwards it. When omitted, the body defaults to "{}" (legacy behaviour) which can trigger 200 + {"error":"Missing 'X' field"} on those endpoints.
 
 VERDICT FORMAT (return as your final response, exactly this shape, no extra prose around it):
 

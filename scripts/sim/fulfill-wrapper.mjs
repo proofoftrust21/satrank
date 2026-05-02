@@ -2,7 +2,12 @@
 // runner's bash_runner tool. Reads the per-agent key from runs/<SIM_RUN>/keys/<idx>.bin.
 //
 // Usage:
-//   SIM_RUN=sim-N node scripts/sim/fulfill-wrapper.mjs <idx> <intent_json> <max_sats> [<max_latency_ms>]
+//   SIM_RUN=sim-N node scripts/sim/fulfill-wrapper.mjs <idx> <intent_json> <max_sats> [<max_latency_ms>] [<recall_body_json>]
+//
+// Sim 12 Fix B (2026-05-02) — the optional 5th argument is forwarded as
+// `recall_body` in the fulfill request. JSON-stringified body for
+// parameterised L402 endpoints (e.g. {"text":"hello"} for bitcoinbenji
+// /ai/classify). When omitted, the orchestrator defaults to "{}".
 import crypto, { webcrypto } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,8 +34,9 @@ const idx = process.argv[2];
 const intentJson = process.argv[3];
 const maxSats = parseInt(process.argv[4], 10);
 const maxLatencyMs = parseInt(process.argv[5] ?? '8000', 10);
+const recallBodyArg = process.argv[6];
 if (!idx || !intentJson || !maxSats) {
-  console.error('usage: SIM_RUN=sim-N node fulfill-wrapper.mjs <idx> <intent_json> <max_sats> [<max_latency_ms>]');
+  console.error('usage: SIM_RUN=sim-N node fulfill-wrapper.mjs <idx> <intent_json> <max_sats> [<max_latency_ms>] [<recall_body_json>]');
   process.exit(1);
 }
 
@@ -39,7 +45,13 @@ const sk = new Uint8Array(fs.readFileSync(keyFile));
 const pubkey = getPublicKey(sk);
 const intent = JSON.parse(intentJson);
 const url = `${BASE}/api/fulfill`;
-const body = JSON.stringify({ intent, max_sats: maxSats, max_latency_ms: maxLatencyMs });
+const fulfillReq = { intent, max_sats: maxSats, max_latency_ms: maxLatencyMs };
+if (recallBodyArg) {
+  // The wrapper accepts the recall body as a raw string (already JSON or
+  // any text). Server caps at 4 KB ; truncate locally to avoid a 400.
+  fulfillReq.recall_body = recallBodyArg.length > 4096 ? recallBodyArg.slice(0, 4096) : recallBodyArg;
+}
+const body = JSON.stringify(fulfillReq);
 const auth = nip98(url, 'POST', body, sk);
 
 const t0 = Date.now();

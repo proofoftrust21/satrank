@@ -61,6 +61,29 @@ const fulfillRequestSchema = z.object({
   // refund when mode='hold' succeeds. Loose length check; fulfillService
   // calls parseBolt11 to validate semantically.
   refund_bolt11: z.string().min(20).max(2048).optional(),
+  // Sim 12 Fix B (2026-05-02) — agent-supplied recall body + headers.
+  // Many parameterized L402 endpoints (bitcoinbenji /ai/classify needs
+  // {"text":...}, /summarize needs {"task":...}) returned HTTP 200 with
+  // {"error":"Missing 'X' field"} when the orchestrator hardcoded `{}`
+  // as the recall body, classifying as delivery_low_quality. Letting
+  // the agent provide the body unlocks these endpoints. Caps :
+  //   - body 4 KB (covers JSON params for any reasonable text/code task)
+  //   - up to 8 headers, 256 chars each — enough for X-API-Key style
+  //     auxiliary auth that some operators bolt onto L402.
+  recall_body: z.string().max(4096).optional(),
+  recall_headers: z
+    .record(z.string().max(64), z.string().max(256))
+    .refine(h => Object.keys(h).length <= 8, 'at most 8 recall_headers')
+    // Block headers that conflict with our L402 + transport semantics —
+    // agents cannot override Authorization (we're paying with L402 token),
+    // Host (would break TLS SNI), or hop-by-hop headers.
+    .refine(
+      h => !Object.keys(h).some(k =>
+        /^(authorization|host|content-length|connection|transfer-encoding)$/i.test(k),
+      ),
+      'recall_headers may not override Authorization/Host/transport headers',
+    )
+    .optional(),
 });
 
 /** Phase 6 — body for POST /api/fulfill/:job_id/execute. The intent must
@@ -443,6 +466,8 @@ export class FulfillController {
         refund_bolt11: body.refund_bolt11,
         validators: body.validators,
         parallel_probe: body.parallel_probe,
+        recall_body: body.recall_body,
+        recall_headers: body.recall_headers,
       });
 
       switch (result.status) {

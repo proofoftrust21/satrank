@@ -97,6 +97,21 @@ export interface FulfillRequest {
    *  (the agent agreed to the worst-case price up-front). The invoice MUST be
    *  open-amount or the residue will fail to pay. Validated at create time. */
   refund_bolt11?: string;
+  /** Sim 12 Fix B (2026-05-02) — agent-supplied recall body. Used as the
+   *  POST body of the post-pay recall request. When omitted, the orchestrator
+   *  defaults to `{}` (legacy behaviour). Letting agents supply a body
+   *  unlocks parameterised endpoints (bitcoinbenji /ai/classify needs
+   *  `{"text":...}`, /summarize needs `{"task":...}`) that previously
+   *  returned HTTP 200 + error stub → delivery_low_quality. Capped at 4 KB
+   *  by the controller schema. */
+  recall_body?: string;
+  /** Sim 12 Fix B (2026-05-02) — extra headers merged into the post-pay
+   *  recall request. The orchestrator-set Authorization (L402 token),
+   *  User-Agent, and Content-Type take precedence ; agent headers cover
+   *  X-API-Key style auxiliary auth some operators bolt onto L402.
+   *  Capped at 8 entries × 256 chars by the controller schema, with
+   *  Authorization/Host/transport headers explicitly blocked. */
+  recall_headers?: Record<string, string>;
 }
 
 export type FulfillSuccess = {
@@ -622,7 +637,10 @@ export class FulfillService {
       // p_e2e DESC, see intentService.compareCandidates). We cap MAX_CANDIDATES
       // to bound the worst-case latency.
       const intentResp = await this.deps.intentService.resolveIntent(req.intent, undefined);
-      const candidates = intentResp.candidates.slice(0, MAX_CANDIDATES);
+      // Sim 12 Fix A — `candidates` is reassigned below by the latency
+      // pre-filter. Use `let` instead of `const` so the slow-operator drop
+      // can replace the working set without a fresh local.
+      let candidates = intentResp.candidates.slice(0, MAX_CANDIDATES);
       if (candidates.length === 0) {
         // Audit C1 — repay credit borrow on every failure exit (the deficit
         // covered an unrealised cost ; without repay the agent's debt sticks).
@@ -675,6 +693,44 @@ export class FulfillService {
         }
       }
 
+      // Sim 12 Fix A (2026-05-02) — drop candidates whose observed median
+      // latency leaves no headroom to complete within max_latency_ms. Sim 12
+      // a06 RealtimeNewsAI was still HARMFUL after Fix 1 (Sim 11) because
+      // a single in-flight attemptCandidate could overshoot the budget by
+      // 400-1300ms. Filtering BEFORE attempting prevents the slow operator
+      // from being tried at all. /api/intent already filters by
+      // `median_latency_ms <= max_latency_ms` (pass-through), but median
+      // ≈ p50 ; an operator at median=5500ms on a 6000ms budget will p95
+      // at ~7-8s. Subtract the same 1500ms safety margin used by the
+      // pre-empt below : a candidate that can't stay under (deadline -
+      // 1500ms) on its median doesn't get an attempt slot.
+      const LATENCY_MARGIN_MS = 1500;
+      const SAFE_LATENCY_CAP_MS = req.max_latency_ms - LATENCY_MARGIN_MS;
+      const filteredCandidates = candidates.filter(cand => {
+        if (cand.median_latency_ms == null) return true;  // unknown : optimistic
+        return cand.median_latency_ms <= SAFE_LATENCY_CAP_MS;
+      });
+      if (filteredCandidates.length === 0 && candidates.length > 0) {
+        logger.info(
+          { jobId, dropped: candidates.length, max_latency_ms: req.max_latency_ms, safe_cap: SAFE_LATENCY_CAP_MS },
+          'Fulfill: all candidates dropped by latency pre-filter (Sim 12 Fix A)',
+        );
+        await this.repayBorrowOnFailure(req.agent_pubkey, creditBorrowed);
+        return await this.refund(jobId, attempts, 'max_latency_unreachable');
+      }
+      if (filteredCandidates.length < candidates.length) {
+        logger.debug(
+          {
+            jobId,
+            dropped: candidates.length - filteredCandidates.length,
+            kept: filteredCandidates.length,
+            safe_cap: SAFE_LATENCY_CAP_MS,
+          },
+          'Fulfill: latency pre-filter dropped slow candidates',
+        );
+      }
+      candidates = filteredCandidates;
+
       // Sim 11 Fix 1 (2026-05-02) — pre-emptive SLA enforcement. Sim 11 a06
       // RealtimeNewsAI (HARMFUL verdict) saw 3/4 calls overshoot a 6000ms
       // budget by 400-1200ms. Root cause: the orchestrator only checked
@@ -706,12 +762,16 @@ export class FulfillService {
         }
 
         // Sim 9 Fix 2 — pass absolute deadline + Phase 7.4 validators DSL.
+        // Sim 12 Fix B — pass agent-supplied recall_body / recall_headers
+        // through to attemptCandidate's recall step.
         const attempt = await this.attemptCandidate(
           cand,
           req.max_sats - satsSpent,
           schemaJson,
           startMs + req.max_latency_ms,
           req.validators,
+          req.recall_body,
+          req.recall_headers,
         );
         attempts.push(attempt);
 
@@ -1306,6 +1366,10 @@ export class FulfillService {
     schemaJson?: object,
     deadlineMs?: number,
     validators?: string[],
+    /** Sim 12 Fix B — agent-supplied recall body + extra headers. See
+     *  FulfillRequest.recall_body / recall_headers for caps + semantics. */
+    recallBody?: string,
+    recallHeaders?: Record<string, string>,
   ): Promise<FulfillAttempt> {
     const url = cand.endpoint_url;
     const method = cand.http_method;
@@ -1493,18 +1557,26 @@ export class FulfillService {
     }
 
     // Step 4 — recall with L402 token. Sim 9 Fix 2 — bounded by remaining budget.
+    // Sim 12 Fix B — when the agent supplies recall_body, use it instead of
+    // the hardcoded `{}` ; merge agent recall_headers UNDER orchestrator-set
+    // ones (agent cannot override Authorization / User-Agent / Content-Type).
     const token = `L402 ${challenge.macaroon}:${pay.paymentPreimage}`;
+    const effectiveBody = method === 'POST' ? (recallBody ?? '{}') : undefined;
+    const baseHeaders: Record<string, string> = {
+      'User-Agent': 'SatRank-Fulfill/1.0',
+      Authorization: token,
+      ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+    };
+    const mergedHeaders = recallHeaders
+      ? { ...recallHeaders, ...baseHeaders }
+      : baseHeaders;
     let recallResp: Response;
     try {
       recallResp = await this.fetchImpl(url, {
         method,
         signal: AbortSignal.timeout(remainingMs(FETCH_TIMEOUT_MS)),
-        headers: {
-          'User-Agent': 'SatRank-Fulfill/1.0',
-          Authorization: token,
-          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
-        },
-        ...(method === 'POST' ? { body: '{}' } : {}),
+        headers: mergedHeaders,
+        ...(effectiveBody !== undefined ? { body: effectiveBody } : {}),
       });
     } catch (err) {
       return baseAttempt(cand, ts_started, this.now(), {
