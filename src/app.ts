@@ -2,6 +2,7 @@
 import express, { Router } from 'express';
 import path from 'path';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -923,7 +924,12 @@ export function createApp() {
     keyGenerator: (req) => {
       const auth = req.headers.authorization;
       if (auth && auth.toLowerCase().startsWith('nostr ')) {
-        return `nostr:${auth.slice(6, 38)}`;
+        // Sim 11 Fix 4 follow-up — base64-encoded NIP-98 events share
+        // a long deterministic prefix ({"kind":27235,"created_at":...),
+        // so slicing the first N chars puts every agent in the same
+        // bucket. SHA256 the whole header so per-pubkey signatures
+        // produce distinct keys.
+        return `nostr:${createHash('sha256').update(auth).digest('hex').slice(0, 32)}`;
       }
       return req.ip ?? '0.0.0.0';
     },
