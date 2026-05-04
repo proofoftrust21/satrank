@@ -81,6 +81,9 @@ import { OperatorAttestationService } from './services/operatorAttestationServic
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
 import { OperatorEndpointRegistrationService } from './services/operatorEndpointRegistrationService';
 import { OperatorRegistrationController } from './controllers/operatorRegistrationController';
+import { AgentBondRepository } from './repositories/agentBondRepository';
+import { AgentBondService } from './services/agentBondService';
+import { AgentBondController } from './controllers/agentBondController';
 import { AgentCreditRepository } from './repositories/agentCreditRepository';
 import { IntentResultCacheRepository } from './repositories/intentResultCacheRepository';
 import { CapabilityTokenService } from './services/capabilityTokenService';
@@ -397,6 +400,17 @@ export function createApp() {
   const operatorEndpointRegistrationService = new OperatorEndpointRegistrationService({
     repo: operatorEndpointRegistrationRepo,
     serviceEndpointRepo,
+  });
+
+  // Phase 11B.1 (2026-05-04) — agent bonds (symmetric to operator_bonds).
+  const agentBondRepo = new AgentBondRepository(pool);
+  const agentBondService = new AgentBondService({
+    bondRepo: agentBondRepo,
+    holdInvoiceService,
+  });
+  const agentBondController = new AgentBondController({
+    service: agentBondService,
+    enabled: process.env.FULFILL_ENABLED === 'true',
   });
   const operatorRegistrationController = new OperatorRegistrationController({
     service: operatorEndpointRegistrationService,
@@ -1030,6 +1044,10 @@ export function createApp() {
   // Phase 10 (2026-05-04) — Operator-side SDK self-registration + dashboard.
   api.post('/operator/register-endpoint', discoveryRateLimit, operatorRegistrationController.register);
   api.get('/operator/:pubkey/dashboard', discoveryRateLimit, operatorRegistrationController.dashboard);
+  // Phase 11B.1 (2026-05-04) — Agent bonds : symmetric to operator_bonds.
+  api.post('/agent/bond/deposit', discoveryRateLimit, agentBondController.deposit);
+  api.get('/agent/bond', discoveryRateLimit, agentBondController.status);
+  api.post('/agent/bond/:bond_id/freeze', discoveryRateLimit, agentBondController.freeze);
   // Phase 8.3 — evidence receipt for compliance/regulator agents.
   api.get('/fulfill/:job_id/evidence', discoveryRateLimit, evidenceController.show);
   // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator
