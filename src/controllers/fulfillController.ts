@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { verifyNip98 } from '../middleware/nip98';
 import { logger } from '../logger';
 import { ValidationError } from '../errors';
+import { sendError, fulfillOutcomeToErrorCode, reasonToNextAction } from '../errors/errorEnvelope';
 import { formatZodError } from '../utils/zodError';
 import type { FulfillService } from '../services/fulfillService';
 
@@ -189,14 +190,14 @@ export class FulfillController {
   issueSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!this.enabled || !this.capabilityTokens) {
-        res.status(503).json({ error: 'fulfill_disabled' });
+        sendError(res, 'fulfill_disabled');
         return;
       }
       const authHeader = req.headers.authorization;
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody ?? null;
       const auth = await verifyNip98(authHeader, 'POST', this.fullUrl(req), rawBody);
       if (!auth.valid || !auth.pubkey) {
-        res.status(401).json({ error: 'invalid_auth' });
+        sendError(res, 'invalid_auth');
         return;
       }
       const sessionSchema = z.object({
@@ -258,10 +259,7 @@ export class FulfillController {
   executeHold = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!this.enabled) {
-        res.status(503).json({
-          error: 'fulfill_disabled',
-          message: 'Phase 6 hold-mode execute is gated behind FULFILL_ENABLED.',
-        });
+        sendError(res, 'fulfill_disabled', { message: 'Phase 6 hold-mode execute is gated behind FULFILL_ENABLED.' });
         return;
       }
       const authHeader = req.headers.authorization;
@@ -272,7 +270,7 @@ export class FulfillController {
           { detail: auth.detail, route: '/api/fulfill/:job_id/execute' },
           'NIP-98 rejected on /api/fulfill/:job_id/execute',
         );
-        res.status(401).json({ error: 'invalid_auth' });
+        sendError(res, 'invalid_auth');
         return;
       }
       const jobIdParam = req.params.job_id;
@@ -280,7 +278,7 @@ export class FulfillController {
       // Audit L2 — strict UUID v4 format. The job_id we mint is randomUUID(),
       // anything else is invalid input we can reject at the boundary.
       if (!jobId || typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) {
-        res.status(400).json({ error: 'invalid_job_id' });
+        sendError(res, 'invalid_job_id');
         return;
       }
       const parsed = executeRequestSchema.safeParse(req.body);
@@ -291,10 +289,9 @@ export class FulfillController {
       // can hammer /execute on one job_id and amplify orchestrator + LND
       // fan-out. Bucket size + refill mirror the /api/fulfill handler.
       if (!this.consumeRateToken(auth.pubkey)) {
-        res.status(429).json({
-          error: 'rate_limited',
+        sendError(res, 'rate_limited', {
           message: 'too many concurrent execute calls — back off and retry',
-          retry_after_sec: Math.ceil(1 / this.refillPerSec),
+          retry_after_ms: Math.ceil(1 / this.refillPerSec) * 1000,
         });
         return;
       }
@@ -323,11 +320,14 @@ export class FulfillController {
           });
           return;
         case 'refunded':
+          // Phase 11A.2 — additive next_action hint without breaking the
+          // existing { status:'refunded', job_id, attempts, reason } shape.
           res.status(502).json({
             status: 'refunded',
             job_id: result.job_id,
             attempts: result.attempts,
             reason: result.reason,
+            next_action: reasonToNextAction(result.reason),
           });
           return;
         case 'hold_invoice_required':
@@ -400,10 +400,7 @@ export class FulfillController {
   handle = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!this.enabled) {
-        res.status(503).json({
-          error: 'fulfill_disabled',
-          message: 'POST /api/fulfill is gated behind FULFILL_ENABLED. Contact ops to enable.',
-        });
+        sendError(res, 'fulfill_disabled', { message: 'POST /api/fulfill is gated behind FULFILL_ENABLED. Contact ops to enable.' });
         return;
       }
 
@@ -423,7 +420,7 @@ export class FulfillController {
             { detail: auth.detail, route: '/api/fulfill' },
             'NIP-98 rejected on /api/fulfill',
           );
-          res.status(401).json({ error: 'invalid_auth', message: 'NIP-98 verification failed' });
+          sendError(res, 'invalid_auth', { message: 'NIP-98 verification failed' });
           return;
         }
         agentPubkey = auth.pubkey;
@@ -447,10 +444,9 @@ export class FulfillController {
 
       // Step 3 — per-agent rate limit.
       if (!this.consumeRateToken(agentPubkey)) {
-        res.status(429).json({
-          error: 'rate_limited',
+        sendError(res, 'rate_limited', {
           message: 'too many concurrent fulfill calls — back off and retry',
-          retry_after_sec: Math.ceil(1 / this.refillPerSec),
+          retry_after_ms: Math.ceil(1 / this.refillPerSec) * 1000,
         });
         return;
       }
@@ -487,18 +483,23 @@ export class FulfillController {
           });
           return;
         case 'refunded':
+          // Phase 11A.2 — additive next_action hint without breaking the
+          // existing { status:'refunded', job_id, attempts, reason } shape.
           res.status(502).json({
             status: 'refunded',
             job_id: result.job_id,
             attempts: result.attempts,
             reason: result.reason,
+            next_action: reasonToNextAction(result.reason),
           });
           return;
         case 'insufficient_balance':
+          // Phase 11A.2 — next_action='abort_lane' (top-up requires user action).
           res.status(402).json({
             error: 'insufficient_balance',
             required_sats: result.required_sats,
             available_sats: result.available_sats,
+            next_action: 'abort_lane',
             message: 'top up via POST /api/deposit and retry',
           });
           return;
@@ -506,12 +507,15 @@ export class FulfillController {
           // Phase 2 — drain protection. Agent has used too many absorbed
           // sats from SatRank's pool in the last 24h. Communicate the cap
           // + how much is left so the agent can plan retries or upgrade.
+          // Phase 11A.2 — next_action='wait', retry_after_ms=24h.
           res.status(429).json({
             error: 'daily_cap_reached',
             cap_sats: result.cap_sats,
             used_24h_sats: result.used_24h_sats,
             agent_age_bucket: result.agent_age_bucket,
             retry_after_sec: 86400,
+            retry_after_ms: 86_400_000,
+            next_action: 'wait',
             message: result.agent_age_bucket === 'fresh'
               ? 'fresh agents (<30d) are limited until trust accumulates'
               : 'daily cap reached — wait for the rolling window to refresh',
@@ -521,11 +525,14 @@ export class FulfillController {
           // Phase 4 — pool exposure exceeded the safe floor. Refuse new
           // jobs so SatRank doesn't take on more risk than capital backs.
           // /api/oracle/fulfill exposes the live balance for diagnostics.
+          // Phase 11A.2 — additive next_action='wait' for autonomous agents.
           res.status(503).json({
             error: 'circuit_breaker_open',
             pool_balance_sats: result.pool_balance_sats,
             min_pool_sats: result.min_pool_sats,
             retry_after_sec: 300,
+            retry_after_ms: 300_000,
+            next_action: 'wait',
             message: 'fulfill pool below safe floor — agents may retry once balance recovers (see /api/oracle/fulfill)',
           });
           return;

@@ -15,6 +15,7 @@ import {
 } from '../services/operatorEndpointRegistrationService';
 import type { OperatorEndpointRegistrationRepository } from '../repositories/operatorEndpointRegistrationRepository';
 import { InvalidDomainError } from '../services/operatorAttestationService';
+import { sendError } from '../errors/errorEnvelope';
 
 const PUBKEY_RE = /^[0-9a-f]{64,66}$/i;
 
@@ -71,7 +72,7 @@ export class OperatorRegistrationController {
   register = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!this.deps.enabled) {
-        res.status(503).json({ error: 'operator_registration_disabled' });
+        sendError(res, 'operator_registration_disabled');
         return;
       }
 
@@ -79,16 +80,13 @@ export class OperatorRegistrationController {
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody ?? null;
       const auth = await verifyNip98(authHeader, 'POST', this.fullUrl(req), rawBody);
       if (!auth.valid || !auth.pubkey) {
-        res.status(401).json({ error: 'invalid_auth' });
+        sendError(res, 'invalid_auth');
         return;
       }
 
       const parsed = registerSchema.safeParse(req.body);
       if (!parsed.success) {
-        res.status(400).json({
-          error: 'invalid_body',
-          details: parsed.error.issues.slice(0, 5),
-        });
+        sendError(res, 'invalid_body', { details: parsed.error.issues.slice(0, 5) });
         return;
       }
       const body = parsed.data;
@@ -96,10 +94,7 @@ export class OperatorRegistrationController {
       // Audit gate : the NIP-98 pubkey must match the declared operator_pubkey.
       // This blocks "I sign as agent A, register as operator B" attacks.
       if (body.operator_pubkey.toLowerCase() !== auth.pubkey.toLowerCase()) {
-        res.status(403).json({
-          error: 'operator_pubkey_mismatch',
-          message: 'NIP-98 pubkey must match operator_pubkey field',
-        });
+        sendError(res, 'operator_pubkey_mismatch');
         return;
       }
 
@@ -125,7 +120,7 @@ export class OperatorRegistrationController {
         });
       } catch (err) {
         if (err instanceof InvalidRegistrationError || err instanceof InvalidDomainError) {
-          res.status(400).json({ error: 'invalid_registration', message: err.message });
+          sendError(res, 'invalid_registration', { message: err.message });
           return;
         }
         throw err;
@@ -142,7 +137,7 @@ export class OperatorRegistrationController {
     try {
       const pubkeyParam = req.params.pubkey;
       if (typeof pubkeyParam !== 'string' || !PUBKEY_RE.test(pubkeyParam)) {
-        res.status(400).json({ error: 'invalid_pubkey' });
+        sendError(res, 'invalid_pubkey');
         return;
       }
       const [registrations, stats] = await Promise.all([
