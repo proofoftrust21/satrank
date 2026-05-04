@@ -425,15 +425,12 @@ export function createApp() {
     bondService: agentBondService,
   });
 
-  // Phase 11B.3 (2026-05-04) — agent slashing. v1 cooldown-cron not yet
-  // wired ; the service is constructed here so the slashing primitive is
-  // discoverable via the DI graph (and so admin scripts can import it).
+  // Phase 11B.3 (2026-05-04) — agent slashing primitive.
+  // Phase 11B.4 (2026-05-04) — wired into the 60s reconcile cron below.
   const agentSlashingService = new AgentSlashingService({
     reputationService: agentReputationService,
     bondRepo: agentBondRepo,
   });
-  // Touch to silence unused-var warnings until Phase 11B.4 wires the cron.
-  void agentSlashingService;
   const operatorRegistrationController = new OperatorRegistrationController({
     service: operatorEndpointRegistrationService,
     repo: operatorEndpointRegistrationRepo,
@@ -453,12 +450,16 @@ export function createApp() {
     intentCacheRepo,
     signer: signerService,
     operatorEndpointRegistrationRepo,
+    // Phase 11B.5 — tier-gated credit-line.
+    reputationService: agentReputationService,
+    bondService: agentBondService,
   });
   const fulfillController = new FulfillController({
     fulfillService,
     enabled: process.env.FULFILL_ENABLED === 'true',
     capabilityTokens,
     reputationService: agentReputationService,
+    bondService: agentBondService,
   });
   const claimController = new ClaimController({
     claimRepo: agentClaimRepo,
@@ -648,6 +649,33 @@ export function createApp() {
         logger.error(
           { error: err instanceof Error ? err.message : String(err) },
           'OperatorBondService: findUnderfundedOperators threw',
+        );
+      }
+      // Phase 11B.4 (2026-05-04) — agent slashing pass. Pulls a narrow set
+      // of red-flag candidates from the reputation table (score < 0.1 AND
+      // ≥10 observations AND profile updated in the past 7 days) and feeds
+      // them to AgentSlashingService.runSlashingPass. The service handles
+      // its own per-agent 24h cool-down + bond presence check ; this cron
+      // tick is just the discovery loop.
+      try {
+        const SLASH_LOOKBACK_SEC = 7 * 86400;
+        const candidates = await agentReputationRepo.findCandidatesForSlashing(
+          0.1, // SLASH_TRIGGER_SCORE
+          10,  // SLASH_MIN_OBSERVATIONS
+          Math.floor(Date.now() / 1000) - SLASH_LOOKBACK_SEC,
+          50,  // narrow limit so a single cron tick stays cheap
+        );
+        if (candidates.length > 0) {
+          const outcomes = await agentSlashingService.runSlashingPass(candidates);
+          const slashed = outcomes.filter(o => o.status === 'slashed').length;
+          if (slashed > 0) {
+            logger.warn({ slashed, evaluated: candidates.length }, 'AgentSlashingService: cron pass slashed agents');
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'AgentSlashingService: cron tick threw',
         );
       }
     } catch (err) {

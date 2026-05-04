@@ -66,6 +66,31 @@ export class AgentReputationRepository {
     return rows[0] ? rowToProfile(rows[0]) : null;
   }
 
+  /** Phase 11B.4 — slashing cron candidates : agents whose reputation is
+   *  below the slash trigger AND who have enough observations for the
+   *  signal to be meaningful AND who have been active recently (skip
+   *  long-dormant agents). The slashing service does the bond + cool-down
+   *  check itself ; this query just narrows the candidate set so the cron
+   *  doesn't scan the whole table. Caller passes the trigger threshold
+   *  + minimum-observation floor so this stays a pure data query. */
+  async findCandidatesForSlashing(
+    triggerScore: number,
+    minObservations: number,
+    sinceUpdatedAt: number,
+    limit: number,
+  ): Promise<string[]> {
+    const { rows } = await this.db.query<{ agent_pubkey: string }>(
+      `SELECT agent_pubkey FROM fulfill_agent_profiles
+        WHERE reputation_score < $1
+          AND total_fulfills >= $2
+          AND reputation_updated_at >= $3
+        ORDER BY reputation_score ASC, reputation_updated_at DESC
+        LIMIT $4`,
+      [triggerScore, minObservations, sinceUpdatedAt, limit],
+    );
+    return rows.map(r => r.agent_pubkey);
+  }
+
   /** Create-or-update path. Reads the existing row (or treats a missing row
    *  as zeros), computes the new counters + score + tier in JS, and writes
    *  back atomically via UPSERT. Two concurrent recordOutcome calls on the

@@ -253,6 +253,15 @@ export interface FulfillServiceDeps {
   fetchImpl?: typeof fetchSafeExternal;
   /** Override for tests; defaults to Date.now()/1000. */
   now?: () => number;
+  /** Phase 11B.5 (2026-05-04) — tier-gated credit-line cap. When wired,
+   *  fulfillService computes the agent's effective tier and refuses any
+   *  borrow when tier=bronze. Silver/gold pass through to the existing
+   *  reputation-credit ladder (agent_credits.accumulated_sats). The
+   *  audit-target is "bronze: no credit ; silver: cap≤bond/2 ; gold:
+   *  cap≤bond" — bond is already the tier ceiling so the gate is just
+   *  on tier. Both deps are optional (back-compat with Phase 9 tests). */
+  reputationService?: import('./agentReputationService').AgentReputationService;
+  bondService?: import('./agentBondService').AgentBondService;
 }
 
 export class FulfillService {
@@ -555,9 +564,31 @@ export class FulfillService {
       // still have most of the balance available. We charge against accumulated
       // delivery_credits earned from past successful fulfills.
       const deficit = requiredSats - balance;
-      const borrowed = this.deps.agentCreditRepo
-        ? await this.deps.agentCreditRepo.borrow(req.agent_pubkey, deficit, this.now())
-        : false;
+      // Phase 11B.5 — tier-gated credit-line. Bronze tier (no bond OR low
+      // reputation) is refused at the gate ; silver/gold pass through to
+      // the existing reputation-credit ladder. This makes Sybil-via-fresh-
+      // pubkey unprofitable : an unbonded fresh agent with no fulfill
+      // history starts bronze and cannot borrow until they post bond OR
+      // accumulate ≥5 successful fulfills (silver floor in P11B.2).
+      let borrowed = false;
+      if (this.deps.agentCreditRepo) {
+        let tier: 'bronze' | 'silver' | 'gold' = 'silver';
+        if (this.deps.reputationService && this.deps.bondService) {
+          const [profile, bond] = await Promise.all([
+            this.deps.reputationService.getProfile(req.agent_pubkey),
+            this.deps.bondService.availableForAgent(req.agent_pubkey),
+          ]);
+          tier = this.deps.reputationService.effectiveTier(profile, bond);
+        }
+        if (tier === 'bronze') {
+          logger.info(
+            { agent_pubkey: req.agent_pubkey.slice(0, 12), tier, deficit },
+            'Fulfill: bronze tier blocked from credit-line borrow (Phase 11B.5)',
+          );
+        } else {
+          borrowed = await this.deps.agentCreditRepo.borrow(req.agent_pubkey, deficit, this.now());
+        }
+      }
       if (!borrowed) {
         return {
           status: 'insufficient_balance',

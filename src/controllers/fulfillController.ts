@@ -157,6 +157,10 @@ export interface FulfillControllerDeps {
   /** Phase 11B.2 — record terminal status into the agent's reputation
    *  profile. Optional so existing tests don't have to mount a repo. */
   reputationService?: import('../services/agentReputationService').AgentReputationService;
+  /** Phase 11B.5 — bond service for the effective-tier rate-limit gate.
+   *  Optional ; without it the rate-limit defaults to silver-tier params
+   *  (matches pre-P11B.5 behaviour). */
+  bondService?: import('../services/agentBondService').AgentBondService;
 }
 
 export class FulfillController {
@@ -167,6 +171,7 @@ export class FulfillController {
   private readonly buckets = new Map<string, RateBucketState>();
   private readonly capabilityTokens?: import('../services/capabilityTokenService').CapabilityTokenService;
   private readonly reputationService?: import('../services/agentReputationService').AgentReputationService;
+  private readonly bondService?: import('../services/agentBondService').AgentBondService;
 
   constructor(deps: FulfillControllerDeps) {
     this.fulfillService = deps.fulfillService;
@@ -175,6 +180,46 @@ export class FulfillController {
     this.refillPerSec = deps.rateRefillPerSec ?? envFloat('FULFILL_RATE_REFILL_PER_SEC', 0.5);
     this.capabilityTokens = deps.capabilityTokens;
     this.reputationService = deps.reputationService;
+    this.bondService = deps.bondService;
+  }
+
+  /** Phase 11B.5 — effective-tier cache. Avoids a DB roundtrip on every
+   *  fulfill call. The cache is keyed by agent_pubkey, expires after
+   *  TIER_CACHE_TTL_MS, and refreshes lazily on miss/expiry. Reputation
+   *  + bond changes propagate within the TTL window — sufficient since
+   *  the profile only changes at terminal status (1+ second granularity)
+   *  and the bond changes only at deposit/slash time. */
+  private readonly tierCache = new Map<string, { tier: import('../services/agentReputationService').ReputationTier; expiresAt: number }>();
+  private static readonly TIER_CACHE_TTL_MS = 60_000;
+
+  private async resolveEffectiveTier(agentPubkey: string): Promise<'bronze' | 'silver' | 'gold'> {
+    // Back-compat : without reputation+bond deps the tier system isn't
+    // wired, so we fall through to silver (matches the pre-P11B.5
+    // behaviour where every agent had the same rate-limit). Once the
+    // operator opts in to the tier gate by passing both services, we
+    // start enforcing bronze for new pubkeys without bond/reputation.
+    if (!this.reputationService || !this.bondService) return 'silver';
+    const cached = this.tierCache.get(agentPubkey);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.tier;
+    const [profile, bondAvail] = await Promise.all([
+      this.reputationService.getProfile(agentPubkey),
+      this.bondService.availableForAgent(agentPubkey),
+    ]);
+    const tier = this.reputationService.effectiveTier(profile, bondAvail);
+    this.tierCache.set(agentPubkey, { tier, expiresAt: now + FulfillController.TIER_CACHE_TTL_MS });
+    return tier;
+  }
+
+  /** Per-tier bucket dimensions. Targets from autonomy audit P11B.5 :
+   *    bronze : 5/min   (untrusted / unbonded)
+   *    silver : 30/min  (matches existing default — bonded ≥1000 sats)
+   *    gold   : 300/min (high-trust + bonded ≥10000 sats)
+   *  Refill rate = throughput, bucket size = burst capacity. */
+  private bucketParamsFor(tier: 'bronze' | 'silver' | 'gold'): { bucketSize: number; refillPerSec: number } {
+    if (tier === 'gold') return { bucketSize: 30, refillPerSec: 5 };
+    if (tier === 'silver') return { bucketSize: this.bucketSize, refillPerSec: this.refillPerSec };
+    return { bucketSize: 1, refillPerSec: 5 / 60 };
   }
 
   /** Phase 11B.2 — record the terminal outcome into the agent profile.
@@ -260,18 +305,27 @@ export class FulfillController {
     return `${req.protocol}://${req.get('host') ?? ''}${req.originalUrl}`;
   }
 
-  private consumeRateToken(agentPubkey: string): boolean {
+  /** Phase 11B.5 — tier-aware rate-limit. Bucket size + refill rate scale
+   *  with the agent's effective tier (reputation × bond). The token
+   *  state is kept per-pubkey across tier transitions so an agent that
+   *  was just promoted to gold doesn't lose their accumulated tokens —
+   *  but tokens are CAPPED at the new tier's bucketSize on every call,
+   *  so a downgrade (slash drains bond, demotion to bronze) immediately
+   *  clamps the burst capacity. */
+  private async consumeRateToken(agentPubkey: string): Promise<boolean> {
+    const tier = await this.resolveEffectiveTier(agentPubkey);
+    const { bucketSize, refillPerSec } = this.bucketParamsFor(tier);
     const now = Date.now() / 1000;
     let state = this.buckets.get(agentPubkey);
     if (!state) {
-      state = { tokens: this.bucketSize - 1, lastRefill: now };
+      state = { tokens: Math.max(0, bucketSize - 1), lastRefill: now };
       this.buckets.set(agentPubkey, state);
       return true;
     }
     const elapsed = Math.max(0, now - state.lastRefill);
     state.tokens = Math.min(
-      this.bucketSize,
-      state.tokens + elapsed * this.refillPerSec,
+      bucketSize,
+      state.tokens + elapsed * refillPerSec,
     );
     state.lastRefill = now;
     if (state.tokens < 1) return false;
@@ -319,7 +373,7 @@ export class FulfillController {
       // Audit H1 — per-agent rate limit. Without this a NIP-98-authed agent
       // can hammer /execute on one job_id and amplify orchestrator + LND
       // fan-out. Bucket size + refill mirror the /api/fulfill handler.
-      if (!this.consumeRateToken(auth.pubkey)) {
+      if (!(await this.consumeRateToken(auth.pubkey))) {
         sendError(res, 'rate_limited', {
           message: 'too many concurrent execute calls — back off and retry',
           retry_after_ms: Math.ceil(1 / this.refillPerSec) * 1000,
@@ -474,7 +528,7 @@ export class FulfillController {
       }
 
       // Step 3 — per-agent rate limit.
-      if (!this.consumeRateToken(agentPubkey)) {
+      if (!(await this.consumeRateToken(agentPubkey))) {
         sendError(res, 'rate_limited', {
           message: 'too many concurrent fulfill calls — back off and retry',
           retry_after_ms: Math.ceil(1 / this.refillPerSec) * 1000,

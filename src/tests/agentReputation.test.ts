@@ -113,6 +113,51 @@ describe('Phase 11B.2 — AgentReputationRepository.recordOutcome', () => {
   });
 });
 
+describe('Phase 11B.4 — findCandidatesForSlashing', () => {
+  let repo: AgentReputationRepository;
+
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    repo = new AgentReputationRepository(pool);
+  });
+  afterAll(async () => { await teardownTestPool(testDb); });
+  beforeEach(async () => {
+    await pool.query('TRUNCATE fulfill_agent_profiles');
+  });
+
+  it('returns agents whose score is below trigger AND total >= floor AND profile updated since cutoff', async () => {
+    const PUB_BAD = 'a'.repeat(64);
+    const PUB_GOOD = 'b'.repeat(64);
+    const PUB_THIN = 'c'.repeat(64);
+    const PUB_DORMANT = 'd'.repeat(64);
+    // Bad agent: 0/15 → score ~0.06, eligible
+    for (let i = 0; i < 15; i += 1) await repo.recordOutcome(PUB_BAD, 'refunded', NOW + i);
+    // Good agent: 15/15, score ~0.94, NOT eligible
+    for (let i = 0; i < 15; i += 1) await repo.recordOutcome(PUB_GOOD, 'success', NOW + i);
+    // Thin agent: 0/3 (score ~0.2 but below observation floor), NOT eligible
+    for (let i = 0; i < 3; i += 1) await repo.recordOutcome(PUB_THIN, 'refunded', NOW + i);
+    // Dormant agent: 0/15 but profile timestamp < cutoff, NOT eligible
+    for (let i = 0; i < 15; i += 1) await repo.recordOutcome(PUB_DORMANT, 'refunded', NOW - 100 + i);
+
+    const cutoff = NOW; // anything updated at or after NOW
+    const candidates = await repo.findCandidatesForSlashing(0.1, 10, cutoff, 50);
+    expect(candidates).toContain(PUB_BAD);
+    expect(candidates).not.toContain(PUB_GOOD);
+    expect(candidates).not.toContain(PUB_THIN);
+    expect(candidates).not.toContain(PUB_DORMANT);
+  });
+
+  it('honours the limit', async () => {
+    for (let agent = 0; agent < 5; agent += 1) {
+      const pk = String.fromCharCode(0x41 + agent).repeat(64); // 'AAA…','BBB…' etc
+      for (let i = 0; i < 15; i += 1) await repo.recordOutcome(pk, 'refunded', NOW + i);
+    }
+    const candidates = await repo.findCandidatesForSlashing(0.1, 10, 0, 3);
+    expect(candidates).toHaveLength(3);
+  });
+});
+
 describe('Phase 11B.2 — AgentReputationService.effectiveTier', () => {
   let repo: AgentReputationRepository;
 
