@@ -78,6 +78,9 @@ import { EvidenceService } from './services/evidenceService';
 import { EvidenceController } from './controllers/evidenceController';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
+import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
+import { OperatorEndpointRegistrationService } from './services/operatorEndpointRegistrationService';
+import { OperatorRegistrationController } from './controllers/operatorRegistrationController';
 import { AgentCreditRepository } from './repositories/agentCreditRepository';
 import { IntentResultCacheRepository } from './repositories/intentResultCacheRepository';
 import { CapabilityTokenService } from './services/capabilityTokenService';
@@ -389,6 +392,16 @@ export function createApp() {
   const operatorAttestationService = new OperatorAttestationService({
     repo: operatorAttestationRepo,
   });
+  // Phase 10 (2026-05-04) — Operator-side SDK self-registration.
+  const operatorEndpointRegistrationRepo = new OperatorEndpointRegistrationRepository(pool);
+  const operatorEndpointRegistrationService = new OperatorEndpointRegistrationService({
+    repo: operatorEndpointRegistrationRepo,
+  });
+  const operatorRegistrationController = new OperatorRegistrationController({
+    service: operatorEndpointRegistrationService,
+    repo: operatorEndpointRegistrationRepo,
+    enabled: process.env.FULFILL_ENABLED === 'true',
+  });
   const fulfillService = new FulfillService({
     pool,
     fulfillJobRepo,
@@ -402,6 +415,7 @@ export function createApp() {
     agentCreditRepo,
     intentCacheRepo,
     signer: signerService,
+    operatorEndpointRegistrationRepo,
   });
   const fulfillController = new FulfillController({
     fulfillService,
@@ -567,6 +581,22 @@ export function createApp() {
         logger.error(
           { error: err instanceof Error ? err.message : String(err) },
           'OperatorAttestationService: verification cycle threw',
+        );
+      }
+      // Phase 10 (2026-05-04) — verify pending operator-self-registrations
+      // via DNS TXT _satrank-operator.<domain>. Pending rows flip to
+      // 'verified' on match (endpoint becomes visible in /api/intent
+      // ranking via the join in fulfillService recall) or 'failed'
+      // otherwise (operator can re-submit after fixing DNS).
+      try {
+        const reg = await operatorEndpointRegistrationService.runVerificationCycle();
+        if (reg.verified + reg.failed > 0) {
+          logger.info(reg, 'OperatorEndpointRegistrationService: verification cycle complete');
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'OperatorEndpointRegistrationService: verification cycle threw',
         );
       }
       // Phase 7.5 — surface underfunded operators (logging only for v1 ; the
@@ -996,6 +1026,9 @@ export function createApp() {
   // POST is NIP-98 by the operator owning the bond.
   api.post('/operator/claim/:claim_id/dispute', discoveryRateLimit, claimController.fileDispute);
   api.get('/oracle/claims', discoveryRateLimit, claimController.oracleClaims);
+  // Phase 10 (2026-05-04) — Operator-side SDK self-registration + dashboard.
+  api.post('/operator/register-endpoint', discoveryRateLimit, operatorRegistrationController.register);
+  api.get('/operator/:pubkey/dashboard', discoveryRateLimit, operatorRegistrationController.dashboard);
   // Phase 8.3 — evidence receipt for compliance/regulator agents.
   api.get('/fulfill/:job_id/evidence', discoveryRateLimit, evidenceController.show);
   // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator

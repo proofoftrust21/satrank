@@ -41,6 +41,7 @@ import type { IntentResultCacheRepository } from '../repositories/intentResultCa
 import type { SignerService } from './signerService';
 import { canonicalJson } from './signerService';
 import type { EndpointSchemaRepository } from '../repositories/endpointSchemaRepository';
+import type { OperatorEndpointRegistrationRepository } from '../repositories/operatorEndpointRegistrationRepository';
 import type { PoolAccountingService } from './poolAccountingService';
 import type { LndHoldInvoiceService } from './lndHoldInvoiceService';
 import { InvoiceAlreadyCanceledError } from './lndHoldInvoiceService';
@@ -239,6 +240,12 @@ export interface FulfillServiceDeps {
   /** Phase 6 — LND hold-invoice helpers. Required for mode='hold'; absent
    *  means hold mode requests get a clean 503 'hold_mode_unavailable'. */
   holdInvoiceService?: LndHoldInvoiceService;
+  /** Phase 10 (2026-05-04) — operator self-registration repository. Used by
+   *  attemptCandidate to look up `recall_body_template` when the agent
+   *  doesn't supply recall_body — the orchestrator auto-composes the body
+   *  from the operator's own declared template. Optional ; absent means no
+   *  template fallback (legacy `{}` body). */
+  operatorEndpointRegistrationRepo?: OperatorEndpointRegistrationRepository;
   /** Self-pay guard: refuse to pay our own LND node (we already operate it
    *  for the registry crawler probes, see paidProbeRunner.ts:344). */
   selfPubkey?: string;
@@ -1626,8 +1633,27 @@ export class FulfillService {
     // Sim 12 Fix B — when the agent supplies recall_body, use it instead of
     // the hardcoded `{}` ; merge agent recall_headers UNDER orchestrator-set
     // ones (agent cannot override Authorization / User-Agent / Content-Type).
+    // Phase 10 (2026-05-04) — when the agent didn't supply recall_body and
+    // the operator has self-registered with a recall_body_template, fall
+    // back to the template. Unblocks bitcoinbenji /ai/* and similar
+    // parameterised endpoints automatically once their operator registers.
     const token = `L402 ${challenge.macaroon}:${pay.paymentPreimage}`;
-    const effectiveBody = method === 'POST' ? (recallBody ?? '{}') : undefined;
+    let templateBody: string | undefined;
+    if (method === 'POST' && recallBody === undefined && this.deps.operatorEndpointRegistrationRepo) {
+      try {
+        const tpl = await this.deps.operatorEndpointRegistrationRepo.findVerifiedTemplate(url);
+        if (tpl?.recall_body_template) {
+          templateBody = tpl.recall_body_template;
+        }
+      } catch (err) {
+        // Non-fatal: fall back to default `{}` body.
+        logger.debug(
+          { url, error: err instanceof Error ? err.message : String(err) },
+          'Fulfill: recall_body_template lookup failed — falling back to default',
+        );
+      }
+    }
+    const effectiveBody = method === 'POST' ? (recallBody ?? templateBody ?? '{}') : undefined;
     const baseHeaders: Record<string, string> = {
       'User-Agent': 'SatRank-Fulfill/1.0',
       Authorization: token,
