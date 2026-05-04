@@ -84,6 +84,9 @@ import { OperatorRegistrationController } from './controllers/operatorRegistrati
 import { AgentBondRepository } from './repositories/agentBondRepository';
 import { AgentBondService } from './services/agentBondService';
 import { AgentBondController } from './controllers/agentBondController';
+import { AgentReputationRepository } from './repositories/agentReputationRepository';
+import { AgentReputationService } from './services/agentReputationService';
+import { AgentReputationController } from './controllers/agentReputationController';
 import { AgentCreditRepository } from './repositories/agentCreditRepository';
 import { IntentResultCacheRepository } from './repositories/intentResultCacheRepository';
 import { CapabilityTokenService } from './services/capabilityTokenService';
@@ -412,6 +415,14 @@ export function createApp() {
     service: agentBondService,
     enabled: process.env.FULFILL_ENABLED === 'true',
   });
+
+  // Phase 11B.2 (2026-05-04) — agent reputation ledger.
+  const agentReputationRepo = new AgentReputationRepository(pool);
+  const agentReputationService = new AgentReputationService({ repo: agentReputationRepo });
+  const agentReputationController = new AgentReputationController({
+    service: agentReputationService,
+    bondService: agentBondService,
+  });
   const operatorRegistrationController = new OperatorRegistrationController({
     service: operatorEndpointRegistrationService,
     repo: operatorEndpointRegistrationRepo,
@@ -436,6 +447,7 @@ export function createApp() {
     fulfillService,
     enabled: process.env.FULFILL_ENABLED === 'true',
     capabilityTokens,
+    reputationService: agentReputationService,
   });
   const claimController = new ClaimController({
     claimRepo: agentClaimRepo,
@@ -1048,6 +1060,8 @@ export function createApp() {
   api.post('/agent/bond/deposit', discoveryRateLimit, agentBondController.deposit);
   api.get('/agent/bond', discoveryRateLimit, agentBondController.status);
   api.post('/agent/bond/:bond_id/freeze', discoveryRateLimit, agentBondController.freeze);
+  // Phase 11B.2 (2026-05-04) — Agent reputation : public read keyed by pubkey.
+  api.get('/agent/:pubkey/reputation', discoveryRateLimit, agentReputationController.show);
   // Phase 8.3 — evidence receipt for compliance/regulator agents.
   api.get('/fulfill/:job_id/evidence', discoveryRateLimit, evidenceController.show);
   // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator
