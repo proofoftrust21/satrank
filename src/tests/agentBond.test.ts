@@ -11,6 +11,10 @@ let pool: Pool;
 const NOW = 1_700_000_000;
 const PUBKEY = 'a'.repeat(64);
 
+// Test stubs that satisfy only the subset of LndHoldInvoiceService that
+// AgentBondService actually calls (isAvailable + addHoldInvoice). Cast via
+// `unknown` because the real class has private internals (restUrl, doFetch,
+// etc.) we don't reproduce here — the caller never reads those.
 const holdInvoiceServiceStub = {
   isAvailable() { return true; },
   async addHoldInvoice(req: { valueSat: number; memo?: string; expirySec: number }): Promise<{ payment_request: string; payment_hash: string; preimage: string }> {
@@ -20,14 +24,14 @@ const holdInvoiceServiceStub = {
       preimage: 'p'.repeat(64),
     };
   },
-} as Parameters<typeof AgentBondService>[0]['holdInvoiceService'];
+} as unknown as ConstructorParameters<typeof AgentBondService>[0]['holdInvoiceService'];
 
 const lndUnavailableStub = {
   isAvailable() { return false; },
   async addHoldInvoice(): Promise<{ payment_request: string; payment_hash: string; preimage: string }> {
     throw new Error('not used');
   },
-} as Parameters<typeof AgentBondService>[0]['holdInvoiceService'];
+} as unknown as ConstructorParameters<typeof AgentBondService>[0]['holdInvoiceService'];
 
 describe('Phase 11B.1 — AgentBondRepository round-trip', () => {
   let repo: AgentBondRepository;
