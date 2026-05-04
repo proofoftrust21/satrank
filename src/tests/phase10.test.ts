@@ -102,6 +102,129 @@ describe('Phase 10 — OperatorEndpointRegistrationService.registerEndpoint', ()
     expect(after!.state).toBe('pending');
     expect(after!.openapi_json).toEqual({ v: 2 });
   });
+
+  // Phase 11A.1 — capability schema acceptance + validation
+  it('capability fields persist on registration', async () => {
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      output_schema: { type: 'object', properties: { sentiment: { type: 'string' } } },
+      modalities: ['text'],
+      languages: ['en', 'fr'],
+      freshness_sla_sec: 3600,
+      deterministic: false,
+    });
+    expect(reg.input_schema).toEqual({ type: 'object', properties: { text: { type: 'string' } }, required: ['text'] });
+    expect(reg.output_schema).toEqual({ type: 'object', properties: { sentiment: { type: 'string' } } });
+    expect(reg.modalities).toEqual(['text']);
+    expect(reg.languages).toEqual(['en', 'fr']);
+    expect(reg.freshness_sla_sec).toBe(3600);
+    expect(reg.deterministic).toBe(false);
+  });
+
+  it('capability hints without any schema or openapi_json is rejected', async () => {
+    await expect(
+      svc.registerEndpoint({
+        ...VALID_INPUT,
+        modalities: ['text'],
+      }),
+    ).rejects.toThrow(/capability hints .* require at least one of input_schema/i);
+  });
+
+  it('capability hints accepted when openapi_json supplies the contract', async () => {
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      openapi_json: { openapi: '3.0.0', paths: {} },
+      modalities: ['text'],
+    });
+    expect(reg.modalities).toEqual(['text']);
+  });
+
+  it('rejects input_schema over 64 KB', async () => {
+    const huge = { type: 'object', enum: 'x'.repeat(70_000) };
+    await expect(
+      svc.registerEndpoint({ ...VALID_INPUT, input_schema: huge }),
+    ).rejects.toThrow(/input_schema exceeds/i);
+  });
+
+  it('rejects more than 8 modalities', async () => {
+    await expect(
+      svc.registerEndpoint({
+        ...VALID_INPUT,
+        input_schema: { type: 'object' },
+        modalities: ['text', 'image', 'audio', 'video', 'code', 'embedding', 'a', 'b', 'c'],
+      }),
+    ).rejects.toThrow(/modalities max 8/i);
+  });
+
+  it('rejects negative freshness_sla_sec', async () => {
+    await expect(
+      svc.registerEndpoint({
+        ...VALID_INPUT,
+        input_schema: { type: 'object' },
+        freshness_sla_sec: -1,
+      }),
+    ).rejects.toThrow(/freshness_sla_sec/i);
+  });
+});
+
+describe('Phase 11A.1 — capability propagation to service_endpoints on verify', () => {
+  let repo: OperatorEndpointRegistrationRepository;
+
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    repo = new OperatorEndpointRegistrationRepository(pool);
+  });
+  afterAll(async () => { await teardownTestPool(testDb); });
+  beforeEach(async () => {
+    await pool.query('TRUNCATE operator_endpoint_registrations RESTART IDENTITY CASCADE');
+  });
+
+  it('verifyOne writes capability into service_endpoints when row exists', async () => {
+    const calls: Array<{ url: string; cap: { provenance: string; modalities: string[] | null } }> = [];
+    const stubServiceEndpointRepo = {
+      async updateCapability(url: string, cap: { provenance: string; modalities: string[] | null } & Record<string, unknown>): Promise<number> {
+        calls.push({ url, cap: { provenance: cap.provenance, modalities: cap.modalities } });
+        return 1;
+      },
+    };
+    const dns = async (): Promise<string[][]> => [[`satrank-operator-pubkey=${PUBKEY}`]];
+    const svc = new OperatorEndpointRegistrationService({
+      repo,
+      dnsResolveTxt: dns,
+      now: () => NOW,
+      serviceEndpointRepo: stubServiceEndpointRepo,
+    });
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      input_schema: { type: 'object' },
+      modalities: ['text'],
+      languages: ['en'],
+    });
+    await svc.verifyOne(reg);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(VALID_INPUT.endpoint_url);
+    expect(calls[0].cap.provenance).toBe('operator_signed');
+    expect(calls[0].cap.modalities).toEqual(['text']);
+  });
+
+  it('verifyOne does NOT call updateCapability when registration has no capability data', async () => {
+    let calls = 0;
+    const stubServiceEndpointRepo = {
+      async updateCapability(): Promise<number> { calls += 1; return 0; },
+    };
+    const dns = async (): Promise<string[][]> => [[`satrank-operator-pubkey=${PUBKEY}`]];
+    const svc = new OperatorEndpointRegistrationService({
+      repo,
+      dnsResolveTxt: dns,
+      now: () => NOW,
+      serviceEndpointRepo: stubServiceEndpointRepo,
+    });
+    const reg = await svc.registerEndpoint(VALID_INPUT);
+    await svc.verifyOne(reg);
+    expect(calls).toBe(0);
+  });
 });
 
 describe('Phase 10 — verification cycle (DNS TXT mock)', () => {

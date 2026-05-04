@@ -396,6 +396,7 @@ export function createApp() {
   const operatorEndpointRegistrationRepo = new OperatorEndpointRegistrationRepository(pool);
   const operatorEndpointRegistrationService = new OperatorEndpointRegistrationService({
     repo: operatorEndpointRegistrationRepo,
+    serviceEndpointRepo,
   });
   const operatorRegistrationController = new OperatorRegistrationController({
     service: operatorEndpointRegistrationService,

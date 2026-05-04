@@ -139,6 +139,16 @@ export interface ServiceEndpoint {
    *  pre-claim entries. First-claim semantics: only the holder of this
    *  pubkey can PATCH/DELETE the metadata via the same surface. */
   operator_id: string | null;
+  /** Phase 11A.1 — capability metadata. NULL = unknown (crawler-fed entries
+   *  predate v69 OR LLM backfill not yet run). Phase 10 self-registration
+   *  requires at minimum input_schema + output_schema. */
+  input_schema: Record<string, unknown> | null;
+  output_schema: Record<string, unknown> | null;
+  modalities: string[] | null;
+  languages: string[] | null;
+  freshness_sla_sec: number | null;
+  deterministic: boolean | null;
+  capability_provenance: 'operator_signed' | 'crawler_inferred' | 'unknown' | null;
 }
 
 /** Vague 1 G.2 — payload accepted by upsertUpstreamSignals. Mirrors the
@@ -733,6 +743,48 @@ export class ServiceEndpointRepository {
       'UPDATE service_endpoints SET name = $1, description = $2, category = $3, provider = $4 WHERE url = $5',
       [meta.name, meta.description, meta.category, meta.provider, url],
     );
+  }
+
+  /** Phase 11A.1 — write capability metadata for an endpoint. Called by
+   *  operatorEndpointRegistrationService.verifyOne when a Phase 10
+   *  registration is promoted to 'verified', and (later) by an LLM-assisted
+   *  backfill job for crawler-fed rows. Returns the number of rows touched
+   *  so the caller can detect the "registered URL not yet crawled into
+   *  service_endpoints" case. */
+  async updateCapability(
+    url: string,
+    cap: {
+      input_schema: Record<string, unknown> | null;
+      output_schema: Record<string, unknown> | null;
+      modalities: string[] | null;
+      languages: string[] | null;
+      freshness_sla_sec: number | null;
+      deterministic: boolean | null;
+      provenance: 'operator_signed' | 'crawler_inferred' | 'unknown';
+    },
+  ): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE service_endpoints
+          SET input_schema = $1,
+              output_schema = $2,
+              modalities = $3,
+              languages = $4,
+              freshness_sla_sec = $5,
+              deterministic = $6,
+              capability_provenance = $7
+        WHERE url = $8`,
+      [
+        cap.input_schema,
+        cap.output_schema,
+        cap.modalities,
+        cap.languages,
+        cap.freshness_sla_sec,
+        cap.deterministic,
+        cap.provenance,
+        url,
+      ],
+    );
+    return rowCount ?? 0;
   }
 
   /** Vague 1 G.2 — persist upstream registry quality signals. Idempotent:

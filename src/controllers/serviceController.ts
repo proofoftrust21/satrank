@@ -120,6 +120,21 @@ export class ServiceController {
         // strategic-review.md). Feed the new `optimize=` parameter axes.
         const reliability_score = svc.upstream_reliability_score ?? undefined;
         const uptime_30d = svc.upstream_uptime_30d ?? undefined;
+        // Phase 11A.1 — capability metadata (input/output JSON Schema,
+        // modalities, languages, freshness_sla, deterministic). Surfaced
+        // only when the row has any signed/inferred capability data so the
+        // legacy crawler-fed lean shape is preserved for unknown rows.
+        const capability = svc.capability_provenance != null
+          ? {
+              provenance: svc.capability_provenance,
+              ...(svc.input_schema ? { input_schema: svc.input_schema } : {}),
+              ...(svc.output_schema ? { output_schema: svc.output_schema } : {}),
+              ...(svc.modalities && svc.modalities.length > 0 ? { modalities: svc.modalities } : {}),
+              ...(svc.languages && svc.languages.length > 0 ? { languages: svc.languages } : {}),
+              ...(svc.freshness_sla_sec != null ? { freshness_sla_sec: svc.freshness_sla_sec } : {}),
+              ...(svc.deterministic != null ? { deterministic: svc.deterministic } : {}),
+            }
+          : undefined;
 
         return {
           name: svc.name,
@@ -141,6 +156,7 @@ export class ServiceController {
           ...(provider_contact !== undefined ? { provider_contact } : {}),
           ...(reliability_score !== undefined ? { reliability_score } : {}),
           ...(uptime_30d !== undefined ? { uptime_30d } : {}),
+          ...(capability !== undefined ? { capability } : {}),
           node: agent ? {
             publicKeyHash: agent.public_key_hash,
             alias: agent.alias,

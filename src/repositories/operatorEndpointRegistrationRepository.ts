@@ -32,6 +32,13 @@ export interface OperatorEndpointRegistration {
   last_health_at: number | null;
   fulfill_count: number;
   fulfill_success_count: number;
+  /** Phase 11A.1 — capability schema (required at registration time). */
+  input_schema: Record<string, unknown> | null;
+  output_schema: Record<string, unknown> | null;
+  modalities: string[] | null;
+  languages: string[] | null;
+  freshness_sla_sec: number | null;
+  deterministic: boolean | null;
 }
 
 export interface CreateRegistrationInput {
@@ -48,6 +55,15 @@ export interface CreateRegistrationInput {
   signed_payload_sha256: string;
   signature_b64: string;
   registered_at: number;
+  /** Phase 11A.1 — at least one of input_schema or output_schema is required
+   *  by the service-layer validator. Backwards-compatible at the DB layer
+   *  (NULL allowed) so existing v68 fixtures keep working in tests. */
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown>;
+  modalities?: string[];
+  languages?: string[];
+  freshness_sla_sec?: number;
+  deterministic?: boolean;
 }
 
 export class OperatorEndpointRegistrationRepository {
@@ -59,8 +75,11 @@ export class OperatorEndpointRegistrationRepository {
         (endpoint_url, http_method, operator_pubkey, domain, openapi_json,
          recall_body_template, recommended_validators,
          expected_price_sats_min, expected_price_sats_max, bond_id,
-         signed_payload_sha256, signature_b64, registered_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         signed_payload_sha256, signature_b64, registered_at,
+         input_schema, output_schema, modalities, languages,
+         freshness_sla_sec, deterministic)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+               $14, $15, $16, $17, $18, $19)
        ON CONFLICT (endpoint_url) DO UPDATE
          SET http_method = EXCLUDED.http_method,
              operator_pubkey = EXCLUDED.operator_pubkey,
@@ -74,6 +93,12 @@ export class OperatorEndpointRegistrationRepository {
              signed_payload_sha256 = EXCLUDED.signed_payload_sha256,
              signature_b64 = EXCLUDED.signature_b64,
              registered_at = EXCLUDED.registered_at,
+             input_schema = EXCLUDED.input_schema,
+             output_schema = EXCLUDED.output_schema,
+             modalities = EXCLUDED.modalities,
+             languages = EXCLUDED.languages,
+             freshness_sla_sec = EXCLUDED.freshness_sla_sec,
+             deterministic = EXCLUDED.deterministic,
              state = 'pending',
              verified_at = NULL
        RETURNING *`,
@@ -91,6 +116,12 @@ export class OperatorEndpointRegistrationRepository {
         input.signed_payload_sha256,
         input.signature_b64,
         input.registered_at,
+        input.input_schema ?? null,
+        input.output_schema ?? null,
+        input.modalities ?? null,
+        input.languages ?? null,
+        input.freshness_sla_sec ?? null,
+        input.deterministic ?? null,
       ],
     );
     return rowTo(rows[0]);
@@ -228,6 +259,12 @@ interface RegistrationRow {
   last_health_at: string | number | null;
   fulfill_count: string | number;
   fulfill_success_count: string | number;
+  input_schema: Record<string, unknown> | null;
+  output_schema: Record<string, unknown> | null;
+  modalities: string[] | null;
+  languages: string[] | null;
+  freshness_sla_sec: string | number | null;
+  deterministic: boolean | null;
 }
 
 function rowTo(r: RegistrationRow): OperatorEndpointRegistration {
@@ -251,5 +288,11 @@ function rowTo(r: RegistrationRow): OperatorEndpointRegistration {
     last_health_at: r.last_health_at != null ? Number(r.last_health_at) : null,
     fulfill_count: Number(r.fulfill_count),
     fulfill_success_count: Number(r.fulfill_success_count),
+    input_schema: r.input_schema ?? null,
+    output_schema: r.output_schema ?? null,
+    modalities: r.modalities ?? null,
+    languages: r.languages ?? null,
+    freshness_sla_sec: r.freshness_sla_sec != null ? Number(r.freshness_sla_sec) : null,
+    deterministic: r.deterministic ?? null,
   };
 }

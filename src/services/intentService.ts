@@ -578,6 +578,21 @@ export class IntentService {
     // and feed the new `optimize=reliability` axis. Omitted when null.
     const reliability_score = c.svc.upstream_reliability_score ?? undefined;
     const uptime_30d = c.svc.upstream_uptime_30d ?? undefined;
+    // Phase 11A.1 — capability metadata. Omitted when capability_provenance
+    // is NULL ('unknown') so legacy crawler-fed rows stay lean. Operators
+    // who self-register via Phase 10 (capability_provenance='operator_signed')
+    // surface their declared schemas so agents filter without probing.
+    const capability = c.svc.capability_provenance != null
+      ? {
+          provenance: c.svc.capability_provenance,
+          ...(c.svc.input_schema ? { input_schema: c.svc.input_schema } : {}),
+          ...(c.svc.output_schema ? { output_schema: c.svc.output_schema } : {}),
+          ...(c.svc.modalities && c.svc.modalities.length > 0 ? { modalities: c.svc.modalities } : {}),
+          ...(c.svc.languages && c.svc.languages.length > 0 ? { languages: c.svc.languages } : {}),
+          ...(c.svc.freshness_sla_sec != null ? { freshness_sla_sec: c.svc.freshness_sla_sec } : {}),
+          ...(c.svc.deterministic != null ? { deterministic: c.svc.deterministic } : {}),
+        }
+      : undefined;
 
     return {
       rank,
@@ -612,6 +627,7 @@ export class IntentService {
       ...(provider_contact !== undefined ? { provider_contact } : {}),
       ...(reliability_score !== undefined ? { reliability_score } : {}),
       ...(uptime_30d !== undefined ? { uptime_30d } : {}),
+      ...(capability !== undefined ? { capability } : {}),
       bayesian: {
         ...c.bayesian,
         // Vague 1 B: surface a non-breaking honesty flag. The score is

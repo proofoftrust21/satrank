@@ -38,6 +38,16 @@ const registerSchema = z.object({
   expected_price_sats_max: z.number().int().nonnegative().max(100000).optional(),
   bond_id: z.number().int().positive().optional(),
   signature_b64: z.string().min(20).max(512),
+  // Phase 11A.1 — capability schema (autonomy audit L1 Discovery).
+  // Zod accepts any plain object ; service-layer enforces size caps + the
+  // "at least one of input_schema/output_schema/openapi_json when capability
+  // hints are supplied" rule.
+  input_schema: z.record(z.string(), z.unknown()).optional(),
+  output_schema: z.record(z.string(), z.unknown()).optional(),
+  modalities: z.array(z.string().min(1).max(32)).max(8).optional(),
+  languages: z.array(z.string().min(2).max(16)).max(32).optional(),
+  freshness_sla_sec: z.number().int().nonnegative().max(365 * 86400).optional(),
+  deterministic: z.boolean().optional(),
 });
 
 export interface OperatorRegistrationControllerDeps {
