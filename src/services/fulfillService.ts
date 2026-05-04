@@ -655,11 +655,72 @@ export class FulfillService {
       // Resolve candidates via existing intent ranking (Tier α: stage-aware
       // p_e2e DESC, see intentService.compareCandidates). We cap MAX_CANDIDATES
       // to bound the worst-case latency.
-      const intentResp = await this.deps.intentService.resolveIntent(req.intent, undefined);
+      // Sim 13 Fix 2 (2026-05-04) — request a wider candidate pool from
+      // intentService (10 instead of default 5) so the strict operator
+      // diversity cap below has slack to drop monoculture entries without
+      // shrinking below MAX_CANDIDATES=4. Sim 13 a02 saw 4/5 data/finance
+      // candidates from `1fc6fff496aa...` → my replay-state pre-check (Fix
+      // 1.2) skipped them all on 2nd try and the entire lane bricked. With
+      // a wider pool + strict cap (max 2 per operator), the orchestrator
+      // gets at least 2 distinct operators to fall back to.
+      const intentResp = await this.deps.intentService.resolveIntent(req.intent, 10);
       // Sim 12 Fix A — `candidates` is reassigned below by the latency
       // pre-filter. Use `let` instead of `const` so the slow-operator drop
       // can replace the working set without a fresh local.
-      let candidates = intentResp.candidates.slice(0, MAX_CANDIDATES);
+      let candidates = intentResp.candidates.slice(0);
+      // Sim 13 Fix 3 (2026-05-04) — media-URL filter. Sim 13 had 4 agents
+      // hit hyperdope.com/api/l402/videos/<hash>/master.m3u8 (HLS video
+      // manifest) under `category=bitcoin` because hyperdope tagged itself
+      // as bitcoin in 402index, and our ranking only uses technical signals
+      // (uptime, p_success) — no concept of "agent wanted JSON data, this is
+      // media". Filter out URLs ending in known media extensions ; agents
+      // building real media pipelines can opt back in via a future
+      // `category=media` after Phase 10 operators self-classify.
+      const MEDIA_URL_RE = /\.(m3u8|mp4|webm|mov|mp3|aac|ogg|ts|m4s)(\?|$|#)/i;
+      const beforeMedia = candidates.length;
+      candidates = candidates.filter(c => !MEDIA_URL_RE.test(c.endpoint_url));
+      if (candidates.length < beforeMedia) {
+        logger.debug(
+          { jobId, dropped: beforeMedia - candidates.length },
+          'Fulfill: media-URL filter dropped candidates (Sim 13 Fix 3)',
+        );
+      }
+      // Sim 13 Fix 2 — strict operator-diversity cap (no overflow refill).
+      // The intentService.applyDiversityCap allows refill when pool < limit
+      // (defensive against thin pools). For fulfill we want STRICT diversity
+      // even at the cost of a smaller working set, because the same-operator
+      // monoculture is the dominant cause of replay-state cascade failures
+      // (Sim 13 a02 finance lane bricked).
+      const FULFILL_MAX_PER_OPERATOR = 2;
+      const diversifiedCounts = new Map<string, number>();
+      const diversified: typeof candidates = [];
+      for (const c of candidates) {
+        if (c.operator_pubkey == null) {
+          diversified.push(c);
+          continue;
+        }
+        const n = diversifiedCounts.get(c.operator_pubkey) ?? 0;
+        if (n >= FULFILL_MAX_PER_OPERATOR) continue;
+        diversified.push(c);
+        diversifiedCounts.set(c.operator_pubkey, n + 1);
+      }
+      const operatorCount = new Set(
+        diversified.map(c => c.operator_pubkey).filter(Boolean),
+      ).size;
+      if (diversified.length < candidates.length) {
+        logger.debug(
+          {
+            jobId,
+            kept: diversified.length,
+            dropped: candidates.length - diversified.length,
+            distinct_operators: operatorCount,
+          },
+          'Fulfill: strict operator diversity cap applied (Sim 13 Fix 2)',
+        );
+      }
+      // Take the top MAX_CANDIDATES from the diversified pool (still preserves
+      // intentService's primary ranking by p_e2e DESC).
+      candidates = diversified.slice(0, MAX_CANDIDATES);
       if (candidates.length === 0) {
         // Audit C1 — repay credit borrow on every failure exit (the deficit
         // covered an unrealised cost ; without repay the agent's debt sticks).

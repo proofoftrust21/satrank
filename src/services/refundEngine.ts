@@ -111,8 +111,21 @@ export class RefundEngine {
         // operator returned a 2xx but the body didn't match the agent's
         // declared schema), so the dispute path treats it identically.
         return 'tier2_body_shape';
+      case 'delivery_validator_violation':
+        // Sim 13 Fix 1.3 (2026-05-04) — JSON error-shape gate flagged a
+        // 200+stub. The Phase 7.4 ClaimEngine classifies operator-supplied
+        // validator violations at 5× multiplier; for refund purposes here
+        // we treat them like schema_violation (Tier 2 body shape — operator
+        // returned 200 but the body doesn't satisfy the implicit contract).
+        return 'tier2_body_shape';
       case 'delivery_empty_body':
         return 'tier2_empty_body';
+      case 'aborted_for_sla':
+        // Sim 13 Fix 1.1 (2026-05-04) — orchestrator aborted before pay
+        // because deadline elapsed. payment_outcome will be 'aborted_for_sla'
+        // here (no sats moved), so this case is reached only via odd
+        // accounting paths. Map to tier1_http_other for ledger consistency.
+        return 'tier1_http_other';
       case 'delivery_skipped':
         // Defensive: this shouldn't happen with payment_outcome=pay_ok, but
         // if it does we record as tier1_http_other so accounting balances.
