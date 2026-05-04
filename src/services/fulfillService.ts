@@ -53,6 +53,13 @@ const RECALL_BODY_MAX_BYTES = 256 * 1024;
 const IDEMPOTENCY_WINDOW_SEC = 60;
 const MAX_CANDIDATES = 4;
 const PREMIUM_FLOOR_SATS = 1;
+/** Sim 13 Fix 1.2 — operator replay state thresholds. After
+ *  `REPLAY_THRESHOLD` distinct `pay_invoice_replayed` outcomes inside
+ *  `REPLAY_WINDOW_MS`, the orchestrator skips that operator pre-pay
+ *  rather than burning more sats on a stuck operator. State is
+ *  process-local + decays. */
+const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const REPLAY_THRESHOLD = 2;
 /** Phase 6.1 — outbound refund retries. Each cron tick attempts one pay;
  *  after this cap we mark the residue failed_absorbed (kept by SatRank
  *  pool) so the queue never blocks indefinitely on a hostile invoice. */
@@ -244,6 +251,11 @@ export interface FulfillServiceDeps {
 export class FulfillService {
   private readonly fetchImpl: typeof fetchSafeExternal;
   private readonly now: () => number;
+  /** Sim 13 Fix 1.2 — in-memory operator replay tracker. Hooks into the
+   *  Sim 11 `pay_invoice_replayed` detection to skip operators that
+   *  repeatedly replay invoices. State decays after REPLAY_WINDOW_MS.
+   *  Single-process; horizontal scale would need Redis (deferred). */
+  private readonly operatorReplayState: Map<string, { count: number; last_seen_ms: number }> = new Map();
 
   constructor(private readonly deps: FulfillServiceDeps) {
     this.fetchImpl = deps.fetchImpl ?? fetchSafeExternal;
@@ -1394,6 +1406,17 @@ export class FulfillService {
       return Math.max(10, Math.min(defaultMs, left));
     };
 
+    // Sim 13 Fix 1.1 (2026-05-04) — explicit deadline gate before each
+    // billable stage. Sim 12 a06 RealtimeNewsAI (HARMFUL again) saw
+    // 6355ms / 7334ms on a 6000ms budget because payInvoice() has a
+    // `Math.max(1, ...)` floor on its timeout (LND gRPC won't accept 0s),
+    // so even with `remainingMs=10ms` the LND call can run a full second.
+    // This gate aborts the attempt BEFORE we hand off to LND, so the
+    // pay step never starts past deadline. Returns a synthetic attempt
+    // classified `aborted_for_sla` (no sats moved, agent gets refund).
+    const isPastDeadline = (): boolean =>
+      deadlineMs != null && Date.now() >= deadlineMs;
+
     // Step 1 — challenge fetch. Same shape as paidProbeRunner.probeOne so
     // we get identical SSRF + timeout + content-type semantics.
     let firstResp: Response;
@@ -1507,6 +1530,38 @@ export class FulfillService {
         sats_paid: 0,
       });
     }
+    // Sim 13 Fix 1.1 — abort BEFORE handing the invoice to LND if the
+    // deadline has already elapsed. The previous code (Sim 11 Fix 1)
+    // pre-empted between candidates but a single in-flight attempt could
+    // still overshoot because payInvoice's `Math.max(1, ...)` paySec
+    // floor lets LND run for a full second past deadline.
+    if (isPastDeadline()) {
+      return baseAttempt(cand, ts_started, this.now(), {
+        payment_outcome: 'aborted_for_sla',
+        delivery_outcome: 'delivery_skipped',
+        http_status: 402,
+        sats_paid: 0,
+        detail: 'deadline elapsed before pay step',
+      });
+    }
+    // Sim 13 Fix 1.2 — operator-side L402 replay pre-check. Sim 12 a02/a07
+    // burned 25-30 sats each retrying the same operator that was returning
+    // "invoice is already paid". Sim 11 Fix 3 detected the replay
+    // post-hoc; this fix skips the pay step entirely on operators that
+    // have replayed > REPLAY_THRESHOLD times in the last REPLAY_WINDOW_MS.
+    if (cand.operator_pubkey) {
+      const state = this.operatorReplayState.get(cand.operator_pubkey);
+      const nowMs = Date.now();
+      if (state && nowMs - state.last_seen_ms <= REPLAY_WINDOW_MS && state.count > REPLAY_THRESHOLD) {
+        return baseAttempt(cand, ts_started, this.now(), {
+          payment_outcome: 'pay_skipped_replay_state',
+          delivery_outcome: 'delivery_skipped',
+          http_status: 402,
+          sats_paid: 0,
+          detail: `operator has ${state.count} replays in last ${REPLAY_WINDOW_MS / 1000}s`,
+        });
+      }
+    }
     // Sim 9 Fix 2 — bound payInvoice timeout to remaining budget too.
     const paySec = Math.max(1, Math.ceil(remainingMs(PAY_TIMEOUT_DEFAULT_SEC * 1000) / 1000));
     const pay = await this.deps.lndClient.payInvoice(challenge.invoice, 10, paySec);
@@ -1527,6 +1582,17 @@ export class FulfillService {
       if (isReplay) outcome = 'pay_invoice_replayed';
       else if (isRouting) outcome = 'pay_routing_failed';
       else outcome = 'pay_other_failure';
+      // Sim 13 Fix 1.2 — feed the replay state tracker on every replay.
+      // Pre-pay gate above skips the operator after REPLAY_THRESHOLD hits.
+      if (isReplay && cand.operator_pubkey) {
+        const nowMs = Date.now();
+        const prev = this.operatorReplayState.get(cand.operator_pubkey);
+        const stale = !prev || nowMs - prev.last_seen_ms > REPLAY_WINDOW_MS;
+        this.operatorReplayState.set(cand.operator_pubkey, {
+          count: stale ? 1 : prev.count + 1,
+          last_seen_ms: nowMs,
+        });
+      }
       return baseAttempt(cand, ts_started, this.now(), {
         payment_outcome: outcome,
         delivery_outcome: 'delivery_skipped',
@@ -1638,10 +1704,29 @@ export class FulfillService {
       if (status >= 200 && status < 300) {
         delivery = body.length >= 10 ? 'delivery_ok' : 'delivery_empty_body';
         if (delivery === 'delivery_ok') {
-          // Tier 2 light — heuristic body shape check. A 2xx that fails the
-          // heuristics gets demoted to delivery_low_quality.
-          const evaluated = evaluateBodyQuality({ body, contentType, status });
-          if (!evaluated.passed) delivery = 'delivery_low_quality';
+          // Sim 13 Fix 1.3 (2026-05-04) — explicit JSON error-shape gate.
+          // Sim 12 a04+a09 burned 30+15+15 sats on bitcoinbenji /ai/* which
+          // returned HTTP 200 + `{"error":"Missing 'X' field"}`. The Phase
+          // 5.13 `evaluateBodyQuality` heuristic catches the word "error"
+          // but classifies as `delivery_low_quality` (Tier 2 light → just
+          // refund). Operators returning a 200+error stub for a missing
+          // field SHOULD be returning 4xx — surfacing this as
+          // `delivery_validator_violation` opens a 5× claim against the
+          // operator bond (Phase 7 ClaimEngine), which incentivises proper
+          // HTTP semantics. The detection is narrow : top-level key
+          // matches /^(error|errors|err)$/i AND its value is a non-empty
+          // string OR an object with `message|detail|reason|code` field.
+          // Filters out legitimate `{error: false, data: ...}` shapes.
+          const errorShape = detectJsonErrorShape(body, contentType);
+          if (errorShape) {
+            delivery = 'delivery_validator_violation';
+            validatorDetail = `error_shape_in_2xx: ${errorShape}`;
+          } else {
+            // Tier 2 light — heuristic body shape check. A 2xx that fails the
+            // heuristics gets demoted to delivery_low_quality.
+            const evaluated = evaluateBodyQuality({ body, contentType, status });
+            if (!evaluated.passed) delivery = 'delivery_low_quality';
+          }
         }
         // Phase 3 — strict JSON Schema validation overlays the heuristics. If
         // the agent declared expected_schema_hash and the body parses + matches,
@@ -1963,6 +2048,52 @@ export function canonicalIntentHash(intent: IntentRequest): string {
 
 function sha256OfBuffer(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex');
+}
+
+/** Sim 13 Fix 1.3 — narrow detector for "200 + JSON error stub" pattern.
+ *  Returns a short truncated description on match, null otherwise.
+ *  Recognises:
+ *    {"error": "Missing 'X' field"}     → match
+ *    {"errors": ["..."]}                → match
+ *    {"err": {"message": "..."}}        → match
+ *    {"error": false, "data": [...]}    → NO match (status flag, not stub)
+ *    {"error_count": 0, ...}            → NO match (key doesn't match)
+ *  Only runs when content-type indicates JSON ; non-JSON bodies fall back
+ *  to the heuristic. Cap on returned description = 80 chars to avoid
+ *  log injection or attempts table bloat. */
+function detectJsonErrorShape(body: string, contentType: string | null): string | null {
+  const isJson = contentType?.toLowerCase().includes('application/json') ?? false;
+  if (!isJson) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(body); } catch { return null; }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!/^(error|errors|err)$/i.test(key)) continue;
+    const v = obj[key];
+    if (typeof v === 'string' && v.length > 0) {
+      return `${key}: ${v.slice(0, 80)}`;
+    }
+    if (Array.isArray(v) && v.length > 0) {
+      const first = v[0];
+      const preview = typeof first === 'string' ? first : JSON.stringify(first);
+      return `${key}[0]: ${String(preview).slice(0, 80)}`;
+    }
+    if (v && typeof v === 'object') {
+      const inner = v as Record<string, unknown>;
+      for (const sub of ['message', 'detail', 'reason', 'code']) {
+        const sv = inner[sub];
+        if (typeof sv === 'string' && sv.length > 0) {
+          return `${key}.${sub}: ${sv.slice(0, 80)}`;
+        }
+      }
+      // Object without any of the expected sub-fields → ambiguous, skip.
+      return null;
+    }
+    // Anything else (boolean false, number 0) → not a stub, skip.
+    return null;
+  }
+  return null;
 }
 
 function baseAttempt(
