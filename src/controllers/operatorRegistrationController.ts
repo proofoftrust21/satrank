@@ -49,6 +49,8 @@ const registerSchema = z.object({
   languages: z.array(z.string().min(2).max(16)).max(32).optional(),
   freshness_sla_sec: z.number().int().nonnegative().max(365 * 86400).optional(),
   deterministic: z.boolean().optional(),
+  // Phase 11A.3 — pubkey-only attestation as alternative to DNS TXT.
+  attestation_method: z.enum(['dns_txt', 'wellknown_pubkey']).optional(),
 });
 
 export interface OperatorRegistrationControllerDeps {
@@ -108,15 +110,28 @@ export class OperatorRegistrationController {
           },
           'OperatorRegistration: registration accepted (Phase 10)',
         );
+        // Phase 11A.3 — pubkey-only operators get a different setup hint.
+        const verificationInstruction = reg.attestation_method === 'wellknown_pubkey'
+          ? {
+              attestation_method: reg.attestation_method,
+              wellknown_url: `${new URL(reg.endpoint_url).origin}/.well-known/satrank-operator-pubkey`,
+              wellknown_body: reg.operator_pubkey,
+              message:
+                'Serve the operator_pubkey above at the well-known URL (one line, exact match). The verification cron will pick up the change within 60 seconds.',
+            }
+          : {
+              attestation_method: reg.attestation_method,
+              dns_txt_required: `_satrank-operator.${reg.domain}`,
+              dns_txt_value: `satrank-operator-pubkey=${reg.operator_pubkey}`,
+              message:
+                'Add the DNS TXT record above to verify ownership. The verification cron will pick up the change within 60 seconds.',
+            };
         res.status(201).json({
           status: 'pending_verification',
           registration_id: reg.registration_id,
           endpoint_url: reg.endpoint_url,
           state: reg.state,
-          dns_txt_required: `_satrank-operator.${reg.domain}`,
-          dns_txt_value: `satrank-operator-pubkey=${reg.operator_pubkey}`,
-          message:
-            'Add the DNS TXT record above to verify ownership. The verification cron will pick up the change within 60 seconds.',
+          ...verificationInstruction,
         });
       } catch (err) {
         if (err instanceof InvalidRegistrationError || err instanceof InvalidDomainError) {

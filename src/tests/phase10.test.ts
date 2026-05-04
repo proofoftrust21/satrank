@@ -168,6 +168,131 @@ describe('Phase 10 — OperatorEndpointRegistrationService.registerEndpoint', ()
   });
 });
 
+describe('Phase 11A.3 — pubkey-only attestation (wellknown_pubkey)', () => {
+  let repo: OperatorEndpointRegistrationRepository;
+
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    repo = new OperatorEndpointRegistrationRepository(pool);
+  });
+  afterAll(async () => { await teardownTestPool(testDb); });
+  beforeEach(async () => {
+    await pool.query('TRUNCATE operator_endpoint_registrations RESTART IDENTITY CASCADE');
+  });
+
+  it('registers with attestation_method=wellknown_pubkey and skips DNS subdomain check', async () => {
+    const svc = new OperatorEndpointRegistrationService({ repo, now: () => NOW });
+    // Heroku-style URL host that does NOT match the declared domain — would
+    // be rejected under dns_txt but accepted under wellknown_pubkey.
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      endpoint_url: 'https://my-agent.herokuapp.com/api',
+      attestation_method: 'wellknown_pubkey',
+    });
+    expect(reg.state).toBe('pending');
+    expect(reg.attestation_method).toBe('wellknown_pubkey');
+    expect(reg.endpoint_url).toBe('https://my-agent.herokuapp.com/api');
+  });
+
+  it('dns_txt mode still rejects mismatched URL host (back-compat)', async () => {
+    const svc = new OperatorEndpointRegistrationService({ repo, now: () => NOW });
+    await expect(
+      svc.registerEndpoint({
+        ...VALID_INPUT,
+        endpoint_url: 'https://my-agent.herokuapp.com/api',
+        attestation_method: 'dns_txt',
+      }),
+    ).rejects.toThrow(/must match or be a subdomain/i);
+  });
+
+  it('verifyOne calls wellknown fetcher and matches pubkey', async () => {
+    const calls: string[] = [];
+    const wellknownFetch = async (url: string): Promise<{ status: number; body: string }> => {
+      calls.push(url);
+      return { status: 200, body: PUBKEY };
+    };
+    const svc = new OperatorEndpointRegistrationService({ repo, wellknownFetch, now: () => NOW });
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      endpoint_url: 'https://my-agent.herokuapp.com/api',
+      attestation_method: 'wellknown_pubkey',
+    });
+    const ok = await svc.verifyOne(reg);
+    expect(ok).toBe(true);
+    expect(calls).toEqual(['https://my-agent.herokuapp.com/.well-known/satrank-operator-pubkey']);
+    const refreshed = await repo.findByUrl('https://my-agent.herokuapp.com/api');
+    expect(refreshed!.state).toBe('verified');
+  });
+
+  it('verifyOne tolerates whitespace + case in the well-known body', async () => {
+    const wellknownFetch = async (): Promise<{ status: number; body: string }> => ({
+      status: 200,
+      body: `\n  ${PUBKEY.toUpperCase()}\n`,
+    });
+    const svc = new OperatorEndpointRegistrationService({ repo, wellknownFetch, now: () => NOW });
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      endpoint_url: 'https://my-agent.herokuapp.com/api',
+      attestation_method: 'wellknown_pubkey',
+    });
+    const ok = await svc.verifyOne(reg);
+    expect(ok).toBe(true);
+  });
+
+  it('verifyOne marks failed when wellknown returns wrong pubkey', async () => {
+    const wellknownFetch = async (): Promise<{ status: number; body: string }> => ({
+      status: 200,
+      body: 'd'.repeat(64),
+    });
+    const svc = new OperatorEndpointRegistrationService({ repo, wellknownFetch, now: () => NOW });
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      endpoint_url: 'https://my-agent.herokuapp.com/api',
+      attestation_method: 'wellknown_pubkey',
+    });
+    const ok = await svc.verifyOne(reg);
+    expect(ok).toBe(false);
+    const refreshed = await repo.findByUrl('https://my-agent.herokuapp.com/api');
+    expect(refreshed!.state).toBe('failed');
+  });
+
+  it('verifyOne marks failed when wellknown returns 404', async () => {
+    const wellknownFetch = async (): Promise<{ status: number; body: string }> => ({
+      status: 404,
+      body: '',
+    });
+    const svc = new OperatorEndpointRegistrationService({ repo, wellknownFetch, now: () => NOW });
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      endpoint_url: 'https://my-agent.herokuapp.com/api',
+      attestation_method: 'wellknown_pubkey',
+    });
+    const ok = await svc.verifyOne(reg);
+    expect(ok).toBe(false);
+  });
+
+  it('verifyOne marks failed on wellknown fetch throw', async () => {
+    const wellknownFetch = async (): Promise<{ status: number; body: string }> => {
+      throw new Error('connection refused');
+    };
+    const svc = new OperatorEndpointRegistrationService({ repo, wellknownFetch, now: () => NOW });
+    const reg = await svc.registerEndpoint({
+      ...VALID_INPUT,
+      endpoint_url: 'https://my-agent.herokuapp.com/api',
+      attestation_method: 'wellknown_pubkey',
+    });
+    const ok = await svc.verifyOne(reg);
+    expect(ok).toBe(false);
+  });
+
+  it('default attestation_method is dns_txt when omitted (back-compat)', async () => {
+    const svc = new OperatorEndpointRegistrationService({ repo, now: () => NOW });
+    const reg = await svc.registerEndpoint(VALID_INPUT);
+    expect(reg.attestation_method).toBe('dns_txt');
+  });
+});
+
 describe('Phase 11A.1 — capability propagation to service_endpoints on verify', () => {
   let repo: OperatorEndpointRegistrationRepository;
 

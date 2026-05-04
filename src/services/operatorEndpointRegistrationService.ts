@@ -15,15 +15,22 @@ import { promises as nodeDns } from 'node:dns';
 import { createHash } from 'node:crypto';
 import { logger } from '../logger';
 import { validateOperatorDomain } from './operatorAttestationService';
+import { fetchSafeExternal, readBodyCapped } from '../utils/ssrf';
 import type {
   OperatorEndpointRegistrationRepository,
   OperatorEndpointRegistration,
   CreateRegistrationInput,
+  AttestationMethod,
 } from '../repositories/operatorEndpointRegistrationRepository';
 
 const TXT_PREFIX = 'satrank-operator-pubkey=';
 const REGISTRATION_OPENAPI_MAX_BYTES = 64 * 1024;
 const REGISTRATION_RECALL_BODY_MAX_BYTES = 4 * 1024;
+/** Phase 11A.3 — well-known body cap. The file is meant to contain a single
+ *  line (the pubkey, ~66 hex chars) ; refusing larger payloads blocks an
+ *  operator from stuffing the file with adversarial content. */
+const WELLKNOWN_PUBKEY_MAX_BYTES = 256;
+const WELLKNOWN_PATH = '/.well-known/satrank-operator-pubkey';
 
 export class InvalidRegistrationError extends Error {
   constructor(message: string) {
@@ -36,6 +43,9 @@ export interface OperatorEndpointRegistrationServiceDeps {
   repo: OperatorEndpointRegistrationRepository;
   /** Optional override for tests — must satisfy dns.resolveTxt's signature. */
   dnsResolveTxt?: (host: string) => Promise<string[][]>;
+  /** Phase 11A.3 — optional override for the well-known fetcher (tests mock
+   *  with a stub that returns body+status without going through the network). */
+  wellknownFetch?: (url: string) => Promise<{ status: number; body: string }>;
   now?: () => number;
   /** Phase 11A.1 — when a registration verifies, the service writes its
    *  capability schema into the matching service_endpoints row so /api/intent
@@ -61,6 +71,10 @@ export interface RegisterEndpointInput {
   endpoint_url: string;
   http_method: 'GET' | 'POST';
   operator_pubkey: string;
+  /** Required for attestation_method='dns_txt'. For 'wellknown_pubkey'
+   *  the field is informational (used to label the registration) — the
+   *  URL host is the actual proof surface. Must still pass the
+   *  validateOperatorDomain shape gate when supplied. */
   domain: string;
   openapi_json?: unknown;
   recall_body_template?: string;
@@ -78,22 +92,37 @@ export interface RegisterEndpointInput {
   languages?: string[];
   freshness_sla_sec?: number;
   deterministic?: boolean;
+  /** Phase 11A.3 — defaults to 'dns_txt'. */
+  attestation_method?: AttestationMethod;
 }
 
 export class OperatorEndpointRegistrationService {
   private now: () => number;
   private dnsResolveTxt: (host: string) => Promise<string[][]>;
+  private wellknownFetch: (url: string) => Promise<{ status: number; body: string }>;
 
   constructor(private readonly deps: OperatorEndpointRegistrationServiceDeps) {
     this.now = deps.now ?? (() => Math.floor(Date.now() / 1000));
     this.dnsResolveTxt = deps.dnsResolveTxt ?? (host => nodeDns.resolveTxt(host));
+    this.wellknownFetch = deps.wellknownFetch ?? defaultWellknownFetch;
   }
 
   async registerEndpoint(input: RegisterEndpointInput): Promise<OperatorEndpointRegistration> {
-    // 1. Domain shape gate (reuses Phase 8.4 H2 validation).
+    const attestationMethod: AttestationMethod = input.attestation_method ?? 'dns_txt';
+
+    // 1. Domain shape gate (reuses Phase 8.4 H2 validation). For
+    //    wellknown_pubkey we still pass the domain through so URL labels
+    //    are normalised — the operator can declare anything ; the
+    //    URL→domain match below is the only thing that will be relaxed.
     const safeDomain = validateOperatorDomain(input.domain);
 
-    // 2. URL must belong to the declared domain.
+    // 2. URL shape gate. For dns_txt the host must match or be a
+    //    subdomain of the declared domain (DNS TXT lookup is rooted on
+    //    the declared domain). For wellknown_pubkey the host is taken at
+    //    face value and the .well-known fetch is the proof surface, so
+    //    the agent-operator can register an URL on a host they don't
+    //    control DNS for (Heroku, Render, ngrok, …) as long as they can
+    //    serve a static file at .well-known/satrank-operator-pubkey.
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(input.endpoint_url);
@@ -104,10 +133,12 @@ export class OperatorEndpointRegistrationService {
       throw new InvalidRegistrationError('endpoint_url must use https');
     }
     const urlHost = parsedUrl.hostname.toLowerCase();
-    if (urlHost !== safeDomain && !urlHost.endsWith(`.${safeDomain}`)) {
-      throw new InvalidRegistrationError(
-        `endpoint_url host "${urlHost}" must match or be a subdomain of declared domain "${safeDomain}"`,
-      );
+    if (attestationMethod === 'dns_txt') {
+      if (urlHost !== safeDomain && !urlHost.endsWith(`.${safeDomain}`)) {
+        throw new InvalidRegistrationError(
+          `endpoint_url host "${urlHost}" must match or be a subdomain of declared domain "${safeDomain}"`,
+        );
+      }
     }
 
     // 3. Caps on heavy fields.
@@ -224,6 +255,7 @@ export class OperatorEndpointRegistrationService {
       languages: input.languages,
       freshness_sla_sec: input.freshness_sla_sec,
       deterministic: input.deterministic,
+      attestation_method: attestationMethod,
     };
     return this.deps.repo.create(created);
   }
@@ -246,6 +278,20 @@ export class OperatorEndpointRegistrationService {
   }
 
   async verifyOne(reg: OperatorEndpointRegistration): Promise<boolean> {
+    // Phase 11A.3 — dispatch on attestation_method. Default 'dns_txt'
+    // for backwards compat with v68 rows.
+    const matched = reg.attestation_method === 'wellknown_pubkey'
+      ? await this.verifyWellknownPubkey(reg)
+      : await this.verifyDnsTxt(reg);
+    if (!matched) {
+      await this.deps.repo.markFailed(reg.registration_id, this.now());
+      return false;
+    }
+    await this.deps.repo.markVerified(reg.registration_id, this.now());
+    return await this.propagateCapabilityIfNeeded(reg);
+  }
+
+  private async verifyDnsTxt(reg: OperatorEndpointRegistration): Promise<boolean> {
     const host = `_satrank-operator.${reg.domain}`;
     let records: string[][];
     try {
@@ -255,19 +301,46 @@ export class OperatorEndpointRegistrationService {
         { domain: reg.domain, error: err instanceof Error ? err.message : String(err) },
         'OperatorEndpointRegistrationService: DNS lookup failed',
       );
-      await this.deps.repo.markFailed(reg.registration_id, this.now());
       return false;
     }
     const flat = records.map(parts => parts.join('')).filter(s => s.startsWith(TXT_PREFIX));
-    const matched = flat.some(s =>
+    return flat.some(s =>
       s.slice(TXT_PREFIX.length).toLowerCase() === reg.operator_pubkey.toLowerCase(),
     );
-    if (!matched) {
-      await this.deps.repo.markFailed(reg.registration_id, this.now());
+  }
+
+  private async verifyWellknownPubkey(reg: OperatorEndpointRegistration): Promise<boolean> {
+    let parsed: URL;
+    try {
+      parsed = new URL(reg.endpoint_url);
+    } catch {
       return false;
     }
-    await this.deps.repo.markVerified(reg.registration_id, this.now());
+    if (parsed.protocol !== 'https:') return false;
+    // Probe the .well-known on the same origin as the endpoint URL.
+    const probeUrl = `https://${parsed.host}${WELLKNOWN_PATH}`;
+    let response: { status: number; body: string };
+    try {
+      response = await this.wellknownFetch(probeUrl);
+    } catch (err) {
+      logger.info(
+        { endpoint_url: reg.endpoint_url, error: err instanceof Error ? err.message : String(err) },
+        'OperatorEndpointRegistrationService: well-known fetch failed',
+      );
+      return false;
+    }
+    if (response.status !== 200) {
+      logger.info(
+        { endpoint_url: reg.endpoint_url, status: response.status },
+        'OperatorEndpointRegistrationService: well-known returned non-200',
+      );
+      return false;
+    }
+    const trimmed = response.body.trim().toLowerCase();
+    return trimmed === reg.operator_pubkey.toLowerCase();
+  }
 
+  private async propagateCapabilityIfNeeded(reg: OperatorEndpointRegistration): Promise<boolean> {
     // Phase 11A.1 — propagate capability schema to service_endpoints so the
     // operator-signed metadata surfaces in /api/intent + /api/services. Best
     // effort : a missing service_endpoints row (registered URL not yet in the
@@ -309,4 +382,20 @@ export class OperatorEndpointRegistrationService {
     }
     return true;
   }
+}
+
+/** Default well-known fetcher : SSRF-safe HTTPS GET, body capped at 256 bytes
+ *  (the file should contain a single ~66 char pubkey ; anything larger is
+ *  malformed). Tests inject a stub via deps.wellknownFetch. */
+async function defaultWellknownFetch(url: string): Promise<{ status: number; body: string }> {
+  const resp = await fetchSafeExternal(url, {
+    method: 'GET',
+    redirect: 'manual',
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (resp.status !== 200) {
+    return { status: resp.status, body: '' };
+  }
+  const { body } = await readBodyCapped(resp, WELLKNOWN_PUBKEY_MAX_BYTES);
+  return { status: 200, body: body.toString('utf8') };
 }

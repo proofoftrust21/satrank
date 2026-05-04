@@ -12,6 +12,13 @@ type Queryable = Pool | PoolClient;
 
 export type RegistrationState = 'pending' | 'verified' | 'failed' | 'revoked';
 
+/** Phase 11A.3 — how the registration's URL ownership is attested.
+ *  - dns_txt           : DNS TXT record at _satrank-operator.<domain>
+ *  - wellknown_pubkey  : HTTPS GET https://<host>/.well-known/satrank-operator-pubkey
+ *                        returns the operator_pubkey (one line, optional whitespace).
+ *  Backwards-compat default is 'dns_txt'. */
+export type AttestationMethod = 'dns_txt' | 'wellknown_pubkey';
+
 export interface OperatorEndpointRegistration {
   registration_id: number;
   endpoint_url: string;
@@ -39,6 +46,8 @@ export interface OperatorEndpointRegistration {
   languages: string[] | null;
   freshness_sla_sec: number | null;
   deterministic: boolean | null;
+  /** Phase 11A.3 — attestation method. */
+  attestation_method: AttestationMethod;
 }
 
 export interface CreateRegistrationInput {
@@ -64,6 +73,8 @@ export interface CreateRegistrationInput {
   languages?: string[];
   freshness_sla_sec?: number;
   deterministic?: boolean;
+  /** Phase 11A.3 — defaults to 'dns_txt' if omitted. */
+  attestation_method?: AttestationMethod;
 }
 
 export class OperatorEndpointRegistrationRepository {
@@ -77,9 +88,9 @@ export class OperatorEndpointRegistrationRepository {
          expected_price_sats_min, expected_price_sats_max, bond_id,
          signed_payload_sha256, signature_b64, registered_at,
          input_schema, output_schema, modalities, languages,
-         freshness_sla_sec, deterministic)
+         freshness_sla_sec, deterministic, attestation_method)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-               $14, $15, $16, $17, $18, $19)
+               $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (endpoint_url) DO UPDATE
          SET http_method = EXCLUDED.http_method,
              operator_pubkey = EXCLUDED.operator_pubkey,
@@ -99,6 +110,7 @@ export class OperatorEndpointRegistrationRepository {
              languages = EXCLUDED.languages,
              freshness_sla_sec = EXCLUDED.freshness_sla_sec,
              deterministic = EXCLUDED.deterministic,
+             attestation_method = EXCLUDED.attestation_method,
              state = 'pending',
              verified_at = NULL
        RETURNING *`,
@@ -122,6 +134,7 @@ export class OperatorEndpointRegistrationRepository {
         input.languages ?? null,
         input.freshness_sla_sec ?? null,
         input.deterministic ?? null,
+        input.attestation_method ?? 'dns_txt',
       ],
     );
     return rowTo(rows[0]);
@@ -265,6 +278,7 @@ interface RegistrationRow {
   languages: string[] | null;
   freshness_sla_sec: string | number | null;
   deterministic: boolean | null;
+  attestation_method: AttestationMethod;
 }
 
 function rowTo(r: RegistrationRow): OperatorEndpointRegistration {
@@ -294,5 +308,6 @@ function rowTo(r: RegistrationRow): OperatorEndpointRegistration {
     languages: r.languages ?? null,
     freshness_sla_sec: r.freshness_sla_sec != null ? Number(r.freshness_sla_sec) : null,
     deterministic: r.deterministic ?? null,
+    attestation_method: r.attestation_method ?? 'dns_txt',
   };
 }
