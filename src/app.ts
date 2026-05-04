@@ -87,6 +87,7 @@ import { AgentBondController } from './controllers/agentBondController';
 import { AgentReputationRepository } from './repositories/agentReputationRepository';
 import { AgentReputationService } from './services/agentReputationService';
 import { AgentReputationController } from './controllers/agentReputationController';
+import { AgentSlashingService } from './services/agentSlashingService';
 import { AgentCreditRepository } from './repositories/agentCreditRepository';
 import { IntentResultCacheRepository } from './repositories/intentResultCacheRepository';
 import { CapabilityTokenService } from './services/capabilityTokenService';
@@ -423,6 +424,16 @@ export function createApp() {
     service: agentReputationService,
     bondService: agentBondService,
   });
+
+  // Phase 11B.3 (2026-05-04) — agent slashing. v1 cooldown-cron not yet
+  // wired ; the service is constructed here so the slashing primitive is
+  // discoverable via the DI graph (and so admin scripts can import it).
+  const agentSlashingService = new AgentSlashingService({
+    reputationService: agentReputationService,
+    bondRepo: agentBondRepo,
+  });
+  // Touch to silence unused-var warnings until Phase 11B.4 wires the cron.
+  void agentSlashingService;
   const operatorRegistrationController = new OperatorRegistrationController({
     service: operatorEndpointRegistrationService,
     repo: operatorEndpointRegistrationRepo,
