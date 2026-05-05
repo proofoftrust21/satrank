@@ -63,8 +63,8 @@ import {
   buildAnthropicRerankAdapter,
   type IntentRanker,
 } from './services/intentRanker';
-import { GoldenCanaryService, type GoldenPair } from './services/goldenCanaryService';
-import * as fsSync from 'node:fs';
+import { GoldenCanaryService } from './services/goldenCanaryService';
+import { GOLDEN_PAIRS } from './services/goldenSetData';
 
 /** Phase 12.4 — populate the in-memory BM25 inverted index from the
  *  current catalogue. Run once at boot and on a 5min cron tick.
@@ -413,48 +413,37 @@ export function createApp() {
   // Phase 12.5 (2026-05-05) — golden-set canary. Audit non-negotiable
   // for shipping a ranking layer ; alerts when recall@K drops below
   // GOLDEN_CANARY_THRESHOLD (default 0.7). Cron runs every
-  // GOLDEN_CANARY_INTERVAL_MS (default 5min). Loaded from
-  // scripts/sim/golden-set.json at boot.
-  let goldenCanaryService: GoldenCanaryService | undefined;
-  try {
-    const goldenPath = path.resolve(__dirname, '..', 'scripts', 'sim', 'golden-set.json');
-    const goldenRaw = fsSync.existsSync(goldenPath) ? fsSync.readFileSync(goldenPath, 'utf8') : '';
-    if (goldenRaw) {
-      const parsed = JSON.parse(goldenRaw) as { pairs?: GoldenPair[] };
-      const pairs = parsed.pairs ?? [];
-      if (pairs.length > 0) {
-        goldenCanaryService = new GoldenCanaryService({
-          intentService,
-          pairs,
-          alertThreshold: Number(process.env.GOLDEN_CANARY_THRESHOLD ?? 0.7),
-        });
-        const intervalMs = Number(process.env.GOLDEN_CANARY_INTERVAL_MS ?? 5 * 60 * 1000);
-        // Run once at boot (after BM25 first build settles, ~1s).
-        setTimeout(() => {
-          goldenCanaryService?.run().catch(err => {
-            logger.warn(
-              { error: err instanceof Error ? err.message : String(err) },
-              'GoldenCanary: initial run threw',
-            );
-          });
-        }, 5_000);
-        const canaryTimer = setInterval(() => {
-          goldenCanaryService?.run().catch(err => {
-            logger.warn(
-              { error: err instanceof Error ? err.message : String(err) },
-              'GoldenCanary: scheduled run threw',
-            );
-          });
-        }, intervalMs);
-        canaryTimer.unref();
-        logger.info({ pairs: pairs.length, intervalMs }, 'GoldenCanary: enabled (Phase 12.5)');
-      }
-    }
-  } catch (err) {
-    logger.warn(
-      { error: err instanceof Error ? err.message : String(err) },
-      'GoldenCanary: failed to load golden-set.json (canary disabled)',
-    );
+  // GOLDEN_CANARY_INTERVAL_MS (default 5min). Pairs are compiled into
+  // the bundle via goldenSetData.ts so the canary is always available
+  // regardless of Dockerfile COPY scope.
+  const goldenCanaryService = GOLDEN_PAIRS.length > 0
+    ? new GoldenCanaryService({
+        intentService,
+        pairs: GOLDEN_PAIRS,
+        alertThreshold: Number(process.env.GOLDEN_CANARY_THRESHOLD ?? 0.7),
+      })
+    : undefined;
+  if (goldenCanaryService) {
+    const intervalMs = Number(process.env.GOLDEN_CANARY_INTERVAL_MS ?? 5 * 60 * 1000);
+    // Run once at boot (after BM25 first build settles, ~1s).
+    setTimeout(() => {
+      goldenCanaryService.run().catch(err => {
+        logger.warn(
+          { error: err instanceof Error ? err.message : String(err) },
+          'GoldenCanary: initial run threw',
+        );
+      });
+    }, 5_000);
+    const canaryTimer = setInterval(() => {
+      goldenCanaryService.run().catch(err => {
+        logger.warn(
+          { error: err instanceof Error ? err.message : String(err) },
+          'GoldenCanary: scheduled run threw',
+        );
+      });
+    }, intervalMs);
+    canaryTimer.unref();
+    logger.info({ pairs: GOLDEN_PAIRS.length, intervalMs }, 'GoldenCanary: enabled (Phase 12.5)');
   }
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
