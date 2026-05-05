@@ -41,6 +41,12 @@ const intentSchema = z.object({
   /** Phase 5.8 — optimization axis. Default `p_success` (Bayesian) when
    *  omitted. Other values: `latency`, `reliability`, `cost`. */
   optimize: z.enum(['p_success', 'latency', 'reliability', 'cost']).optional(),
+  /** Phase 12.4 (2026-05-05) — free-text intent description for the
+   *  IntentRanker (BM25 + optional LLM rerank). Capped at 1000 chars
+   *  because longer intents are usually agent-side debug noise that
+   *  hurts BM25 IDF more than it helps semantic match. Optional ; when
+   *  absent or empty the ranker falls back to legacy ordering. */
+  text: z.string().min(1).max(1000).optional(),
 });
 
 export class IntentController {
@@ -51,7 +57,7 @@ export class IntentController {
       const parsed = intentSchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError(formatZodError(parsed.error, req.body));
 
-      const { category, keywords, budget_sats, max_latency_ms, caller, limit, optimize } = parsed.data;
+      const { category, keywords, budget_sats, max_latency_ms, caller, limit, optimize, text } = parsed.data;
       // Mix A+D — accept the flag from the body (zod) OR the query string
       // (`?fresh=true`). The L402 paywall in src/app.ts uses the same helper,
       // so the controller and middleware always agree on which path was paid.
@@ -72,7 +78,7 @@ export class IntentController {
       }
 
       const response = await this.intentService.resolveIntent(
-        { category, keywords, budget_sats, max_latency_ms, caller, optimize },
+        { category, keywords, budget_sats, max_latency_ms, caller, optimize, text },
         limit,
         { fresh },
       );

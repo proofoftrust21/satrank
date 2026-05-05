@@ -14,6 +14,7 @@ import { endpointHash } from '../utils/urlCanonical';
 import { computeAdvisoryReport } from './advisoryService';
 import { deriveRecommendation } from '../utils/recommendation';
 import { probeUrlsNow } from './freshProbeService';
+import { logger } from '../logger';
 import type { AgentRepository } from '../repositories/agentRepository';
 import type { ProbeRepository } from '../repositories/probeRepository';
 import type {
@@ -166,6 +167,12 @@ export interface IntentServiceDeps {
    *  stage_posteriors (5 stages du contrat L402 + p_e2e composé). Absent →
    *  bloc omis du payload, agents retombent sur bayesian.p_success legacy. */
   endpointStagePosteriorsRepo?: EndpointStagePosteriorsRepository;
+  /** Phase 12.4 (2026-05-05) — IntentRanker injected from app.ts based on
+   *  RANKER_MODE env var (legacy | bm25 | bm25_llm). Optional ; when
+   *  absent, intentService preserves pre-P12 behaviour (sort by optimize
+   *  axis only). When present AND req.text is non-empty, the ranker
+   *  re-orders the post-tier sorted candidates before diversity cap. */
+  intentRanker?: import('./intentRanker').IntentRanker;
   /** Clock injectable pour tests déterministes. */
   now?: () => number;
 }
@@ -339,13 +346,14 @@ export class IntentService {
     // Bayesian/freshness cohorting kept as tiebreaker so honest signals
     // still beat prior-only ones.
     const sorted = [...tierPool].sort(comparatorFor(optimize));
-    // Audit Tier 4M (2026-04-30) — diversity cap. Without this, a single
-    // operator who holds N endpoints in a category (or a single host with
-    // many endpoints) can capture every slot of the response. Live measure
-    // before fix: top-5 in `ai` returned 4 endpoints from one operator on
-    // one host. The cap surfaces ≤2 per operator and ≤2 per host, then
-    // fills remaining slots with overflow if the pool is genuinely thin.
-    const trimmed = applyDiversityCap(sorted, limit);
+    // Phase 12.4 (2026-05-05) — IntentRanker re-order. When the agent
+    // supplied req.text AND a ranker is wired (RANKER_MODE != legacy),
+    // we let the ranker (BM25 hybrid or LLM rerank) re-order the post-
+    // tier list. The diversity cap below then runs on the new order so
+    // the rerank's top picks still get diversified. Falls through to
+    // legacy ordering when ranker absent or text empty.
+    const reranked = await this.maybeApplyIntentRanker(req, sorted);
+    const trimmed = applyDiversityCap(reranked, limit);
 
     // Mix A+D — when ?fresh=true, force a synchronous probe on the top-N
     // URLs so the response carries a probe younger than the hot-tier cadence.
@@ -420,6 +428,54 @@ export class IntentService {
       this.responseCache.set(cacheKey, response, this.now());
     }
     return response;
+  }
+
+  /** Phase 12.4 — apply the configured IntentRanker if conditions met.
+   *  Maps EnrichedCandidate → RankCandidate, calls ranker, then returns
+   *  the input list reordered by the ranker's verdict. Returns the input
+   *  unchanged when no ranker / no req.text / catch-all error path. */
+  private async maybeApplyIntentRanker(
+    req: IntentRequest,
+    enriched: EnrichedCandidate[],
+  ): Promise<EnrichedCandidate[]> {
+    const ranker = this.deps.intentRanker;
+    if (!ranker) return enriched;
+    const text = (req.text ?? '').trim();
+    if (text.length === 0) return enriched;
+    if (enriched.length <= 1) return enriched;
+    try {
+      const rankCandidates = enriched.map(e => ({
+        id: e.svc.id,
+        endpoint_url: e.svc.url,
+        service_name: e.svc.name,
+        description: e.svc.description,
+        category: e.svc.category,
+        provider: e.svc.provider,
+        p_e2e_pessimistic: e.stagePosteriors?.p_e2e_pessimistic ?? e.bayesian.p_success,
+        p_success: e.bayesian.p_success,
+        median_latency_ms: e.medianLatencyMs,
+      }));
+      const ranked = await ranker.rank(text, rankCandidates);
+      // Reorder enriched to match ranker output. Stable map by svc.id.
+      const byId = new Map<number, EnrichedCandidate>(enriched.map(e => [e.svc.id, e]));
+      const out: EnrichedCandidate[] = [];
+      for (const r of ranked) {
+        const e = byId.get(r.candidate.id);
+        if (e) out.push(e);
+      }
+      // Append any missing (defensive — ranker should cover all).
+      for (const e of enriched) {
+        if (!out.includes(e)) out.push(e);
+      }
+      return out;
+    } catch (err) {
+      // Ranker failure must NEVER break /api/intent. Logged and ignored.
+      logger.warn(
+        { ranker: ranker.id, error: err instanceof Error ? err.message : String(err) },
+        'intentService: IntentRanker threw, falling back to legacy ordering',
+      );
+      return enriched;
+    }
   }
 
   private async enrich(svc: ServiceEndpoint): Promise<EnrichedCandidate> {

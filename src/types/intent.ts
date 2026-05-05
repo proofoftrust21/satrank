@@ -27,6 +27,12 @@ export interface IntentRequest {
    *  switchable parameter (rather than a hand-tuned composite) is in
    *  /tmp/satrank-investigation-second-opinion/strategic-review.md. */
   optimize?: IntentOptimizeAxis;
+  /** Phase 12.4 (2026-05-05) — free-text intent description that the
+   *  IntentRanker uses for BM25 lexical matching and / or LLM-rerank.
+   *  Optional ; absent = ranker falls back to legacy ordering by p_e2e
+   *  DESC. Capped at 1000 chars in the controller schema (longer
+   *  intents are usually noise). */
+  text?: string;
 }
 
 /** Phase 5.8 — supported optimize axes. The default of `p_success` keeps

@@ -55,6 +55,35 @@ import { ProbeController } from './controllers/probeController';
 import { ServiceController } from './controllers/serviceController';
 import { IntentController } from './controllers/intentController';
 import { IntentService } from './services/intentService';
+import AnthropicSdk from '@anthropic-ai/sdk';
+import { Bm25Service } from './services/bm25Service';
+import {
+  Bm25HybridRanker,
+  LlmRerankRanker,
+  buildAnthropicRerankAdapter,
+  type IntentRanker,
+} from './services/intentRanker';
+
+/** Phase 12.4 — populate the in-memory BM25 inverted index from the
+ *  current catalogue. Run once at boot and on a 5min cron tick.
+ *  Document text = name + description + category + provider concat'd. */
+async function rebuildBm25Index(
+  bm25: Bm25Service,
+  serviceEndpointRepo: ServiceEndpointRepository,
+): Promise<void> {
+  const endpoints = await serviceEndpointRepo.listActiveTrustedEndpoints(10_000);
+  const docs = endpoints.map(svc => ({
+    id: svc.id,
+    text: [svc.name, svc.description, svc.category, svc.provider]
+      .filter((s): s is string => typeof s === 'string' && s.length > 0)
+      .join(' '),
+  }));
+  bm25.buildIndex(docs);
+  logger.info(
+    { docs: docs.length, ...bm25.stats() },
+    'Bm25Service: index rebuilt (Phase 12.4)',
+  );
+}
 import { ServiceRegisterController } from './controllers/serviceRegisterController';
 import { FulfillController } from './controllers/fulfillController';
 import { FulfillService } from './services/fulfillService';
@@ -307,6 +336,65 @@ export function createApp() {
     dualWriteLogger,
   });
   const serviceController = new ServiceController(serviceEndpointRepo, agentRepo, agentService, bayesianVerdictService);
+  // Phase 12.4 (2026-05-05) — IntentRanker selection.
+  //
+  //   RANKER_MODE=legacy   (default) — pre-P12 ordering (back-compat).
+  //   RANKER_MODE=bm25     — BM25 hybrid (0.5 BM25 + 0.5 p_e2e).
+  //   RANKER_MODE=bm25_llm — BM25 narrow → Claude Haiku rerank top-K.
+  //
+  // The BM25 service holds an in-memory inverted index ; rebuilt every
+  // 5 min so newly registered endpoints surface in re-ranked /api/intent
+  // responses. First build runs once at startup ; the /api/intent path
+  // is safe to serve before the first build (Bm25Service falls through
+  // to legacy when buildIndex hasn't been called).
+  const rankerMode = (process.env.RANKER_MODE ?? 'legacy').toLowerCase();
+  const bm25Service = new Bm25Service();
+  // Fire-and-forget initial build ; subsequent rebuilds via 5-min cron.
+  // Bm25Service.score / topK return 0 / [] before the first build, so
+  // the ranker degrades gracefully to legacy ordering during the
+  // ~50-200ms it takes to load and tokenise the catalogue.
+  void rebuildBm25Index(bm25Service, serviceEndpointRepo).catch(err => {
+    logger.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      'Bm25Service: initial build failed (legacy ordering will apply until next rebuild)',
+    );
+  });
+  const bm25RebuildTimer = setInterval(() => {
+    rebuildBm25Index(bm25Service, serviceEndpointRepo).catch(err => {
+      logger.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        'Bm25Service: scheduled rebuild failed (will retry next tick)',
+      );
+    });
+  }, 5 * 60 * 1000);
+  bm25RebuildTimer.unref();
+  let intentRanker: IntentRanker | undefined;
+  if (rankerMode === 'bm25') {
+    intentRanker = new Bm25HybridRanker({ bm25: bm25Service });
+    logger.info({ ranker: 'bm25_hybrid' }, 'IntentRanker selected (Phase 12.4)');
+  } else if (rankerMode === 'bm25_llm') {
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!anthropicKey) {
+      logger.warn({}, 'RANKER_MODE=bm25_llm requested but ANTHROPIC_API_KEY missing — falling back to bm25');
+      intentRanker = new Bm25HybridRanker({ bm25: bm25Service });
+    } else {
+      const anthropicClient = new AnthropicSdk({ apiKey: anthropicKey });
+      const llmCall = buildAnthropicRerankAdapter({
+        client: anthropicClient as unknown as Parameters<typeof buildAnthropicRerankAdapter>[0]['client'],
+        model: process.env.RANKER_LLM_MODEL ?? 'claude-haiku-4-5-20251001',
+      });
+      intentRanker = new LlmRerankRanker({
+        bm25: bm25Service,
+        llmCall,
+        narrowTopK: Number(process.env.RANKER_NARROW_TOPK ?? 20),
+        finalTopK: Number(process.env.RANKER_FINAL_TOPK ?? 10),
+        fallback: new Bm25HybridRanker({ bm25: bm25Service }),
+      });
+      logger.info({ ranker: 'llm_rerank', model: process.env.RANKER_LLM_MODEL ?? 'claude-haiku-4-5-20251001' }, 'IntentRanker selected (Phase 12.4)');
+    }
+  } else {
+    logger.info({ ranker: 'legacy' }, 'IntentRanker selected (Phase 12.4 default)');
+  }
   const intentService = new IntentService({
     serviceEndpointRepo,
     agentRepo,
@@ -316,6 +404,7 @@ export function createApp() {
     probeRepo,
     operatorService,
     endpointStagePosteriorsRepo,
+    intentRanker,
   });
   const intentController = new IntentController(intentService);
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
