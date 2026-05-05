@@ -1,0 +1,34 @@
+{
+  "lenses": [
+    {
+      "id": "L1_cost_scale",
+      "name": "Cost & scale viability",
+      "question": "Verify the cost claim : 100k endpoints / 100 qps at $0/month delta on existing cpx32 (4 vCPU, 8GB RAM) infra, using onnxruntime-node bge-small CPU + hnswlib-node HNSW + BM25 in-process. Does the math hold? Where is the actual cliff (catalogue size OR qps) where in-process stops working? Are HNSW in-memory + onnxruntime-node CPU the right choices vs alternatives (pgvector, Lucene/Elasticsearch, in-Postgres BM25)? Be concrete with latency + memory numbers. Identify the FIRST $50/month cost you'd actually incur at scale and at what threshold."
+    },
+    {
+      "id": "L2_architecture_layering",
+      "name": "Architecture & migration path",
+      "question": "Evaluate the 3-layer interface design (EmbeddingProvider, VectorIndex, IntentRanker) with default in-process implementations and pluggable sidecar/GPU versions. Is layered abstraction the right pattern for this problem, or is it over-engineered for SatRank's projected size (100k endpoints over 5 years)? Is two-stage retrieval (BM25 narrow → dense rerank top-50) better than single-pass hybrid sparse+dense fusion (e.g. RRF — Reciprocal Rank Fusion)? Are there architecture patterns from production retrieval systems (Vespa, Weaviate, Elasticsearch ANN) that the proposal misses?"
+    },
+    {
+      "id": "L3_model_choice",
+      "name": "Embedding model choice & quality",
+      "question": "The plan picks bge-small-en-v1.5 (384 dims, 22M params, ~30MB ONNX). For SatRank's task — matching short free-text intents (e.g. 'realtime BTC OHLC at 1-minute resolution from regulated venue') to endpoint descriptions — is bge-small the optimal choice? Compare against : MiniLM-L6-v2, paraphrase-multilingual-MiniLM-L12-v2, gte-small, nomic-embed-text-v1.5, e5-small-v2, snowflake-arctic-embed-s. Consider : retrieval quality on short queries, multilingual support, model size, ONNX availability, license. Recommend a specific model + justification. Should we use a cross-encoder (e.g. ms-marco-MiniLM-L-6-v2) as final-stage reranker, and at what cost?"
+    },
+    {
+      "id": "L4_alternatives_dismissed",
+      "name": "Alternatives the plan dismissed too quickly",
+      "question": "The plan dismisses BM25-only as insufficient (~75-85% quality), OpenAI/Voyage as too expensive at scale, and full sparse-dense fusion as deferred. Are these dismissals correct? Specifically: (a) Could a well-tuned BM25 + capability-metadata-as-filter + p_e2e ranking be 95%+ as good as the full stack for SatRank's specific use case (small short intents, structured catalog)? (b) Is SPLADE / learned sparse retrieval a better fit than dense embeddings for this scale (avoids both BM25 fragility and dense compute cost)? (c) Hand-crafted features (BM25 score + category match + capability TFIDF + p_e2e) fed to a tiny gradient boosted model — could that beat embeddings on this task? (d) Have you considered LLM-as-reranker on top-3 only as the simplest/best ranking strategy for sub-10 qps regimes?"
+    },
+    {
+      "id": "L5_ops_risk",
+      "name": "Operations risk & rollback",
+      "question": "List concrete production-ops risks the plan creates and how to mitigate each : (1) Docker image bloat (+120MB) and build time, (2) native binding compile failure on Alpine vs Debian base, (3) cold-start latency (model load), (4) ANN index rebuild on catalogue update, (5) embedding-text-hash mismatch causing stale embeddings, (6) memory pressure if catalog grows faster than expected, (7) silent quality regression (embeddings degrade without alarm), (8) rollback strategy if v74 schema causes Postgres issues. What is the ops cost per quarter (manual oversight) of this stack vs BM25-only or vs SaaS embedding API? What monitoring and alerts should ship on day 1?"
+    },
+    {
+      "id": "L6_lightning_pur_alignment",
+      "name": "Alignment with Lightning-pur autonomy thesis",
+      "question": "SatRank's thesis is 'trust layer for autonomous agents on Lightning, full self-hosted, no external dependencies in the critical path'. Does the proposal align? Specifically: (a) Is using a HuggingFace-hosted model (bge-small) downloaded once at build time acceptable? (b) Does in-process onnxruntime-node introduce hidden coupling to the model author's training data biases? (c) Is the capability-backfill via Anthropic API a one-shot operation that doesn't violate the no-external-dep principle (because it runs once, output is in our DB, no runtime call)? (d) Is there any semantic-rank approach that better embodies the 'sovereign infra' identity — e.g. embeddings trained on public Bitcoin/Lightning corpora, or community-trained model with reproducible weights? (e) For the agent-economy use case (an AI agent calling SatRank), does it matter whether the ranking is 'understandable' (audit log of why endpoint X was chosen) — and does dense embedding ranking score lower on this dimension than BM25 + explicit features?"
+    }
+  ]
+}
