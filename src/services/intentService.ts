@@ -440,7 +440,14 @@ export class IntentService {
   ): Promise<EnrichedCandidate[]> {
     const ranker = this.deps.intentRanker;
     if (!ranker) return enriched;
-    const text = (req.text ?? '').trim();
+    // Phase 12.4 — derive a ranking text. When the agent supplied free
+    // text, use it as-is. Otherwise synthesize from category + keywords
+    // so BM25 still has signal to work with. This makes the new ranker
+    // active on every /api/intent call without breaking the existing
+    // protocol (callers that don't know about intent.text still benefit).
+    const explicitText = (req.text ?? '').trim();
+    const synthText = [req.category, ...(req.keywords ?? [])].filter(s => typeof s === 'string' && s.length > 0).join(' ').trim();
+    const text = explicitText.length > 0 ? explicitText : synthText;
     if (text.length === 0) return enriched;
     if (enriched.length <= 1) return enriched;
     try {
