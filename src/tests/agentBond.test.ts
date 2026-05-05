@@ -195,7 +195,7 @@ describe('Phase 11B.1 — AgentBondService.createDeposit', () => {
     await pool.query('TRUNCATE agent_bonds, agent_bond_pending_deposits RESTART IDENTITY CASCADE');
   });
 
-  it('happy path : invoice issued + bond row created', async () => {
+  it('happy path : invoice issued + bond row created LOCKED + pending deposit row', async () => {
     const svc = new AgentBondService({
       bondRepo: repo,
       holdInvoiceService: holdInvoiceServiceStub,
@@ -208,7 +208,15 @@ describe('Phase 11B.1 — AgentBondService.createDeposit', () => {
     expect(result.payment_request).toMatch(/^lnbc/);
     const bond = await repo.findById(result.bond_id);
     expect(bond!.bond_committed_sats).toBe(5000);
+    // Phase 11B.6 — bond is locked (pending = committed) until settlement.
+    expect(bond!.bond_pending_sats).toBe(5000);
+    expect(await repo.availableForAgent(PUBKEY)).toBe(0);
     expect(bond!.releasable_at).toBe(NOW + 14 * 86400);
+    // Pending deposit row contains the preimage the watcher needs.
+    const pending = await repo.findPendingByPaymentHash(result.payment_hash);
+    expect(pending).toBeTruthy();
+    expect(pending!.preimage_hex).toBe('p'.repeat(64));
+    expect(pending!.amount_sats).toBe(5000);
   });
 
   it('rejects bond_sats below MIN_BOND_SATS=1000', async () => {
@@ -256,6 +264,208 @@ describe('Phase 11B.1 — AgentBondService.createDeposit', () => {
     expect((await noLnd.createDeposit({ agent_pubkey: PUBKEY, bond_sats: 5000 })).status).toBe('lnd_unavailable');
     const downLnd = new AgentBondService({ bondRepo: repo, holdInvoiceService: lndUnavailableStub, now: () => NOW });
     expect((await downLnd.createDeposit({ agent_pubkey: PUBKEY, bond_sats: 5000 })).status).toBe('lnd_unavailable');
+  });
+});
+
+describe('Phase 11B.6 — AgentBondService.runSettlementCycle', () => {
+  let repo: AgentBondRepository;
+
+  beforeAll(async () => {
+    testDb = await setupTestPool();
+    pool = testDb.pool;
+    repo = new AgentBondRepository(pool);
+  });
+  afterAll(async () => { await teardownTestPool(testDb); });
+  beforeEach(async () => {
+    await pool.query('TRUNCATE agent_bonds, agent_bond_pending_deposits RESTART IDENTITY CASCADE');
+  });
+
+  function makeLndStub(opts: {
+    states?: Record<string, 'OPEN' | 'ACCEPTED' | 'SETTLED' | 'CANCELED' | 'EXPIRED' | 'UNKNOWN'>;
+    settleThrows?: Error;
+  } = {}) {
+    const settled: string[] = [];
+    const canceled: string[] = [];
+    return {
+      settled,
+      canceled,
+      stub: {
+        isAvailable() { return true; },
+        async addHoldInvoice() { throw new Error('not used'); },
+        async lookupState(hash: string) { return { state: opts.states?.[hash] ?? 'OPEN', amt_paid_sat: 0 }; },
+        async settle(preimage: string) {
+          if (opts.settleThrows) throw opts.settleThrows;
+          settled.push(preimage);
+        },
+        async cancel(hash: string) { canceled.push(hash); },
+      } as unknown as ConstructorParameters<typeof AgentBondService>[0]['holdInvoiceService'],
+    };
+  }
+
+  async function seedDeposit(amount: number = 5000, paymentHashHex: string = 'h'.repeat(64)) {
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: {
+        isAvailable() { return true; },
+        async addHoldInvoice() {
+          return { payment_request: 'lnbc1nStub', payment_hash: paymentHashHex, preimage: 'p'.repeat(64) };
+        },
+      } as unknown as ConstructorParameters<typeof AgentBondService>[0]['holdInvoiceService'],
+      now: () => NOW,
+    });
+    const r = await svc.createDeposit({ agent_pubkey: PUBKEY, bond_sats: amount });
+    if (r.status !== 'invoice_issued') throw new Error('seed failed');
+    return r;
+  }
+
+  it('ACCEPTED → settle preimage + unlock bond_pending_sats', async () => {
+    const dep = await seedDeposit();
+    const lnd = makeLndStub({ states: { [dep.payment_hash]: 'ACCEPTED' } });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.unlocked).toBe(1);
+    expect(lnd.settled).toEqual(['p'.repeat(64)]);
+    expect(await repo.availableForAgent(PUBKEY)).toBe(5000);
+    const pending = await repo.findPendingByPaymentHash(dep.payment_hash);
+    expect(pending!.settled_at).toBe(NOW + 60);
+  });
+
+  it('CANCELED → bond stays locked, pending marked failed', async () => {
+    const dep = await seedDeposit();
+    const lnd = makeLndStub({ states: { [dep.payment_hash]: 'CANCELED' } });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.failed).toBe(1);
+    expect(lnd.settled).toEqual([]);
+    expect(await repo.availableForAgent(PUBKEY)).toBe(0); // still locked
+    const pending = await repo.findPendingByPaymentHash(dep.payment_hash);
+    expect(pending!.settled_at).toBe(NOW + 60);
+  });
+
+  it('EXPIRED → bond stays locked, pending settled', async () => {
+    const dep = await seedDeposit();
+    const lnd = makeLndStub({ states: { [dep.payment_hash]: 'EXPIRED' } });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.failed).toBe(1);
+    expect(await repo.availableForAgent(PUBKEY)).toBe(0);
+  });
+
+  it('OPEN past expires_at → cancel on LND, mark failed', async () => {
+    const dep = await seedDeposit();
+    const lnd = makeLndStub({ states: { [dep.payment_hash]: 'OPEN' } });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 7200, // past 1h expiry
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.failed).toBe(1);
+    expect(lnd.canceled).toEqual([dep.payment_hash]);
+    expect(await repo.availableForAgent(PUBKEY)).toBe(0);
+  });
+
+  it('OPEN before expires_at → skipped, retry next tick', async () => {
+    const dep = await seedDeposit();
+    const lnd = makeLndStub({ states: { [dep.payment_hash]: 'OPEN' } });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60, // well within 1h expiry
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.skipped).toBe(1);
+    const pending = await repo.findPendingByPaymentHash(dep.payment_hash);
+    expect(pending!.settled_at).toBeNull(); // not yet
+  });
+
+  it('settle throws InvoiceAlreadyCanceled → mark failed', async () => {
+    const dep = await seedDeposit();
+    const { InvoiceAlreadyCanceledError } = await import('../services/lndHoldInvoiceService');
+    const lnd = makeLndStub({
+      states: { [dep.payment_hash]: 'ACCEPTED' },
+      settleThrows: new InvoiceAlreadyCanceledError('p'.repeat(8)),
+    });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.failed).toBe(1);
+    expect(await repo.availableForAgent(PUBKEY)).toBe(0);
+  });
+
+  it('settle throws other error → skipped (retry next tick)', async () => {
+    const dep = await seedDeposit();
+    const lnd = makeLndStub({
+      states: { [dep.payment_hash]: 'ACCEPTED' },
+      settleThrows: new Error('lnd transient'),
+    });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.skipped).toBe(1);
+    const pending = await repo.findPendingByPaymentHash(dep.payment_hash);
+    expect(pending!.settled_at).toBeNull(); // retry
+  });
+
+  it('SETTLED out-of-band → unlocks (defensive)', async () => {
+    const dep = await seedDeposit();
+    const lnd = makeLndStub({ states: { [dep.payment_hash]: 'SETTLED' } });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.unlocked).toBe(1);
+    expect(await repo.availableForAgent(PUBKEY)).toBe(5000);
+  });
+
+  it('runSettlementCycle handles multiple deposits in one tick', async () => {
+    await seedDeposit(1000, 'a'.repeat(64));
+    await seedDeposit(2000, 'b'.repeat(64));
+    const lnd = makeLndStub({
+      states: {
+        ['a'.repeat(64)]: 'ACCEPTED',
+        ['b'.repeat(64)]: 'CANCELED',
+      },
+    });
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: lnd.stub,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out.unlocked).toBe(1);
+    expect(out.failed).toBe(1);
+  });
+
+  it('without LND service available, no-op (returns 0/0/0)', async () => {
+    await seedDeposit();
+    const svc = new AgentBondService({
+      bondRepo: repo,
+      holdInvoiceService: undefined,
+      now: () => NOW + 60,
+    });
+    const out = await svc.runSettlementCycle();
+    expect(out).toEqual({ unlocked: 0, failed: 0, skipped: 0 });
   });
 });
 

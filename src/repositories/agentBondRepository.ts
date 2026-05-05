@@ -36,6 +36,12 @@ export interface CreateAgentBondInput {
   min_floor_sats?: number;
   releasable_at: number;
   created_at: number;
+  /** Phase 11B.6 — initial pending lock. When the bond is created BEFORE
+   *  the agent pays the hold-invoice, we set bond_pending_sats =
+   *  bond_committed_sats so the available capacity is 0 until the
+   *  settlement watcher unlocks it via releasePending. Defaults to 0 for
+   *  legacy callers (existing P11B.1 tests). */
+  bond_pending_sats?: number;
 }
 
 export interface AgentBondPendingDeposit {
@@ -47,6 +53,7 @@ export interface AgentBondPendingDeposit {
   created_at: number;
   expires_at: number;
   settled_at: number | null;
+  preimage_hex: string | null;
 }
 
 export class AgentBondRepository {
@@ -55,20 +62,31 @@ export class AgentBondRepository {
   async create(input: CreateAgentBondInput): Promise<AgentBond> {
     const { rows } = await this.db.query<AgentBondRow>(
       `INSERT INTO agent_bonds
-        (agent_pubkey, bond_payment_hash, bond_committed_sats, min_floor_sats,
-         created_at, releasable_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+        (agent_pubkey, bond_payment_hash, bond_committed_sats, bond_pending_sats,
+         min_floor_sats, created_at, releasable_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
         input.agent_pubkey,
         input.bond_payment_hash,
         input.bond_committed_sats,
+        input.bond_pending_sats ?? 0,
         input.min_floor_sats ?? 100,
         input.created_at,
         input.releasable_at,
       ],
     );
     return rowToBond(rows[0]);
+  }
+
+  /** Phase 11B.6 — find the bond row created by createDeposit so the
+   *  settlement watcher can flip pending → released after settle on LND. */
+  async findByPaymentHash(paymentHash: string): Promise<AgentBond | null> {
+    const { rows } = await this.db.query<AgentBondRow>(
+      'SELECT * FROM agent_bonds WHERE bond_payment_hash = $1',
+      [paymentHash],
+    );
+    return rows[0] ? rowToBond(rows[0]) : null;
   }
 
   async findById(bondId: number): Promise<AgentBond | null> {
@@ -190,12 +208,13 @@ export class AgentBondRepository {
     amount_sats: number;
     created_at: number;
     expires_at: number;
+    preimage_hex?: string;
   }): Promise<AgentBondPendingDeposit> {
     const { rows } = await this.db.query<PendingDepositRow>(
       `INSERT INTO agent_bond_pending_deposits
         (agent_pubkey, payment_hash, payment_request, amount_sats,
-         created_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         created_at, expires_at, preimage_hex)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
         input.agent_pubkey,
@@ -204,9 +223,23 @@ export class AgentBondRepository {
         input.amount_sats,
         input.created_at,
         input.expires_at,
+        input.preimage_hex ?? null,
       ],
     );
     return rowToPending(rows[0]);
+  }
+
+  /** Phase 11B.6 — settlement watcher : every unsettled deposit, oldest
+   *  first, capped to LIMIT so a single cron tick stays cheap. */
+  async findUnsettledPendingDeposits(limit: number): Promise<AgentBondPendingDeposit[]> {
+    const { rows } = await this.db.query<PendingDepositRow>(
+      `SELECT * FROM agent_bond_pending_deposits
+        WHERE settled_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT $1`,
+      [limit],
+    );
+    return rows.map(rowToPending);
   }
 
   async findPendingByPaymentHash(paymentHash: string): Promise<AgentBondPendingDeposit | null> {
@@ -252,6 +285,7 @@ interface PendingDepositRow {
   created_at: string | number;
   expires_at: string | number;
   settled_at: string | number | null;
+  preimage_hex: string | null;
 }
 
 function rowToBond(r: AgentBondRow): AgentBond {
@@ -281,5 +315,6 @@ function rowToPending(r: PendingDepositRow): AgentBondPendingDeposit {
     created_at: Number(r.created_at),
     expires_at: Number(r.expires_at),
     settled_at: r.settled_at != null ? Number(r.settled_at) : null,
+    preimage_hex: r.preimage_hex,
   };
 }

@@ -651,6 +651,20 @@ export function createApp() {
           'OperatorBondService: findUnderfundedOperators threw',
         );
       }
+      // Phase 11B.6 (2026-05-05) — agent bond settlement watcher. Polls
+      // LND for pending deposit invoices ; on ACCEPTED reveals the
+      // preimage to claim the HTLC + unlocks the bond_pending_sats lock
+      // (createDeposit creates the bond LOCKED so phantom bonds without
+      // payment grant zero tier benefit). On CANCELED/EXPIRED leaves the
+      // bond locked and marks the deposit settled-as-failed.
+      try {
+        await agentBondService.runSettlementCycle();
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'AgentBondService: settlement cycle threw',
+        );
+      }
       // Phase 11B.4 (2026-05-04) — agent slashing pass. Pulls a narrow set
       // of red-flag candidates from the reputation table (score < 0.1 AND
       // ≥10 observations AND profile updated in the past 7 days) and feeds
