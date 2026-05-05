@@ -357,7 +357,7 @@ describe('Phase 5 — median_latency_ms fallback', async () => {
  *  a second boundary on fast CI runners. Recursive: strips any key matching
  *  /(?:age|elapsed)_?sec|_age$|_at_iso$|generated_at|asOf|as_of/i at any
  *  depth, plus any value that looks like a recent epoch second/ms. */
-const VOLATILE_KEY_RE = /(?:age|elapsed)_?sec|_age$|_at_iso$|generated_at|asOf|as_of/i;
+const VOLATILE_KEY_RE = /(?:age|elapsed)_?sec|_age$|_at_iso$|generated_at|asOf|as_of|computedAt/i;
 function stripVolatileEndpointFields(body: unknown): unknown {
   if (Array.isArray(body)) return body.map(stripVolatileEndpointFields);
   if (!body || typeof body !== 'object') return body;
