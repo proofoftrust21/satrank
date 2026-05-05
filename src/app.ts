@@ -63,6 +63,8 @@ import {
   buildAnthropicRerankAdapter,
   type IntentRanker,
 } from './services/intentRanker';
+import { GoldenCanaryService, type GoldenPair } from './services/goldenCanaryService';
+import * as fsSync from 'node:fs';
 
 /** Phase 12.4 — populate the in-memory BM25 inverted index from the
  *  current catalogue. Run once at boot and on a 5min cron tick.
@@ -407,6 +409,53 @@ export function createApp() {
     intentRanker,
   });
   const intentController = new IntentController(intentService);
+
+  // Phase 12.5 (2026-05-05) — golden-set canary. Audit non-negotiable
+  // for shipping a ranking layer ; alerts when recall@K drops below
+  // GOLDEN_CANARY_THRESHOLD (default 0.7). Cron runs every
+  // GOLDEN_CANARY_INTERVAL_MS (default 5min). Loaded from
+  // scripts/sim/golden-set.json at boot.
+  let goldenCanaryService: GoldenCanaryService | undefined;
+  try {
+    const goldenPath = path.resolve(__dirname, '..', 'scripts', 'sim', 'golden-set.json');
+    const goldenRaw = fsSync.existsSync(goldenPath) ? fsSync.readFileSync(goldenPath, 'utf8') : '';
+    if (goldenRaw) {
+      const parsed = JSON.parse(goldenRaw) as { pairs?: GoldenPair[] };
+      const pairs = parsed.pairs ?? [];
+      if (pairs.length > 0) {
+        goldenCanaryService = new GoldenCanaryService({
+          intentService,
+          pairs,
+          alertThreshold: Number(process.env.GOLDEN_CANARY_THRESHOLD ?? 0.7),
+        });
+        const intervalMs = Number(process.env.GOLDEN_CANARY_INTERVAL_MS ?? 5 * 60 * 1000);
+        // Run once at boot (after BM25 first build settles, ~1s).
+        setTimeout(() => {
+          goldenCanaryService?.run().catch(err => {
+            logger.warn(
+              { error: err instanceof Error ? err.message : String(err) },
+              'GoldenCanary: initial run threw',
+            );
+          });
+        }, 5_000);
+        const canaryTimer = setInterval(() => {
+          goldenCanaryService?.run().catch(err => {
+            logger.warn(
+              { error: err instanceof Error ? err.message : String(err) },
+              'GoldenCanary: scheduled run threw',
+            );
+          });
+        }, intervalMs);
+        canaryTimer.unref();
+        logger.info({ pairs: pairs.length, intervalMs }, 'GoldenCanary: enabled (Phase 12.5)');
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      'GoldenCanary: failed to load golden-set.json (canary disabled)',
+    );
+  }
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
   const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
   const reportStatsController = new ReportStatsController(pool, reportBonusRepo, () => reportBonusService.isEnabled());
@@ -1195,6 +1244,22 @@ export function createApp() {
   // POST is NIP-98 by the operator owning the bond.
   api.post('/operator/claim/:claim_id/dispute', discoveryRateLimit, claimController.fileDispute);
   api.get('/oracle/claims', discoveryRateLimit, claimController.oracleClaims);
+  // Phase 12.5 (2026-05-05) — Golden canary status (public read).
+  // Returns the last canary measurement so ops can monitor ranker
+  // recall@K from outside the box. 404 when canary is not enabled
+  // (no golden-set.json present).
+  api.get('/oracle/canary-status', discoveryRateLimit, (_req, res) => {
+    if (!goldenCanaryService) {
+      res.status(404).json({ error: 'canary_disabled', message: 'GoldenCanary not enabled (no golden-set.json or empty pairs)' });
+      return;
+    }
+    const last = goldenCanaryService.getLastResult();
+    if (!last) {
+      res.status(202).json({ status: 'pending', message: 'canary has not run yet — boot delay or scheduled tick not fired' });
+      return;
+    }
+    res.status(200).json({ data: last });
+  });
   // Phase 10 (2026-05-04) — Operator-side SDK self-registration + dashboard.
   api.post('/operator/register-endpoint', discoveryRateLimit, operatorRegistrationController.register);
   api.get('/operator/:pubkey/dashboard', discoveryRateLimit, operatorRegistrationController.dashboard);
