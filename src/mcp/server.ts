@@ -94,6 +94,39 @@ async function fetchWithCap(
   }
 }
 
+/** AEPS §8 helper — GET an AEPS endpoint and surface as MCP tool result.
+ *  Same body-cap + timeout discipline as fetchWithCap. */
+async function proxyAepsGet(
+  url: string,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const resp = await fetchWithCap(
+      url,
+      { method: 'GET', headers: { 'User-Agent': 'SatRank-MCP/1.0' } },
+      MAX_INTENT_RESPONSE_BYTES,
+      INTENT_FETCH_TIMEOUT_MS,
+    );
+    if (!resp.ok) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: 'aeps_request_failed', status: resp.status, body: resp.body }, null, 2) }],
+        isError: true,
+      };
+    }
+    if (resp.truncated) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: 'response_too_large', max_bytes: MAX_INTENT_RESPONSE_BYTES }, null, 2) }],
+        isError: true,
+      };
+    }
+    return { content: [{ type: 'text', text: resp.body }] };
+  } catch (err) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: 'network_error', detail: err instanceof Error ? err.message : String(err) }, null, 2) }],
+      isError: true,
+    };
+  }
+}
+
 // Zod validation schemas for MCP args (same rules as HTTP controllers)
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/, 'Expected SHA256 hex (64 chars)');
 // Accepts both 64-char SHA256 hash and 66-char Lightning compressed pubkey
@@ -176,6 +209,23 @@ const reportArgs = z.object({
 );
 const getProfileArgs = z.object({
   id: identifierSchema,
+});
+
+// AEPS §8 (2026-05-07) — agent-facing tools for Bitcoin L1 trust root.
+// Each tool proxies the corresponding /api/aeps/* HTTP endpoint and returns
+// the canonical JSON the operator's HTTP API would have returned. Lets MCP
+// agents (Claude Desktop, Cursor) verify evidence inclusion without raw HTTP.
+const aepsDailyAnchorArgs = z.object({
+  day_utc: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'day_utc must be YYYY-MM-DD'),
+});
+const aepsRecentAnchorsArgs = z.object({
+  limit: z.number().int().min(1).max(366).optional(),
+});
+const aepsInclusionProofArgs = z.object({
+  receipt_id: z.number().int().positive(),
+});
+const aepsEvidenceReceiptArgs = z.object({
+  job_id: z.string().min(1).max(128),
 });
 const submitAttestationArgs = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
@@ -443,6 +493,49 @@ async function main() {
             limit: { type: 'number', minimum: 1, maximum: 20, description: 'Number of candidates returned (default: 5)' },
           },
           required: ['category'],
+        },
+      },
+      {
+        name: 'aeps.daily_anchor',
+        description: 'AEPS §8 — Fetch the daily Merkle anchor for a UTC day. Returns the operator pubkey, root_hex, receipt_count, and L1 broadcast info if present. Agents and auditors verify receipt inclusion against the root_hex returned here.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            day_utc: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'UTC day in YYYY-MM-DD format' },
+          },
+          required: ['day_utc'],
+        },
+      },
+      {
+        name: 'aeps.recent_anchors',
+        description: 'AEPS §8 — List the most recent N daily Merkle anchors for the operator. Default 30, max 366. Used by observers monitoring for anchor freshness or fork detection.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            limit: { type: 'number', minimum: 1, maximum: 366, default: 30, description: 'Number of anchors to return' },
+          },
+        },
+      },
+      {
+        name: 'aeps.inclusion_proof',
+        description: 'AEPS §8 — Build the RFC 6962 audit path for a single evidence receipt against the day-Merkle root. Returns root_hex, audit_path[], leaf_index, tree_size. Verifiers feed these to the AEPS Merkle verifier (TS or Rust impl) plus the L1 anchor txid to confirm the receipt is committed on-chain.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            receipt_id: { type: 'integer', minimum: 1, description: 'evidence_receipts.receipt_id (BIGSERIAL)' },
+          },
+          required: ['receipt_id'],
+        },
+      },
+      {
+        name: 'aeps.evidence_receipt',
+        description: 'AEPS §8 — Fetch the Ed25519-signed evidence receipt for a fulfilled job. Returns the canonical-JSON payload + signature + operator pubkey. Used by agents to obtain the proof of payment + delivery for a successful /api/fulfill call.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            job_id: { type: 'string', minLength: 1, maxLength: 128, description: 'fulfill_jobs.job_id' },
+          },
+          required: ['job_id'],
         },
       },
       {
@@ -734,6 +827,46 @@ async function main() {
           } catch (err) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: 'network_error', detail: err instanceof Error ? err.message : String(err) }, null, 2) }], isError: true };
           }
+        }
+
+        case 'aeps.daily_anchor': {
+          const parsed = aepsDailyAnchorArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL(`/api/aeps/anchor/${parsed.data.day_utc}`, SATRANK_API_BASE);
+          return await proxyAepsGet(url.toString());
+        }
+
+        case 'aeps.recent_anchors': {
+          const parsed = aepsRecentAnchorsArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL('/api/aeps/anchor/recent', SATRANK_API_BASE);
+          if (parsed.data.limit) url.searchParams.set('limit', String(parsed.data.limit));
+          return await proxyAepsGet(url.toString());
+        }
+
+        case 'aeps.inclusion_proof': {
+          const parsed = aepsInclusionProofArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL(`/api/aeps/proof/${parsed.data.receipt_id}`, SATRANK_API_BASE);
+          return await proxyAepsGet(url.toString());
+        }
+
+        case 'aeps.evidence_receipt': {
+          const parsed = aepsEvidenceReceiptArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          // Reuse the existing /api/fulfill/:job_id/evidence endpoint that
+          // returns the Ed25519-signed receipt. The MCP tool surfaces it under
+          // the AEPS namespace so agents discover it as part of the standard.
+          const url = new URL(`/api/fulfill/${encodeURIComponent(parsed.data.job_id)}/evidence`, SATRANK_API_BASE);
+          return await proxyAepsGet(url.toString());
         }
 
         case 'verify_assertion': {
