@@ -26,6 +26,16 @@ The product exposes `POST /api/intent`: it takes a natural-language intent and r
 
 SatRank runs the full stack: a Bitcoin full node (no Neutrino, no third-party gossip), its own LND, its own Nostr identity, its own probe fleet, its own relay-publishing pipeline. The economic supportability is publicly verifiable at `GET /api/oracle/budget` (revenue / spending / coverage_ratio).
 
+## Protocol: AEPS
+
+The protocol behind SatRank is **AEPS — Agent Evidence and Payment Standard**, a Lightning-pure, Bitcoin-anchored, MIT-licensed open standard for autonomous agents to discover, pay, and obtain cryptographic proof of fulfillment from any L402-compatible API.
+
+- **Spec:** [`spec/AEPS-whitepaper.md`](./spec/AEPS-whitepaper.md) — single whitepaper, ~9 pages, falsifiable, executable.
+- **Process:** [`spec/PROCESS.md`](./spec/PROCESS.md) — forks, not votes. No foundation, no governance protocol, no rent extraction.
+- **Reference impls:** TypeScript (this codebase, `src/`) and Rust (`apps/aeps-node-rs/`). Both required for v0.1 ratification.
+
+There is no AEPS Foundation. There is no AEPS Inc. SatRank is the first reference implementation. Anyone may run a node. Anyone may fork.
+
 ## Quick start
 
 Install the SDK, hand it a wallet, describe the need.
