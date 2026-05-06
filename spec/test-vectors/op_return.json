@@ -1,0 +1,34 @@
+{
+  "$schema": "AEPS conformance vectors v0.1",
+  "description": "AEPS §8.3 OP_RETURN payload format. 49 bytes : tag(5) || operator_pubkey[0..8] || day_le(4) || root(32). day_le is days-since-2026-01-01 UTC, 4-byte little-endian.",
+  "vectors": [
+    {
+      "name": "epoch day, op=aa*32, root=cd*32",
+      "operator_pubkey_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "day_utc": "2026-01-01",
+      "root_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "expected_payload_hex": "4145505331aaaaaaaaaaaaaaaa00000000cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    },
+    {
+      "name": "2026-05-07, op=ab*32, root=cd*32",
+      "operator_pubkey_hex": "abababababababababababababababababababababababababababababababab",
+      "day_utc": "2026-05-07",
+      "root_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "expected_payload_hex": "4145505331abababababababab7e000000cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    },
+    {
+      "name": "2026-12-31, op=11*32, root=22*32",
+      "operator_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "day_utc": "2026-12-31",
+      "root_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "expected_payload_hex": "414550533111111111111111116c0100002222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "name": "2027-01-01, op=ff*32, root=00*32",
+      "operator_pubkey_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "day_utc": "2027-01-01",
+      "root_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_payload_hex": "4145505331ffffffffffffffff6d0100000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

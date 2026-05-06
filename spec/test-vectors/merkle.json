@@ -1,0 +1,45 @@
+{
+  "$schema": "AEPS conformance vectors v0.1",
+  "description": "RFC 6962 Merkle root over an ordered list of leaves. Leaf prefix 0x00, node prefix 0x01. Leaves are hex-decoded, root is the SHA-256 hex output.",
+  "vectors": [
+    {
+      "name": "empty tree",
+      "leaves_hex": [],
+      "expected_root_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "single leaf 0xaa",
+      "leaves_hex": ["aa"],
+      "expected_root_hex": "d2c79d9973bfdaa70e406338d4f4b77e4941dbf90fa84bbbe6769808587528ad"
+    },
+    {
+      "name": "two leaves [aa, bb]",
+      "leaves_hex": ["aa", "bb"],
+      "expected_root_hex": "3a6c27fde711243b24095e21cfa3ab2fd6c4e186412e526b2684850209247eca"
+    },
+    {
+      "name": "three leaves [aa, bb, cc] — split 2|1",
+      "leaves_hex": ["aa", "bb", "cc"],
+      "expected_root_hex": "b0735f9ed75ac2b87ef88a0e62de2d7f86cdf1797f3653e797664f0b0172484a"
+    },
+    {
+      "name": "five 1-byte leaves [00..04]",
+      "leaves_hex": ["00", "01", "02", "03", "04"],
+      "expected_root_hex": "b855b42d6c30f5b087e05266783fbd6e394f7b926013ccaa67700a8b0c5a596f"
+    },
+    {
+      "name": "eight 32-byte leaves (cd-prefixed, varying)",
+      "leaves_hex": [
+        "cd00cd00cd00cd00cd00cd00cd00cd00cd00cd00cd00cd00cd00cd00cd00cd00",
+        "cd11cd11cd11cd11cd11cd11cd11cd11cd11cd11cd11cd11cd11cd11cd11cd11",
+        "cd22cd22cd22cd22cd22cd22cd22cd22cd22cd22cd22cd22cd22cd22cd22cd22",
+        "cd33cd33cd33cd33cd33cd33cd33cd33cd33cd33cd33cd33cd33cd33cd33cd33",
+        "cd44cd44cd44cd44cd44cd44cd44cd44cd44cd44cd44cd44cd44cd44cd44cd44",
+        "cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55",
+        "cd66cd66cd66cd66cd66cd66cd66cd66cd66cd66cd66cd66cd66cd66cd66cd66",
+        "cd77cd77cd77cd77cd77cd77cd77cd77cd77cd77cd77cd77cd77cd77cd77cd77"
+      ],
+      "expected_root_hex": "c53245744b667923a7d9e28d18b56f4e82ce9a235c178b1477dbbc34842ccde6"
+    }
+  ]
+}
