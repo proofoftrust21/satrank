@@ -114,6 +114,12 @@ export interface ServiceEndpoint {
   deprecated: boolean;
   deprecated_reason: string | null;
   consecutive_404_count: number;
+  /** Phase 12.6 (2026-05-06) — operator quarantine via consecutive 5xx.
+   *  Same shape as consecutive_404_count : auto-deprecate when the
+   *  threshold (DEPRECATED_5XX_THRESHOLD = 3 in serviceHealthCrawler)
+   *  is reached, auto-revert when a probe returns 2xx/3xx. Drives the
+   *  Sim 15 a3 fix (dead Cloudflare 502 host that kept costing sats). */
+  consecutive_5xx_count: number;
   /** Vague 3 Phase 3 — every source that has attested this endpoint, deduped.
    *  The legacy scalar `source` carries the highest-trust attribution; `sources`
    *  is the full set, used by /api/health to surface diversification and by the
@@ -687,6 +693,47 @@ export class ServiceEndpointRepository {
     );
     if (rows.length === 0) return { count: 0, deprecated: false };
     return { count: rows[0].consecutive_404_count, deprecated: rows[0].deprecated };
+  }
+
+  /** Phase 12.6 (2026-05-06) — bump consecutive_5xx_count and flag
+   *  deprecated when the threshold is reached. Same shape as record404.
+   *  deprecated_reason = '5xx_persistent' so clear5xxStreak knows which
+   *  rows it owns (404_persistent rows stay frozen until 404 clears). */
+  async record5xx(url: string, threshold: number): Promise<{ count: number; deprecated: boolean }> {
+    const { rows } = await this.db.query<{ consecutive_5xx_count: number; deprecated: boolean }>(
+      // Only PROMOTE to deprecated, never demote. If a prior reason
+      // (e.g. '404_persistent') already deprecated the row, it stays
+      // deprecated regardless of the 5xx streak. The dedicated
+      // clear5xxStreak path is the only one that can lift a
+      // '5xx_persistent' deprecation.
+      `UPDATE service_endpoints
+         SET consecutive_5xx_count = consecutive_5xx_count + 1,
+             deprecated = (consecutive_5xx_count + 1 >= $2 OR deprecated),
+             deprecated_reason = CASE
+               WHEN consecutive_5xx_count + 1 >= $2 AND deprecated_reason IS NULL THEN '5xx_persistent'
+               ELSE deprecated_reason
+             END
+       WHERE url = $1
+       RETURNING consecutive_5xx_count, deprecated`,
+      [url, threshold],
+    );
+    if (rows.length === 0) return { count: 0, deprecated: false };
+    return { count: rows[0].consecutive_5xx_count, deprecated: rows[0].deprecated };
+  }
+
+  /** Phase 12.6 — reset the 5xx streak when the endpoint recovers. Only
+   *  clears the deprecated flag when reason was '5xx_persistent' so
+   *  404-deprecated rows stay frozen. */
+  async clear5xxStreak(url: string): Promise<void> {
+    await this.db.query(
+      `UPDATE service_endpoints
+         SET consecutive_5xx_count = 0,
+             deprecated = CASE WHEN deprecated_reason = '5xx_persistent' THEN FALSE ELSE deprecated END,
+             deprecated_reason = CASE WHEN deprecated_reason = '5xx_persistent' THEN NULL ELSE deprecated_reason END
+       WHERE url = $1
+         AND consecutive_5xx_count > 0`,
+      [url],
+    );
   }
 
   /** Vague 3 Phase 2.6 — reset the 404 streak and clear deprecated when the

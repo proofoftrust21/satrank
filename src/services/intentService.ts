@@ -111,19 +111,50 @@ const CATEGORY_SYNONYMS: Record<string, string[]> = {
   exchange: ['data/finance'],
   search: ['tools/search', 'search'],
   'data/news': ['data'],
+  // Phase 12.7 (2026-05-06) — compound categories surfaced in Sim 15
+  // verdicts (a3 MarketIntelligenceAI HARMFUL : "energy/intelligence
+  // returned zero candidates — synonym/canonical mapping is missing
+  // for compound categories the hint sheet explicitly suggested").
+  // Map them to closest-fit canonical buckets that actually have rows
+  // in the catalogue.
+  'energy/intelligence': ['data/finance', 'data/government', 'data'],
+  'energy': ['data/finance', 'data'],
+  intelligence: ['data/finance', 'data'],
+  'data/energy': ['data', 'data/finance'],
+  'data/intelligence': ['data', 'data/finance'],
 };
 
 /** Sim 9 Fix 3 — return ordered list of categories to try for a given user
  *  input. The exact input goes first (preserves backwards compat for clients
- *  that already use canonical taxonomy), then synonym alternatives. */
+ *  that already use canonical taxonomy), then synonym alternatives, then
+ *  Phase 12.7 (2026-05-06) auto-fallback for unknown compound categories
+ *  of the form "A/B" : we try data/A, data/B, A, B, then 'data' as the
+ *  ultimate catch. resolveIntent's first-non-empty-pool-wins logic means
+ *  the real cost of extra candidates is zero. */
 export function expandCategory(input: string): string[] {
   const lc = input.toLowerCase();
   const synonyms = CATEGORY_SYNONYMS[lc] ?? [];
-  // Dedupe while preserving order.
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const c of [input, ...synonyms]) {
-    if (!seen.has(c)) { seen.add(c); out.push(c); }
+  const push = (c: string): void => {
+    const k = c.toLowerCase();
+    if (!seen.has(k)) { seen.add(k); out.push(c); }
+  };
+  push(input);
+  for (const c of synonyms) push(c);
+  // Phase 12.7 auto-fallback for unknown compound categories.
+  if (lc.includes('/') && !CATEGORY_SYNONYMS[lc]) {
+    const parts = lc.split('/');
+    if (parts.length === 2) {
+      const [a, b] = parts;
+      if (a && b) {
+        push(`data/${b}`);
+        push(`data/${a}`);
+        push(b);
+        push(a);
+      }
+    }
+    push('data');
   }
   return out;
 }

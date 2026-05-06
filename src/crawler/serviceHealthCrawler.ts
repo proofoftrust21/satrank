@@ -27,6 +27,11 @@ import { parseL402Challenge } from '../utils/l402HeaderParser';
 
 const CHECK_RATE_MS = 200; // 5 checks/sec
 const FETCH_TIMEOUT_MS = 3000;
+/** Phase 12.6 (2026-05-06) — quarantine threshold. After N consecutive
+ *  5xx returns the endpoint is auto-deprecated (`deprecated_reason =
+ *  '5xx_persistent'`) and excluded from /api/intent. Mirror v44 fossile
+ *  404 pattern. Tunable via env without migration. */
+const DEPRECATED_5XX_THRESHOLD = parseInt(process.env.DEPRECATED_5XX_THRESHOLD ?? '3', 10);
 
 const TIER_LIMITS: Record<ProbeTier, number> = {
   hot: 200,
@@ -129,6 +134,41 @@ export class ServiceHealthCrawler {
       await this.repo.upsert(endpoint.agent_hash, endpoint.url, status, latencyMs);
       if (healthy) result.healthy++;
       else result.down++;
+
+      // Phase 12.6 (2026-05-06) — operator quarantine via consecutive 5xx.
+      // Sim 15 a3 spent 21 sats on a Cloudflare 502 dead host because the
+      // ranker had no quarantine signal. Threshold = 3 consecutive 5xx
+      // returns → deprecated, mirroring the v44 fossile 404 pattern.
+      // Probe success (any 2xx/3xx OR 402 challenge) resets the streak so
+      // a recovered host auto-rejoins the catalog at the next probe.
+      if (status >= 500 && status <= 599) {
+        try {
+          const after = await this.repo.record5xx(endpoint.url, DEPRECATED_5XX_THRESHOLD);
+          if (after.deprecated && !endpoint.deprecated) {
+            logger.info(
+              { url: endpoint.url, consecutive_5xx: after.count, threshold: DEPRECATED_5XX_THRESHOLD },
+              'Health crawler: endpoint flagged deprecated (5xx streak — Phase 12.6)',
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            { url: endpoint.url, error: err instanceof Error ? err.message : String(err) },
+            'Health crawler: record5xx failed (will retry next tick)',
+          );
+        }
+      } else if (healthy && endpoint.consecutive_5xx_count > 0) {
+        try {
+          await this.repo.clear5xxStreak(endpoint.url);
+          if (endpoint.deprecated && endpoint.deprecated_reason === '5xx_persistent') {
+            logger.info({ url: endpoint.url }, 'Health crawler: deprecated cleared (5xx recovered — Phase 12.6)');
+          }
+        } catch (err) {
+          logger.warn(
+            { url: endpoint.url, error: err instanceof Error ? err.message : String(err) },
+            'Health crawler: clear5xxStreak failed (will retry next tick)',
+          );
+        }
+      }
 
       await this.dualWriteProbeTx(endpoint, healthy);
       // Phase 5 — feed the per-endpoint streaming posterior so /api/intent's

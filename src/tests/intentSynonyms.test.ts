@@ -38,4 +38,56 @@ describe('expandCategory (Sim 9 Fix 3)', () => {
     expect(expandCategory('exchange')).toEqual(['exchange', 'data/finance']);
     expect(expandCategory('market')).toEqual(['market', 'data/finance', 'data']);
   });
+
+  // Phase 12.7 (2026-05-06) — Sim 15 a3 HARMFUL : "energy/intelligence
+  // returned zero candidates — synonym/canonical mapping is missing
+  // for compound categories the hint sheet explicitly suggested".
+  describe('Phase 12.7 — compound category fallback', () => {
+    it('explicit synonym for energy/intelligence falls back to finance + data', () => {
+      expect(expandCategory('energy/intelligence')).toEqual([
+        'energy/intelligence',
+        'data/finance',
+        'data/government',
+        'data',
+      ]);
+    });
+
+    it('auto-fallback for unknown compound A/B tries data/B, data/A, B, A, data', () => {
+      // Compound not in the explicit synonyms map.
+      expect(expandCategory('foo/bar')).toEqual([
+        'foo/bar',
+        'data/bar',
+        'data/foo',
+        'bar',
+        'foo',
+        'data',
+      ]);
+    });
+
+    it('explicit synonym wins over auto-fallback (no duplication)', () => {
+      // 'data/news' has explicit synonym ['data'], so the auto-fallback
+      // path is NOT triggered (CATEGORY_SYNONYMS hit takes precedence).
+      expect(expandCategory('data/news')).toEqual(['data/news', 'data']);
+    });
+
+    it('non-compound input is unaffected by the auto-fallback', () => {
+      expect(expandCategory('totally-unknown')).toEqual(['totally-unknown']);
+    });
+
+    it('case-insensitive on compound', () => {
+      expect(expandCategory('Foo/Bar')).toEqual([
+        'Foo/Bar',
+        'data/bar',
+        'data/foo',
+        'bar',
+        'foo',
+        'data',
+      ]);
+    });
+
+    it('three-segment compound only auto-falls when 2-part', () => {
+      // 'data/a/b' has 3 parts → auto-fallback skipped, only ultimate 'data' added.
+      expect(expandCategory('data/a/b')).toEqual(['data/a/b', 'data']);
+    });
+  });
 });
