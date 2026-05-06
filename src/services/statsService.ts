@@ -65,7 +65,8 @@ const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 // Security audit : v56 (anti-double-revenue payment_hash UNIQUE).
 // Excellence pass : v57 (service_register_log, audit trail for self-registration).
 // AEPS §8 : v77 (daily_merkle_anchors, Bitcoin L1 trust root for evidence).
-const EXPECTED_SCHEMA_VERSION = 77;
+// AEPS §6.3 : v78 (aeps_multihop_chains + legs, atomic multi-hop primitive).
+const EXPECTED_SCHEMA_VERSION = 78;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that
