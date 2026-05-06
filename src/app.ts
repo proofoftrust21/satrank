@@ -109,6 +109,11 @@ import { SignerService } from './services/signerService';
 import { EvidenceReceiptRepository } from './repositories/evidenceReceiptRepository';
 import { EvidenceService } from './services/evidenceService';
 import { EvidenceController } from './controllers/evidenceController';
+// AEPS §8 (2026-05-07) — Bitcoin L1 trust root for evidence.
+import { DailyMerkleAnchorRepository } from './repositories/dailyMerkleAnchorRepository';
+import { DailyMerkleAnchorService, unixSecToUtcDay } from './services/dailyMerkleAnchorService';
+import { AepsEvidenceController } from './controllers/aepsEvidenceController';
+import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
@@ -535,6 +540,23 @@ export function createApp() {
     fulfillJobRepo,
     enabled: process.env.FULFILL_ENABLED === 'true',
   });
+
+  // AEPS §8 (2026-05-07) — daily Merkle anchor of evidence_receipts to
+  // Bitcoin L1. The L1 broadcast itself is gated by env L1_ANCHOR_ENABLED
+  // (default off until UTXO/key management is opted in). Even with broadcast
+  // off, the daily root is computed and persisted so any party that ingests
+  // the root via /api/aeps/anchor/:day_utc can verify inclusion.
+  const dailyMerkleAnchorRepo = new DailyMerkleAnchorRepository(pool);
+  const operatorPubkeyHex = signerService.publicKeyHex() ?? 'unknown';
+  const dailyMerkleAnchorService = new DailyMerkleAnchorService({
+    repo: dailyMerkleAnchorRepo,
+    operatorPubkeyHex,
+  });
+  const aepsEvidenceController = new AepsEvidenceController({
+    anchorService: dailyMerkleAnchorService,
+    anchorRepo: dailyMerkleAnchorRepo,
+    operatorPubkeyHex,
+  });
   // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
   const operatorAttestationRepo = new OperatorAttestationRepository(pool);
   const operatorAttestationService = new OperatorAttestationService({
@@ -845,6 +867,50 @@ export function createApp() {
     }
   }, RECONCILIATION_INTERVAL_MS);
   reconcileTimer.unref();
+
+  // AEPS §8 (2026-05-07) — daily Merkle anchor cron. Runs every hour: at the
+  // top of the hour, if the previous-UTC-day's anchor isn't yet computed and
+  // the day is fully closed (we're past 00:00 UTC of the next day), compute
+  // and persist it. This is a "compute-once-per-day" pattern in a 1h timer
+  // for restart resilience: the server can crash and the cron will catch up
+  // on the missed day at the next tick.
+  const aepsAnchorIntervalMs = Number(process.env.AEPS_ANCHOR_INTERVAL_MS ?? 60 * 60 * 1000);
+  const aepsAnchorTimer = setInterval(async () => {
+    try {
+      // Anchor the prior UTC day. We only compute fully-closed days.
+      const yesterday = unixSecToUtcDay(Math.floor(Date.now() / 1000) - 86400);
+      const result = await dailyMerkleAnchorService.computeAndPersist(yesterday);
+      if (result.status === 'ok') {
+        logger.info(
+          {
+            day_utc: result.anchor.day_utc,
+            receipt_count: result.anchor.receipt_count,
+            root_first8: result.anchor.root_hex.slice(0, 8),
+          },
+          'AEPS §8: daily anchor cron computed',
+        );
+      }
+    } catch (err) {
+      logger.error(
+        { error: err instanceof Error ? err.message : String(err) },
+        'AEPS §8: daily anchor cron threw',
+      );
+    }
+  }, aepsAnchorIntervalMs);
+  aepsAnchorTimer.unref();
+  // Run once at boot (after a short delay so DB pool is warm) to backfill any
+  // missed prior days during downtime.
+  setTimeout(() => {
+    const yesterday = unixSecToUtcDay(Math.floor(Date.now() / 1000) - 86400);
+    dailyMerkleAnchorService
+      .computeAndPersist(yesterday)
+      .catch(err =>
+        logger.warn(
+          { error: err instanceof Error ? err.message : String(err) },
+          'AEPS §8: daily anchor boot-run threw',
+        ),
+      );
+  }, 30_000);
 
   // Trust first proxy hop (nginx/caddy) so rate limiter sees real client IPs.
   // IMPORTANT: if a CDN (Cloudflare, Fastly) is added in front of nginx, increase to 2.
@@ -1210,6 +1276,11 @@ export function createApp() {
   // and use discoveryRateLimit instead.
   api.use(createAgentRoutes(agentController, balanceAuth, paidGate, discoveryRateLimit));
   api.use(createAttestationRoutes(attestationController, balanceAuth, paidGate, discoveryRateLimit));
+
+  // AEPS §8 (2026-05-07) — public, unauthenticated, rate-limited via the
+  // global Express middleware. The L1 anchor + signed receipts are the trust
+  // root; transparency is the whole point.
+  api.use('/aeps', createAepsEvidenceRoutes(aepsEvidenceController));
 
   // /api/intent — Mix A+D conditional gate. Default path = free directory
   // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
