@@ -580,6 +580,8 @@ export function createApp() {
     // Phase 11B.5 — tier-gated credit-line.
     reputationService: agentReputationService,
     bondService: agentBondService,
+    // Phase 12.8 — quarantine endpoints with consecutive validator violations.
+    serviceEndpointRepo,
   });
   const fulfillController = new FulfillController({
     fulfillService,

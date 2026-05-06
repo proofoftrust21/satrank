@@ -120,6 +120,11 @@ export interface ServiceEndpoint {
    *  is reached, auto-revert when a probe returns 2xx/3xx. Drives the
    *  Sim 15 a3 fix (dead Cloudflare 502 host that kept costing sats). */
   consecutive_5xx_count: number;
+  /** Phase 12.8 (2026-05-06) — operator quarantine for body-shape repeat
+   *  offenders. Increments on delivery_validator_violation /
+   *  delivery_schema_violation, resets on delivery_ok, auto-deprecates
+   *  at threshold (default 3). Reason = 'validator_violation_persistent'. */
+  consecutive_validator_violation_count: number;
   /** Vague 3 Phase 3 — every source that has attested this endpoint, deduped.
    *  The legacy scalar `source` carries the highest-trust attribution; `sources`
    *  is the full set, used by /api/health to surface diversification and by the
@@ -719,6 +724,43 @@ export class ServiceEndpointRepository {
     );
     if (rows.length === 0) return { count: 0, deprecated: false };
     return { count: rows[0].consecutive_5xx_count, deprecated: rows[0].deprecated };
+  }
+
+  /** Phase 12.8 (2026-05-06) — bump consecutive_validator_violation_count
+   *  and flag deprecated when threshold reached. Mirror of record5xx :
+   *  promote-only, never demote. Won't overwrite an existing 404/5xx
+   *  deprecation. Sets deprecated_reason='validator_violation_persistent'
+   *  only when threshold met AND no other reason exists. */
+  async recordValidatorViolation(url: string, threshold: number): Promise<{ count: number; deprecated: boolean }> {
+    const { rows } = await this.db.query<{ consecutive_validator_violation_count: number; deprecated: boolean }>(
+      `UPDATE service_endpoints
+         SET consecutive_validator_violation_count = consecutive_validator_violation_count + 1,
+             deprecated = (consecutive_validator_violation_count + 1 >= $2 OR deprecated),
+             deprecated_reason = CASE
+               WHEN consecutive_validator_violation_count + 1 >= $2 AND deprecated_reason IS NULL THEN 'validator_violation_persistent'
+               ELSE deprecated_reason
+             END
+       WHERE url = $1
+       RETURNING consecutive_validator_violation_count, deprecated`,
+      [url, threshold],
+    );
+    if (rows.length === 0) return { count: 0, deprecated: false };
+    return { count: rows[0].consecutive_validator_violation_count, deprecated: rows[0].deprecated };
+  }
+
+  /** Phase 12.8 — reset the validator violation streak when the endpoint
+   *  delivers a clean response. Only clears deprecated when reason was
+   *  'validator_violation_persistent' (404/5xx-deprecated rows stay frozen). */
+  async clearValidatorViolationStreak(url: string): Promise<void> {
+    await this.db.query(
+      `UPDATE service_endpoints
+         SET consecutive_validator_violation_count = 0,
+             deprecated = CASE WHEN deprecated_reason = 'validator_violation_persistent' THEN FALSE ELSE deprecated END,
+             deprecated_reason = CASE WHEN deprecated_reason = 'validator_violation_persistent' THEN NULL ELSE deprecated_reason END
+       WHERE url = $1
+         AND consecutive_validator_violation_count > 0`,
+      [url],
+    );
   }
 
   /** Phase 12.6 — reset the 5xx streak when the endpoint recovers. Only

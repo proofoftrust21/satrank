@@ -253,6 +253,14 @@ export interface FulfillServiceDeps {
   fetchImpl?: typeof fetchSafeExternal;
   /** Override for tests; defaults to Date.now()/1000. */
   now?: () => number;
+  /** Phase 12.8 (2026-05-06) — operator quarantine for body-shape
+   *  repeat-offenders. When wired, attemptCandidate calls
+   *  recordValidatorViolation on every delivery_validator_violation /
+   *  delivery_schema_violation, and clearValidatorViolationStreak on
+   *  delivery_ok. Optional ; back-compat with existing tests that don't
+   *  mount a serviceEndpointRepo (they lose the quarantine signal but
+   *  continue to function). */
+  serviceEndpointRepo?: import('../repositories/serviceEndpointRepository').ServiceEndpointRepository;
   /** Phase 11B.5 (2026-05-04) — tier-gated credit-line cap. When wired,
    *  fulfillService computes the agent's effective tier and refuses any
    *  borrow when tier=bronze. Silver/gold pass through to the existing
@@ -1907,6 +1915,26 @@ export class FulfillService {
     const detail = !carryBody && validatorDetail
       ? validatorDetail
       : truncated ? body + '\n[truncated_at_256kb]' : body;
+
+    // Phase 12.8 (2026-05-06) — operator quarantine for body-shape
+    // repeat-offenders. Increment on validator/schema violation ; clear
+    // on clean delivery. Best-effort : a DB write failure must NEVER
+    // break the fulfill response. Threshold 3 mirrors P12.6 5xx pattern.
+    if (this.deps.serviceEndpointRepo) {
+      const VALIDATOR_VIOLATION_THRESHOLD = 3;
+      try {
+        if (delivery === 'delivery_validator_violation' || delivery === 'delivery_schema_violation') {
+          await this.deps.serviceEndpointRepo.recordValidatorViolation(cand.endpoint_url, VALIDATOR_VIOLATION_THRESHOLD);
+        } else if (delivery === 'delivery_ok') {
+          await this.deps.serviceEndpointRepo.clearValidatorViolationStreak(cand.endpoint_url);
+        }
+      } catch (err) {
+        logger.warn(
+          { url: cand.endpoint_url, error: err instanceof Error ? err.message : String(err) },
+          'Fulfill: validator-violation quarantine update failed (non-blocking)',
+        );
+      }
+    }
 
     return baseAttempt(cand, ts_started, this.now(), {
       payment_outcome: 'pay_ok',
