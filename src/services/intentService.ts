@@ -492,6 +492,7 @@ export class IntentService {
         p_e2e_pessimistic: e.stagePosteriors?.p_e2e_pessimistic ?? e.bayesian.p_success,
         p_success: e.bayesian.p_success,
         median_latency_ms: e.medianLatencyMs,
+        operator_pubkey: e.operatorPubkey,
       }));
       const ranked = await ranker.rank(text, rankCandidates);
       // Reorder enriched to match ranker output. Stable map by svc.id.

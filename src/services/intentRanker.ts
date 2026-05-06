@@ -39,6 +39,17 @@ export interface RankCandidate {
   p_success: number;
   /** Median latency, used as a tertiary tiebreaker. ms. */
   median_latency_ms: number | null;
+  /** Phase 12.9 (2026-05-06) — operator pubkey, used by the ranker to
+   *  query the shared replay-state service and downrank candidates whose
+   *  operator is in active lockout. Optional — null when the catalogue
+   *  row has no operator linkage. */
+  operator_pubkey?: string | null;
+}
+
+/** Phase 12.9 — narrowed interface so the ranker doesn't pull the full
+ *  OperatorReplayStateService class type (avoids circular import risk). */
+export interface ReplayStateLookup {
+  isLockedOut(operatorPubkey: string): boolean;
 }
 
 /** Per-candidate score after ranking. The same candidate appears at the
@@ -59,20 +70,50 @@ export interface IntentRanker {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 12.9 — shared helper : downrank a candidate by a fixed multiplier
+// when its operator is in active replay lockout. Pushed strongly enough
+// that any non-locked candidate ranks above. Returns the multiplier so
+// callers can also expose it in score_breakdown.
+// ---------------------------------------------------------------------------
+const REPLAY_LOCKOUT_MULTIPLIER = 0.05;
+
+function applyReplayLockout(
+  candidate: RankCandidate,
+  baseScore: number,
+  replayState?: ReplayStateLookup,
+): { score: number; locked: boolean } {
+  if (!replayState || !candidate.operator_pubkey) return { score: baseScore, locked: false };
+  if (!replayState.isLockedOut(candidate.operator_pubkey)) return { score: baseScore, locked: false };
+  return { score: baseScore * REPLAY_LOCKOUT_MULTIPLIER, locked: true };
+}
+
+// ---------------------------------------------------------------------------
 // LegacyRanker — pre-P12 ordering. RANKER_MODE=legacy default ; back-compat
 // for existing prod behaviour, default for tests that don't set up BM25.
 // ---------------------------------------------------------------------------
+export interface LegacyRankerOpts {
+  replayState?: ReplayStateLookup;
+}
+
 export class LegacyRanker implements IntentRanker {
   readonly id = 'legacy' as const;
+  private readonly replayState?: ReplayStateLookup;
+  constructor(opts: LegacyRankerOpts = {}) {
+    this.replayState = opts.replayState;
+  }
   async rank(_text: string, candidates: ReadonlyArray<RankCandidate>): Promise<RankedCandidate[]> {
-    const scored = candidates.map((c, i) => ({
-      candidate: c,
-      score: c.p_e2e_pessimistic,
-      rank: 0,
-      score_breakdown: { p_e2e: c.p_e2e_pessimistic },
-      reason: 'legacy_p_e2e_desc',
-      _orig: i,
-    }));
+    const scored = candidates.map(c => {
+      const { score, locked } = applyReplayLockout(c, c.p_e2e_pessimistic, this.replayState);
+      const breakdown: Record<string, number> = { p_e2e: c.p_e2e_pessimistic };
+      if (locked) breakdown.replay_lockout = 1;
+      return {
+        candidate: c,
+        score,
+        rank: 0,
+        score_breakdown: breakdown,
+        reason: locked ? 'legacy_p_e2e_replay_lockout' : 'legacy_p_e2e_desc',
+      };
+    });
     scored.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       if (b.candidate.p_success !== a.candidate.p_success) {
@@ -99,6 +140,10 @@ export interface Bm25HybridOpts {
   bm25: Bm25Service;
   bm25Weight?: number;       // default 0.5
   pE2eWeight?: number;       // default 0.5
+  /** Phase 12.9 — operator replay-state lookup. When supplied, locked-out
+   *  operators are downranked so the agent doesn't burn an RTT on a
+   *  candidate that fulfillService is going to skip pre-pay anyway. */
+  replayState?: ReplayStateLookup;
 }
 
 export class Bm25HybridRanker implements IntentRanker {
@@ -106,18 +151,22 @@ export class Bm25HybridRanker implements IntentRanker {
   private readonly bm25: Bm25Service;
   private readonly bm25Weight: number;
   private readonly pE2eWeight: number;
+  private readonly replayState?: ReplayStateLookup;
 
   constructor(opts: Bm25HybridOpts) {
     this.bm25 = opts.bm25;
     this.bm25Weight = opts.bm25Weight ?? 0.5;
     this.pE2eWeight = opts.pE2eWeight ?? 0.5;
+    this.replayState = opts.replayState;
   }
 
   async rank(intentText: string, candidates: ReadonlyArray<RankCandidate>): Promise<RankedCandidate[]> {
     if (candidates.length === 0) return [];
     if (!intentText || intentText.trim().length === 0) {
-      // Fallback to legacy when caller didn't supply free text.
-      return new LegacyRanker().rank(intentText, candidates);
+      // Fallback to legacy when caller didn't supply free text. Pass the
+      // shared replay-state through so the locked-out downrank still
+      // applies in the legacy fallback path.
+      return new LegacyRanker({ replayState: this.replayState }).rank(intentText, candidates);
     }
     // Compute raw BM25 scores per candidate. Normalise to [0, 1] by
     // dividing by the max so the hybrid weighting is meaningful.
@@ -126,17 +175,21 @@ export class Bm25HybridRanker implements IntentRanker {
     const norm = (s: number): number => (maxRaw > 0 ? s / maxRaw : 0);
     const scored = candidates.map((c, i) => {
       const bm25Norm = norm(rawScores[i]);
-      const score = this.bm25Weight * bm25Norm + this.pE2eWeight * c.p_e2e_pessimistic;
+      const baseScore = this.bm25Weight * bm25Norm + this.pE2eWeight * c.p_e2e_pessimistic;
+      // Phase 12.9 — apply replay-state lockout downrank.
+      const { score, locked } = applyReplayLockout(c, baseScore, this.replayState);
+      const breakdown: Record<string, number> = {
+        bm25_raw: rawScores[i],
+        bm25_norm: bm25Norm,
+        p_e2e: c.p_e2e_pessimistic,
+      };
+      if (locked) breakdown.replay_lockout = 1;
       return {
         candidate: c,
         score,
         rank: 0,
-        score_breakdown: {
-          bm25_raw: rawScores[i],
-          bm25_norm: bm25Norm,
-          p_e2e: c.p_e2e_pessimistic,
-        },
-        reason: 'bm25_hybrid',
+        score_breakdown: breakdown,
+        reason: locked ? 'bm25_hybrid_replay_lockout' : 'bm25_hybrid',
       };
     });
     scored.sort((a, b) => b.score - a.score);

@@ -261,6 +261,12 @@ export interface FulfillServiceDeps {
    *  mount a serviceEndpointRepo (they lose the quarantine signal but
    *  continue to function). */
   serviceEndpointRepo?: import('../repositories/serviceEndpointRepository').ServiceEndpointRepository;
+  /** Phase 12.9 (2026-05-06) — shared operator replay-state service.
+   *  When injected, fulfillService writes here instead of its private
+   *  Map ; the IntentRanker reads the same instance to downrank
+   *  locked-out operators at /api/intent time. Optional ; without it
+   *  the legacy in-memory tracker is used (back-compat with tests). */
+  operatorReplayState?: import('./operatorReplayStateService').OperatorReplayStateService;
   /** Phase 11B.5 (2026-05-04) — tier-gated credit-line cap. When wired,
    *  fulfillService computes the agent's effective tier and refuses any
    *  borrow when tier=bronze. Silver/gold pass through to the existing
@@ -302,6 +308,11 @@ export class FulfillService {
     );
     if (existing) {
       if (existing.status === 'success') {
+        // Phase 12.10 (2026-05-06) — surface body_sha256 on the
+        // idempotent-replay path. Sim 17 a8/a10 flagged that some
+        // delivery_ok responses didn't carry body_sha256 ; the gap was
+        // here (and the executeHold idempotent path below). The hash is
+        // stored in fulfill_jobs.result_body_sha256 at settle time.
         return {
           status: 'success',
           job_id: existing.job_id,
@@ -313,6 +324,7 @@ export class FulfillService {
           attempts: existing.attempts,
           sats_spent: existing.sats_spent,
           premium_sats: existing.premium_sats,
+          body_sha256: existing.result_body_sha256 ?? undefined,
         };
       }
       if (existing.status === 'refunded' || existing.status === 'aborted') {
@@ -1656,16 +1668,25 @@ export class FulfillService {
     // "invoice is already paid". Sim 11 Fix 3 detected the replay
     // post-hoc; this fix skips the pay step entirely on operators that
     // have replayed > REPLAY_THRESHOLD times in the last REPLAY_WINDOW_MS.
+    // Phase 12.9 — when the shared OperatorReplayStateService is wired,
+    // delegate the read so the same lockout view is available to the
+    // IntentRanker. Falls through to the local Map otherwise.
     if (cand.operator_pubkey) {
-      const state = this.operatorReplayState.get(cand.operator_pubkey);
+      // Phase 12.9 — when the shared service is wired, prefer it (same
+      // view as IntentRanker). Otherwise fall through to local Map.
+      const sharedLockedOut = this.deps.operatorReplayState?.isLockedOut(cand.operator_pubkey);
+      const sharedState = this.deps.operatorReplayState?.getState(cand.operator_pubkey);
+      const localState = this.operatorReplayState.get(cand.operator_pubkey);
       const nowMs = Date.now();
-      if (state && nowMs - state.last_seen_ms <= REPLAY_WINDOW_MS && state.count > REPLAY_THRESHOLD) {
+      const localLockedOut = !!(localState && nowMs - localState.last_seen_ms <= REPLAY_WINDOW_MS && localState.count > REPLAY_THRESHOLD);
+      if (sharedLockedOut || localLockedOut) {
+        const count = sharedState?.count ?? localState?.count ?? 0;
         return baseAttempt(cand, ts_started, this.now(), {
           payment_outcome: 'pay_skipped_replay_state',
           delivery_outcome: 'delivery_skipped',
           http_status: 402,
           sats_paid: 0,
-          detail: `operator has ${state.count} replays in last ${REPLAY_WINDOW_MS / 1000}s`,
+          detail: `operator has ${count} replays in last ${REPLAY_WINDOW_MS / 1000}s`,
         });
       }
     }
@@ -1691,7 +1712,13 @@ export class FulfillService {
       else outcome = 'pay_other_failure';
       // Sim 13 Fix 1.2 — feed the replay state tracker on every replay.
       // Pre-pay gate above skips the operator after REPLAY_THRESHOLD hits.
+      // Phase 12.9 — when the shared service is wired, write through it
+      // so the IntentRanker sees the same lockout. Always also update the
+      // local Map for back-compat with existing code paths reading it.
       if (isReplay && cand.operator_pubkey) {
+        if (this.deps.operatorReplayState) {
+          this.deps.operatorReplayState.recordReplay(cand.operator_pubkey);
+        }
         const nowMs = Date.now();
         const prev = this.operatorReplayState.get(cand.operator_pubkey);
         const stale = !prev || nowMs - prev.last_seen_ms > REPLAY_WINDOW_MS;

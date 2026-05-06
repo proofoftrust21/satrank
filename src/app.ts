@@ -59,10 +59,12 @@ import AnthropicSdk from '@anthropic-ai/sdk';
 import { Bm25Service } from './services/bm25Service';
 import {
   Bm25HybridRanker,
+  LegacyRanker,
   LlmRerankRanker,
   buildAnthropicRerankAdapter,
   type IntentRanker,
 } from './services/intentRanker';
+import { OperatorReplayStateService } from './services/operatorReplayStateService';
 import { GoldenCanaryService } from './services/goldenCanaryService';
 import { GOLDEN_PAIRS } from './services/goldenSetData';
 
@@ -349,6 +351,12 @@ export function createApp() {
   // responses. First build runs once at startup ; the /api/intent path
   // is safe to serve before the first build (Bm25Service falls through
   // to legacy when buildIndex hasn't been called).
+  // Phase 12.9 (2026-05-06) — shared operator replay-state service.
+  // fulfillService writes on every pay_invoice_replayed ; the IntentRanker
+  // reads at rank time to downrank locked-out operators. Single instance
+  // wired into both deps so they share the same lockout view.
+  const operatorReplayState = new OperatorReplayStateService();
+
   const rankerMode = (process.env.RANKER_MODE ?? 'legacy').toLowerCase();
   const bm25Service = new Bm25Service();
   // Fire-and-forget initial build ; subsequent rebuilds via 5-min cron.
@@ -372,13 +380,13 @@ export function createApp() {
   bm25RebuildTimer.unref();
   let intentRanker: IntentRanker | undefined;
   if (rankerMode === 'bm25') {
-    intentRanker = new Bm25HybridRanker({ bm25: bm25Service });
+    intentRanker = new Bm25HybridRanker({ bm25: bm25Service, replayState: operatorReplayState });
     logger.info({ ranker: 'bm25_hybrid' }, 'IntentRanker selected (Phase 12.4)');
   } else if (rankerMode === 'bm25_llm') {
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (!anthropicKey) {
       logger.warn({}, 'RANKER_MODE=bm25_llm requested but ANTHROPIC_API_KEY missing — falling back to bm25');
-      intentRanker = new Bm25HybridRanker({ bm25: bm25Service });
+      intentRanker = new Bm25HybridRanker({ bm25: bm25Service, replayState: operatorReplayState });
     } else {
       const anthropicClient = new AnthropicSdk({ apiKey: anthropicKey });
       const llmCall = buildAnthropicRerankAdapter({
@@ -390,11 +398,17 @@ export function createApp() {
         llmCall,
         narrowTopK: Number(process.env.RANKER_NARROW_TOPK ?? 20),
         finalTopK: Number(process.env.RANKER_FINAL_TOPK ?? 10),
-        fallback: new Bm25HybridRanker({ bm25: bm25Service }),
+        fallback: new Bm25HybridRanker({ bm25: bm25Service, replayState: operatorReplayState }),
       });
       logger.info({ ranker: 'llm_rerank', model: process.env.RANKER_LLM_MODEL ?? 'claude-haiku-4-5-20251001' }, 'IntentRanker selected (Phase 12.4)');
     }
   } else {
+    // Phase 12.9 — even in legacy mode, the replay-state downrank applies
+    // because the existing intentService swap path (see resolveIntent
+    // .maybeApplyIntentRanker) is bypassed for empty req.text. We attach
+    // a LegacyRanker so the lockout penalty still kicks in when the
+    // ranker IS exercised (req.text supplied or auto-synthesized).
+    intentRanker = new LegacyRanker({ replayState: operatorReplayState });
     logger.info({ ranker: 'legacy' }, 'IntentRanker selected (Phase 12.4 default)');
   }
   const intentService = new IntentService({
@@ -582,6 +596,8 @@ export function createApp() {
     bondService: agentBondService,
     // Phase 12.8 — quarantine endpoints with consecutive validator violations.
     serviceEndpointRepo,
+    // Phase 12.9 — shared replay-state with the IntentRanker.
+    operatorReplayState,
   });
   const fulfillController = new FulfillController({
     fulfillService,
