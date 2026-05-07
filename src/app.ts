@@ -111,11 +111,12 @@ import { EvidenceService } from './services/evidenceService';
 import { EvidenceController } from './controllers/evidenceController';
 // AEPS §8 (2026-05-07) — Bitcoin L1 trust root for evidence.
 import { DailyMerkleAnchorRepository } from './repositories/dailyMerkleAnchorRepository';
-import { DailyMerkleAnchorService, unixSecToUtcDay } from './services/dailyMerkleAnchorService';
+import { DailyMerkleAnchorService, unixSecToUtcDay, buildOpReturnPayload } from './services/dailyMerkleAnchorService';
 import { AepsEvidenceController } from './controllers/aepsEvidenceController';
 import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
 // AEPS §8.3 (2026-05-07) — Nostr publication of daily anchors.
 import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsAnchorPublisher';
+import { AepsL1BroadcastService } from './services/aepsL1BroadcastService';
 import { Kind31403Consumer } from './nostr/kind31403Consumer';
 // AEPS §8.5 (2026-05-08) — Nostr publication of detected fork events.
 import { buildAndSignForkEvent } from './services/aepsForkPublisher';
@@ -576,6 +577,39 @@ export function createApp() {
   const dailyMerkleAnchorService = new DailyMerkleAnchorService({
     repo: dailyMerkleAnchorRepo,
     operatorPubkeyHex,
+  });
+
+  // Phase 12A — AEPS L1 anchor broadcast. Loads the onchain macaroon at boot ;
+  // if the path is unset OR loading fails, the service is constructed with an
+  // empty macaroon and skips every broadcast call. The service itself is the
+  // gate (`enabled` flag) ; the cron always invokes it and trusts the
+  // returned status to know whether work happened.
+  let aepsOnchainMacaroonHex = '';
+  if (config.LND_ONCHAIN_MACAROON_PATH) {
+    try {
+      const macBytes = readFileSync(config.LND_ONCHAIN_MACAROON_PATH);
+      aepsOnchainMacaroonHex = macBytes.toString('hex');
+      logger.info(
+        { path: config.LND_ONCHAIN_MACAROON_PATH, len: aepsOnchainMacaroonHex.length },
+        'AEPS L1 onchain macaroon loaded',
+      );
+    } catch (err) {
+      logger.warn(
+        {
+          path: config.LND_ONCHAIN_MACAROON_PATH,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        'AEPS L1 onchain macaroon failed to load — broadcast disabled',
+      );
+    }
+  }
+  const aepsL1BroadcastService = new AepsL1BroadcastService({
+    repo: dailyMerkleAnchorRepo,
+    lndRestUrl: config.LND_REST_URL,
+    onchainMacaroonHex: aepsOnchainMacaroonHex,
+    feeApiUrl: config.AEPS_L1_FEE_API_URL,
+    maxFeeRateSatVByte: config.AEPS_L1_MAX_FEE_RATE_SAT_VBYTE,
+    enabled: config.AEPS_L1_BROADCAST_ENABLED,
   });
   const aepsEvidenceController = new AepsEvidenceController({
     anchorService: dailyMerkleAnchorService,
@@ -1131,6 +1165,51 @@ export function createApp() {
               'AEPS §8.3: anchor Nostr publish threw',
             );
           }
+        }
+
+        // Phase 12A — AEPS §8 L1 anchor broadcast on Bitcoin. Service is its
+        // own gate ; if AEPS_L1_BROADCAST_ENABLED=false or the macaroon is
+        // missing, broadcastIfReady short-circuits with status='skipped_*'.
+        // We log the outcome for observability either way. Idempotent : a
+        // row with l1_txid already populated returns 'skipped_already'.
+        try {
+          const opReturnPayload = buildOpReturnPayload(
+            operatorPubkeyHex,
+            result.anchor.day_utc,
+            result.anchor.root_hex,
+          );
+          const broadcastResult = await aepsL1BroadcastService.broadcastIfReady(
+            result.anchor,
+            opReturnPayload,
+          );
+          if (broadcastResult.status === 'ok') {
+            logger.info(
+              {
+                day_utc: result.anchor.day_utc,
+                txid_first8: broadcastResult.txid.slice(0, 8),
+                sat_per_vbyte: broadcastResult.sat_per_vbyte,
+              },
+              'AEPS §8: L1 anchor cron broadcast complete',
+            );
+          } else if (
+            broadcastResult.status === 'skipped_cap' ||
+            broadcastResult.status === 'error'
+          ) {
+            // These two warrant a warning ; other 'skipped_*' are silent
+            // by design (disabled / no_macaroon / already / no_receipts).
+            logger.warn(
+              { day_utc: result.anchor.day_utc, ...broadcastResult },
+              'AEPS §8: L1 anchor cron broadcast deferred',
+            );
+          }
+        } catch (err) {
+          logger.error(
+            {
+              day_utc: result.anchor.day_utc,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            'AEPS §8: L1 anchor cron broadcast threw',
+          );
         }
       }
     } catch (err) {

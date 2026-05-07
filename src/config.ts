@@ -119,6 +119,22 @@ const configSchema = z.object({
   // to 0 to disable the throttle (legacy behaviour).
   PAID_PROBE_THROTTLE_IF_RECENT_FULFILLS_AT_LEAST: z.coerce.number().int().nonnegative().default(3),
   PAID_PROBE_THROTTLE_FULFILLS_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
+  // Phase 12A — AEPS §8 L1 anchor broadcast. The daily Merkle root is
+  // committed to Bitcoin L1 via OP_RETURN (49-byte payload per whitepaper).
+  // Activation is OPT-IN ; with the flag off, the cron computes the root +
+  // publishes the kind 31403 Nostr gossip but does not touch the on-chain
+  // wallet. Fee rate is queried from `AEPS_L1_FEE_API_URL` per cycle and
+  // capped at `AEPS_L1_MAX_FEE_RATE_SAT_VBYTE` ; if the market exceeds the
+  // cap the day's anchor is skipped (re-attempted on the next cron tick).
+  // The minimum relay fee floor of 1 sat/vB is enforced server-side.
+  AEPS_L1_BROADCAST_ENABLED: z.coerce.boolean().default(false),
+  AEPS_L1_MAX_FEE_RATE_SAT_VBYTE: z.coerce.number().int().positive().default(5),
+  AEPS_L1_FEE_API_URL: z.string().url().default('https://mempool.space/api/v1/fees/recommended'),
+  /** Path to LND macaroon with `onchain:write` permission. Bake via
+   *  `lncli bakemacaroon onchain:write --save_to onchain.macaroon`. When
+   *  unset and `AEPS_L1_BROADCAST_ENABLED=true`, the cron logs a warning and
+   *  skips broadcast. */
+  LND_ONCHAIN_MACAROON_PATH: z.string().optional(),
   // Probe safety rails — caps on the L402 invoice SatRank will pay and on the
   // probe round-trip fetch duration. Per-probe defaults are conservative;
   // override via env for stress demos.
