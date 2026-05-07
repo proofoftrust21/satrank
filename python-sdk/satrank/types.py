@@ -302,3 +302,91 @@ class SatRankOptions(TypedDict, total=False):
     wallet: Wallet
     caller: str
     request_timeout_ms: int
+
+
+# SDK 1.6.0 (2026-05-08) — AEPS §10 dispute types. Mirror @satrank/sdk
+# TypeScript definitions byte-for-byte ; the wire format is snake_case
+# JSON identical on both ends.
+
+AepsDisputeType = Literal[
+    "content_correctness",
+    "sla_breach",
+    "fork",
+    "non_payment",
+    "false_dispute",
+]
+
+AepsAttestationOutcome = Literal["disputant_wins", "respondent_wins"]
+
+AepsDisputeState = Literal[
+    "open",
+    "resolved_disputant",
+    "resolved_respondent",
+    "expired",
+    "aborted",
+]
+
+
+class AepsDisputeOpenInput(TypedDict, total=False):
+    respondent_pubkey: str
+    dispute_type: AepsDisputeType
+    receipt_id: int
+    fork_event_id: int
+    oracle_pubkeys: list[str]
+    oracle_threshold: int
+    ttl_sec: int
+    dispute_reason: str
+
+
+class AepsDisputeOutcomeMessage(TypedDict):
+    canonical: str
+    hash_hex: str
+
+
+class AepsDisputeOpenResult(TypedDict):
+    dispute_id: str
+    state: AepsDisputeState
+    multiplier: int
+    oracle_pubkeys: list[str]
+    oracle_threshold: int
+    expires_at: int
+    outcome_messages: dict[str, AepsDisputeOutcomeMessage]
+
+
+class AepsAttestationInput(TypedDict):
+    outcome: AepsAttestationOutcome
+    signature_hex: str
+
+
+class AepsAttestationResult(TypedDict):
+    dispute_id: str
+    attestation_id: int
+    dispute_state: AepsDisputeState
+
+
+class AepsDisputeAttestationView(TypedDict):
+    oracle_pubkey: str
+    outcome: AepsAttestationOutcome
+    signed_at: int
+
+
+class AepsDisputeAttestationCounts(TypedDict):
+    disputant_wins: int
+    respondent_wins: int
+
+
+class AepsDisputeView(TypedDict, total=False):
+    dispute_id: str
+    disputant_pubkey: str
+    respondent_pubkey: str
+    dispute_type: AepsDisputeType
+    multiplier: int
+    oracle_pubkeys: list[str]
+    oracle_threshold: int
+    state: AepsDisputeState
+    expires_at: int
+    created_at: int
+    resolved_at: int | None
+    claim_id: int | None
+    attestation_counts: AepsDisputeAttestationCounts
+    attestations: list[AepsDisputeAttestationView]

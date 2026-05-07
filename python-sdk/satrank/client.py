@@ -264,6 +264,92 @@ class SatRank:
         from urllib.parse import quote
         return f"{self._api_base}/api/fulfill/{quote(job_id, safe='')}/execute"
 
+    # ===== AEPS §10 disputes (SDK 1.6.0) =====
+
+    async def open_dispute(
+        self,
+        *,
+        respondent_pubkey: str,
+        dispute_type: str,
+        oracle_pubkeys: list[str],
+        oracle_threshold: int,
+        receipt_id: int | None = None,
+        fork_event_id: int | None = None,
+        ttl_sec: int | None = None,
+        dispute_reason: str | None = None,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """AEPS §10 — open a dispute against a respondent.
+
+        NIP-98-gated ; the caller's pubkey is recorded as ``disputant_pubkey``.
+        The response's ``outcome_messages`` give the canonical bytes + sha256
+        each oracle must BIP-340-sign for their attestation.
+
+        Multipliers per dispute_type (§10.1) :
+          ``content_correctness``, ``fork`` → 5×
+          ``sla_breach``, ``false_dispute`` → 3×
+          ``non_payment``                   → 1×
+
+        Raises :
+          - ``Nip98InvalidError`` (401)
+          - ``ValidationSatRankError`` (400) — threshold > pubkeys.length, etc.
+        """
+        return await self._api.post_aeps_dispute(
+            respondent_pubkey=respondent_pubkey,
+            dispute_type=dispute_type,
+            oracle_pubkeys=oracle_pubkeys,
+            oracle_threshold=oracle_threshold,
+            receipt_id=receipt_id,
+            fork_event_id=fork_event_id,
+            ttl_sec=ttl_sec,
+            dispute_reason=dispute_reason,
+            authorization=authorization,
+        )
+
+    async def submit_attestation(
+        self,
+        *,
+        dispute_id: str,
+        outcome: str,
+        signature_hex: str,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """AEPS §10 — submit a Schnorr attestation as one of the dispute's oracles.
+
+        The auth pubkey MUST equal the oracle pubkey ; ``signature_hex`` is
+        BIP-340 over the canonical outcome message hash returned by
+        :meth:`open_dispute`.
+
+        Raises :
+          - ``AepsDisputeNotFoundError`` (404)
+          - ``AepsDisputeNotOpenError`` (409) — already resolved/expired
+          - ``AepsOracleNotInSetError`` (403)
+          - ``AepsSignatureInvalidError`` (400)
+        """
+        return await self._api.post_aeps_attestation(
+            dispute_id=dispute_id,
+            outcome=outcome,
+            signature_hex=signature_hex,
+            authorization=authorization,
+        )
+
+    async def get_dispute(self, dispute_id: str) -> dict[str, Any]:
+        """AEPS §10 — read dispute state + per-outcome attestation counts.
+        Public, no auth. Raises ``AepsDisputeNotFoundError`` on unknown id."""
+        return await self._api.get_aeps_dispute(dispute_id)
+
+    def dispute_endpoint(self) -> str:
+        """AEPS §10 — canonical URL agents must sign in their NIP-98 ``u``
+        tag when calling :meth:`open_dispute`."""
+        return f"{self._api_base}/api/aeps/dispute"
+
+    def attestation_endpoint(self, dispute_id: str) -> str:
+        """AEPS §10 — canonical URL agents must sign in their NIP-98 ``u``
+        tag when calling :meth:`submit_attestation` for the given
+        ``dispute_id``."""
+        from urllib.parse import quote
+        return f"{self._api_base}/api/aeps/dispute/{quote(dispute_id, safe='')}/attestation"
+
     async def fulfill(
         self,
         *,

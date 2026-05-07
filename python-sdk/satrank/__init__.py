@@ -24,6 +24,10 @@ from satrank.aggregate import (
 )
 from satrank.client import SatRank
 from satrank.errors import (
+    AepsDisputeNotFoundError,
+    AepsDisputeNotOpenError,
+    AepsOracleNotInSetError,
+    AepsSignatureInvalidError,
     AlreadyClaimedError,
     BalanceExhaustedError,
     DuplicateReportError,
@@ -66,12 +70,17 @@ from satrank.types import (
     Wallet,
 )
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 __all__ = [
     "SatRank",
     "__version__",
     "AdvisoryBlock",
+    # SDK 1.6.0 — AEPS §10 dispute error subclasses
+    "AepsDisputeNotFoundError",
+    "AepsDisputeNotOpenError",
+    "AepsOracleNotInSetError",
+    "AepsSignatureInvalidError",
     "BalanceExhaustedError",
     "BayesianBlock",
     "CandidateAttempt",

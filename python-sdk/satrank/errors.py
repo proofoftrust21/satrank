@@ -105,6 +105,42 @@ class WalletError(Exception):
         return f"WalletError(code={self.code!r}, message={str(self)!r})"
 
 
+# SDK 1.6.0 (2026-05-08) — AEPS §10 dispute-specific error subclasses.
+# Mirror the TypeScript SDK 1.6.0 hierarchy. The server's structured
+# error envelope (Phase 11A.2) ships lowercase codes for these cases ;
+# Python callers can `except` on them instead of string-matching.
+
+class AepsDisputeNotFoundError(NotFoundSatRankError):
+    """Raised on 404 with code 'dispute_not_found' — the dispute_id was
+    not registered on this server (typo, expired purge, etc.)."""
+
+    code = "dispute_not_found"
+
+
+class AepsDisputeNotOpenError(SatRankError):
+    """Raised on 409 with code 'dispute_not_open' — the dispute already
+    resolved, expired, or aborted ; new attestations are no longer accepted."""
+
+    code = "dispute_not_open"
+
+
+class AepsOracleNotInSetError(SatRankError):
+    """Raised on 403 with code 'oracle_not_in_set' — the caller's NIP-98
+    pubkey is not in the dispute's pre-agreed `dlc_oracles` threshold set,
+    so its attestation is not eligible."""
+
+    code = "oracle_not_in_set"
+
+
+class AepsSignatureInvalidError(ValidationSatRankError):
+    """Raised on 400 with code 'signature_invalid' — the BIP-340 Schnorr
+    signature on the canonical outcome message did not verify against the
+    declared oracle pubkey. Either the wrong key signed, or the signature
+    was crafted over a different message."""
+
+    code = "signature_invalid"
+
+
 _HTTP_CODE_MAP: dict[int, type[SatRankError]] = {
     400: ValidationSatRankError,
     401: UnauthorizedError,
@@ -156,6 +192,15 @@ def error_from_response(
         code_cls = AlreadyClaimedError
     elif code == "OWNERSHIP_MISMATCH":
         code_cls = OwnershipMismatchError
+    # SDK 1.6.0 — AEPS §10 dispute-specific codes.
+    elif code == "dispute_not_found":
+        code_cls = AepsDisputeNotFoundError
+    elif code == "dispute_not_open":
+        code_cls = AepsDisputeNotOpenError
+    elif code == "oracle_not_in_set":
+        code_cls = AepsOracleNotInSetError
+    elif code == "signature_invalid":
+        code_cls = AepsSignatureInvalidError
 
     cls = code_cls or _HTTP_CODE_MAP.get(status, SatRankError)
     return cls(message, code=code or cls.code, data=data)

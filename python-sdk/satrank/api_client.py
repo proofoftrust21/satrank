@@ -245,6 +245,84 @@ class ApiClient:
         # ever adds sibling fields.
         return wrapped if "candidates" in wrapped else wrapped.get("data", wrapped)
 
+    # ===== AEPS §10 disputes (SDK 1.6.0) =====
+
+    async def post_aeps_dispute(
+        self,
+        *,
+        respondent_pubkey: str,
+        dispute_type: str,
+        oracle_pubkeys: list[str],
+        oracle_threshold: int,
+        receipt_id: int | None = None,
+        fork_event_id: int | None = None,
+        ttl_sec: int | None = None,
+        dispute_reason: str | None = None,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """AEPS §10 — open a dispute. NIP-98-gated.
+
+        The response includes `outcome_messages.{disputant_wins,
+        respondent_wins}.{canonical, hash_hex}` — the canonical bytes +
+        sha256 each oracle in oracle_pubkeys must BIP-340-sign for their
+        attestation.
+        """
+        body: dict[str, Any] = {
+            "respondent_pubkey": respondent_pubkey,
+            "dispute_type": dispute_type,
+            "oracle_pubkeys": oracle_pubkeys,
+            "oracle_threshold": oracle_threshold,
+        }
+        if receipt_id is not None:
+            body["receipt_id"] = receipt_id
+        if fork_event_id is not None:
+            body["fork_event_id"] = fork_event_id
+        if ttl_sec is not None:
+            body["ttl_sec"] = ttl_sec
+        if dispute_reason is not None:
+            body["dispute_reason"] = dispute_reason
+
+        wrapped = await self._request(
+            "POST",
+            "/api/aeps/dispute",
+            json=body,
+            extra_headers={"Authorization": authorization},
+        )
+        return wrapped.get("data", wrapped)
+
+    async def post_aeps_attestation(
+        self,
+        *,
+        dispute_id: str,
+        outcome: str,
+        signature_hex: str,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """AEPS §10 — submit an oracle Schnorr attestation.
+
+        The auth pubkey MUST equal the oracle pubkey ; signature_hex is
+        BIP-340 over the canonical outcome message hash returned by
+        post_aeps_dispute().
+        """
+        body = {"outcome": outcome, "signature_hex": signature_hex}
+        wrapped = await self._request(
+            "POST",
+            f"/api/aeps/dispute/{quote(dispute_id, safe='')}/attestation",
+            json=body,
+            extra_headers={"Authorization": authorization},
+        )
+        return wrapped.get("data", wrapped)
+
+    async def get_aeps_dispute(self, dispute_id: str) -> dict[str, Any]:
+        """AEPS §10 — read dispute state + per-outcome attestation counts.
+        Public, no auth.
+        """
+        wrapped = await self._request(
+            "GET",
+            f"/api/aeps/dispute/{quote(dispute_id, safe='')}",
+        )
+        return wrapped.get("data", wrapped)
+
     # ---- internals -------------------------------------------------------
 
     async def _request(
