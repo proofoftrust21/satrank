@@ -114,6 +114,8 @@ import { DailyMerkleAnchorRepository } from './repositories/dailyMerkleAnchorRep
 import { DailyMerkleAnchorService, unixSecToUtcDay } from './services/dailyMerkleAnchorService';
 import { AepsEvidenceController } from './controllers/aepsEvidenceController';
 import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
+// AEPS §8.3 (2026-05-07) — Nostr publication of daily anchors.
+import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsAnchorPublisher';
 // AEPS §8.5 + §10 (2026-05-07) — fork detection + DLC dispute resolution.
 import { AepsObserverRepository } from './repositories/aepsObserverRepository';
 import { ForkDetectionService } from './services/forkDetectionService';
@@ -931,6 +933,51 @@ export function createApp() {
           },
           'AEPS §8: daily anchor cron computed',
         );
+        // AEPS §8.3 — publish kind 31403 to Nostr if signing key configured
+        // and this anchor hasn't been published yet. Best-effort : failures
+        // are logged but don't block the cron.
+        if (config.NOSTR_PRIVATE_KEY && result.anchor.nostr_event_id === null) {
+          try {
+            const signed = await buildAndSignAnchorEvent(
+              result.anchor,
+              Math.floor(Date.now() / 1000),
+              config.NOSTR_PRIVATE_KEY,
+            );
+            const relays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(Boolean);
+            const pub = await publishAnchorToRelays(signed, relays, (msg, meta) =>
+              logger.warn(meta ?? {}, msg),
+            );
+            if (pub.relays_acked > 0) {
+              await dailyMerkleAnchorRepo.recordNostrPublish(
+                result.anchor.anchor_id,
+                pub.event_id,
+                Math.floor(Date.now() / 1000),
+              );
+              logger.info(
+                {
+                  day_utc: result.anchor.day_utc,
+                  event_id_first8: pub.event_id.slice(0, 8),
+                  relays_acked: pub.relays_acked,
+                  relays_attempted: pub.relays_attempted,
+                },
+                'AEPS §8.3: anchor published to Nostr (kind 31403)',
+              );
+            } else {
+              logger.warn(
+                { day_utc: result.anchor.day_utc, ...pub },
+                'AEPS §8.3: zero relays acked anchor publish',
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              {
+                day_utc: result.anchor.day_utc,
+                error: err instanceof Error ? err.message : String(err),
+              },
+              'AEPS §8.3: anchor Nostr publish threw',
+            );
+          }
+        }
       }
     } catch (err) {
       logger.error(

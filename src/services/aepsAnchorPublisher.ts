@@ -89,3 +89,83 @@ export async function buildAndSignAnchorEvent(
   const template = buildAnchorEventTemplate(anchor, nowSec);
   return signAnchorEvent(template, secretKeyHex);
 }
+
+const PUBLISH_TIMEOUT_MS = 5_000;
+const CONNECT_TIMEOUT_MS = 10_000;
+
+export interface PublishResult {
+  event_id: string;
+  relays_attempted: number;
+  relays_acked: number;
+  relays_timeout: number;
+  relays_error: number;
+}
+
+/** Publish a signed anchor event to a relay list. Connect + publish + close.
+ *  Best-effort : returns counts so the cron can decide whether to mark the
+ *  anchor as published. Considered "published" when at least one relay
+ *  acked. Failures are logged and do not throw. */
+export async function publishAnchorToRelays(
+  signed: AepsAnchorEventSigned,
+  relays: ReadonlyArray<string>,
+  log?: (msg: string, meta?: Record<string, unknown>) => void,
+): Promise<PublishResult> {
+  // @ts-expect-error — nostr-tools is ESM, dynamic import works at runtime.
+  const { Relay } = await import('nostr-tools/relay');
+
+  let acked = 0;
+  let timeouts = 0;
+  let errors = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const connections: { relay: any; url: string }[] = [];
+  for (const url of relays) {
+    try {
+      const relay = await Promise.race([
+        Relay.connect(url),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('connect_timeout')), CONNECT_TIMEOUT_MS),
+        ),
+      ]);
+      connections.push({ relay, url });
+    } catch (err) {
+      errors += 1;
+      log?.('aeps anchor: relay connect failed', {
+        relay: url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  await Promise.allSettled(
+    connections.map(async ({ relay, url }) => {
+      try {
+        await Promise.race([
+          relay.publish(signed),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('publish_timeout')), PUBLISH_TIMEOUT_MS),
+          ),
+        ]);
+        acked += 1;
+      } catch (err) {
+        if (err instanceof Error && err.message === 'publish_timeout') timeouts += 1;
+        else errors += 1;
+        log?.('aeps anchor: relay publish failed', {
+          relay: url,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        try {
+          relay.close();
+        } catch { /* swallow close errors */ }
+      }
+    }),
+  );
+
+  return {
+    event_id: signed.id,
+    relays_attempted: relays.length,
+    relays_acked: acked,
+    relays_timeout: timeouts,
+    relays_error: errors,
+  };
+}
