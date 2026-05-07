@@ -116,6 +116,7 @@ import { AepsEvidenceController } from './controllers/aepsEvidenceController';
 import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
 // AEPS §8.3 (2026-05-07) — Nostr publication of daily anchors.
 import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsAnchorPublisher';
+import { Kind31403Consumer } from './nostr/kind31403Consumer';
 // AEPS §8.5 + §10 (2026-05-07) — fork detection + DLC dispute resolution.
 import { AepsObserverRepository } from './repositories/aepsObserverRepository';
 import { ForkDetectionService } from './services/forkDetectionService';
@@ -601,6 +602,33 @@ export function createApp() {
     forkService: forkDetectionService,
     observerRepo: aepsObserverRepo,
   });
+
+  // AEPS §8.5 (2026-05-07) — kind 31403 consumer ingests peer operators'
+  // daily anchors over Nostr. Each ingestion calls
+  // forkDetectionService.recordObservation, which scans the (operator, day)
+  // bucket and emits a fork_event when ≥2 distinct roots are now seen.
+  // Disabled when AEPS_31403_CONSUMER_ENABLED=false (default on).
+  if (process.env.AEPS_31403_CONSUMER_ENABLED !== 'false') {
+    void (async () => {
+      try {
+        // @ts-expect-error nostr-tools is ESM, dynamic import works at runtime
+        const { verifyEvent: verifyEventFn } = await import('nostr-tools/pure');
+        const aepsRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(Boolean);
+        const consumer = new Kind31403Consumer({
+          forkService: forkDetectionService,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+          relays: aepsRelays.length > 0 ? aepsRelays : undefined,
+        });
+        await consumer.start();
+        logger.info({ relays: aepsRelays.length }, 'AEPS §8.5: kind 31403 consumer started');
+      } catch (err) {
+        logger.warn(
+          { error: err instanceof Error ? err.message : String(err) },
+          'AEPS §8.5: kind 31403 consumer failed to start (will retry next boot)',
+        );
+      }
+    })();
+  }
   // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
   const operatorAttestationRepo = new OperatorAttestationRepository(pool);
   const operatorAttestationService = new OperatorAttestationService({
