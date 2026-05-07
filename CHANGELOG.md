@@ -8,6 +8,103 @@ this project adheres to [Semantic Versioning](https://semver.org/). The HTTP
 API and each SDK are versioned independently; entries are prefixed with
 `API`, `SDK-TS`, or `SDK-PY` when scope is not obvious.
 
+## [AEPS v0.1] - 2026-05-08
+
+**AEPS — Agent Evidence and Payment Standard.** The protocol behind
+SatRank, codified as a single ~9-page MIT-licensed whitepaper and shipped
+in this 33-commit run (since `feae714`) as the first of two reference
+implementations required for v0.1 ratification. The second
+(`apps/aeps-node-rs`) ships in the same run.
+
+### Added (Spec)
+
+- `spec/AEPS-whitepaper.md` — protocol whitepaper. 13 sections covering
+  identity, capability, discovery, settlement (BOLT11 / BOLT12 / atomic
+  multi-hop HTLC chains), bonds, evidence + L1 anchor, fork detection,
+  reputation, disputes, threat model, versioning + adoption.
+- `spec/PROCESS.md` — evolution process. Forks not votes. No foundation,
+  no governance protocol, no rent extraction. Founder-exit clause at 5y.
+- `spec/test-vectors/{merkle,op_return,dispute_outcome,capability_descriptor}.json`
+  — 16 cross-impl conformance vectors. Both reference implementations
+  (TS server + Rust crate) read the same fixtures and produce
+  byte-identical canonical bytes / SHA-256 hashes.
+
+### Added (Server, TypeScript)
+
+- §6.3 atomic multi-hop HTLC chains : v78 schema + `MultiHopChainService`
+  state machine (planning → locked → settling → complete) +
+  `/api/aeps/multihop/{plan,:id/lock,:id/reveal,:id/settle,:id/abort,:id}`.
+- §8 evidence L1 trust root : v77 schema + `DailyMerkleAnchorService`
+  (RFC 6962 Merkle batch + 49-byte OP_RETURN payload format) + 1h
+  anchor cron + `/api/aeps/{anchor/:day,anchor/recent,proof/:receipt_id}`
+  + Nostr publish kind 31403 + consumer of peer kind 31403 events on
+  boot.
+- §8.5 open observer + fork detection : v79 schema + `ForkDetectionService`
+  (idempotent at the (operator, day) bucket level) +
+  `/api/aeps/{observation,forks,observations/:op/:day}` + Nostr publish
+  kind 31410 (auto-fired by `onForkDetected` hook) + consumer of peer
+  kind 31410 events on boot.
+- §10 dispute resolution via BIP-340 Schnorr threshold : v80 schema +
+  `DisputeService` (multipliers 1×/2×/3×/5× per type) +
+  `/api/aeps/dispute/{,*:id/attestation,:id}` + ClaimEngine wiring
+  (resolved disputes auto-open slashing claims).
+- §10 oracle equivocation slashing : v81 + v82 schemas. Equivocation
+  detection (oracle signs both outcomes ⇒ both sigs persisted as
+  publicly verifiable evidence + vote excluded from threshold count) +
+  `EquivocationClaimAdapter` (5× operator-bond reservation) + 1h grace
+  settlement cron with §7.2 distribution (80% claimant / 15% observer /
+  5% burned).
+- §11 MCP distribution : new `aeps.{daily_anchor, recent_anchors,
+  inclusion_proof, evidence_receipt, get_dispute}` tools surfacing
+  the protocol read surface to Claude Desktop / Cursor / any MCP host.
+
+### Added (Rust reference impl)
+
+- `apps/aeps-node-rs/` — second reference implementation. RFC 6962
+  Merkle, NIP-01 Nostr pubkey types, capability descriptor +
+  canonical JSON, Ed25519 evidence + 49-byte OP_RETURN payload,
+  AEPS §10 outcome message + SHA-256 hash. 36 unit + conformance
+  tests, MIT licensed, edition 2021.
+
+### Added (SDK-TS 1.6.0)
+
+- `SatRank.{openDispute, submitAttestation, getDispute,
+  disputeEndpoint, attestationEndpoint}`.
+- Pure helpers : `buildOutcomeMessage`, `buildOutcomeMessageHash`,
+  `buildNip98EventTemplate`, `encodeNip98AuthHeader`. Zero runtime
+  deps preserved.
+- Typed errors : `AepsDisputeNotFoundError` (404),
+  `AepsDisputeNotOpenError` (409), `AepsOracleNotInSetError` (403),
+  `AepsSignatureInvalidError` (400).
+
+### Added (SDK-PY 1.6.0)
+
+- `SatRank.{open_dispute, submit_attestation, get_dispute,
+  dispute_endpoint, attestation_endpoint}`.
+- Pure helpers : `build_outcome_message`, `build_outcome_message_hash`,
+  `build_nip98_event_template`, `encode_nip98_auth_header`.
+- Same typed-error subclasses, same conformance vectors.
+
+### Test infrastructure
+
+- `globalSetup` auto-cleanup of orphan `satrank_test_*` databases —
+  prevents test-DB accumulation across failed runs (observed up to 2460
+  orphans before this fix). Env `AEPS_TEST_KEEP_LEFTOVERS=1` to disable.
+- 46 new integration tests covering observer + evidence + dispute +
+  multi-hop HTTP routes against real Postgres with REAL BIP-340 NIP-98
+  + Schnorr outcome attestations. End-to-end stack validated.
+
+### Final state
+
+Server **2152 / 0 fail** | TS SDK **176 / 176** | Python SDK **164 / 164** |
+Rust **36 / 36**. Type-check clean across all four impls.
+
+The protocol is conceptually complete at v0.1 spec level. Remaining
+follow-ups (each a v0.2 chapter of its own) : Lightning disbursement of
+slashing payouts, bitcoind RPC OP_RETURN broadcast activation, real
+HTLC chain Lightning integration with operator capability advertisement,
+and `src/services/*` → `packages/aeps-*/` refactor.
+
 ## [SDK-PY 1.1.0 + Sim 7 follow-up] - 2026-04-29
 
 Sim 7 follow-up: stage 1 challenge data writing wired + backfilled, paid
