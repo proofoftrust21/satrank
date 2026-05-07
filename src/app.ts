@@ -114,6 +114,12 @@ import { DailyMerkleAnchorRepository } from './repositories/dailyMerkleAnchorRep
 import { DailyMerkleAnchorService, unixSecToUtcDay } from './services/dailyMerkleAnchorService';
 import { AepsEvidenceController } from './controllers/aepsEvidenceController';
 import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
+// AEPS §8.5 + §10 (2026-05-07) — fork detection + DLC dispute resolution.
+import { AepsObserverRepository } from './repositories/aepsObserverRepository';
+import { ForkDetectionService } from './services/forkDetectionService';
+import { AepsDisputeRepository } from './repositories/aepsDisputeRepository';
+import { DisputeService } from './services/disputeService';
+import { buildDisputeClaim } from './services/disputeClaimAdapter';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
@@ -557,6 +563,35 @@ export function createApp() {
     anchorRepo: dailyMerkleAnchorRepo,
     operatorPubkeyHex,
   });
+
+  // AEPS §8.5 + §10 (2026-05-07) — fork detection + dispute resolution.
+  // ForkDetectionService scans observed_anchors for ≥2 distinct roots same
+  // (operator, day) and emits a slashable fork_event.
+  // DisputeService resolves §10 disputes via BIP-340 Schnorr threshold ;
+  // when resolved_disputant + receipt-based, the buildDisputeClaim adapter
+  // opens a ClaimEngine slashing claim against the operator's bond.
+  const aepsObserverRepo = new AepsObserverRepository(pool);
+  const forkDetectionService = new ForkDetectionService({ repo: aepsObserverRepo });
+  const aepsDisputeRepo = new AepsDisputeRepository(pool);
+  const disputeService = new DisputeService({
+    repo: aepsDisputeRepo,
+    onResolved: async (dispute) => {
+      const result = await buildDisputeClaim(dispute, {
+        fulfillJobRepo,
+        evidenceReceiptRepo,
+        claimEngine,
+      });
+      if (result.status === 'claim_opened') {
+        return { claim_id: result.claim_id };
+      }
+      return undefined;
+    },
+  });
+  // Mark unused for the linter ; routes/cron for these services are wired
+  // in follow-up commits. Instantiation here makes them available to the
+  // app graph so future wire-ups don't require a refactor.
+  void forkDetectionService;
+  void disputeService;
   // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
   const operatorAttestationRepo = new OperatorAttestationRepository(pool);
   const operatorAttestationService = new OperatorAttestationService({

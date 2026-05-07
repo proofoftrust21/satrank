@@ -454,6 +454,107 @@ describe('AEPS §10 — DisputeService', () => {
     });
   });
 
+  describe('onResolved hook', () => {
+    it('fires when dispute resolves and persists returned claim_id', async () => {
+      let now = 1_000_000;
+      const repo = new InMemoryRepo();
+      const calls: AepsDispute[] = [];
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => now,
+        onResolved: async (dispute) => {
+          calls.push(dispute);
+          return { claim_id: 999 };
+        },
+      });
+      const o = makeOracle();
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'sla_breach',
+        oracle_pubkeys: [o.pkHex],
+        oracle_threshold: 1,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const sig = schnorrSignOutcome(o.skHex, open.dispute.dispute_id, 'disputant_wins');
+      await svc.submitAttestation(open.dispute.dispute_id, o.pkHex, 'disputant_wins', sig);
+      expect(calls.length).toBe(1);
+      expect(calls[0].dispute_id).toBe(open.dispute.dispute_id);
+      expect(calls[0].state).toBe('resolved_disputant');
+      const updated = await repo.findDispute(open.dispute.dispute_id);
+      expect(updated?.claim_id).toBe(999);
+    });
+
+    it('does not fire while dispute remains open (below threshold)', async () => {
+      const repo = new InMemoryRepo();
+      const calls: AepsDispute[] = [];
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+        onResolved: async (d) => { calls.push(d); },
+      });
+      const oracles = [makeOracle(), makeOracle()];
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'fork',
+        oracle_pubkeys: oracles.map(o => o.pkHex),
+        oracle_threshold: 2,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const sig = schnorrSignOutcome(oracles[0].skHex, open.dispute.dispute_id, 'disputant_wins');
+      await svc.submitAttestation(open.dispute.dispute_id, oracles[0].pkHex, 'disputant_wins', sig);
+      expect(calls.length).toBe(0);
+    });
+
+    it('hook failure is logged but does not roll back resolution', async () => {
+      const repo = new InMemoryRepo();
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+        onResolved: async () => { throw new Error('claim engine down'); },
+      });
+      const o = makeOracle();
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'fork',
+        oracle_pubkeys: [o.pkHex],
+        oracle_threshold: 1,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const sig = schnorrSignOutcome(o.skHex, open.dispute.dispute_id, 'disputant_wins');
+      const r = await svc.submitAttestation(open.dispute.dispute_id, o.pkHex, 'disputant_wins', sig);
+      expect(r.status).toBe('ok');
+      const d = await repo.findDispute(open.dispute.dispute_id);
+      expect(d?.state).toBe('resolved_disputant');  // resolution stuck
+      expect(d?.claim_id).toBeNull();              // but no claim
+    });
+
+    it('hook can return void (no claim_id) — resolution proceeds without linkage', async () => {
+      const repo = new InMemoryRepo();
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+        onResolved: async () => { /* void */ },
+      });
+      const o = makeOracle();
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'non_payment',
+        oracle_pubkeys: [o.pkHex],
+        oracle_threshold: 1,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const sig = schnorrSignOutcome(o.skHex, open.dispute.dispute_id, 'disputant_wins');
+      await svc.submitAttestation(open.dispute.dispute_id, o.pkHex, 'disputant_wins', sig);
+      const d = await repo.findDispute(open.dispute.dispute_id);
+      expect(d?.state).toBe('resolved_disputant');
+      expect(d?.claim_id).toBeNull();
+    });
+  });
+
   describe('Schnorr verify primitives (BIP-340)', () => {
     it('schnorrVerify returns true for self-signed message', () => {
       const o = makeOracle();

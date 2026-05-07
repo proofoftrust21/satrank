@@ -53,8 +53,19 @@ const MULTIPLIERS_BY_TYPE: Record<DisputeType, number> = {
   non_payment: 1,
 };
 
+/** Hook called when a dispute resolves (state → resolved_disputant or
+ *  resolved_respondent). Returning a claim_id persists it on the dispute
+ *  row so observers can join dispute → slashing claim. The hook runs after
+ *  the state transition is committed ; failures are logged but don't roll
+ *  back the resolution (the dispute is settled regardless of whether a
+ *  Lightning slash succeeded). */
+export type DisputeResolvedHook = (
+  dispute: AepsDispute,
+) => Promise<{ claim_id?: number } | void>;
+
 export interface DisputeServiceDeps {
   repo: AepsDisputeRepository;
+  onResolved?: DisputeResolvedHook;
   now?: () => number;
 }
 
@@ -224,6 +235,33 @@ export class DisputeService {
         },
         'AEPS §10: dispute resolved by oracle threshold',
       );
+
+      // Fire the optional onResolved hook (e.g. ClaimEngine slashing). The
+      // dispute resolution is already committed ; hook failures don't roll
+      // back, they just log and continue. Returning a claim_id from the hook
+      // links the dispute to the slashing claim.
+      if (this.deps.onResolved) {
+        try {
+          // Fetch the freshly-updated dispute to pass the resolved state.
+          const resolved = await this.deps.repo.findDispute(disputeId);
+          if (resolved) {
+            const hookResult = await this.deps.onResolved(resolved);
+            if (hookResult && typeof hookResult === 'object' && hookResult.claim_id) {
+              await this.deps.repo.updateDisputeState(disputeId, newState, {
+                claim_id: hookResult.claim_id,
+              });
+            }
+          }
+        } catch (err) {
+          logger.error(
+            {
+              dispute_id: disputeId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            'AEPS §10: onResolved hook threw — dispute is resolved but slashing not triggered',
+          );
+        }
+      }
     }
 
     return { status: 'ok', attestation, dispute_state: newState };
