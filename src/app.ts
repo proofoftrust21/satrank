@@ -119,6 +119,7 @@ import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsA
 import { Kind31403Consumer } from './nostr/kind31403Consumer';
 // AEPS §8.5 (2026-05-08) — Nostr publication of detected fork events.
 import { buildAndSignForkEvent } from './services/aepsForkPublisher';
+import { Kind31410Consumer } from './nostr/kind31410Consumer';
 // AEPS §6.3 (2026-05-08) — Multi-hop HTLC chain HTTP surface.
 import { MultiHopChainRepository } from './repositories/multiHopChainRepository';
 import { MultiHopChainService } from './services/multiHopChainService';
@@ -687,6 +688,31 @@ export function createApp() {
         logger.warn(
           { error: err instanceof Error ? err.message : String(err) },
           'AEPS §8.5: kind 31403 consumer failed to start (will retry next boot)',
+        );
+      }
+    })();
+  }
+
+  // AEPS §8.5 (2026-05-08) — kind 31410 consumer ingests peer fork events.
+  // Each event records BOTH roots as observations on our side, which
+  // cascades into a local fork_event linking to OUR observation IDs.
+  if (process.env.AEPS_31410_CONSUMER_ENABLED !== 'false') {
+    void (async () => {
+      try {
+        // @ts-expect-error nostr-tools is ESM, dynamic import works at runtime
+        const { verifyEvent: verifyEventFn } = await import('nostr-tools/pure');
+        const aepsRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(Boolean);
+        const consumer = new Kind31410Consumer({
+          forkService: forkDetectionService,
+          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
+          relays: aepsRelays.length > 0 ? aepsRelays : undefined,
+        });
+        await consumer.start();
+        logger.info({ relays: aepsRelays.length }, 'AEPS §8.5: kind 31410 consumer started');
+      } catch (err) {
+        logger.warn(
+          { error: err instanceof Error ? err.message : String(err) },
+          'AEPS §8.5: kind 31410 consumer failed to start (will retry next boot)',
         );
       }
     })();
