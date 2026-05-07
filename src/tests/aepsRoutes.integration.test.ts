@@ -13,6 +13,7 @@ import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './hel
 import request from 'supertest';
 import express from 'express';
 import crypto from 'node:crypto';
+// @ts-expect-error — ESM subpath, runtime resolves fine
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { AepsObserverRepository } from '../repositories/aepsObserverRepository';
 import { ForkDetectionService } from '../services/forkDetectionService';
