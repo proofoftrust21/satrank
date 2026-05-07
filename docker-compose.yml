@@ -41,6 +41,14 @@ services:
       # Optional — when missing, fulfill mode=hold returns clean 503
       # hold_mode_unavailable rather than crashing.
       - ./fulfill.macaroon:/app/macaroons/fulfill.macaroon:ro
+      # Phase 12A — onchain macaroon (onchain:write only). Used by AEPS
+      # L1 anchor cron to broadcast the daily Merkle root in an OP_RETURN
+      # tx via WalletKit.SendOutputs. Baked out-of-band via:
+      #   lncli bakemacaroon --save_to <remote_dir>/onchain.macaroon \
+      #     onchain:write
+      # Optional — when missing, the broadcast service short-circuits
+      # with status='skipped_no_macaroon' (cron tick is a no-op).
+      - ./onchain.macaroon:/app/macaroons/onchain.macaroon:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>r.json()).then(j=>{process.exit(j.data.status==='ok'?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s
