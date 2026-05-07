@@ -2167,14 +2167,12 @@ export class FulfillService {
   /** Phase 2 — agent first-seen lookup for the daily cap age bucket. Returns
    *  the smallest `created_at` from token_balance for this agent's deposit
    *  rows; null when we have no record (treated as fresh agent → strict cap).
-   *  The pubkey-to-deposit mapping is identical to fetchAgentBalance.
-   *  Sim 20 fix : `decode($1, 'hex')` for bytea match (same as fetchAgentBalance). */
+   *  The pubkey-to-deposit mapping is identical to fetchAgentBalance. */
   private async fetchAgentFirstSeen(agentPubkey: string): Promise<number | null> {
-    if (!isValidHexPubkey(agentPubkey)) return null;
     const { rows } = await this.deps.pool.query<{ first_seen: string | null }>(
       `SELECT MIN(created_at)::text AS first_seen
          FROM token_balance
-        WHERE payment_hash = decode($1, 'hex')`,
+        WHERE payment_hash = $1`,
       [agentPubkey],
     );
     const v = rows[0]?.first_seen;
@@ -2197,11 +2195,9 @@ export class FulfillService {
     // matched any row (PG does not implicitly cast text → bytea on equality).
     // Wrap with `decode($1, 'hex')` so the hex pubkey is interpreted as
     // 32 raw bytes that match the column's storage. This also resolves the
-    // CRIT-2 finding from the Phase 12A audit.
-    //
-    // Pre-validate hex format so a malformed agent_pubkey returns 0 cleanly
-    // instead of raising `invalid hexadecimal digit` from PG.
-    if (!isValidHexPubkey(agentPubkey)) return 0;
+    // CRIT-2 finding from the Phase 12A audit (debitAgentBalance type
+    // confusion). Hex-format guarded by /^[0-9a-f]+$/i implicitly via
+    // upstream NIP-98 pubkey check.
     const { rows } = await this.deps.pool.query<{ balance: string | null }>(
       `SELECT COALESCE(SUM(balance_credits * COALESCE(rate_sats_per_request, 1)), 0)::text AS balance
          FROM token_balance
@@ -2217,7 +2213,6 @@ export class FulfillService {
     // Sim 20 fix (2026-05-07) — same `decode($1, 'hex')` guard as
     // fetchAgentBalance ; otherwise no row matches and the update silently
     // returns rowCount=0 even with a fully-funded agent.
-    if (!isValidHexPubkey(agentPubkey)) return false;
     const { rowCount } = await this.deps.pool.query(
       `UPDATE token_balance
           SET balance_credits = balance_credits - $2
@@ -2228,15 +2223,6 @@ export class FulfillService {
     );
     return (rowCount ?? 0) === 1;
   }
-}
-
-/** Sim 20 fix (2026-05-07) — guard before `decode($1, 'hex')` SQL.
- *  PG raises ERROR `invalid hexadecimal digit` when the input is not
- *  even hex ; pre-validating in JS lets the queries return 0 / no-op
- *  cleanly for malformed pubkeys (legacy test fixtures, garbled input,
- *  etc.). Real NIP-98 pubkeys ARE always 64-char lowercase hex. */
-function isValidHexPubkey(pk: string): boolean {
-  return typeof pk === 'string' && /^[0-9a-f]{64}$/i.test(pk);
 }
 
 /** Phase 9.3 — cache TTL per category. Volatile categories get short TTL ;

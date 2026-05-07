@@ -74,17 +74,6 @@ export interface IntentRanker {
 // when its operator is in active replay lockout. Pushed strongly enough
 // that any non-locked candidate ranks above. Returns the multiplier so
 // callers can also expose it in score_breakdown.
-//
-// Phase 12.11 (Sim 20 follow-up, 2026-05-07) — Sim 20 a09 verbatim :
-// "SatRank knew they were unhealthy yet still ranked them top-3". The 0.05
-// multiplier alone is not enough when ALL top candidates of a category
-// share one replay-storming operator (Lightning Enable proxy = ~80% of
-// finance/data candidates). Multiplying everyone by 0.05 leaves the same
-// top-3 ordering. Phase 12.11 introduces a HARD pre-filter via
-// `filterReplayLockout` ; rankers call it first to drop locked-out
-// candidates entirely. The 0.05 downrank is preserved as defense-in-depth
-// for the (rare) case where some candidates of a category are locked AND
-// some aren't — the non-locked ones rank above by a large margin.
 // ---------------------------------------------------------------------------
 const REPLAY_LOCKOUT_MULTIPLIER = 0.05;
 
@@ -96,31 +85,6 @@ function applyReplayLockout(
   if (!replayState || !candidate.operator_pubkey) return { score: baseScore, locked: false };
   if (!replayState.isLockedOut(candidate.operator_pubkey)) return { score: baseScore, locked: false };
   return { score: baseScore * REPLAY_LOCKOUT_MULTIPLIER, locked: true };
-}
-
-/** Phase 12.11 — hard pre-filter. Drops every candidate whose operator is
- *  currently in replay lockout. The intent surface should treat the result
- *  as "no_candidates" rather than ranking unhealthy operators top-K and
- *  letting the agent burn an RTT on a guaranteed `pay_skipped_replay_state`.
- *
- *  Returns `{ keep, dropped }` so callers can log / observe the drop ratio
- *  for the audit trail. When `replayState` is undefined (back-compat with
- *  tests), nothing is dropped. */
-export function filterReplayLockout(
-  candidates: ReadonlyArray<RankCandidate>,
-  replayState?: ReplayStateLookup,
-): { keep: RankCandidate[]; dropped: RankCandidate[] } {
-  if (!replayState) return { keep: [...candidates], dropped: [] };
-  const keep: RankCandidate[] = [];
-  const dropped: RankCandidate[] = [];
-  for (const c of candidates) {
-    if (c.operator_pubkey && replayState.isLockedOut(c.operator_pubkey)) {
-      dropped.push(c);
-    } else {
-      keep.push(c);
-    }
-  }
-  return { keep, dropped };
 }
 
 // ---------------------------------------------------------------------------
@@ -138,13 +102,7 @@ export class LegacyRanker implements IntentRanker {
     this.replayState = opts.replayState;
   }
   async rank(_text: string, candidates: ReadonlyArray<RankCandidate>): Promise<RankedCandidate[]> {
-    // Phase 12.11 — hard filter replay-locked candidates.
-    const { keep } = filterReplayLockout(candidates, this.replayState);
-    const scored = keep.map(c => {
-      // Defense-in-depth : applyReplayLockout still runs in case the
-      // filter was a no-op (no replayState injected) — the locked branch
-      // is unreachable when filter is active, but the breakdown shape
-      // stays consistent with the pre-Phase-12.11 contract.
+    const scored = candidates.map(c => {
       const { score, locked } = applyReplayLockout(c, c.p_e2e_pessimistic, this.replayState);
       const breakdown: Record<string, number> = { p_e2e: c.p_e2e_pessimistic };
       if (locked) breakdown.replay_lockout = 1;
@@ -210,16 +168,12 @@ export class Bm25HybridRanker implements IntentRanker {
       // applies in the legacy fallback path.
       return new LegacyRanker({ replayState: this.replayState }).rank(intentText, candidates);
     }
-    // Phase 12.11 — hard filter replay-locked candidates before scoring.
-    const { keep } = filterReplayLockout(candidates, this.replayState);
-    if (keep.length === 0) return [];
-    const filtered = keep;
     // Compute raw BM25 scores per candidate. Normalise to [0, 1] by
     // dividing by the max so the hybrid weighting is meaningful.
-    const rawScores = filtered.map(c => this.bm25.score(c.id, intentText));
+    const rawScores = candidates.map(c => this.bm25.score(c.id, intentText));
     const maxRaw = rawScores.reduce((m, s) => (s > m ? s : m), 0);
     const norm = (s: number): number => (maxRaw > 0 ? s / maxRaw : 0);
-    const scored = filtered.map((c, i) => {
+    const scored = candidates.map((c, i) => {
       const bm25Norm = norm(rawScores[i]);
       const baseScore = this.bm25Weight * bm25Norm + this.pE2eWeight * c.p_e2e_pessimistic;
       // Phase 12.9 — apply replay-state lockout downrank.

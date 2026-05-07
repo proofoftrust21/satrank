@@ -128,20 +128,9 @@ const CATEGORY_SYNONYMS: Record<string, string[]> = {
  *  input. The exact input goes first (preserves backwards compat for clients
  *  that already use canonical taxonomy), then synonym alternatives, then
  *  Phase 12.7 (2026-05-06) auto-fallback for unknown compound categories
- *  of the form "A/B" : we try data/A, data/B, A, B.
- *
- *  Phase 12.13 (Sim 20 follow-up, 2026-05-07) — REMOVED the trailing
- *  `push('data')` catch-all. Sim 20 a03 (energy/intelligence query) and
- *  a06 (news classifier persona supplying a text body) both got routed
- *  to the generic `data` pool — finance/FRED candidates and Bitcoin
- *  mempool fee oracles respectively. The agent paid sats for content
- *  semantically unrelated to the intent. Better to surface
- *  `no_candidates_for_intent` than to mis-route silently ; the SDK
- *  agent can then pivot or accept the empty result.
- *
- *  Compound A/B fallback is preserved : a real `data/finance` query
- *  lacking native operators still gracefully falls back to `finance`
- *  alone if that pool exists. */
+ *  of the form "A/B" : we try data/A, data/B, A, B, then 'data' as the
+ *  ultimate catch. resolveIntent's first-non-empty-pool-wins logic means
+ *  the real cost of extra candidates is zero. */
 export function expandCategory(input: string): string[] {
   const lc = input.toLowerCase();
   const synonyms = CATEGORY_SYNONYMS[lc] ?? [];
@@ -153,7 +142,7 @@ export function expandCategory(input: string): string[] {
   };
   push(input);
   for (const c of synonyms) push(c);
-  // Compound A/B auto-fallback for unknown compound categories.
+  // Phase 12.7 auto-fallback for unknown compound categories.
   if (lc.includes('/') && !CATEGORY_SYNONYMS[lc]) {
     const parts = lc.split('/');
     if (parts.length === 2) {
@@ -165,6 +154,7 @@ export function expandCategory(input: string): string[] {
         push(a);
       }
     }
+    push('data');
   }
   return out;
 }
@@ -369,17 +359,7 @@ export class IntentService {
       if (req.max_latency_ms != null) {
         const median = await this.deps.serviceEndpointRepo.medianHttpLatency7d(svc.url);
         if (median == null) continue;
-        // Phase 12.12 (Sim 20 follow-up, 2026-05-07) — strict pre-filter.
-        // Sim 12 fix introduced a 1500ms buffer for the challenge fetch ;
-        // Sim 20 a02 + a07 surfaced that the buffer was NOT applied to the
-        // full pay+body-read RTT. An endpoint with median=4000ms passes the
-        // raw `< 4500` check, but the agent's deadline includes the L402
-        // pay roundtrip (~2-3s on Lightning) AND the body read. Net : 2/4
-        // calls timed out post-pay despite "passing" the median filter.
-        // Tightening to `median > max_latency - SAFETY_BUFFER_MS` so the
-        // pay+read window can actually fit under the agent's deadline.
-        const SAFETY_BUFFER_MS = 1500;
-        if (median > req.max_latency_ms - SAFETY_BUFFER_MS) continue;
+        if (median > req.max_latency_ms) continue;
       }
       matched.push(svc);
     }

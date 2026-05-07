@@ -59,31 +59,18 @@ describe('Phase 12.4 — LegacyRanker', () => {
   });
 });
 
-describe('Phase 12.9 + 12.11 — replay-state lockout : downrank then filter', () => {
-  // Phase 12.11 (Sim 20 follow-up) — locked-out operators are now FILTERED
-  // out of the candidate list, not just downranked. The .9 downrank logic
-  // is preserved as defense-in-depth but unreachable in the standard flow.
-  it('LegacyRanker filters out a locked-out operator', async () => {
+describe('Phase 12.9 — replay-state lockout downrank', () => {
+  it('LegacyRanker downranks a locked-out operator', async () => {
     const replay = makeReplayLookup(new Set(['op-bad']));
     const r = new LegacyRanker({ replayState: replay });
     const ranked = await r.rank('x', [
       mk(1, { p_e2e_pessimistic: 0.95, operator_pubkey: 'op-bad' }),
       mk(2, { p_e2e_pessimistic: 0.55, operator_pubkey: 'op-good' }),
     ]);
-    // Only the non-locked operator survives.
-    expect(ranked).toHaveLength(1);
-    expect(ranked[0].candidate.id).toBe(2);
-  });
-
-  it('LegacyRanker returns empty when EVERY candidate is locked out', async () => {
-    const replay = makeReplayLookup(new Set(['op-bad-1', 'op-bad-2']));
-    const r = new LegacyRanker({ replayState: replay });
-    const ranked = await r.rank('x', [
-      mk(1, { p_e2e_pessimistic: 0.95, operator_pubkey: 'op-bad-1' }),
-      mk(2, { p_e2e_pessimistic: 0.55, operator_pubkey: 'op-bad-2' }),
-    ]);
-    // Phase 12.11 — better to surface "no_candidates" than burn an RTT.
-    expect(ranked).toHaveLength(0);
+    expect(ranked[0].candidate.id).toBe(2); // good operator wins despite lower p_e2e
+    expect(ranked[1].candidate.id).toBe(1);
+    expect(ranked[1].score_breakdown.replay_lockout).toBe(1);
+    expect(ranked[1].reason).toBe('legacy_p_e2e_replay_lockout');
   });
 
   it('LegacyRanker without replayState behaves as before', async () => {
@@ -95,7 +82,7 @@ describe('Phase 12.9 + 12.11 — replay-state lockout : downrank then filter', (
     expect(ranked[0].candidate.id).toBe(1);
   });
 
-  it('Bm25HybridRanker filters out a locked-out operator', async () => {
+  it('Bm25HybridRanker downranks a locked-out operator', async () => {
     const bm25 = new Bm25Service();
     bm25.buildIndex([
       { id: 1, text: 'bitcoin trading API real-time' },
@@ -107,21 +94,20 @@ describe('Phase 12.9 + 12.11 — replay-state lockout : downrank then filter', (
       mk(1, { p_e2e_pessimistic: 0.85, operator_pubkey: 'op-bad' }),
       mk(2, { p_e2e_pessimistic: 0.40, operator_pubkey: 'op-good' }),
     ]);
-    expect(ranked).toHaveLength(1);
     expect(ranked[0].candidate.id).toBe(2);
+    expect(ranked.find(c => c.candidate.id === 1)?.score_breakdown.replay_lockout).toBe(1);
   });
 
-  it('Bm25HybridRanker fallback to legacy also filters lockouts', async () => {
+  it('Bm25HybridRanker fallback to legacy still downranks lockout', async () => {
     const bm25 = new Bm25Service();
     bm25.buildIndex([{ id: 1, text: 'x' }]);
     const replay = makeReplayLookup(new Set(['op-bad']));
     const r = new Bm25HybridRanker({ bm25, replayState: replay });
-    // Empty intent text → legacy fallback. Legacy still applies lockout filter.
+    // Empty intent text → legacy fallback. Legacy still applies lockout.
     const ranked = await r.rank('', [
       mk(1, { p_e2e_pessimistic: 0.95, operator_pubkey: 'op-bad' }),
       mk(2, { p_e2e_pessimistic: 0.55, operator_pubkey: 'op-good' }),
     ]);
-    expect(ranked).toHaveLength(1);
     expect(ranked[0].candidate.id).toBe(2);
   });
 
@@ -132,9 +118,7 @@ describe('Phase 12.9 + 12.11 — replay-state lockout : downrank then filter', (
       mk(1, { p_e2e_pessimistic: 0.95, operator_pubkey: null }),
       mk(2, { p_e2e_pessimistic: 0.55, operator_pubkey: 'op-bad' }),
     ]);
-    // Null-operator candidate kept ; op-bad filtered out.
-    expect(ranked).toHaveLength(1);
-    expect(ranked[0].candidate.id).toBe(1);
+    expect(ranked[0].candidate.id).toBe(1); // null operator stays at top despite same set
   });
 });
 

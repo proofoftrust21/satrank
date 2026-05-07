@@ -52,17 +52,15 @@ describe('expandCategory (Sim 9 Fix 3)', () => {
       ]);
     });
 
-    it('auto-fallback for unknown compound A/B tries data/B, data/A, B, A (no `data` catch-all post-Phase-12.13)', () => {
+    it('auto-fallback for unknown compound A/B tries data/B, data/A, B, A, data', () => {
       // Compound not in the explicit synonyms map.
-      // Phase 12.13 (Sim 20 follow-up) — removed the trailing `data`
-      // catch-all to prevent silent mis-routing of off-taxonomy intents
-      // (a03 energy/intelligence, a06 news classifier).
       expect(expandCategory('foo/bar')).toEqual([
         'foo/bar',
         'data/bar',
         'data/foo',
         'bar',
         'foo',
+        'data',
       ]);
     });
 
@@ -77,20 +75,19 @@ describe('expandCategory (Sim 9 Fix 3)', () => {
     });
 
     it('case-insensitive on compound', () => {
-      // Phase 12.13 — no trailing `data` catch-all.
       expect(expandCategory('Foo/Bar')).toEqual([
         'Foo/Bar',
         'data/bar',
         'data/foo',
         'bar',
         'foo',
+        'data',
       ]);
     });
 
-    it('three-segment compound only auto-falls when 2-part (Phase 12.13: no `data` catch-all)', () => {
-      // 'data/a/b' has 3 parts → auto-fallback skipped. Phase 12.13 also
-      // removed the unconditional `data` push.
-      expect(expandCategory('data/a/b')).toEqual(['data/a/b']);
+    it('three-segment compound only auto-falls when 2-part', () => {
+      // 'data/a/b' has 3 parts → auto-fallback skipped, only ultimate 'data' added.
+      expect(expandCategory('data/a/b')).toEqual(['data/a/b', 'data']);
     });
   });
 });

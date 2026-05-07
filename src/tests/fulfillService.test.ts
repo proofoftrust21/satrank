@@ -151,20 +151,12 @@ function makeFetch(routes: Array<{ match: (url: string, init?: RequestInit) => b
   }) as unknown as typeof fetch;
 }
 
-// Phase 12A audit fix (2026-05-07) — token_balance.payment_hash is bytea ;
-// the production code wraps the param with `decode($1, 'hex')`. Test pubkey
-// MUST be valid hex now (the legacy 'agent-hash-aa...' value would raise
-// `invalid hexadecimal digit` from PG).
-const AGENT_HASH = 'a'.repeat(64);
+const AGENT_HASH = 'agent-hash-' + 'a'.repeat(54); // matches our 64-char convention
 
 async function seedAgentBalance(pool: Pool, agentPubkey: string, sats: number): Promise<void> {
-  // Phase 12A audit fix (2026-05-07) — `payment_hash` is `bytea`. The
-  // production code now uses `decode($1, 'hex')` ; mirror it here so the
-  // test fixture row matches what fetchAgentBalance / debitAgentBalance
-  // look up.
   await pool.query(
     `INSERT INTO token_balance (payment_hash, balance_credits, rate_sats_per_request, created_at)
-     VALUES (decode($1, 'hex'), $2, 1, EXTRACT(EPOCH FROM NOW())::bigint)
+     VALUES ($1, $2, 1, EXTRACT(EPOCH FROM NOW())::bigint)
      ON CONFLICT (payment_hash) DO UPDATE SET balance_credits = $2`,
     [agentPubkey, sats],
   );
@@ -246,7 +238,7 @@ describe('FulfillService', () => {
 
     // Agent balance was debited atomically.
     const { rows } = await pool.query<{ b: string }>(
-      `SELECT balance_credits::text AS b FROM token_balance WHERE payment_hash = decode($1, 'hex')`,
+      'SELECT balance_credits::text AS b FROM token_balance WHERE payment_hash = $1',
       [AGENT_HASH],
     );
     expect(Number(rows[0].b)).toBe(100 - 5 - result.premium_sats);
@@ -315,7 +307,7 @@ describe('FulfillService', () => {
 
     // Agent only paid 5 sats — failed attempt was absorbed by SatRank's pool.
     const { rows } = await pool.query<{ b: string }>(
-      `SELECT balance_credits::text AS b FROM token_balance WHERE payment_hash = decode($1, 'hex')`,
+      'SELECT balance_credits::text AS b FROM token_balance WHERE payment_hash = $1',
       [AGENT_HASH],
     );
     expect(Number(rows[0].b)).toBe(100 - 5 - result.premium_sats);
@@ -360,7 +352,7 @@ describe('FulfillService', () => {
 
     // Agent balance unchanged.
     const { rows } = await pool.query<{ b: string }>(
-      `SELECT balance_credits::text AS b FROM token_balance WHERE payment_hash = decode($1, 'hex')`,
+      'SELECT balance_credits::text AS b FROM token_balance WHERE payment_hash = $1',
       [AGENT_HASH],
     );
     expect(Number(rows[0].b)).toBe(100);
@@ -1403,7 +1395,7 @@ describe('FulfillService — Phase 2 refund engine integration', () => {
     // Set agent_first_seen via token_balance.created_at: refresh balance with
     // a recent timestamp so the agent reads as `fresh`.
     await pool.query(
-      `UPDATE token_balance SET created_at = $2 WHERE payment_hash = decode($1, 'hex')`,
+      `UPDATE token_balance SET created_at = $2 WHERE payment_hash = $1`,
       [AGENT_HASH, Math.floor(Date.now() / 1000) - 86400], // 1 day old → fresh
     );
 
@@ -1450,7 +1442,7 @@ describe('FulfillService — Phase 2 refund engine integration', () => {
     });
     // Make the agent established by backdating token_balance.created_at.
     await pool.query(
-      `UPDATE token_balance SET created_at = $2 WHERE payment_hash = decode($1, 'hex')`,
+      `UPDATE token_balance SET created_at = $2 WHERE payment_hash = $1`,
       [AGENT_HASH, Math.floor(Date.now() / 1000) - 60 * 86400], // 60 days
     );
 
