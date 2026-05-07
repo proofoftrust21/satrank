@@ -230,6 +230,17 @@ const aepsEvidenceReceiptArgs = z.object({
 const aepsGetDisputeArgs = z.object({
   dispute_id: z.string().regex(/^dis_[0-9a-f]{32}$/),
 });
+const aepsListForksArgs = z.object({
+  operator_pubkey: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+});
+const aepsGetObservationsArgs = z.object({
+  operator_pubkey: z.string().regex(/^[0-9a-f]{64}$/),
+  day_utc: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+const aepsGetMultihopArgs = z.object({
+  chain_id: z.string().regex(/^mhc_[0-9a-f]{32}$/),
+});
 const submitAttestationArgs = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
   attesterHash: hashSchema,
@@ -550,6 +561,40 @@ async function main() {
             dispute_id: { type: 'string', pattern: '^dis_[0-9a-f]{32}$', description: 'AEPS dispute identifier (returned by openDispute)' },
           },
           required: ['dispute_id'],
+        },
+      },
+      {
+        name: 'aeps.list_forks',
+        description: 'AEPS §8.5 — List detected fork events (public, no auth). A fork is publicly slashable evidence that an operator anchored two different daily Merkle roots for the same UTC day. Returns the list of fork events ordered by detected_at DESC. Each fork carries operator_pubkey, day_utc, root_hex_a + root_hex_b (lex-ordered), nostr_event_id (kind 31410 publication ref), claim_id (slashing claim if opened). Optional operator_pubkey filter narrows to one operator. Use this to monitor a specific operator for equivocation or to discover network-wide fork events.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            operator_pubkey: { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'Optional: filter to a specific operator pubkey' },
+            limit: { type: 'number', minimum: 1, maximum: 500, default: 100, description: 'Max number of fork events to return' },
+          },
+        },
+      },
+      {
+        name: 'aeps.get_observations',
+        description: 'AEPS §8.5 — Return all observed daily anchors for a given (operator, day) bucket, grouped by root_hex (public, no auth). distinct_roots > 1 means the operator equivocated for that day. Each root entry lists the sources (self / l1 / nostr / http / manual) + source_refs + observed_at timestamps. The audit trail input to fork detection — useful for verifying WHY a fork was emitted, or for detecting equivocation that has not yet been emitted as a fork event (e.g. observations from peer Nostr 31403 events still arriving).',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            operator_pubkey: { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'Operator pubkey (64-char hex)' },
+            day_utc: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'UTC day in YYYY-MM-DD format' },
+          },
+          required: ['operator_pubkey', 'day_utc'],
+        },
+      },
+      {
+        name: 'aeps.get_multihop',
+        description: 'AEPS §6.3 — Read multi-hop HTLC chain state (public, no auth). Returns chain_id, agent_pubkey, preimage_hash, preimage_revealed (only after reveal step), n_legs, total_amount_msat, state (planning/locked/settling/complete/aborted), per-leg state (planned/locked/settled/aborted) + htlc_ref + amount_msat + request/response sha256 hashes. Use this to monitor a chain lifecycle, verify atomic settlement, or check why a chain aborted.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            chain_id: { type: 'string', pattern: '^mhc_[0-9a-f]{32}$', description: 'AEPS multi-hop chain identifier (returned by openMultihopChain)' },
+          },
+          required: ['chain_id'],
         },
       },
       {
@@ -889,6 +934,38 @@ async function main() {
             return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
           }
           const url = new URL(`/api/aeps/dispute/${encodeURIComponent(parsed.data.dispute_id)}`, SATRANK_API_BASE);
+          return await proxyAepsGet(url.toString());
+        }
+
+        case 'aeps.list_forks': {
+          const parsed = aepsListForksArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL('/api/aeps/forks', SATRANK_API_BASE);
+          if (parsed.data.operator_pubkey) url.searchParams.set('operator_pubkey', parsed.data.operator_pubkey);
+          if (parsed.data.limit) url.searchParams.set('limit', String(parsed.data.limit));
+          return await proxyAepsGet(url.toString());
+        }
+
+        case 'aeps.get_observations': {
+          const parsed = aepsGetObservationsArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL(
+            `/api/aeps/observations/${encodeURIComponent(parsed.data.operator_pubkey)}/${encodeURIComponent(parsed.data.day_utc)}`,
+            SATRANK_API_BASE,
+          );
+          return await proxyAepsGet(url.toString());
+        }
+
+        case 'aeps.get_multihop': {
+          const parsed = aepsGetMultihopArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL(`/api/aeps/multihop/${encodeURIComponent(parsed.data.chain_id)}`, SATRANK_API_BASE);
           return await proxyAepsGet(url.toString());
         }
 
