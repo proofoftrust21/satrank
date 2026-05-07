@@ -6,20 +6,29 @@ License: MIT.
 
 ## Status
 
-Scaffolding. Tracks the TypeScript reference (`src/` in the parent repo) for spec conformance. Required for AEPS v0.1 ratification per the whitepaper §12.2.
+v0.1 ratification candidate. Tracks the TypeScript reference for spec
+conformance ; both impls now pass all 16 cross-impl vectors in
+`../../spec/test-vectors/`.
 
 ## Scope (v0.1)
 
-- AEPS-§4 capability descriptor types (parse + canonical serialization).
-- AEPS-§7 bonds: type definitions and lifecycle state machine (no Lightning yet).
-- AEPS-§8 evidence: Ed25519 signing, RFC 6962 Merkle batch, OpenTimestamps anchor format.
-- AEPS-§10 disputes: structures + DLC-attestation parsing.
+- §1 Identity : `NostrPubkey` 32-byte hex parse + display.
+- §4 Capability : `CapabilityDescriptor` struct + sorted-keys
+  `canonical_json` + `compute_endpoint_id` (sha256 of canonical bytes).
+- §8 Evidence : Ed25519 sign / verify (`ed25519-dalek`),
+  `build_op_return_payload` (49-byte `AEPS1` payload) +
+  `utc_day_index` (Howard Hinnant civil-from-days, matches TS impl).
+- §10 Disputes : `AttestationOutcome` enum, `build_outcome_message` +
+  `build_outcome_message_hash` — the canonical bytes BIP-340 signs.
+- RFC 6962 Merkle : `leaf_hash` (0x00 prefix) / `node_hash` (0x01),
+  `merkle_root`, `inclusion_proof`, `verify_inclusion_proof`.
 
-Out of scope for v0.1 of this Rust impl (deferred to v0.2):
+Out of scope for v0.1 (deferred to v0.2) :
 
-- Full LDK integration for hold-invoice + BOLT12.
+- LDK integration for hold-invoice + BOLT12.
 - HTLC chain coordination across operators.
-- HTTP server (the TS impl serves both APIs in v0.1; the Rust impl provides a CLI verifier).
+- HTTP server (TS impl serves the routes ; Rust ships the verifier
+  primitives so CLI tooling can be built on top).
 
 ## What this crate is for
 
@@ -37,4 +46,24 @@ cargo test
 
 ## Conformance test vectors
 
-When both TS and Rust impls run the same vectors and produce the same outputs, they are conformant. Vectors live in `../../spec/test-vectors/` (to be added).
+Live in [`../../spec/test-vectors/`](../../spec/test-vectors/). Both
+implementations read the SAME fixtures and produce byte-identical output.
+
+```sh
+cargo test --test conformance
+```
+
+Currently 4 conformance suites against 16 vectors :
+
+| Test | Section | Vectors |
+|---|---|---|
+| `merkle_conformance` | RFC 6962 Merkle root | 6 |
+| `op_return_conformance` | §8.3 OP_RETURN payload | 4 |
+| `dispute_outcome_conformance` | §10 outcome message | 4 |
+| `capability_descriptor_conformance` | §4 capability descriptor | 2 |
+
+Plus 32 unit tests in the lib itself.
+
+Any divergence between Rust output and the fixture's `expected_*` field
+indicates a bug — either the spec is ambiguous (file a whitepaper PR)
+or one of the implementations diverged from the spec.
