@@ -152,6 +152,44 @@ export class WalletError extends Error {
   }
 }
 
+// SDK 1.6 (2026-05-08) — AEPS §10 typed errors.
+//
+// The server's structured error envelope (Phase 11A.2) uses lowercase
+// codes for AEPS-specific failures. The SDK exposes them as distinct
+// classes so callers can `instanceof` instead of string-matching :
+//   AepsDisputeNotFoundError    — 404 dispute_not_found
+//   AepsDisputeNotOpenError     — 409 dispute_not_open
+//   AepsOracleNotInSetError     — 403 oracle_not_in_set
+//   AepsSignatureInvalidError   — 400 signature_invalid (BIP-340 verify)
+
+export class AepsDisputeNotFoundError extends SatRankError {
+  constructor(message: string) {
+    super(message, 404, 'dispute_not_found');
+    this.name = 'AepsDisputeNotFoundError';
+  }
+}
+
+export class AepsDisputeNotOpenError extends SatRankError {
+  constructor(message: string) {
+    super(message, 409, 'dispute_not_open');
+    this.name = 'AepsDisputeNotOpenError';
+  }
+}
+
+export class AepsOracleNotInSetError extends SatRankError {
+  constructor(message: string) {
+    super(message, 403, 'oracle_not_in_set');
+    this.name = 'AepsOracleNotInSetError';
+  }
+}
+
+export class AepsSignatureInvalidError extends SatRankError {
+  constructor(message: string) {
+    super(message, 400, 'signature_invalid');
+    this.name = 'AepsSignatureInvalidError';
+  }
+}
+
 /** Map an HTTP response to a typed SatRankError subclass. */
 export function errorFromResponse(
   status: number,
@@ -159,7 +197,10 @@ export function errorFromResponse(
   message: string,
 ): SatRankError {
   const msg = message || `HTTP ${status}`;
-  if (status === 400) return new ValidationSatRankError(msg);
+  if (status === 400) {
+    if (code === 'signature_invalid') return new AepsSignatureInvalidError(msg);
+    return new ValidationSatRankError(msg);
+  }
   if (status === 401) {
     if (code === 'NIP98_INVALID') return new Nip98InvalidError(msg);
     return new UnauthorizedError(msg);
@@ -171,11 +212,16 @@ export function errorFromResponse(
   }
   if (status === 403) {
     if (code === 'OWNERSHIP_MISMATCH') return new OwnershipMismatchError(msg);
+    if (code === 'oracle_not_in_set') return new AepsOracleNotInSetError(msg);
     return new SatRankError(msg, 403, code ?? 'FORBIDDEN');
   }
-  if (status === 404) return new NotFoundSatRankError(msg);
+  if (status === 404) {
+    if (code === 'dispute_not_found') return new AepsDisputeNotFoundError(msg);
+    return new NotFoundSatRankError(msg);
+  }
   if (status === 409) {
     if (code === 'ALREADY_CLAIMED') return new AlreadyClaimedError(msg);
+    if (code === 'dispute_not_open') return new AepsDisputeNotOpenError(msg);
     return new DuplicateReportError(msg);
   }
   if (status === 429) return new RateLimitedError(msg);

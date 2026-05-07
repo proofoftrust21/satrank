@@ -493,3 +493,96 @@ export interface EvidenceReceipt {
   verifier_doc: string;
   well_known_pubkey_url: string;
 }
+
+// SDK 1.6 (2026-05-08) — AEPS §10 dispute types.
+
+export type AepsDisputeType =
+  | 'content_correctness'
+  | 'sla_breach'
+  | 'fork'
+  | 'non_payment'
+  | 'false_dispute';
+
+export type AepsAttestationOutcome = 'disputant_wins' | 'respondent_wins';
+
+export type AepsDisputeState =
+  | 'open'
+  | 'resolved_disputant'
+  | 'resolved_respondent'
+  | 'expired'
+  | 'aborted';
+
+export interface AepsDisputeOpenInput {
+  /** 64-char hex pubkey of the party being disputed. */
+  respondent_pubkey: string;
+  dispute_type: AepsDisputeType;
+  /** Optional pointer to evidence_receipts.receipt_id (content/SLA disputes). */
+  receipt_id?: number;
+  /** Optional pointer to aeps_fork_events.fork_event_id (fork disputes). */
+  fork_event_id?: number;
+  /** Pre-agreed oracle threshold set. 64-char hex BIP-340 x-only pubkeys. */
+  oracle_pubkeys: string[];
+  /** n-of-m. Must be in [1, oracle_pubkeys.length]. */
+  oracle_threshold: number;
+  ttl_sec?: number;
+  dispute_reason?: string;
+}
+
+export interface AepsDisputeOutcomeMessage {
+  /** Canonical-JSON bytes the oracle signs (UTF-8 string). */
+  canonical: string;
+  /** SHA-256 hex of the canonical bytes — the 32 bytes BIP-340 signs. */
+  hash_hex: string;
+}
+
+export interface AepsDisputeOpenResult {
+  dispute_id: string;
+  state: AepsDisputeState;
+  multiplier: 1 | 2 | 3 | 5;
+  oracle_pubkeys: string[];
+  oracle_threshold: number;
+  expires_at: number;
+  outcome_messages: {
+    disputant_wins: AepsDisputeOutcomeMessage;
+    respondent_wins: AepsDisputeOutcomeMessage;
+  };
+}
+
+export interface AepsAttestationInput {
+  outcome: AepsAttestationOutcome;
+  /** 128-char hex BIP-340 Schnorr signature of the canonical outcome
+   *  message hash (returned by AepsDisputeOpenResult.outcome_messages). */
+  signature_hex: string;
+}
+
+export interface AepsAttestationResult {
+  dispute_id: string;
+  attestation_id: number;
+  dispute_state: AepsDisputeState;
+}
+
+export interface AepsDisputeAttestationView {
+  oracle_pubkey: string;
+  outcome: AepsAttestationOutcome;
+  signed_at: number;
+}
+
+export interface AepsDisputeView {
+  dispute_id: string;
+  disputant_pubkey: string;
+  respondent_pubkey: string;
+  dispute_type: AepsDisputeType;
+  multiplier: number;
+  oracle_pubkeys: string[];
+  oracle_threshold: number;
+  state: AepsDisputeState;
+  expires_at: number;
+  created_at: number;
+  resolved_at: number | null;
+  claim_id: number | null;
+  attestation_counts: {
+    disputant_wins: number;
+    respondent_wins: number;
+  };
+  attestations: AepsDisputeAttestationView[];
+}

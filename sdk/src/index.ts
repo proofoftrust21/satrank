@@ -41,6 +41,17 @@ export type {
   ProxyFulfillExecuteInput,
   // SDK 1.5.0 — evidence receipts (Phase 8.3)
   EvidenceReceipt,
+  // SDK 1.6.0 — AEPS §10 disputes
+  AepsDisputeType,
+  AepsAttestationOutcome,
+  AepsDisputeState,
+  AepsDisputeOpenInput,
+  AepsDisputeOpenResult,
+  AepsDisputeOutcomeMessage,
+  AepsAttestationInput,
+  AepsAttestationResult,
+  AepsDisputeAttestationView,
+  AepsDisputeView,
 } from './types';
 
 export {
@@ -61,6 +72,11 @@ export {
   Nip98InvalidError,
   AlreadyClaimedError,
   OwnershipMismatchError,
+  // SDK 1.6.0 — AEPS §10 dispute-specific error subclasses
+  AepsDisputeNotFoundError,
+  AepsDisputeNotOpenError,
+  AepsOracleNotInSetError,
+  AepsSignatureInvalidError,
 } from './errors';
 
 // Phase 7.2 — federation aggregation primitives.

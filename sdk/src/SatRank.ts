@@ -16,6 +16,11 @@ import type {
   ProxyFulfillQuoteResult,
   ProxyFulfillExecuteInput,
   EvidenceReceipt,
+  AepsDisputeOpenInput,
+  AepsDisputeOpenResult,
+  AepsAttestationInput,
+  AepsAttestationResult,
+  AepsDisputeView,
 } from './types';
 
 interface InternalOptions {
@@ -210,6 +215,64 @@ export class SatRank {
    *  evidence(). */
   evidenceEndpoint(jobId: string): string {
     return `${this.options.apiBase}/api/fulfill/${encodeURIComponent(jobId)}/evidence`;
+  }
+
+  // ===== AEPS §10 disputes (SDK 1.6.0) =====
+
+  /** AEPS §10 — open a dispute against a respondent. NIP-98-gated ;
+   *  the caller's pubkey is the disputant. The response includes
+   *  `outcome_messages.{disputant_wins,respondent_wins}.{canonical,
+   *  hash_hex}` — the canonical bytes + sha256 each oracle in
+   *  `oracle_pubkeys` must BIP-340-sign for their attestation.
+   *
+   *  Multipliers per dispute_type (§10.1) :
+   *    content_correctness, fork → 5×
+   *    sla_breach, false_dispute → 3×
+   *    non_payment               → 1×
+   *
+   *  Errors :
+   *    - Nip98InvalidError (401)
+   *    - ValidationSatRankError (400) — threshold > pubkeys.length, etc.
+   */
+  async openDispute(input: AepsDisputeOpenInput, authorization: string): Promise<AepsDisputeOpenResult> {
+    return this.api.postAepsDispute(input, authorization);
+  }
+
+  /** AEPS §10 — submit a Schnorr attestation as one of the dispute's
+   *  oracles. The auth pubkey MUST equal the oracle pubkey ;
+   *  `signature_hex` is BIP-340 over the canonical outcome message
+   *  hash returned by openDispute().
+   *
+   *  Errors :
+   *    - AepsDisputeNotFoundError (404)
+   *    - AepsDisputeNotOpenError (409) — already resolved/expired
+   *    - AepsOracleNotInSetError (403) — caller pubkey not in dispute set
+   *    - AepsSignatureInvalidError (400) — BIP-340 verify failed
+   */
+  async submitAttestation(
+    disputeId: string,
+    input: AepsAttestationInput,
+    authorization: string,
+  ): Promise<AepsAttestationResult> {
+    return this.api.postAepsAttestation(disputeId, input, authorization);
+  }
+
+  /** AEPS §10 — read dispute state + per-outcome attestation counts.
+   *  Public, no auth. Returns AepsDisputeNotFoundError on unknown id. */
+  async getDispute(disputeId: string): Promise<AepsDisputeView> {
+    return this.api.getAepsDispute(disputeId);
+  }
+
+  /** AEPS §10 — canonical URL agents must sign in their NIP-98 `u` tag
+   *  when calling openDispute(). */
+  disputeEndpoint(): string {
+    return `${this.options.apiBase}/api/aeps/dispute`;
+  }
+
+  /** AEPS §10 — canonical URL agents must sign in their NIP-98 `u` tag
+   *  when calling submitAttestation() for the given dispute_id. */
+  attestationEndpoint(disputeId: string): string {
+    return `${this.options.apiBase}/api/aeps/dispute/${encodeURIComponent(disputeId)}/attestation`;
   }
 
   _options(): Readonly<InternalOptions> {

@@ -17,6 +17,11 @@ import type {
   ProxyFulfillResult,
   ProxyFulfillQuoteResult,
   EvidenceReceipt,
+  AepsDisputeOpenInput,
+  AepsDisputeOpenResult,
+  AepsAttestationInput,
+  AepsAttestationResult,
+  AepsDisputeView,
 } from '../types';
 
 export interface ApiClientOptions {
@@ -172,6 +177,63 @@ export class ApiClient {
       'POST',
       '/api/fulfill/quote',
       body,
+    );
+    return wrapped.data;
+  }
+
+  // ===== AEPS §10 disputes (SDK 1.6.0) =====
+
+  /** AEPS §10 — open a dispute. NIP-98-gated : the caller's pubkey is
+   *  recorded as `disputant_pubkey` on the dispute row. The response's
+   *  `outcome_messages` give the canonical bytes + sha256 each oracle
+   *  must BIP-340-sign for their attestation. */
+  async postAepsDispute(
+    input: AepsDisputeOpenInput,
+    authorizationHeader: string,
+  ): Promise<AepsDisputeOpenResult> {
+    const body = stripUndefined({
+      respondent_pubkey: input.respondent_pubkey,
+      dispute_type: input.dispute_type,
+      receipt_id: input.receipt_id,
+      fork_event_id: input.fork_event_id,
+      oracle_pubkeys: input.oracle_pubkeys,
+      oracle_threshold: input.oracle_threshold,
+      ttl_sec: input.ttl_sec,
+      dispute_reason: input.dispute_reason,
+    });
+    const wrapped = await this.request<{ data: AepsDisputeOpenResult }>(
+      'POST',
+      '/api/aeps/dispute',
+      body,
+      { customAuthorization: authorizationHeader },
+    );
+    return wrapped.data;
+  }
+
+  /** AEPS §10 — submit a Schnorr attestation as one of the dispute's
+   *  oracles. NIP-98-gated AND the auth pubkey MUST equal the oracle
+   *  pubkey. The signature_hex is BIP-340 over the canonical outcome
+   *  message hash returned in postAepsDispute's outcome_messages. */
+  async postAepsAttestation(
+    disputeId: string,
+    input: AepsAttestationInput,
+    authorizationHeader: string,
+  ): Promise<AepsAttestationResult> {
+    const wrapped = await this.request<{ data: AepsAttestationResult }>(
+      'POST',
+      `/api/aeps/dispute/${encodeURIComponent(disputeId)}/attestation`,
+      input,
+      { customAuthorization: authorizationHeader },
+    );
+    return wrapped.data;
+  }
+
+  /** AEPS §10 — read dispute state + per-outcome attestation counts.
+   *  Public, no auth. */
+  async getAepsDispute(disputeId: string): Promise<AepsDisputeView> {
+    const wrapped = await this.request<{ data: AepsDisputeView }>(
+      'GET',
+      `/api/aeps/dispute/${encodeURIComponent(disputeId)}`,
     );
     return wrapped.data;
   }
@@ -381,14 +443,19 @@ export class ApiClient {
     }
 
     if (!res.ok) {
-      const errBody = parsed as
-        | { error?: { code?: string; message?: string } }
-        | null;
-      throw errorFromResponse(
-        res.status,
-        errBody?.error?.code,
-        errBody?.error?.message ?? `HTTP ${res.status} at ${path}`,
-      );
+      // Phase 11A.2 (server) — error envelope shape switched to flat
+      // `{ error: <code>, message: <text>, next_action: ... }`. Older
+      // legacy paths still emit nested `{ error: { code, message } }`.
+      // Accept BOTH shapes.
+      const errBody = parsed as {
+        error?: string | { code?: string; message?: string };
+        message?: string;
+      } | null;
+      const code = typeof errBody?.error === 'string' ? errBody.error : errBody?.error?.code;
+      const message = typeof errBody?.error === 'string'
+        ? errBody.message ?? errBody.error
+        : errBody?.error?.message ?? `HTTP ${res.status} at ${path}`;
+      throw errorFromResponse(res.status, code, message);
     }
 
     if (parsed === null) {
