@@ -16,7 +16,11 @@ describe('expandCategory (Sim 9 Fix 3)', () => {
 
   it('returns single-element list when input has no synonyms', () => {
     expect(expandCategory('data')).toEqual(['data']);
-    expect(expandCategory('ai')).toEqual(['ai']);
+    // Phase 12.15 (2026-05-08) — `ai` now expands to the cheap mini-LLM
+    // sub-categories so generic AI queries surface sub-budget endpoints.
+    expect(expandCategory('ai')).toEqual([
+      'ai', 'ai/classify', 'ai/summarize', 'ai/translate', 'ai/text',
+    ]);
     expect(expandCategory('totally-unknown-category')).toEqual(['totally-unknown-category']);
   });
 
@@ -25,9 +29,15 @@ describe('expandCategory (Sim 9 Fix 3)', () => {
     expect(expandCategory('data')).toEqual(['data']);
   });
 
-  it('LLM/AI vocabulary maps to ai/text and ai cascade', () => {
-    expect(expandCategory('llm')).toEqual(['llm', 'ai/text', 'ai']);
-    expect(expandCategory('language')).toEqual(['language', 'ai/text', 'ai']);
+  it('LLM/AI vocabulary maps to ai/* cascade incl. mini-LLM categories', () => {
+    // Phase 12.15 — extended to include ai/classify, ai/summarize,
+    // ai/translate so generic queries surface the cheap mini-LLM endpoints.
+    expect(expandCategory('llm')).toEqual([
+      'llm', 'ai/text', 'ai/classify', 'ai/summarize', 'ai/translate', 'ai',
+    ]);
+    expect(expandCategory('language')).toEqual([
+      'language', 'ai/text', 'ai/translate', 'ai/summarize', 'ai',
+    ]);
     expect(expandCategory('image')).toEqual(['image', 'ai/image', 'ai']);
     expect(expandCategory('code')).toEqual(['code', 'ai/code', 'ai']);
   });

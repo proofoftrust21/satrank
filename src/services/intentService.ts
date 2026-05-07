@@ -98,11 +98,28 @@ const IS_MEANINGFUL_MIN_N_OBS = 3;
 const CATEGORY_SYNONYMS: Record<string, string[]> = {
   finance: ['data/finance'],
   crypto: ['bitcoin'],
-  llm: ['ai/text', 'ai'],
-  language: ['ai/text', 'ai'],
-  text: ['ai/text', 'ai'],
+  // Phase 12.15 (2026-05-08) — Sim 22 surfaced that agents querying
+  // bare `ai` or `ai/text` never saw the new self-hosted Phase-12.14
+  // mini-LLM endpoints (ai/classify / ai/summarize / ai/translate)
+  // because the SQL `findServices` filters by exact category match.
+  // Add reverse synonyms so a generic `ai` query surfaces the cheap
+  // sub-budget options first, then falls through to the existing
+  // ai/text / ai/code / ai/image catalog.
+  ai: ['ai/classify', 'ai/summarize', 'ai/translate', 'ai/text'],
+  llm: ['ai/text', 'ai/classify', 'ai/summarize', 'ai/translate', 'ai'],
+  language: ['ai/text', 'ai/translate', 'ai/summarize', 'ai'],
+  text: ['ai/text', 'ai/summarize', 'ai/classify', 'ai'],
   image: ['ai/image', 'ai'],
   code: ['ai/code', 'ai'],
+  classify: ['ai/classify', 'ai'],
+  classification: ['ai/classify', 'ai'],
+  sentiment: ['ai/classify', 'ai'],
+  summarize: ['ai/summarize', 'ai'],
+  summarization: ['ai/summarize', 'ai'],
+  summary: ['ai/summarize', 'ai'],
+  translate: ['ai/translate', 'ai'],
+  translation: ['ai/translate', 'ai'],
+  'ai/text': ['ai/summarize', 'ai/translate', 'ai/classify', 'ai'],
   weather: ['data', 'energy/intelligence'],
   news: ['data'],
   market: ['data/finance', 'data'],
