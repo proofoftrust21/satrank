@@ -122,6 +122,8 @@ import { DisputeService } from './services/disputeService';
 import { buildDisputeClaim } from './services/disputeClaimAdapter';
 import { AepsDisputeController } from './controllers/aepsDisputeController';
 import { createAepsDisputeRoutes } from './routes/aepsDispute';
+import { AepsObserverController } from './controllers/aepsObserverController';
+import { createAepsObserverRoutes } from './routes/aepsObserver';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
@@ -593,10 +595,10 @@ export function createApp() {
     disputeService,
     disputeRepo: aepsDisputeRepo,
   });
-  // ForkDetectionService routes are deferred (need observer scan endpoint
-  // + Nostr ingestion). Mark unused for the linter ; instantiation now
-  // keeps the dep graph stable for the follow-up.
-  void forkDetectionService;
+  const aepsObserverController = new AepsObserverController({
+    forkService: forkDetectionService,
+    observerRepo: aepsObserverRepo,
+  });
   // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
   const operatorAttestationRepo = new OperatorAttestationRepository(pool);
   const operatorAttestationService = new OperatorAttestationService({
@@ -1324,6 +1326,11 @@ export function createApp() {
   // AEPS §10 (2026-05-07) — dispute open/attest/get. NIP-98 enforced by
   // the controller for write paths; GET is public.
   api.use('/aeps', createAepsDisputeRoutes(aepsDisputeController));
+  // AEPS §8.5 (2026-05-07) — permissionless observer routes. POST anchor
+  // observation (no auth — observer gets 15% slashing reward via the
+  // observed_anchors row regardless of caller identity), GET forks +
+  // observations bucket.
+  api.use('/aeps', createAepsObserverRoutes(aepsObserverController));
 
   // /api/intent — Mix A+D conditional gate. Default path = free directory
   // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
