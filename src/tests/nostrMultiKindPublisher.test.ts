@@ -24,6 +24,9 @@ import type {
 interface MockRelay {
   url: string;
   closed: boolean;
+  /** Mirrors nostr-tools `Relay.connected` getter ; the publisher pre-checks
+   *  this to skip publishes against dropped sockets (audit fix 2026-05-07). */
+  connected: boolean;
   publishedEvents: Array<{ id: string; kind: number; tags: string[][] }>;
   /** Mode d'échec : false = ok, 'timeout' = setTimeout forever, 'error' = throw. */
   mode: 'ok' | 'timeout' | 'error';
@@ -35,6 +38,7 @@ async function createMockRelay(url: string, mode: 'ok' | 'timeout' | 'error' = '
   const r: MockRelay = {
     url,
     closed: false,
+    connected: true,
     publishedEvents: [],
     mode,
     publish: async (signed) => {
@@ -42,7 +46,7 @@ async function createMockRelay(url: string, mode: 'ok' | 'timeout' | 'error' = '
       if (r.mode === 'timeout') await new Promise<void>(() => { /* forever */ });
       r.publishedEvents.push(signed);
     },
-    close: () => { r.closed = true; },
+    close: () => { r.closed = true; r.connected = false; },
   };
   return r;
 }

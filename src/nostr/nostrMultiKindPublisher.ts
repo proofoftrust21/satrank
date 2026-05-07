@@ -107,12 +107,18 @@ export class NostrMultiKindPublisher {
   }
 
   /** Ouvre les connexions aux relais. Les échecs sont logués mais non-fatals
-   *  tant qu'au moins un relai répond. Idempotent : rappeler ne rouvre pas
-   *  les connexions déjà établies. */
+   *  tant qu'au moins un relai répond. Idempotent : ne rouvre que les relais
+   *  pas déjà connectés (par URL).
+   *
+   *  System-audit fix (2026-05-07) — `publishTemplate` drops stale connections
+   *  on failure ; this method now re-opens any URL that's missing from
+   *  `this.connections` rather than short-circuiting on `length > 0`. */
   async connect(): Promise<void> {
-    if (this.connections.length > 0) return;
     const bindings = await this.ensureBindings();
-    for (const url of this.relays) {
+    const connected = new Set(this.connections.map((c) => c.url));
+    const missing = this.relays.filter((url) => !connected.has(url));
+    if (missing.length === 0) return;
+    for (const url of missing) {
       try {
         const relay = await Promise.race([
           bindings.connectRelay(url),
@@ -145,15 +151,43 @@ export class NostrMultiKindPublisher {
   /** Signe et publie un template arbitraire. Exposé pour les flashes kind
    *  20900 (C6) qui partagent la plomberie mais pas le schema Endorsement. */
   async publishTemplate(template: EventTemplate): Promise<PublishResult> {
-    if (this.connections.length === 0) await this.connect();
+    // Always call connect() — it short-circuits when all configured relays
+    // are already in `connections`, but reopens any missing URL (e.g. one
+    // that was dropped on a previous publish for being closed).
+    await this.connect();
     const bindings = await this.ensureBindings();
     const sk = bindings.hexToBytes(this.skHex);
     const signed = bindings.finalizeEvent(template, sk) as { id: string };
     const startNs = process.hrtime.bigint();
     const kindLabel = String(template.kind);
 
+    // System-audit fix (2026-05-07) — pre-check connection state.
+    //
+    // nostr-tools' `relay.publish(event)` calls `relay.send(...)` internally
+    // WITHOUT awaiting it. When the WebSocket is closed, `send()` throws
+    // `SendingOnClosedConnection` synchronously and the rejected Promise
+    // returned by the un-awaited `send()` becomes an UNHANDLED REJECTION
+    // that escapes our local try/catch. This was flooding prod logs ; the
+    // global `unhandledRejection` handler caught + logged each one and the
+    // crawler stayed alive but published nothing.
+    //
+    // The fix : check `relay.connected` before calling `publish()`. If a
+    // relay's WebSocket has dropped, we skip the publish AND drop the
+    // connection so the next `publishTemplate()` call triggers a fresh
+    // `connect()` that re-opens it. Side-effect : the orphan Promise from
+    // `send()` is never created, so unhandledRejection no longer fires.
+    const stale: string[] = [];
     const acks: RelayAck[] = await Promise.all(
       this.connections.map(async ({ relay, url }) => {
+        if (!relay.connected) {
+          stale.push(url);
+          multiKindRelayErrorsTotal.inc({ relay: url, result: 'error' });
+          return {
+            relay: url,
+            result: 'error' as RelayAckResult,
+            error: 'connection_closed_pre_publish',
+          };
+        }
         try {
           await Promise.race([
             relay.publish(signed),
@@ -166,10 +200,29 @@ export class NostrMultiKindPublisher {
           const msg = err instanceof Error ? err.message : String(err);
           const result: RelayAckResult = msg === 'Publish timeout' ? 'timeout' : 'error';
           multiKindRelayErrorsTotal.inc({ relay: url, result });
+          // Mark the connection as stale if the failure indicates it's dead.
+          if (
+            msg.includes('closed connection') ||
+            msg.includes('CLOSED') ||
+            msg.includes('not connected')
+          ) {
+            stale.push(url);
+          }
           return { relay: url, result, error: msg };
         }
       }),
     );
+
+    // Drop stale connections so the next publishTemplate() triggers connect()
+    // for the relays that need it. We cannot reconnect synchronously here —
+    // doing so would extend each publish window past its timeout budget.
+    if (stale.length > 0) {
+      this.connections = this.connections.filter((c) => !stale.includes(c.url));
+      logger.warn(
+        { stale_relays: stale, remaining_relays: this.connections.length },
+        'nostr multi-kind: dropped stale relay connections — will reconnect on next publish',
+      );
+    }
 
     const durationSec = Number(process.hrtime.bigint() - startNs) / 1e9;
     multiKindPublishDuration.observe({ kind: kindLabel }, durationSec);

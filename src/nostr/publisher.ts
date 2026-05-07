@@ -264,8 +264,15 @@ export class NostrPublisher {
         // The EVENT frame is on the wire before the ack — timeout just means
         // we don't wait for the relay's OK confirmation, not that the event
         // wasn't stored. Fire-fast, not fire-and-forget.
+        // System-audit fix (2026-05-07) — pre-check `relay.connected` to
+        // dodge the nostr-tools un-awaited-send orphan-rejection bug.
+        // See nostrMultiKindPublisher.ts comment for full rationale.
         await Promise.allSettled(
           connections.map(async ({ relay, url }) => {
+            if (!relay.connected) {
+              nostrRelayAckTotal.inc({ relay: url, result: 'error' });
+              return;
+            }
             try {
               await Promise.race([
                 relay.publish(signed),

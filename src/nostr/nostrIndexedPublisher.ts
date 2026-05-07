@@ -310,9 +310,15 @@ export class NostrIndexedPublisher {
 
     for (const ev of events) {
       try {
-        // Publish to all connected relays in parallel with timeout
+        // System-audit fix (2026-05-07) — pre-check `relay.connected` to
+        // avoid the nostr-tools un-awaited-send orphan-rejection bug.
+        // See nostrMultiKindPublisher.ts for full rationale.
         const results = await Promise.allSettled(
           connections.map(async ({ url, relay }) => {
+            if (!relay.connected) {
+              nostrRelayAckTotal.inc({ relay: url, result: 'error' });
+              return { url, ok: false, error: 'connection_closed_pre_publish' };
+            }
             try {
               await Promise.race([
                 relay.publish(ev),
