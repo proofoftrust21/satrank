@@ -86,11 +86,14 @@ export {
 export {
   buildOutcomeMessage,
   buildOutcomeMessageHash,
+  buildCapabilityCanonicalBytes,
+  buildCapabilityEndpointId,
   buildNip98EventTemplate,
   encodeNip98AuthHeader,
 } from './aeps';
 export type {
   AepsOutcome,
+  AepsCapabilityDescriptorLike,
   Nip98Template,
   Nip98SignedEvent,
   BuildNip98Input,

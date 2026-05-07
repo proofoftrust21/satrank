@@ -3,15 +3,18 @@
 // the agent's choice (nostr-tools, noble, etc.) — this module ships the
 // scaffolding so the consumer doesn't have to re-derive byte formats.
 //
-// Two surfaces :
+// Three surfaces :
 //  1. AEPS §10 outcome message — the canonical bytes BIP-340 oracles
 //     attest. Ship the exact 32-byte hash + the canonical UTF-8 string.
-//  2. NIP-98 (kind 27235) event template — the {kind, created_at, tags,
+//  2. AEPS §4 capability descriptor — same idea, for operators who sign
+//     the bytes representing their endpoint declaration. The hex of
+//     SHA-256(canonical bytes) IS the endpoint_id (content address).
+//  3. NIP-98 (kind 27235) event template — the {kind, created_at, tags,
 //     content} object the agent's signer will finalize. The SDK then
 //     base64-encodes the resulting event into the Authorization header.
 //
-// Both formats are conformance-vector tested ; see
-// spec/test-vectors/dispute_outcome.json + the new aepsHelpers tests.
+// All formats are conformance-vector tested against
+// spec/test-vectors/{dispute_outcome,capability_descriptor}.json.
 import { createHash } from 'node:crypto';
 
 // ============================================================
@@ -44,6 +47,65 @@ export function buildOutcomeMessageHash(
   const canonical = buildOutcomeMessage(disputeId, outcome);
   const hashBytes = createHash('sha256').update(canonical, 'utf8').digest();
   return { hashHex: hashBytes.toString('hex'), hashBytes, canonical };
+}
+
+// ============================================================
+// AEPS §4 — Capability descriptor
+// ============================================================
+
+/** Minimal capability-descriptor shape the helpers operate on. The
+ *  server side (in `src/services/aepsCapability.ts`) has the typed
+ *  interface ; SDK callers can pass any plain object whose keys
+ *  reflect the spec §4 fields. The helper strips `endpoint_id` (which
+ *  IS the output) before canonicalising. */
+export type AepsCapabilityDescriptorLike = Record<string, unknown>;
+
+/** Sort-keys recursive canonical JSON. Same algorithm as the server's
+ *  `canonicalJson` in signerService.ts — RFC 8785 subset, no whitespace,
+ *  no special-number handling needed for §4 inputs. */
+function canonicalJson(value: unknown): string {
+  if (value === null) return 'null';
+  const t = typeof value;
+  if (t === 'number' || t === 'string' || t === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return '[' + value.map(canonicalJson).join(',') + ']';
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return (
+    '{' +
+    keys.map(k => JSON.stringify(k) + ':' + canonicalJson(obj[k])).join(',') +
+    '}'
+  );
+}
+
+/** Build the canonical-JSON bytes of a capability descriptor with
+ *  `endpoint_id` stripped. Pure ; same output as
+ *  `src/services/aepsCapability.ts::buildCanonicalDescriptor`. */
+export function buildCapabilityCanonicalBytes(
+  descriptor: AepsCapabilityDescriptorLike,
+): string {
+  const stripped: Record<string, unknown> = { ...descriptor };
+  delete stripped.endpoint_id;
+  return canonicalJson(stripped);
+}
+
+/** Compute the §4 endpoint_id — SHA-256 hex of the canonical bytes.
+ *  This IS the 32-byte hash an operator's BIP-340 Schnorr signature
+ *  authenticates. Agents verifying an operator's commitment to a
+ *  declared endpoint use this hash. */
+export function buildCapabilityEndpointId(
+  descriptor: AepsCapabilityDescriptorLike,
+): { canonical: string; endpointId: string; hashBytes: Buffer } {
+  const canonical = buildCapabilityCanonicalBytes(descriptor);
+  const hashBytes = createHash('sha256').update(canonical, 'utf8').digest();
+  return {
+    canonical,
+    endpointId: hashBytes.toString('hex'),
+    hashBytes,
+  };
 }
 
 // ============================================================

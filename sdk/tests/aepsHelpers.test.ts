@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import {
   buildOutcomeMessage,
   buildOutcomeMessageHash,
+  buildCapabilityCanonicalBytes,
+  buildCapabilityEndpointId,
   buildNip98EventTemplate,
   encodeNip98AuthHeader,
 } from '../src/aeps';
@@ -50,6 +52,50 @@ describe('AEPS §10 outcome message helpers', () => {
     const a = buildOutcomeMessageHash('dis_a', 'disputant_wins');
     const b = buildOutcomeMessageHash('dis_b', 'disputant_wins');
     expect(a.hashHex).not.toBe(b.hashHex);
+  });
+});
+
+describe('AEPS §4 capability descriptor helpers', () => {
+  it('matches spec/test-vectors/capability_descriptor.json', () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        join(__dirname, '..', '..', 'spec', 'test-vectors', 'capability_descriptor.json'),
+        'utf8',
+      ),
+    ) as {
+      vectors: Array<{
+        name: string;
+        descriptor: Record<string, unknown>;
+        expected_canonical: string;
+        expected_endpoint_id: string;
+      }>;
+    };
+    for (const v of fixture.vectors) {
+      const canonical = buildCapabilityCanonicalBytes(v.descriptor);
+      expect(canonical).toBe(v.expected_canonical);
+      const { endpointId, hashBytes } = buildCapabilityEndpointId(v.descriptor);
+      expect(endpointId).toBe(v.expected_endpoint_id);
+      expect(hashBytes.length).toBe(32);
+      expect(hashBytes.toString('hex')).toBe(v.expected_endpoint_id);
+    }
+  });
+
+  it('strips endpoint_id before canonicalising (idempotency)', () => {
+    const base = {
+      operator_pubkey: 'aa'.repeat(32),
+      method: 'GET',
+      url: 'https://x',
+      version: '0.1',
+    };
+    const a = buildCapabilityEndpointId(base);
+    const b = buildCapabilityEndpointId({ ...base, endpoint_id: a.endpointId });
+    expect(a.endpointId).toBe(b.endpointId);
+  });
+
+  it('different descriptors produce different endpoint_ids', () => {
+    const a = buildCapabilityEndpointId({ url: 'https://a', method: 'GET' });
+    const b = buildCapabilityEndpointId({ url: 'https://b', method: 'GET' });
+    expect(a.endpointId).not.toBe(b.endpointId);
   });
 });
 

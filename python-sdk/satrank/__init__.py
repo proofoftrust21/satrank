@@ -18,6 +18,8 @@ PR-7 federation primitives:
 """
 
 from satrank.aeps import (
+    build_capability_canonical_bytes,
+    build_capability_endpoint_id,
     build_nip98_event_template,
     build_outcome_message,
     build_outcome_message_hash,
@@ -90,6 +92,8 @@ __all__ = [
     # SDK 1.6.0 — AEPS canonical-bytes helpers (zero-dep)
     "build_outcome_message",
     "build_outcome_message_hash",
+    "build_capability_canonical_bytes",
+    "build_capability_endpoint_id",
     "build_nip98_event_template",
     "encode_nip98_auth_header",
     "BalanceExhaustedError",

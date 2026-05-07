@@ -70,6 +70,69 @@ def build_outcome_message_hash(dispute_id: str, outcome: AepsOutcome) -> Outcome
 
 
 # ============================================================
+# AEPS §4 — Capability descriptor
+# ============================================================
+
+
+def _canonical_json(value: Any) -> str:
+    """Sort-keys recursive canonical JSON. Mirrors the server's
+    `canonicalJson` in signerService.ts and the TS SDK's helper.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ",".join(_canonical_json(v) for v in value) + "]"
+    if isinstance(value, dict):
+        keys = sorted(value.keys())
+        return (
+            "{"
+            + ",".join(
+                f"{json.dumps(k, ensure_ascii=False)}:{_canonical_json(value[k])}"
+                for k in keys
+            )
+            + "}"
+        )
+    raise TypeError(f"_canonical_json: unsupported type {type(value).__name__}")
+
+
+def build_capability_canonical_bytes(descriptor: dict[str, Any]) -> str:
+    """Build the canonical-JSON bytes of an AEPS §4 capability descriptor
+    with ``endpoint_id`` stripped. Pure ; same output as the TS SDK
+    helper and the server's ``buildCanonicalDescriptor``.
+    """
+    stripped = {k: v for k, v in descriptor.items() if k != "endpoint_id"}
+    return _canonical_json(stripped)
+
+
+class CapabilityEndpointId(TypedDict):
+    canonical: str
+    endpoint_id: str
+    hash_bytes: bytes
+
+
+def build_capability_endpoint_id(descriptor: dict[str, Any]) -> CapabilityEndpointId:
+    """Compute the §4 endpoint_id — SHA-256 hex of the canonical bytes.
+
+    The 32 bytes returned in ``hash_bytes`` ARE what an operator's BIP-340
+    Schnorr signature authenticates. Agents verifying an operator's
+    commitment to a declared endpoint sign / verify against this hash.
+    """
+    canonical = build_capability_canonical_bytes(descriptor)
+    h = hashlib.sha256(canonical.encode("utf-8")).digest()
+    return {
+        "canonical": canonical,
+        "endpoint_id": h.hex(),
+        "hash_bytes": h,
+    }
+
+
+# ============================================================
 # NIP-98 (kind 27235) — HTTP authentication
 # ============================================================
 

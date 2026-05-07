@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 
 from satrank import (
+    build_capability_canonical_bytes,
+    build_capability_endpoint_id,
     build_nip98_event_template,
     build_outcome_message,
     build_outcome_message_hash,
@@ -115,6 +117,41 @@ def test_encode_nip98_auth_header_format() -> None:
     b64 = auth[len("Nostr ") :]
     decoded = json.loads(base64.b64decode(b64).decode("utf-8"))
     assert decoded == signed
+
+
+def test_capability_descriptor_matches_conformance_vectors() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "spec"
+        / "test-vectors"
+        / "capability_descriptor.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+    for v in fixture["vectors"]:
+        canonical = build_capability_canonical_bytes(v["descriptor"])
+        assert canonical == v["expected_canonical"], v["name"]
+        r = build_capability_endpoint_id(v["descriptor"])
+        assert r["endpoint_id"] == v["expected_endpoint_id"], v["name"]
+        assert len(r["hash_bytes"]) == 32
+        assert r["hash_bytes"].hex() == v["expected_endpoint_id"]
+
+
+def test_capability_descriptor_strips_endpoint_id_idempotency() -> None:
+    base = {
+        "operator_pubkey": "aa" * 32,
+        "method": "GET",
+        "url": "https://x",
+        "version": "0.1",
+    }
+    a = build_capability_endpoint_id(base)
+    b = build_capability_endpoint_id({**base, "endpoint_id": a["endpoint_id"]})
+    assert a["endpoint_id"] == b["endpoint_id"]
+
+
+def test_capability_descriptor_changes_with_url() -> None:
+    a = build_capability_endpoint_id({"url": "https://a", "method": "GET"})
+    b = build_capability_endpoint_id({"url": "https://b", "method": "GET"})
+    assert a["endpoint_id"] != b["endpoint_id"]
 
 
 def test_python_ts_outcome_canonical_byte_identical() -> None:
