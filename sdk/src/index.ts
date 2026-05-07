@@ -79,6 +79,23 @@ export {
   AepsSignatureInvalidError,
 } from './errors';
 
+// SDK 1.6 — AEPS canonical-bytes helpers (zero-dep ; agents bring their
+// own crypto). buildOutcomeMessage / buildOutcomeMessageHash for §10
+// oracle attestations ; buildNip98EventTemplate / encodeNip98AuthHeader
+// for HTTP authentication on AEPS routes.
+export {
+  buildOutcomeMessage,
+  buildOutcomeMessageHash,
+  buildNip98EventTemplate,
+  encodeNip98AuthHeader,
+} from './aeps';
+export type {
+  AepsOutcome,
+  Nip98Template,
+  Nip98SignedEvent,
+  BuildNip98Input,
+} from './aeps';
+
 // Phase 7.2 — federation aggregation primitives.
 export {
   fetchOraclePeers,

@@ -17,6 +17,12 @@ PR-7 federation primitives:
     )
 """
 
+from satrank.aeps import (
+    build_nip98_event_template,
+    build_outcome_message,
+    build_outcome_message_hash,
+    encode_nip98_auth_header,
+)
 from satrank.aggregate import (
     aggregate_oracles,
     fetch_oracle_peers,
@@ -81,6 +87,11 @@ __all__ = [
     "AepsDisputeNotOpenError",
     "AepsOracleNotInSetError",
     "AepsSignatureInvalidError",
+    # SDK 1.6.0 — AEPS canonical-bytes helpers (zero-dep)
+    "build_outcome_message",
+    "build_outcome_message_hash",
+    "build_nip98_event_template",
+    "encode_nip98_auth_header",
     "BalanceExhaustedError",
     "BayesianBlock",
     "CandidateAttempt",
