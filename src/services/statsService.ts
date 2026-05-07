@@ -67,7 +67,8 @@ const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 // AEPS §8 : v77 (daily_merkle_anchors, Bitcoin L1 trust root for evidence).
 // AEPS §6.3 : v78 (aeps_multihop_chains + legs, atomic multi-hop primitive).
 // AEPS §8.5 : v79 (aeps_observed_anchors + aeps_fork_events, permissionless fork detection).
-const EXPECTED_SCHEMA_VERSION = 79;
+// AEPS §10  : v80 (aeps_disputes + aeps_dispute_attestations, BIP-340 Schnorr threshold).
+const EXPECTED_SCHEMA_VERSION = 80;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that
