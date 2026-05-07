@@ -22,7 +22,12 @@ export type ServiceSource =
    *  Lower trust than directories because anyone can publish. */
   | 'nostr_31402'
   /** Sim 8 follow-up — Fewsats/awesome-L402 community-curated GitHub list. */
-  | 'awesome_l402';
+  | 'awesome_l402'
+  /** Phase 12.14 (2026-05-08) — endpoint operated by SatRank itself
+   *  (mini-LLM gateway). Highest trust rank because we control the
+   *  L402 surface, the body shape, and the upstream backend. Auto-
+   *  registered at app boot ; never crawled. */
+  | 'self_hosted';
 
 /** Sources trusted enough to influence the 3D ranking composite.
  *  ad_hoc entries (observed from /api/decide serviceUrl) stay in DB for later
@@ -34,6 +39,8 @@ export type ServiceSource =
 export const TRUSTED_SOURCES: ServiceSource[] = [
   '402index', 'l402directory', 'self_registered',
   'wellknown_l402', 'l402index_rss', 'nostr_31402', 'awesome_l402',
+  // Phase 12.14 — self-hosted SatRank endpoints rank highest in trust.
+  'self_hosted',
 ];
 
 /** SQL `IN (...)` fragment of every trusted source. Single source of truth —
@@ -64,6 +71,10 @@ const TRUSTED_SOURCES_SQL_LIST = TRUSTED_SOURCES.map(s => `'${s}'`).join(', ');
  *  self_registered (operator-claimed). l402index_rss inherits 402index's rank
  *  because it's the same upstream truth, just delivered as a change-stream. */
 const SOURCE_TRUST_RANK: Record<ServiceSource, number> = {
+  // Phase 12.14 — self-hosted SatRank endpoints rank above all others :
+  // we know the L402 surface and the backend, no third-party trust
+  // delegation needed.
+  'self_hosted': 5,
   '402index': 4,
   'l402index_rss': 4,
   'l402directory': 3,
@@ -239,6 +250,7 @@ export class ServiceEndpointRepository {
         success_count = service_endpoints.success_count + EXCLUDED.success_count,
         source = CASE WHEN $9 > COALESCE((
           CASE service_endpoints.source
+            WHEN 'self_hosted' THEN 5
             WHEN '402index' THEN 4
             WHEN 'l402index_rss' THEN 4
             WHEN 'l402directory' THEN 3
@@ -291,6 +303,7 @@ export class ServiceEndpointRepository {
           ),
           source = CASE WHEN $3 > COALESCE((
             CASE source
+              WHEN 'self_hosted' THEN 5
               WHEN '402index' THEN 4
               WHEN 'l402index_rss' THEN 4
               WHEN 'l402directory' THEN 3
@@ -357,6 +370,7 @@ export class ServiceEndpointRepository {
       'awesome_l402': 0,
       'nostr_31402': 0,
       'ad_hoc': 0,
+      'self_hosted': 0,
     };
     for (const r of rows) out[r.source] = Number(r.c);
     return out;
