@@ -150,6 +150,84 @@ try {
 - [NLP helper](../docs/sdk/nlp-helper.md)
 - [Migration 0.2.x → 1.0](../docs/sdk/migration-0.2-to-1.0.md)
 
+## AEPS §10 disputes (SDK 1.6.0+)
+
+[AEPS](../spec/AEPS-whitepaper.md) is the open standard SatRank
+implements. SDK 1.6.0 adds typed methods + zero-dep canonical-byte
+helpers so agents drive disputes without re-deriving wire formats.
+
+```typescript
+import {
+  SatRank,
+  AepsDisputeNotFoundError,
+  buildOutcomeMessageHash,
+  buildNip98EventTemplate,
+  encodeNip98AuthHeader,
+} from '@satrank/sdk';
+import { schnorr } from '@noble/curves/secp256k1.js';
+import { finalizeEvent } from 'nostr-tools/pure';
+
+const sr = new SatRank({ apiBase: 'https://satrank.dev' });
+
+// 1. Open a dispute (NIP-98 auth = disputant pubkey)
+const body = JSON.stringify({
+  respondent_pubkey: '<operator-pubkey>',
+  dispute_type: 'content_correctness',
+  receipt_id: 42,
+  oracle_pubkeys: [oracle1Pk, oracle2Pk, oracle3Pk],
+  oracle_threshold: 2,
+});
+const tmpl = buildNip98EventTemplate({
+  url: sr.disputeEndpoint(),
+  method: 'POST',
+  body,
+});
+const auth = encodeNip98AuthHeader(finalizeEvent(tmpl, agentSk));
+const dispute = await sr.openDispute(JSON.parse(body), auth);
+
+// 2. Each oracle signs the canonical outcome message hash
+const { hashBytes } = buildOutcomeMessageHash(
+  dispute.dispute_id,
+  'disputant_wins',
+);
+const sig = schnorr.sign(hashBytes, oracleSk);
+
+// 3. Submit attestation (NIP-98 auth = oracle pubkey)
+const attestBody = JSON.stringify({
+  outcome: 'disputant_wins',
+  signature_hex: Buffer.from(sig).toString('hex'),
+});
+const attestTmpl = buildNip98EventTemplate({
+  url: sr.attestationEndpoint(dispute.dispute_id),
+  method: 'POST',
+  body: attestBody,
+});
+const attestAuth = encodeNip98AuthHeader(finalizeEvent(attestTmpl, oracleSk));
+try {
+  const r = await sr.submitAttestation(
+    dispute.dispute_id,
+    JSON.parse(attestBody),
+    attestAuth,
+  );
+  if (r.dispute_state === 'resolved_disputant') {
+    // Slashing claim auto-opens against the operator's bond.
+  }
+} catch (e) {
+  if (e instanceof AepsDisputeNotFoundError) { /* ... */ }
+}
+
+// 4. Public read of dispute state (no auth)
+const view = await sr.getDispute(dispute.dispute_id);
+console.log(view.attestation_counts, view.state);
+```
+
+Typed errors : `AepsDisputeNotFoundError` (404), `AepsDisputeNotOpenError`
+(409), `AepsOracleNotInSetError` (403), `AepsSignatureInvalidError` (400).
+
+The SDK is zero runtime-dep. BIP-340 Schnorr signing + Nostr event
+finalization are the agent's responsibility — `@noble/curves` +
+`nostr-tools` shown above ; any conformant lib works.
+
 ## License
 
 MIT

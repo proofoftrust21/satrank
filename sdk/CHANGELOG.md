@@ -1,5 +1,50 @@
 # Changelog — @satrank/sdk
 
+## 1.6.0 — 2026-05-08
+
+AEPS §10 dispute surface. Backwards-compatible additive release exposing
+the new server-side AEPS routes (commits 7bf5eaf + 22b01d0) as typed
+SDK methods + helpers. Zero new runtime dependencies.
+
+### Added
+
+- `SatRank.openDispute(input, authorization)` — open a dispute against a
+  respondent. NIP-98-gated. Returns `dispute_id` + `outcome_messages`
+  with the canonical bytes + sha256 each oracle must BIP-340-sign.
+- `SatRank.submitAttestation(disputeId, input, authorization)` — submit
+  oracle Schnorr attestation. NIP-98 pubkey MUST equal the oracle pubkey.
+- `SatRank.getDispute(disputeId)` — public read of dispute state +
+  per-outcome attestation counts.
+- `SatRank.disputeEndpoint()` / `SatRank.attestationEndpoint(disputeId)` —
+  canonical URLs callers need in their NIP-98 `u` tag.
+- Pure helpers (zero-dep) :
+  - `buildOutcomeMessage(disputeId, outcome)` — canonical-JSON UTF-8.
+  - `buildOutcomeMessageHash(...)` — `{ canonical, hashHex, hashBytes:Buffer(32) }`.
+  - `buildNip98EventTemplate({url, method, body?, createdAt?})` — kind
+    27235 unsigned event template.
+  - `encodeNip98AuthHeader(signedEvent)` — `Nostr <base64-json>`.
+- Typed error subclasses :
+  - `AepsDisputeNotFoundError` (404 dispute_not_found)
+  - `AepsDisputeNotOpenError` (409 dispute_not_open)
+  - `AepsOracleNotInSetError` (403 oracle_not_in_set)
+  - `AepsSignatureInvalidError` (400 signature_invalid — BIP-340 verify failed)
+- TypedDicts/types : `AepsDisputeType`, `AepsAttestationOutcome`,
+  `AepsDisputeState`, `AepsDisputeOpenInput/Result`,
+  `AepsAttestationInput/Result`, `AepsDisputeView`.
+
+### Fixed
+
+- `parseResponse()` now accepts both the flat error envelope shape
+  (Phase 11A.2) `{ error: <code>, message: <text> }` AND the legacy
+  nested `{ error: { code, message } }` so callers see typed errors
+  regardless of which path the server uses.
+
+### Cross-impl
+
+- All canonical-byte helpers verified byte-for-byte against
+  `spec/test-vectors/dispute_outcome.json` — the same fixture the
+  server, the Rust reference impl, and the Python SDK 1.6.0 read.
+
 ## 1.1.0 — 2026-04-28
 
 Federation-aware SDK. Backwards-compatible additive release that exposes

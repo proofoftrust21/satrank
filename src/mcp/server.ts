@@ -227,6 +227,9 @@ const aepsInclusionProofArgs = z.object({
 const aepsEvidenceReceiptArgs = z.object({
   job_id: z.string().min(1).max(128),
 });
+const aepsGetDisputeArgs = z.object({
+  dispute_id: z.string().regex(/^dis_[0-9a-f]{32}$/),
+});
 const submitAttestationArgs = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
   attesterHash: hashSchema,
@@ -536,6 +539,17 @@ async function main() {
             job_id: { type: 'string', minLength: 1, maxLength: 128, description: 'fulfill_jobs.job_id' },
           },
           required: ['job_id'],
+        },
+      },
+      {
+        name: 'aeps.get_dispute',
+        description: 'AEPS §10 — Read the current state of a dispute (public, no auth). Returns dispute_id, dispute_type, multiplier (1×/2×/3×/5×), oracle_pubkeys + oracle_threshold, state (open/resolved_disputant/resolved_respondent/expired/aborted), expires_at, attestation_counts per outcome, and the per-attestation list (oracle_pubkey + outcome + signed_at). The agent uses this to monitor whether an open dispute has reached threshold or to verify the cryptographic proof trail of a resolved one.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            dispute_id: { type: 'string', pattern: '^dis_[0-9a-f]{32}$', description: 'AEPS dispute identifier (returned by openDispute)' },
+          },
+          required: ['dispute_id'],
         },
       },
       {
@@ -866,6 +880,15 @@ async function main() {
           // returns the Ed25519-signed receipt. The MCP tool surfaces it under
           // the AEPS namespace so agents discover it as part of the standard.
           const url = new URL(`/api/fulfill/${encodeURIComponent(parsed.data.job_id)}/evidence`, SATRANK_API_BASE);
+          return await proxyAepsGet(url.toString());
+        }
+
+        case 'aeps.get_dispute': {
+          const parsed = aepsGetDisputeArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const url = new URL(`/api/aeps/dispute/${encodeURIComponent(parsed.data.dispute_id)}`, SATRANK_API_BASE);
           return await proxyAepsGet(url.toString());
         }
 
