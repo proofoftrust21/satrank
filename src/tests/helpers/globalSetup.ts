@@ -61,9 +61,58 @@ const DEPOSIT_TIERS: Array<[number, number, number]> = [
   [1000000, 0.05, 95],
 ];
 
+/** Drop orphan satrank_test_* databases left behind by previous failed
+ *  test runs. Without this, each timeout-failing run leaks one DB ; over
+ *  many runs the count balloons (observed 2460 after one debugging
+ *  session) and slows future CREATE DATABASE TEMPLATE calls — eventually
+ *  past setupTestPool's 10s hookTimeout.
+ *
+ *  Heuristic : any satrank_test_<hex16> that is NOT the template AND has
+ *  no active connections is fair game. We do this BEFORE the template
+ *  setup so the next setupTestPool() lands on a clean PG instance.
+ *
+ *  Set AEPS_TEST_KEEP_LEFTOVERS=1 to skip (debugging).
+ */
+async function dropOrphanTestDatabases(admin: Pool): Promise<{ dropped: number; skipped: number; errors: number }> {
+  if (process.env.AEPS_TEST_KEEP_LEFTOVERS === '1') {
+    return { dropped: 0, skipped: 0, errors: 0 };
+  }
+  const { rows } = await admin.query<{ datname: string }>(
+    `SELECT datname FROM pg_database
+     WHERE datname LIKE 'satrank_test_%'
+       AND datname != $1
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_stat_activity WHERE pg_stat_activity.datname = pg_database.datname
+       )`,
+    [TEMPLATE_DB],
+  );
+  let dropped = 0;
+  let errors = 0;
+  for (const r of rows) {
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS ${r.datname}`);
+      dropped += 1;
+    } catch {
+      errors += 1;
+    }
+  }
+  return { dropped, skipped: 0, errors };
+}
+
 export async function setup(): Promise<void> {
   const admin = new Pool({ connectionString: adminUrl(), max: 1 });
   try {
+    // Phase Test-Hygiene (2026-05-08) — clean orphan satrank_test_* DBs
+    // left by previous failed runs before they slow down PG's metadata
+    // scanning + CREATE DATABASE TEMPLATE.
+    const cleanup = await dropOrphanTestDatabases(admin);
+    if (cleanup.dropped > 0 || cleanup.errors > 0) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[globalSetup] cleaned ${cleanup.dropped} orphan satrank_test_* DBs (${cleanup.errors} errored)`,
+      );
+    }
+
     const { rows } = await admin.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM pg_database WHERE datname = $1`,
       [TEMPLATE_DB],
