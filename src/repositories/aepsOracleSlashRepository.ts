@@ -92,6 +92,49 @@ export class AepsOracleSlashRepository {
       [slashIntentId, bondId, reservedAt],
     );
   }
+
+  async transitionToExecuted(
+    slashIntentId: number,
+    executedAt: number,
+    payouts: {
+      payout_disputant_sats: number;
+      payout_observer_sats: number;
+      payout_burned_sats: number;
+    },
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE aeps_oracle_slash_intents
+       SET state = 'executed',
+           executed_at = $2,
+           payout_disputant_sats = $3,
+           payout_observer_sats = $4,
+           payout_burned_sats = $5
+       WHERE slash_intent_id = $1
+         AND state = 'reserved'`,
+      [
+        slashIntentId,
+        executedAt,
+        payouts.payout_disputant_sats,
+        payouts.payout_observer_sats,
+        payouts.payout_burned_sats,
+      ],
+    );
+  }
+
+  /** List intents in 'reserved' state whose grace period has elapsed.
+   *  Used by the cron to find candidates for execution. */
+  async findReservedReady(graceSec: number, nowSec: number): Promise<OracleSlashIntent[]> {
+    const { rows } = await this.db.query<OracleSlashRow>(
+      `SELECT * FROM aeps_oracle_slash_intents
+       WHERE state = 'reserved'
+         AND reserved_at IS NOT NULL
+         AND reserved_at + $1 <= $2
+       ORDER BY reserved_at ASC
+       LIMIT 100`,
+      [graceSec, nowSec],
+    );
+    return rows.map(rowToSlash);
+  }
 }
 
 interface OracleSlashRow {

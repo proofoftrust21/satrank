@@ -138,6 +138,7 @@ import { createAepsObserverRoutes } from './routes/aepsObserver';
 // AEPS §10 equivocation slashing.
 import { AepsOracleSlashRepository } from './repositories/aepsOracleSlashRepository';
 import { EquivocationClaimAdapter } from './services/equivocationClaimAdapter';
+import { EquivocationSlashCron } from './services/equivocationSlashCron';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
@@ -638,11 +639,16 @@ export function createApp() {
     },
   });
   const aepsDisputeRepo = new AepsDisputeRepository(pool);
-  // AEPS §10 — oracle slash intent storage + adapter.
+  // AEPS §10 — oracle slash intent storage + adapter + settlement cron.
   const aepsOracleSlashRepo = new AepsOracleSlashRepository(pool);
   const equivocationClaimAdapter = new EquivocationClaimAdapter({
     bondRepo: operatorBondRepo,
     slashRepo: aepsOracleSlashRepo,
+  });
+  const equivocationSlashCron = new EquivocationSlashCron({
+    slashRepo: aepsOracleSlashRepo,
+    bondRepo: operatorBondRepo,
+    graceSec: Number(process.env.AEPS_EQUIVOCATION_GRACE_SEC ?? 3600),
   });
   const disputeService = new DisputeService({
     repo: aepsDisputeRepo,
@@ -926,6 +932,22 @@ export function createApp() {
         logger.error(
           { error: err instanceof Error ? err.message : String(err) },
           'ClaimEngine: payout cron threw — will retry',
+        );
+      }
+      // AEPS §10 — equivocation slash settlement cron. Reserved intents
+      // past the grace period (default 1h, AEPS_EQUIVOCATION_GRACE_SEC env)
+      // get committed : bond_pending → bond_slashed + §7.2 payout shares
+      // recorded. Disbursement to disputant/observer wallets is a v0.2
+      // follow-up ; v0.1 records the shares.
+      try {
+        const out = await equivocationSlashCron.runCycle();
+        if (out.executed > 0 || out.errors > 0) {
+          logger.info(out, 'AEPS §10: equivocation slash cron cycle complete');
+        }
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'AEPS §10: equivocation slash cron threw — will retry',
         );
       }
       // Phase 9.2 — capability token in-memory cache prune.
