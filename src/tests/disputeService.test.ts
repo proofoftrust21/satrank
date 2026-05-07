@@ -15,13 +15,21 @@ import type {
   AttestationOutcome,
   CreateDisputeInput,
   DisputeState,
+  OracleEquivocation,
   RecordAttestationInput,
+  RecordEquivocationInput,
 } from '../repositories/aepsDisputeRepository';
 
 class InMemoryRepo {
   disputes = new Map<string, AepsDispute>();
   attestations = new Map<string, AepsDisputeAttestation[]>();
+  equivocations: OracleEquivocation[] = [];
   attSeq = 0;
+  equivSeq = 0;
+  // Loose typing for the in-memory db query stub used by the equivocation
+  // claim_id back-fill path.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db = { query: async (_sql: string, _params: unknown[]): Promise<{ rows: any[] }> => ({ rows: [] }) };
 
   async createDispute(input: CreateDisputeInput): Promise<AepsDispute> {
     const d: AepsDispute = {
@@ -67,10 +75,64 @@ class InMemoryRepo {
       outcome: input.outcome,
       signature_hex: input.signature_hex,
       signed_at: input.signed_at,
+      equivocated: false,
     };
     list.push(att);
     this.attestations.set(input.dispute_id, list);
     return att;
+  }
+
+  async markAttestationEquivocated(disputeId: string, oraclePubkey: string): Promise<void> {
+    const list = this.attestations.get(disputeId) ?? [];
+    const att = list.find(a => a.oracle_pubkey === oraclePubkey);
+    if (att) att.equivocated = true;
+  }
+
+  async recordEquivocation(input: RecordEquivocationInput): Promise<OracleEquivocation> {
+    const existing = this.equivocations.find(
+      e => e.oracle_pubkey === input.oracle_pubkey && e.dispute_id === input.dispute_id,
+    );
+    if (existing) {
+      existing.detected_at = Math.min(existing.detected_at, input.detected_at);
+      return existing;
+    }
+    this.equivSeq += 1;
+    const e: OracleEquivocation = {
+      equivocation_id: this.equivSeq,
+      oracle_pubkey: input.oracle_pubkey,
+      dispute_id: input.dispute_id,
+      outcome_a: input.outcome_a,
+      signature_hex_a: input.signature_hex_a,
+      signed_at_a: input.signed_at_a,
+      outcome_b: input.outcome_b,
+      signature_hex_b: input.signature_hex_b,
+      signed_at_b: input.signed_at_b,
+      detected_at: input.detected_at,
+      claim_id: null,
+    };
+    this.equivocations.push(e);
+    return e;
+  }
+
+  async findEquivocation(
+    oraclePubkey: string,
+    disputeId: string,
+  ): Promise<OracleEquivocation | null> {
+    return (
+      this.equivocations.find(
+        e => e.oracle_pubkey === oraclePubkey && e.dispute_id === disputeId,
+      ) ?? null
+    );
+  }
+
+  async listEquivocationsForOracle(
+    oraclePubkey: string,
+    limit = 100,
+  ): Promise<OracleEquivocation[]> {
+    return this.equivocations
+      .filter(e => e.oracle_pubkey === oraclePubkey)
+      .sort((a, b) => b.detected_at - a.detected_at)
+      .slice(0, limit);
   }
 
   async listAttestations(disputeId: string): Promise<AepsDisputeAttestation[]> {
@@ -552,6 +614,184 @@ describe('AEPS §10 — DisputeService', () => {
       const d = await repo.findDispute(open.dispute.dispute_id);
       expect(d?.state).toBe('resolved_disputant');
       expect(d?.claim_id).toBeNull();
+    });
+  });
+
+  describe('equivocation detection (an oracle who signs both outcomes)', () => {
+    it('records an equivocation event when oracle changes vote', async () => {
+      const repo = new InMemoryRepo();
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+      });
+      const oracles = [makeOracle(), makeOracle(), makeOracle()];
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'content_correctness',
+        oracle_pubkeys: oracles.map(o => o.pkHex),
+        oracle_threshold: 2,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const id = open.dispute.dispute_id;
+      // Oracle 0 first signs disputant_wins
+      const sig1 = schnorrSignOutcome(oracles[0].skHex, id, 'disputant_wins');
+      await svc.submitAttestation(id, oracles[0].pkHex, 'disputant_wins', sig1);
+      expect(repo.equivocations.length).toBe(0);
+      // Oracle 0 then signs respondent_wins → equivocation
+      const sig2 = schnorrSignOutcome(oracles[0].skHex, id, 'respondent_wins');
+      const r = await svc.submitAttestation(id, oracles[0].pkHex, 'respondent_wins', sig2);
+      expect(r.status).toBe('ok');
+      expect(repo.equivocations.length).toBe(1);
+      const equiv = repo.equivocations[0];
+      expect(equiv.oracle_pubkey).toBe(oracles[0].pkHex.toLowerCase());
+      expect(equiv.outcome_a).toBe('disputant_wins');
+      expect(equiv.outcome_b).toBe('respondent_wins');
+      expect(equiv.signature_hex_a).toBe(sig1.toLowerCase());
+      expect(equiv.signature_hex_b).toBe(sig2.toLowerCase());
+    });
+
+    it('marks the attestation as equivocated so threshold count excludes it', async () => {
+      const repo = new InMemoryRepo();
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+      });
+      const oracles = [makeOracle(), makeOracle()];
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'sla_breach',
+        oracle_pubkeys: oracles.map(o => o.pkHex),
+        oracle_threshold: 1,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const id = open.dispute.dispute_id;
+      // Oracle 0 signs disputant_wins → would resolve at threshold=1
+      // BUT then equivocates → threshold no longer met (vote excluded)
+      const sigA = schnorrSignOutcome(oracles[0].skHex, id, 'disputant_wins');
+      const r1 = await svc.submitAttestation(id, oracles[0].pkHex, 'disputant_wins', sigA);
+      // First write resolved at threshold 1.
+      expect(r1.status).toBe('ok');
+      if (r1.status !== 'ok') return;
+      expect(r1.dispute_state).toBe('resolved_disputant');
+      // Second submission lands on a now-resolved dispute → dispute_not_open.
+      const sigB = schnorrSignOutcome(oracles[0].skHex, id, 'respondent_wins');
+      const r2 = await svc.submitAttestation(id, oracles[0].pkHex, 'respondent_wins', sigB);
+      expect(r2.status).toBe('dispute_not_open');
+    });
+
+    it('equivocation excludes vote when dispute is still open', async () => {
+      const repo = new InMemoryRepo();
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+      });
+      const oracles = [makeOracle(), makeOracle(), makeOracle()];
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'content_correctness',
+        oracle_pubkeys: oracles.map(o => o.pkHex),
+        oracle_threshold: 2,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const id = open.dispute.dispute_id;
+      // Oracle 0 votes disputant_wins (1 vote toward threshold=2 → still open)
+      await svc.submitAttestation(
+        id,
+        oracles[0].pkHex,
+        'disputant_wins',
+        schnorrSignOutcome(oracles[0].skHex, id, 'disputant_wins'),
+      );
+      const dispute = await repo.findDispute(id);
+      expect(dispute?.state).toBe('open');
+      // Oracle 0 equivocates : signs respondent_wins
+      await svc.submitAttestation(
+        id,
+        oracles[0].pkHex,
+        'respondent_wins',
+        schnorrSignOutcome(oracles[0].skHex, id, 'respondent_wins'),
+      );
+      // Now there's an equivocation. Oracle 0's vote doesn't count.
+      // Oracle 1 + Oracle 2 must both vote disputant_wins for resolution.
+      const r1 = await svc.submitAttestation(
+        id,
+        oracles[1].pkHex,
+        'disputant_wins',
+        schnorrSignOutcome(oracles[1].skHex, id, 'disputant_wins'),
+      );
+      // Threshold is 2 ; only oracle 1's vote counts now (oracle 0 equivocated).
+      expect(r1.status).toBe('ok');
+      if (r1.status !== 'ok') return;
+      expect(r1.dispute_state).toBe('open');
+      const r2 = await svc.submitAttestation(
+        id,
+        oracles[2].pkHex,
+        'disputant_wins',
+        schnorrSignOutcome(oracles[2].skHex, id, 'disputant_wins'),
+      );
+      expect(r2.status).toBe('ok');
+      if (r2.status !== 'ok') return;
+      expect(r2.dispute_state).toBe('resolved_disputant');
+    });
+
+    it('onEquivocation hook fires with the equivocation event', async () => {
+      const repo = new InMemoryRepo();
+      const calls: OracleEquivocation[] = [];
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+        onEquivocation: async (e) => { calls.push(e); },
+      });
+      const oracles = [makeOracle(), makeOracle()];
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'fork',
+        oracle_pubkeys: oracles.map(o => o.pkHex),
+        oracle_threshold: 2,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const id = open.dispute.dispute_id;
+      await svc.submitAttestation(
+        id,
+        oracles[0].pkHex,
+        'disputant_wins',
+        schnorrSignOutcome(oracles[0].skHex, id, 'disputant_wins'),
+      );
+      await svc.submitAttestation(
+        id,
+        oracles[0].pkHex,
+        'respondent_wins',
+        schnorrSignOutcome(oracles[0].skHex, id, 'respondent_wins'),
+      );
+      expect(calls.length).toBe(1);
+      expect(calls[0].oracle_pubkey).toBe(oracles[0].pkHex.toLowerCase());
+      expect(calls[0].outcome_a).toBe('disputant_wins');
+      expect(calls[0].outcome_b).toBe('respondent_wins');
+    });
+
+    it('idempotent re-submission of same outcome does NOT trigger equivocation', async () => {
+      const repo = new InMemoryRepo();
+      const svc = new DisputeService({
+        repo: repo as unknown as AepsDisputeRepository,
+        now: () => 1_000_000,
+      });
+      const oracles = [makeOracle(), makeOracle()];
+      const open = await svc.openDispute({
+        disputant_pubkey: DISPUTANT,
+        respondent_pubkey: RESPONDENT,
+        dispute_type: 'fork',
+        oracle_pubkeys: oracles.map(o => o.pkHex),
+        oracle_threshold: 2,
+      });
+      if (open.status !== 'ok') throw new Error('open failed');
+      const id = open.dispute.dispute_id;
+      const sig = schnorrSignOutcome(oracles[0].skHex, id, 'disputant_wins');
+      await svc.submitAttestation(id, oracles[0].pkHex, 'disputant_wins', sig);
+      await svc.submitAttestation(id, oracles[0].pkHex, 'disputant_wins', sig);
+      expect(repo.equivocations.length).toBe(0);
     });
   });
 

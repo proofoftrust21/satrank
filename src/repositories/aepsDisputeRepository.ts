@@ -44,6 +44,33 @@ export interface AepsDisputeAttestation {
   outcome: AttestationOutcome;
   signature_hex: string;
   signed_at: number;
+  equivocated: boolean;
+}
+
+export interface OracleEquivocation {
+  equivocation_id: number;
+  oracle_pubkey: string;
+  dispute_id: string;
+  outcome_a: AttestationOutcome;
+  signature_hex_a: string;
+  signed_at_a: number;
+  outcome_b: AttestationOutcome;
+  signature_hex_b: string;
+  signed_at_b: number;
+  detected_at: number;
+  claim_id: number | null;
+}
+
+export interface RecordEquivocationInput {
+  oracle_pubkey: string;
+  dispute_id: string;
+  outcome_a: AttestationOutcome;
+  signature_hex_a: string;
+  signed_at_a: number;
+  outcome_b: AttestationOutcome;
+  signature_hex_b: string;
+  signed_at_b: number;
+  detected_at: number;
 }
 
 export interface CreateDisputeInput {
@@ -123,6 +150,75 @@ export class AepsDisputeRepository {
     return rowToAttestation(rows[0]);
   }
 
+  /** Mark an attestation as having equivocated (an oracle changed their
+   *  vote). The vote no longer counts toward the threshold. */
+  async markAttestationEquivocated(
+    disputeId: string,
+    oraclePubkey: string,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE aeps_dispute_attestations
+       SET equivocated = TRUE
+       WHERE dispute_id = $1 AND oracle_pubkey = $2`,
+      [disputeId, oraclePubkey],
+    );
+  }
+
+  /** Record an equivocation event with both signatures as evidence.
+   *  Idempotent on (oracle_pubkey, dispute_id) ; subsequent vote changes
+   *  do not overwrite the canonical first-detection row. */
+  async recordEquivocation(
+    input: RecordEquivocationInput,
+  ): Promise<OracleEquivocation> {
+    const { rows } = await this.db.query<OracleEquivocationRow>(
+      `INSERT INTO aeps_oracle_equivocations
+        (oracle_pubkey, dispute_id, outcome_a, signature_hex_a, signed_at_a,
+         outcome_b, signature_hex_b, signed_at_b, detected_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (oracle_pubkey, dispute_id) DO UPDATE
+         SET detected_at = LEAST(aeps_oracle_equivocations.detected_at, EXCLUDED.detected_at)
+       RETURNING *`,
+      [
+        input.oracle_pubkey,
+        input.dispute_id,
+        input.outcome_a,
+        input.signature_hex_a,
+        input.signed_at_a,
+        input.outcome_b,
+        input.signature_hex_b,
+        input.signed_at_b,
+        input.detected_at,
+      ],
+    );
+    return rowToEquivocation(rows[0]);
+  }
+
+  async findEquivocation(
+    oraclePubkey: string,
+    disputeId: string,
+  ): Promise<OracleEquivocation | null> {
+    const { rows } = await this.db.query<OracleEquivocationRow>(
+      `SELECT * FROM aeps_oracle_equivocations
+       WHERE oracle_pubkey = $1 AND dispute_id = $2`,
+      [oraclePubkey, disputeId],
+    );
+    return rows[0] ? rowToEquivocation(rows[0]) : null;
+  }
+
+  async listEquivocationsForOracle(
+    oraclePubkey: string,
+    limit = 100,
+  ): Promise<OracleEquivocation[]> {
+    const { rows } = await this.db.query<OracleEquivocationRow>(
+      `SELECT * FROM aeps_oracle_equivocations
+       WHERE oracle_pubkey = $1
+       ORDER BY detected_at DESC
+       LIMIT $2`,
+      [oraclePubkey, limit],
+    );
+    return rows.map(rowToEquivocation);
+  }
+
   async listAttestations(disputeId: string): Promise<AepsDisputeAttestation[]> {
     const { rows } = await this.db.query<AttestationRow>(
       `SELECT * FROM aeps_dispute_attestations
@@ -191,6 +287,21 @@ interface AttestationRow {
   outcome: string;
   signature_hex: string;
   signed_at: string | number;
+  equivocated: boolean;
+}
+
+interface OracleEquivocationRow {
+  equivocation_id: string | number;
+  oracle_pubkey: string;
+  dispute_id: string;
+  outcome_a: string;
+  signature_hex_a: string;
+  signed_at_a: string | number;
+  outcome_b: string;
+  signature_hex_b: string;
+  signed_at_b: string | number;
+  detected_at: string | number;
+  claim_id: string | number | null;
 }
 
 function rowToDispute(r: DisputeRow): AepsDispute {
@@ -221,5 +332,22 @@ function rowToAttestation(r: AttestationRow): AepsDisputeAttestation {
     outcome: r.outcome as AttestationOutcome,
     signature_hex: r.signature_hex,
     signed_at: Number(r.signed_at),
+    equivocated: r.equivocated === true,
+  };
+}
+
+function rowToEquivocation(r: OracleEquivocationRow): OracleEquivocation {
+  return {
+    equivocation_id: Number(r.equivocation_id),
+    oracle_pubkey: r.oracle_pubkey,
+    dispute_id: r.dispute_id,
+    outcome_a: r.outcome_a as AttestationOutcome,
+    signature_hex_a: r.signature_hex_a,
+    signed_at_a: Number(r.signed_at_a),
+    outcome_b: r.outcome_b as AttestationOutcome,
+    signature_hex_b: r.signature_hex_b,
+    signed_at_b: Number(r.signed_at_b),
+    detected_at: Number(r.detected_at),
+    claim_id: r.claim_id !== null ? Number(r.claim_id) : null,
   };
 }

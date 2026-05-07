@@ -40,6 +40,7 @@ import type {
   AepsDisputeAttestation,
   DisputeType,
   AttestationOutcome,
+  OracleEquivocation,
 } from '../repositories/aepsDisputeRepository';
 
 const DEFAULT_DISPUTE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
@@ -63,9 +64,18 @@ export type DisputeResolvedHook = (
   dispute: AepsDispute,
 ) => Promise<{ claim_id?: number } | void>;
 
+/** Hook called when an oracle equivocates (signs both outcomes). The
+ *  equivocation row is the publicly slashable evidence ; the hook is
+ *  the integration point with ClaimEngine for the 5× slash against the
+ *  oracle's bond. */
+export type EquivocationDetectedHook = (
+  equivocation: OracleEquivocation,
+) => Promise<{ claim_id?: number } | void>;
+
 export interface DisputeServiceDeps {
   repo: AepsDisputeRepository;
   onResolved?: DisputeResolvedHook;
+  onEquivocation?: EquivocationDetectedHook;
   now?: () => number;
 }
 
@@ -204,17 +214,59 @@ export class DisputeService {
       return { status: 'invalid_signature' };
     }
 
+    // Equivocation detection : check for a prior attestation by this oracle
+    // with a DIFFERENT outcome. If found, this is publicly slashable.
+    const priorAttestations = await this.deps.repo.listAttestations(disputeId);
+    const oraclePkLower = oraclePubkey.toLowerCase();
+    const prior = priorAttestations.find(a => a.oracle_pubkey === oraclePkLower);
+    const isEquivocation = !!prior && prior.outcome !== outcome && !prior.equivocated;
+
+    let equivocationEvent: OracleEquivocation | null = null;
+    if (isEquivocation && prior) {
+      equivocationEvent = await this.deps.repo.recordEquivocation({
+        oracle_pubkey: oraclePkLower,
+        dispute_id: disputeId,
+        outcome_a: prior.outcome,
+        signature_hex_a: prior.signature_hex,
+        signed_at_a: prior.signed_at,
+        outcome_b: outcome,
+        signature_hex_b: signatureHex.toLowerCase(),
+        signed_at_b: this.now(),
+        detected_at: this.now(),
+      });
+      logger.warn(
+        {
+          dispute_id: disputeId,
+          oracle_pubkey: oraclePkLower.slice(0, 12),
+          outcome_a: prior.outcome,
+          outcome_b: outcome,
+          equivocation_id: equivocationEvent.equivocation_id,
+        },
+        'AEPS §10: ORACLE EQUIVOCATION DETECTED — both signatures recorded as publicly slashable evidence',
+      );
+    }
+
     const attestation = await this.deps.repo.recordAttestation({
       dispute_id: disputeId,
-      oracle_pubkey: oraclePubkey.toLowerCase(),
+      oracle_pubkey: oraclePkLower,
       outcome,
       signature_hex: signatureHex.toLowerCase(),
       signed_at: this.now(),
     });
 
-    // After recording, count per-outcome attestations and resolve if threshold reached.
+    // If equivocation detected, mark the (now-updated) attestation row as
+    // equivocated so the threshold count excludes this oracle. The oracle
+    // permanently loses their vote in this dispute.
+    if (equivocationEvent) {
+      await this.deps.repo.markAttestationEquivocated(disputeId, oraclePkLower);
+    }
+
+    // After recording, count per-outcome attestations EXCLUDING equivocated
+    // votes and resolve if threshold reached.
     const allAttestations = await this.deps.repo.listAttestations(disputeId);
-    const counts = countByOutcome(allAttestations);
+    // Mark in-memory : the attestation we just wrote was set equivocated above
+    // but we re-read from repo so the flag is accurate.
+    const counts = countByOutcome(allAttestations.filter(a => !a.equivocated));
     let newState: AepsDispute['state'] = 'open';
     if (counts.disputant_wins >= dispute.oracle_threshold) {
       newState = 'resolved_disputant';
@@ -236,6 +288,8 @@ export class DisputeService {
         'AEPS §10: dispute resolved by oracle threshold',
       );
 
+      // (separate from below) — no equivocation flow needed here ; the
+      // resolution itself was triggered by non-equivocating votes.
       // Fire the optional onResolved hook (e.g. ClaimEngine slashing). The
       // dispute resolution is already committed ; hook failures don't roll
       // back, they just log and continue. Returning a claim_id from the hook
@@ -261,6 +315,34 @@ export class DisputeService {
             'AEPS §10: onResolved hook threw — dispute is resolved but slashing not triggered',
           );
         }
+      }
+    }
+
+    // Fire the optional onEquivocation hook independently of resolution.
+    // An oracle can equivocate without changing the threshold outcome, and
+    // the slashing trigger is the equivocation event itself.
+    if (equivocationEvent && this.deps.onEquivocation) {
+      try {
+        const hookResult = await this.deps.onEquivocation(equivocationEvent);
+        if (hookResult && typeof hookResult === 'object' && hookResult.claim_id) {
+          // Persist claim_id directly on the equivocation row via a small
+          // raw query — there's no dedicated repo setter today and adding
+          // one for one field is overkill.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const db = (this.deps.repo as unknown as { db: any }).db;
+          await db.query(
+            'UPDATE aeps_oracle_equivocations SET claim_id = $1 WHERE equivocation_id = $2',
+            [hookResult.claim_id, equivocationEvent.equivocation_id],
+          );
+        }
+      } catch (err) {
+        logger.error(
+          {
+            equivocation_id: equivocationEvent.equivocation_id,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          'AEPS §10: onEquivocation hook threw — evidence persists but slashing not triggered',
+        );
       }
     }
 
