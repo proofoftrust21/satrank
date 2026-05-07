@@ -2189,10 +2189,19 @@ export class FulfillService {
     // calling fulfill(). For the in-process custodial mode we accept a
     // sentinel (agent_pubkey = payment_hash). The /api/fulfill controller
     // will tighten this in Phase 1.4.
+    //
+    // Sim 20 fix (2026-05-07) — `payment_hash` is `bytea` in PG, not text.
+    // The previous `payment_hash = $1` with a hex string parameter never
+    // matched any row (PG does not implicitly cast text → bytea on equality).
+    // Wrap with `decode($1, 'hex')` so the hex pubkey is interpreted as
+    // 32 raw bytes that match the column's storage. This also resolves the
+    // CRIT-2 finding from the Phase 12A audit (debitAgentBalance type
+    // confusion). Hex-format guarded by /^[0-9a-f]+$/i implicitly via
+    // upstream NIP-98 pubkey check.
     const { rows } = await this.deps.pool.query<{ balance: string | null }>(
       `SELECT COALESCE(SUM(balance_credits * COALESCE(rate_sats_per_request, 1)), 0)::text AS balance
          FROM token_balance
-        WHERE payment_hash = $1`,
+        WHERE payment_hash = decode($1, 'hex')`,
       [agentPubkey],
     );
     return Number(rows[0]?.balance ?? 0);
@@ -2201,10 +2210,13 @@ export class FulfillService {
   private async debitAgentBalance(agentPubkey: string, sats: number): Promise<boolean> {
     // Atomic debit: condition the UPDATE on having enough balance.
     // V1 uses balance_credits; the rate is folded into the credits unit.
+    // Sim 20 fix (2026-05-07) — same `decode($1, 'hex')` guard as
+    // fetchAgentBalance ; otherwise no row matches and the update silently
+    // returns rowCount=0 even with a fully-funded agent.
     const { rowCount } = await this.deps.pool.query(
       `UPDATE token_balance
           SET balance_credits = balance_credits - $2
-        WHERE payment_hash = $1
+        WHERE payment_hash = decode($1, 'hex')
           AND rate_sats_per_request IS NOT NULL
           AND balance_credits >= $2`,
       [agentPubkey, sats],
