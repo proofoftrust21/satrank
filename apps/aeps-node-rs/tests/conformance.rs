@@ -6,6 +6,7 @@
 //! multi-implementation rather than single-vendor.
 
 use aeps_node::{
+    dispute::{build_outcome_message, build_outcome_message_hash, AttestationOutcome},
     evidence::build_op_return_payload,
     identity::NostrPubkey,
     merkle::merkle_root,
@@ -84,5 +85,43 @@ fn op_return_conformance() {
             .unwrap_or_else(|e| panic!("payload {:?}", e));
         let got = hex::encode(&payload);
         assert_eq!(got, v.expected_payload_hex, "op_return vector '{}'", v.name);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DisputeOutcomeFixture {
+    vectors: Vec<DisputeOutcomeVector>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DisputeOutcomeVector {
+    name: String,
+    dispute_id: String,
+    outcome: String,
+    expected_canonical: String,
+    expected_hash_hex: String,
+}
+
+#[test]
+fn dispute_outcome_conformance() {
+    let fixture: DisputeOutcomeFixture = load_fixture("dispute_outcome.json");
+    for v in &fixture.vectors {
+        let outcome: AttestationOutcome = v
+            .outcome
+            .parse()
+            .unwrap_or_else(|_| panic!("invalid outcome enum '{}'", v.outcome));
+        let canonical = build_outcome_message(&v.dispute_id, outcome);
+        assert_eq!(
+            canonical, v.expected_canonical,
+            "dispute_outcome canonical mismatch '{}'",
+            v.name
+        );
+        let hash = build_outcome_message_hash(&v.dispute_id, outcome);
+        let hash_hex = hex::encode(hash);
+        assert_eq!(
+            hash_hex, v.expected_hash_hex,
+            "dispute_outcome hash mismatch '{}'",
+            v.name
+        );
     }
 }

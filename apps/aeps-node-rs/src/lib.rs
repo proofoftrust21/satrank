@@ -14,6 +14,7 @@
 //! shared test vectors. See README for the test-vector contract.
 
 pub mod capability;
+pub mod dispute;
 pub mod evidence;
 pub mod identity;
 pub mod merkle;

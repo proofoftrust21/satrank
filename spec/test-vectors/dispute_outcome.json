@@ -1,0 +1,34 @@
+{
+  "$schema": "AEPS conformance vectors v0.1",
+  "description": "AEPS §10.2 canonical outcome message format. Sorted-keys JSON, no whitespace, JSON.stringify on each value: {\"dispute_id\":\"<id>\",\"outcome\":\"<outcome>\",\"v\":\"AEPS-§10\"}. The 32-byte SHA-256 of the UTF-8-encoded canonical bytes is what BIP-340 Schnorr oracle attestations sign.",
+  "vectors": [
+    {
+      "name": "short id, disputant_wins",
+      "dispute_id": "dis_abc",
+      "outcome": "disputant_wins",
+      "expected_canonical": "{\"dispute_id\":\"dis_abc\",\"outcome\":\"disputant_wins\",\"v\":\"AEPS-§10\"}",
+      "expected_hash_hex": "4f7cd784ae1d3bd664e0194d4724ef473691077b56f226384453a423a767916c"
+    },
+    {
+      "name": "short id, respondent_wins",
+      "dispute_id": "dis_abc",
+      "outcome": "respondent_wins",
+      "expected_canonical": "{\"dispute_id\":\"dis_abc\",\"outcome\":\"respondent_wins\",\"v\":\"AEPS-§10\"}",
+      "expected_hash_hex": "37efa408354702264c228e0affb05eaebf6bd01862ec2b6459ad5cf3d11649ba"
+    },
+    {
+      "name": "canonical 32-hex id, disputant_wins",
+      "dispute_id": "dis_11111111111111111111111111111111",
+      "outcome": "disputant_wins",
+      "expected_canonical": "{\"dispute_id\":\"dis_11111111111111111111111111111111\",\"outcome\":\"disputant_wins\",\"v\":\"AEPS-§10\"}",
+      "expected_hash_hex": "8e4be28152bfe69862e3b873a0be243f9832f82ee6729e971c6758371553affd"
+    },
+    {
+      "name": "canonical 32-hex id, respondent_wins",
+      "dispute_id": "dis_ffffffffffffffffffffffffffffffff",
+      "outcome": "respondent_wins",
+      "expected_canonical": "{\"dispute_id\":\"dis_ffffffffffffffffffffffffffffffff\",\"outcome\":\"respondent_wins\",\"v\":\"AEPS-§10\"}",
+      "expected_hash_hex": "6654c8512a78f4763c17926a81cc3d7961eef1dc07fe1d55f3491e534cb0628a"
+    }
+  ]
+}

@@ -10,6 +10,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { merkleRoot } from '../services/merkleTreeUtil';
 import { buildOpReturnPayload } from '../services/dailyMerkleAnchorService';
+import {
+  buildOutcomeMessage,
+  buildOutcomeMessageHash,
+} from '../services/disputeService';
 
 const VECTORS_DIR = join(__dirname, '..', '..', 'spec', 'test-vectors');
 
@@ -62,6 +66,31 @@ describe('AEPS conformance — §8.3 OP_RETURN payload', () => {
         vector.root_hex,
       );
       expect(payload.toString('hex')).toBe(vector.expected_payload_hex);
+    });
+  }
+});
+
+interface DisputeOutcomeVector {
+  name: string;
+  dispute_id: string;
+  outcome: 'disputant_wins' | 'respondent_wins';
+  expected_canonical: string;
+  expected_hash_hex: string;
+}
+
+interface DisputeOutcomeFixture {
+  vectors: DisputeOutcomeVector[];
+}
+
+describe('AEPS conformance — §10 canonical outcome message', () => {
+  const fixture = loadFixture<DisputeOutcomeFixture>('dispute_outcome.json');
+
+  for (const vector of fixture.vectors) {
+    it(vector.name, () => {
+      const canonical = buildOutcomeMessage(vector.dispute_id, vector.outcome);
+      expect(canonical).toBe(vector.expected_canonical);
+      const hash = buildOutcomeMessageHash(vector.dispute_id, vector.outcome);
+      expect(hash.toString('hex')).toBe(vector.expected_hash_hex);
     });
   }
 });
