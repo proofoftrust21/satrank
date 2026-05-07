@@ -1,0 +1,48 @@
+{
+  "$schema": "AEPS conformance vectors v0.1",
+  "description": "AEPS §4 capability descriptor canonical hashing. The endpoint_id is the SHA-256 hex of the canonical-JSON serialization of the descriptor with the endpoint_id field stripped. Sorted-keys recursive (RFC 8785 subset). Both reference impls must produce identical canonical bytes + identical SHA-256.",
+  "vectors": [
+    {
+      "name": "minimal descriptor (no dlc oracles)",
+      "descriptor": {
+        "operator_pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "method": "POST",
+        "url": "https://example/translate",
+        "input_schema": { "type": "object" },
+        "output_schema": { "type": "string" },
+        "price_msat": 5000,
+        "quote_validity_s": 300,
+        "evidence_endpoint": "https://example/.well-known/aeps-evidence",
+        "bond_pubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "dlc_oracles": [],
+        "dlc_threshold": 0,
+        "version": "0.1"
+      },
+      "expected_canonical": "{\"bond_pubkey\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"dlc_oracles\":[],\"dlc_threshold\":0,\"evidence_endpoint\":\"https://example/.well-known/aeps-evidence\",\"input_schema\":{\"type\":\"object\"},\"method\":\"POST\",\"operator_pubkey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"output_schema\":{\"type\":\"string\"},\"price_msat\":5000,\"quote_validity_s\":300,\"url\":\"https://example/translate\",\"version\":\"0.1\"}",
+      "expected_endpoint_id": "3985ac6bd772fcc72ca57f204cfc8fbae980087b1f3fd9dd9a7980f9cbd942d3"
+    },
+    {
+      "name": "with 3 dlc oracles + 2-of-3 threshold + nested schema",
+      "descriptor": {
+        "operator_pubkey": "1111111111111111111111111111111111111111111111111111111111111111",
+        "method": "GET",
+        "url": "https://op.example/v1/data",
+        "input_schema": { "type": "object", "properties": { "q": { "type": "string" } }, "required": ["q"] },
+        "output_schema": { "type": "array", "items": { "type": "string" } },
+        "price_msat": 10000,
+        "quote_validity_s": 600,
+        "evidence_endpoint": "https://op.example/.well-known/aeps-evidence",
+        "bond_pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "dlc_oracles": [
+          "3333333333333333333333333333333333333333333333333333333333333333",
+          "4444444444444444444444444444444444444444444444444444444444444444",
+          "5555555555555555555555555555555555555555555555555555555555555555"
+        ],
+        "dlc_threshold": 2,
+        "version": "0.1"
+      },
+      "expected_canonical": "{\"bond_pubkey\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"dlc_oracles\":[\"3333333333333333333333333333333333333333333333333333333333333333\",\"4444444444444444444444444444444444444444444444444444444444444444\",\"5555555555555555555555555555555555555555555555555555555555555555\"],\"dlc_threshold\":2,\"evidence_endpoint\":\"https://op.example/.well-known/aeps-evidence\",\"input_schema\":{\"properties\":{\"q\":{\"type\":\"string\"}},\"required\":[\"q\"],\"type\":\"object\"},\"method\":\"GET\",\"operator_pubkey\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"output_schema\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"price_msat\":10000,\"quote_validity_s\":600,\"url\":\"https://op.example/v1/data\",\"version\":\"0.1\"}",
+      "expected_endpoint_id": "aa4de319b932d2007b4179099ebfec8298b708993e60274a182ceb160d1e0e31"
+    }
+  ]
+}

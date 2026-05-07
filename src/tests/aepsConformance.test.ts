@@ -14,6 +14,11 @@ import {
   buildOutcomeMessage,
   buildOutcomeMessageHash,
 } from '../services/disputeService';
+import {
+  buildCanonicalDescriptor,
+  computeEndpointId,
+  type AepsCapabilityDescriptor,
+} from '../services/aepsCapability';
 
 const VECTORS_DIR = join(__dirname, '..', '..', 'spec', 'test-vectors');
 
@@ -91,6 +96,30 @@ describe('AEPS conformance — §10 canonical outcome message', () => {
       expect(canonical).toBe(vector.expected_canonical);
       const hash = buildOutcomeMessageHash(vector.dispute_id, vector.outcome);
       expect(hash.toString('hex')).toBe(vector.expected_hash_hex);
+    });
+  }
+});
+
+interface CapabilityVector {
+  name: string;
+  descriptor: AepsCapabilityDescriptor;
+  expected_canonical: string;
+  expected_endpoint_id: string;
+}
+
+interface CapabilityFixture {
+  vectors: CapabilityVector[];
+}
+
+describe('AEPS conformance — §4 capability descriptor', () => {
+  const fixture = loadFixture<CapabilityFixture>('capability_descriptor.json');
+
+  for (const vector of fixture.vectors) {
+    it(vector.name, () => {
+      const canonical = buildCanonicalDescriptor(vector.descriptor);
+      expect(canonical).toBe(vector.expected_canonical);
+      const id = computeEndpointId(vector.descriptor);
+      expect(id).toBe(vector.expected_endpoint_id);
     });
   }
 });

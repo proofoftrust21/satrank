@@ -6,12 +6,14 @@
 //! multi-implementation rather than single-vendor.
 
 use aeps_node::{
+    capability::canonical_json,
     dispute::{build_outcome_message, build_outcome_message_hash, AttestationOutcome},
     evidence::build_op_return_payload,
     identity::NostrPubkey,
     merkle::merkle_root,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 
@@ -121,6 +123,47 @@ fn dispute_outcome_conformance() {
         assert_eq!(
             hash_hex, v.expected_hash_hex,
             "dispute_outcome hash mismatch '{}'",
+            v.name
+        );
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CapabilityFixture {
+    vectors: Vec<CapabilityVector>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CapabilityVector {
+    name: String,
+    descriptor: serde_json::Value,
+    expected_canonical: String,
+    expected_endpoint_id: String,
+}
+
+#[test]
+fn capability_descriptor_conformance() {
+    let fixture: CapabilityFixture = load_fixture("capability_descriptor.json");
+    for v in &fixture.vectors {
+        // Strip endpoint_id (if present) before canonicalising to match
+        // the TS impl behaviour : the field is the OUTPUT and not part
+        // of the input.
+        let mut stripped = v.descriptor.clone();
+        if let serde_json::Value::Object(ref mut map) = stripped {
+            map.remove("endpoint_id");
+        }
+        let canonical = canonical_json(&stripped).expect("canonical_json should serialize Value");
+        assert_eq!(
+            canonical, v.expected_canonical,
+            "capability_descriptor canonical mismatch '{}'",
+            v.name
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.as_bytes());
+        let id = hex::encode(hasher.finalize());
+        assert_eq!(
+            id, v.expected_endpoint_id,
+            "capability_descriptor endpoint_id mismatch '{}'",
             v.name
         );
     }
