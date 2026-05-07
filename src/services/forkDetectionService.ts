@@ -31,8 +31,14 @@ import type {
   ObservationSource,
 } from '../repositories/aepsObserverRepository';
 
+/** Hook called when a NEW fork event is recorded for the first time on
+ *  this (operator, day) bucket. Re-detection of an already-existing fork
+ *  does NOT fire the hook again. Failures log + continue. */
+export type ForkDetectedHook = (fork: ForkEvent) => Promise<void>;
+
 export interface ForkDetectionServiceDeps {
   repo: AepsObserverRepository;
+  onForkDetected?: ForkDetectedHook;
   now?: () => number;
 }
 
@@ -150,6 +156,20 @@ export class ForkDetectionService {
         },
         'AEPS §8.5: FORK DETECTED — two distinct daily roots for same operator+day',
       );
+      // Fire the optional onForkDetected hook (e.g. Nostr publication).
+      if (this.deps.onForkDetected) {
+        try {
+          await this.deps.onForkDetected(forkEvent);
+        } catch (err) {
+          logger.error(
+            {
+              fork_event_id: forkEvent.fork_event_id,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            'AEPS §8.5: onForkDetected hook threw — fork persisted but downstream not notified',
+          );
+        }
+      }
     }
 
     return forkEvent;

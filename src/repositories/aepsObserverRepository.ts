@@ -145,6 +145,21 @@ export class AepsObserverRepository {
     return rows[0] ? rowToForkEvent(rows[0]) : null;
   }
 
+  /** Persist Nostr publication metadata on a fork event. Idempotent. */
+  async recordForkNostrPublish(
+    forkEventId: number,
+    nostrEventId: string,
+    publishedAt: number,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE aeps_fork_events
+       SET nostr_event_id = $2,
+           nostr_published_at = $3
+       WHERE fork_event_id = $1`,
+      [forkEventId, nostrEventId, publishedAt],
+    );
+  }
+
   async listForkEvents(
     operatorPubkey: string | null,
     limit = 100,

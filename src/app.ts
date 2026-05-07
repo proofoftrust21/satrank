@@ -117,6 +117,8 @@ import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
 // AEPS §8.3 (2026-05-07) — Nostr publication of daily anchors.
 import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsAnchorPublisher';
 import { Kind31403Consumer } from './nostr/kind31403Consumer';
+// AEPS §8.5 (2026-05-08) — Nostr publication of detected fork events.
+import { buildAndSignForkEvent } from './services/aepsForkPublisher';
 // AEPS §6.3 (2026-05-08) — Multi-hop HTLC chain HTTP surface.
 import { MultiHopChainRepository } from './repositories/multiHopChainRepository';
 import { MultiHopChainService } from './services/multiHopChainService';
@@ -583,7 +585,54 @@ export function createApp() {
   // when resolved_disputant + receipt-based, the buildDisputeClaim adapter
   // opens a ClaimEngine slashing claim against the operator's bond.
   const aepsObserverRepo = new AepsObserverRepository(pool);
-  const forkDetectionService = new ForkDetectionService({ repo: aepsObserverRepo });
+  const forkDetectionService = new ForkDetectionService({
+    repo: aepsObserverRepo,
+    // AEPS §8.5 — auto-publish detected forks as kind 31410 to relays.
+    // Best-effort : failures persist the fork locally but log + continue.
+    onForkDetected: async (fork) => {
+      if (!config.NOSTR_PRIVATE_KEY) return;
+      try {
+        const signed = await buildAndSignForkEvent(
+          fork,
+          Math.floor(Date.now() / 1000),
+          config.NOSTR_PRIVATE_KEY,
+        );
+        const relays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(Boolean);
+        const pub = await publishAnchorToRelays(signed, relays, (msg, meta) =>
+          logger.warn(meta ?? {}, msg),
+        );
+        if (pub.relays_acked > 0) {
+          await aepsObserverRepo.recordForkNostrPublish(
+            fork.fork_event_id,
+            pub.event_id,
+            Math.floor(Date.now() / 1000),
+          );
+          logger.info(
+            {
+              fork_event_id: fork.fork_event_id,
+              event_id_first8: pub.event_id.slice(0, 8),
+              relays_acked: pub.relays_acked,
+              relays_attempted: pub.relays_attempted,
+            },
+            'AEPS §8.5: fork event published to Nostr (kind 31410)',
+          );
+        } else {
+          logger.warn(
+            { fork_event_id: fork.fork_event_id, ...pub },
+            'AEPS §8.5: zero relays acked fork publish',
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            fork_event_id: fork.fork_event_id,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          'AEPS §8.5: fork Nostr publish threw',
+        );
+      }
+    },
+  });
   const aepsDisputeRepo = new AepsDisputeRepository(pool);
   const disputeService = new DisputeService({
     repo: aepsDisputeRepo,
