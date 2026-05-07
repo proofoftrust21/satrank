@@ -2169,10 +2169,12 @@ export class FulfillService {
    *  rows; null when we have no record (treated as fresh agent → strict cap).
    *  The pubkey-to-deposit mapping is identical to fetchAgentBalance. */
   private async fetchAgentFirstSeen(agentPubkey: string): Promise<number | null> {
+    // Sim 20 fix — payment_hash is bytea ; decode($1, 'hex').
+    if (!/^[0-9a-f]{64}$/i.test(agentPubkey)) return null;
     const { rows } = await this.deps.pool.query<{ first_seen: string | null }>(
       `SELECT MIN(created_at)::text AS first_seen
          FROM token_balance
-        WHERE payment_hash = $1`,
+        WHERE payment_hash = decode($1, 'hex')`,
       [agentPubkey],
     );
     const v = rows[0]?.first_seen;
@@ -2196,8 +2198,10 @@ export class FulfillService {
     // Wrap with `decode($1, 'hex')` so the hex pubkey is interpreted as
     // 32 raw bytes that match the column's storage. This also resolves the
     // CRIT-2 finding from the Phase 12A audit (debitAgentBalance type
-    // confusion). Hex-format guarded by /^[0-9a-f]+$/i implicitly via
-    // upstream NIP-98 pubkey check.
+    // confusion). Hex-format pre-validated to avoid PG `invalid hexadecimal
+    // digit` errors when the input is not even hex (legacy test fixtures
+    // like 'agent-with-no-deposit' must return 0 cleanly).
+    if (!/^[0-9a-f]{64}$/i.test(agentPubkey)) return 0;
     const { rows } = await this.deps.pool.query<{ balance: string | null }>(
       `SELECT COALESCE(SUM(balance_credits * COALESCE(rate_sats_per_request, 1)), 0)::text AS balance
          FROM token_balance
@@ -2213,6 +2217,7 @@ export class FulfillService {
     // Sim 20 fix (2026-05-07) — same `decode($1, 'hex')` guard as
     // fetchAgentBalance ; otherwise no row matches and the update silently
     // returns rowCount=0 even with a fully-funded agent.
+    if (!/^[0-9a-f]{64}$/i.test(agentPubkey)) return false;
     const { rowCount } = await this.deps.pool.query(
       `UPDATE token_balance
           SET balance_credits = balance_credits - $2
