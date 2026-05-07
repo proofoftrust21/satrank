@@ -93,6 +93,11 @@ export type ErrorCode =
   | 'claim_not_found'
   | 'claim_already_paid'
   | 'claim_dispute_window_expired'
+  // ===== AEPS §10 disputes =====
+  | 'dispute_not_found'
+  | 'dispute_not_open'
+  | 'oracle_not_in_set'
+  | 'signature_invalid'
   // ===== generic =====
   | 'internal_error';
 
@@ -138,6 +143,10 @@ const RULES: Record<ErrorCode, ErrorRule> = {
   claim_not_found:                { next_action: 'abort_lane',          http_status: 404, message: 'claim_id is unknown' },
   claim_already_paid:             { next_action: 'abort_lane',          http_status: 409, message: 'claim has already been settled' },
   claim_dispute_window_expired:   { next_action: 'abort_lane',          http_status: 410, message: '24h dispute window has elapsed' },
+  dispute_not_found:              { next_action: 'abort_lane',          http_status: 404, message: 'dispute_id is unknown' },
+  dispute_not_open:               { next_action: 'abort_lane',          http_status: 409, message: 'dispute is not in open state' },
+  oracle_not_in_set:              { next_action: 'abort_lane',          http_status: 403, message: 'caller pubkey is not in the dispute oracle threshold set' },
+  signature_invalid:              { next_action: 'abort_lane',          http_status: 400, message: 'BIP-340 Schnorr signature did not verify' },
   internal_error:                 { next_action: 'wait',                http_status: 500, message: 'internal error — see requestId for log lookup', retry_after_ms: 10_000 },
 };
 

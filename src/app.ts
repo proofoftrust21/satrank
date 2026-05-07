@@ -120,6 +120,8 @@ import { ForkDetectionService } from './services/forkDetectionService';
 import { AepsDisputeRepository } from './repositories/aepsDisputeRepository';
 import { DisputeService } from './services/disputeService';
 import { buildDisputeClaim } from './services/disputeClaimAdapter';
+import { AepsDisputeController } from './controllers/aepsDisputeController';
+import { createAepsDisputeRoutes } from './routes/aepsDispute';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
@@ -587,11 +589,14 @@ export function createApp() {
       return undefined;
     },
   });
-  // Mark unused for the linter ; routes/cron for these services are wired
-  // in follow-up commits. Instantiation here makes them available to the
-  // app graph so future wire-ups don't require a refactor.
+  const aepsDisputeController = new AepsDisputeController({
+    disputeService,
+    disputeRepo: aepsDisputeRepo,
+  });
+  // ForkDetectionService routes are deferred (need observer scan endpoint
+  // + Nostr ingestion). Mark unused for the linter ; instantiation now
+  // keeps the dep graph stable for the follow-up.
   void forkDetectionService;
-  void disputeService;
   // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
   const operatorAttestationRepo = new OperatorAttestationRepository(pool);
   const operatorAttestationService = new OperatorAttestationService({
@@ -1316,6 +1321,9 @@ export function createApp() {
   // global Express middleware. The L1 anchor + signed receipts are the trust
   // root; transparency is the whole point.
   api.use('/aeps', createAepsEvidenceRoutes(aepsEvidenceController));
+  // AEPS §10 (2026-05-07) — dispute open/attest/get. NIP-98 enforced by
+  // the controller for write paths; GET is public.
+  api.use('/aeps', createAepsDisputeRoutes(aepsDisputeController));
 
   // /api/intent — Mix A+D conditional gate. Default path = free directory
   // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
