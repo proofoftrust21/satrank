@@ -836,6 +836,9 @@ export function createApp() {
     serviceEndpointRepo,
     // Phase 12.9 — shared replay-state with the IntentRanker.
     operatorReplayState,
+    // Phase 12A (2026-05-07) — auto-issue evidence on every successful
+    // settle so AEPS L1 anchor has data to commit on Bitcoin.
+    evidenceService,
   });
   const fulfillController = new FulfillController({
     fulfillService,

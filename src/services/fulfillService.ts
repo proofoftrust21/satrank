@@ -276,6 +276,14 @@ export interface FulfillServiceDeps {
    *  on tier. Both deps are optional (back-compat with Phase 9 tests). */
   reputationService?: import('./agentReputationService').AgentReputationService;
   bondService?: import('./agentBondService').AgentBondService;
+  /** Phase 12A (2026-05-07) — auto-issue an Ed25519 evidence receipt on
+   *  every successful settle. Without this, evidence receipts are only
+   *  populated when an agent explicitly calls
+   *  /api/fulfill/:job_id/evidence — which agents in the wild rarely do.
+   *  Auto-issuance feeds `evidence_receipts` so the AEPS daily Merkle
+   *  anchor cron has data to commit on Bitcoin L1. Optional ; absent
+   *  means legacy on-demand-only behavior. */
+  evidenceService?: import('./evidenceService').EvidenceService;
 }
 
 export class FulfillService {
@@ -290,6 +298,40 @@ export class FulfillService {
   constructor(private readonly deps: FulfillServiceDeps) {
     this.fetchImpl = deps.fetchImpl ?? fetchSafeExternal;
     this.now = deps.now ?? (() => Math.floor(Date.now() / 1000));
+  }
+
+  /** Phase 12A — fire-and-forget evidence issuance after a successful settle.
+   *  Picks the first delivery_ok attempt and calls evidenceService.issue.
+   *  All failures are swallowed and logged ; an evidence-issuance failure
+   *  must NEVER prevent the agent from receiving the body it paid for. */
+  private autoIssueEvidence(jobId: string, agentPubkey: string): void {
+    if (!this.deps.evidenceService) return;
+    const svc = this.deps.evidenceService;
+    void (async () => {
+      try {
+        const job = await this.deps.fulfillJobRepo.findById(jobId);
+        if (!job) return;
+        const idx = svc.findSuccessfulAttemptIndex(job);
+        if (idx === null) return;
+        const result = await svc.issue(jobId, idx, agentPubkey);
+        if (result.status === 'ok') {
+          logger.debug(
+            { jobId, attempt_index: idx, receipt_id: result.receipt.receipt_id },
+            'Fulfill: evidence receipt auto-issued',
+          );
+        } else if (result.status !== 'signing_disabled') {
+          logger.warn(
+            { jobId, attempt_index: idx, status: result.status },
+            'Fulfill: evidence auto-issue returned non-ok',
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { jobId, error: err instanceof Error ? err.message : String(err) },
+          'Fulfill: evidence auto-issue threw — non-fatal',
+        );
+      }
+    })();
   }
 
   async fulfill(req: FulfillRequest): Promise<FulfillResult> {
@@ -937,6 +979,10 @@ export class FulfillService {
           if (!stored) {
             logger.warn({ jobId }, 'Fulfill: settleSuccess affected 0 rows — race detected');
           }
+          // Phase 12A — auto-issue evidence receipt (fire-and-forget). Feeds
+          // evidence_receipts so the daily Merkle anchor cron has data to
+          // commit on Bitcoin L1.
+          this.autoIssueEvidence(jobId, req.agent_pubkey);
           // Phase 9.4 — reward delivery_ok with +1 reputation sat. Auto-repay
           // any prior borrow that was used to fund this very call (deficit
           // covered, agent net : balance + earnings).
@@ -1303,6 +1349,10 @@ export class FulfillService {
             );
             return await this.abort(job.job_id, attempts, 'hold_settle_race_terminal');
           }
+          // Phase 12A — auto-issue evidence receipt (fire-and-forget) for
+          // hold-mode settle path. Same rationale as deposit path : feeds
+          // evidence_receipts → AEPS daily Merkle anchor cron.
+          this.autoIssueEvidence(job.job_id, job.agent_pubkey);
 
           // Phase 6.1 — residue refund. settle claimed the full reserveSats;
           // residue = reserveSats − sats_spent − premium. Pay it out via
