@@ -929,6 +929,9 @@ async function main(): Promise<void> {
                 maxPriceSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
                 minChallengePSuccess: 0.4,
                 skipIfPaymentNObsAtLeast: 20,
+                // Phase 11D — fulfill-aware throttle (cf. project_probes_role_post_fulfill).
+                skipIfRecentFulfillsAtLeast: config.PAID_PROBE_THROTTLE_IF_RECENT_FULFILLS_AT_LEAST,
+                recentFulfillsWindowDays: config.PAID_PROBE_THROTTLE_FULFILLS_WINDOW_DAYS,
               });
               if (hot.length === 0) {
                 logger.info(
@@ -1040,6 +1043,9 @@ async function main(): Promise<void> {
                   maxPriceSats: config.PAID_PROBE_MAX_PER_PROBE_SATS,
                   freshAfterDays: config.PAID_PROBE_SWEEP_FRESH_AFTER_DAYS,
                   minChallengePSuccess: 0.4,
+                  // Phase 11D — fulfill-aware throttle.
+                  skipIfRecentFulfillsAtLeast: config.PAID_PROBE_THROTTLE_IF_RECENT_FULFILLS_AT_LEAST,
+                  recentFulfillsWindowDays: config.PAID_PROBE_THROTTLE_FULFILLS_WINDOW_DAYS,
                 });
                 if (candidates.length === 0) {
                   logger.info('Paid probe sweep: no candidates (all freshly probed or filtered) — skipped');

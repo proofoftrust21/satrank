@@ -512,9 +512,19 @@ export class ServiceEndpointRepository {
     maxPriceSats: number;
     minChallengePSuccess?: number;
     skipIfPaymentNObsAtLeast?: number;
+    /** Phase 11D — when set, exclude endpoints whose fulfill_jobs already
+     *  produced ≥N successful (status='success', delivery_outcome='delivery_ok')
+     *  attempts in the trailing window. 0 disables. Default 0 for back-compat
+     *  with existing tests; the crawler reads the env knob and passes a non-
+     *  zero value in production. */
+    skipIfRecentFulfillsAtLeast?: number;
+    recentFulfillsWindowDays?: number;
   }): Promise<ServiceEndpoint[]> {
     const minChallengeP = opts.minChallengePSuccess ?? 0.4;
     const skipPaidNObs = opts.skipIfPaymentNObsAtLeast ?? 20;
+    const throttleAtLeast = opts.skipIfRecentFulfillsAtLeast ?? 0;
+    const windowDays = opts.recentFulfillsWindowDays ?? 30;
+    const fulfillCutoffSec = Math.floor(Date.now() / 1000) - windowDays * 86400;
     const { rows } = await this.db.query<ServiceEndpoint>(
       `SELECT se.*
          FROM service_endpoints se
@@ -524,6 +534,18 @@ export class ServiceEndpointRepository {
          LEFT JOIN endpoint_stage_posteriors esp_payment
                 ON esp_payment.endpoint_url_hash = encode(digest(se.url, 'sha256'), 'hex')
                AND esp_payment.stage = 3
+         LEFT JOIN (
+           SELECT
+             attempt->>'candidate_url' AS endpoint_url,
+             COUNT(*) AS success_count
+           FROM fulfill_jobs
+           CROSS JOIN LATERAL jsonb_array_elements(attempts) AS attempt
+           WHERE status = 'success'
+             AND created_at >= $5::bigint
+             AND attempt->>'delivery_outcome' = 'delivery_ok'
+           GROUP BY attempt->>'candidate_url'
+         ) recent_fulfills
+                ON recent_fulfills.endpoint_url = se.url
         WHERE se.deprecated = FALSE
           AND se.check_count >= 1
           AND se.last_intent_query_at IS NOT NULL
@@ -539,11 +561,23 @@ export class ServiceEndpointRepository {
           -- on dead/misconfigured endpoints. NULL accepted to allow
           -- never-checked rows through (rare bootstrap case).
           AND (se.last_http_status IS NULL OR se.last_http_status = 402)
+          -- Phase 11D — fulfill-aware throttle. When the threshold is 0
+          -- (default in tests), the predicate becomes vacuous. When >0,
+          -- endpoints with success_count ≥ threshold drop out and the
+          -- ORDER BY surfaces the next least-sampled candidate.
+          AND ($6::int = 0 OR COALESCE(recent_fulfills.success_count, 0) < $6::int)
         ORDER BY
           COALESCE(esp_payment.n_obs, 0) ASC,
           se.last_intent_query_at DESC NULLS LAST
         LIMIT $4::int`,
-      [opts.maxPriceSats, minChallengeP, skipPaidNObs, opts.limit],
+      [
+        opts.maxPriceSats,
+        minChallengeP,
+        skipPaidNObs,
+        opts.limit,
+        fulfillCutoffSec,
+        throttleAtLeast,
+      ],
     );
     return rows;
   }
@@ -623,10 +657,17 @@ export class ServiceEndpointRepository {
     maxPriceSats: number;
     freshAfterDays?: number;
     minChallengePSuccess?: number;
+    /** Phase 11D — fulfill-aware throttle (same semantics as
+     *  findPaidProbeCandidates). 0 disables. */
+    skipIfRecentFulfillsAtLeast?: number;
+    recentFulfillsWindowDays?: number;
   }): Promise<ServiceEndpoint[]> {
     const freshAfter = opts.freshAfterDays ?? 30;
     const minChallengeP = opts.minChallengePSuccess ?? 0.4;
     const cutoffSec = Math.floor(Date.now() / 1000) - freshAfter * 86400;
+    const throttleAtLeast = opts.skipIfRecentFulfillsAtLeast ?? 0;
+    const windowDays = opts.recentFulfillsWindowDays ?? 30;
+    const fulfillCutoffSec = Math.floor(Date.now() / 1000) - windowDays * 86400;
     const { rows } = await this.db.query<ServiceEndpoint>(
       `SELECT se.*
          FROM service_endpoints se
@@ -636,6 +677,18 @@ export class ServiceEndpointRepository {
          LEFT JOIN endpoint_stage_posteriors esp_payment
                 ON esp_payment.endpoint_url_hash = encode(digest(se.url, 'sha256'), 'hex')
                AND esp_payment.stage = 3
+         LEFT JOIN (
+           SELECT
+             attempt->>'candidate_url' AS endpoint_url,
+             COUNT(*) AS success_count
+           FROM fulfill_jobs
+           CROSS JOIN LATERAL jsonb_array_elements(attempts) AS attempt
+           WHERE status = 'success'
+             AND created_at >= $5::bigint
+             AND attempt->>'delivery_outcome' = 'delivery_ok'
+           GROUP BY attempt->>'candidate_url'
+         ) recent_fulfills
+                ON recent_fulfills.endpoint_url = se.url
         WHERE se.deprecated = FALSE
           AND se.check_count >= 1
           AND (se.service_price_sats IS NULL OR se.service_price_sats <= $1::int)
@@ -647,6 +700,8 @@ export class ServiceEndpointRepository {
           -- Audit r3 — same status filter as findPaidProbeCandidates: skip
           -- endpoints whose last crawler hit was non-402 (4xx/5xx).
           AND (se.last_http_status IS NULL OR se.last_http_status = 402)
+          -- Phase 11D — fulfill-aware throttle (vacuous when threshold = 0).
+          AND ($6::int = 0 OR COALESCE(recent_fulfills.success_count, 0) < $6::int)
         ORDER BY
           COALESCE(esp_payment.n_obs, 0) ASC,
           CASE WHEN se.last_intent_query_at IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -654,7 +709,14 @@ export class ServiceEndpointRepository {
           COALESCE(se.upstream_reliability_score, 50) DESC,
           se.service_price_sats ASC NULLS LAST
         LIMIT $4::int`,
-      [opts.maxPriceSats, minChallengeP, cutoffSec, opts.limit],
+      [
+        opts.maxPriceSats,
+        minChallengeP,
+        cutoffSec,
+        opts.limit,
+        fulfillCutoffSec,
+        throttleAtLeast,
+      ],
     );
     return rows;
   }

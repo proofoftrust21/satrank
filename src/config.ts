@@ -109,6 +109,16 @@ const configSchema = z.object({
   PAID_PROBE_SWEEP_INTERVAL_HOURS: z.coerce.number().int().positive().default(24 * 7),
   PAID_PROBE_SWEEP_MAX_PER_RUN: z.coerce.number().int().positive().default(25),
   PAID_PROBE_SWEEP_FRESH_AFTER_DAYS: z.coerce.number().int().positive().default(30),
+  // Phase 11D — fulfill-aware probe throttling. Endpoints with at least
+  // PAID_PROBE_THROTTLE_IF_RECENT_FULFILLS_AT_LEAST successful fulfill_jobs
+  // in the last PAID_PROBE_THROTTLE_FULFILLS_WINDOW_DAYS days are skipped
+  // by the paid-probe selection. Rationale (cf. memory entry "Probes restent
+  // importantes mais leur rôle change") : when /api/fulfill produces a dense
+  // post-pay signal on an endpoint, a synthetic paid-probe is redundant and
+  // we redirect the budget to the cold-start long tail. Set the threshold
+  // to 0 to disable the throttle (legacy behaviour).
+  PAID_PROBE_THROTTLE_IF_RECENT_FULFILLS_AT_LEAST: z.coerce.number().int().nonnegative().default(3),
+  PAID_PROBE_THROTTLE_FULFILLS_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
   // Probe safety rails — caps on the L402 invoice SatRank will pay and on the
   // probe round-trip fetch duration. Per-probe defaults are conservative;
   // override via env for stress demos.
