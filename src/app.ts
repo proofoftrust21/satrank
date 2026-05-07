@@ -135,6 +135,9 @@ import { AepsDisputeController } from './controllers/aepsDisputeController';
 import { createAepsDisputeRoutes } from './routes/aepsDispute';
 import { AepsObserverController } from './controllers/aepsObserverController';
 import { createAepsObserverRoutes } from './routes/aepsObserver';
+// AEPS §10 equivocation slashing.
+import { AepsOracleSlashRepository } from './repositories/aepsOracleSlashRepository';
+import { EquivocationClaimAdapter } from './services/equivocationClaimAdapter';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
@@ -635,6 +638,12 @@ export function createApp() {
     },
   });
   const aepsDisputeRepo = new AepsDisputeRepository(pool);
+  // AEPS §10 — oracle slash intent storage + adapter.
+  const aepsOracleSlashRepo = new AepsOracleSlashRepository(pool);
+  const equivocationClaimAdapter = new EquivocationClaimAdapter({
+    bondRepo: operatorBondRepo,
+    slashRepo: aepsOracleSlashRepo,
+  });
   const disputeService = new DisputeService({
     repo: aepsDisputeRepo,
     onResolved: async (dispute) => {
@@ -645,6 +654,13 @@ export function createApp() {
       });
       if (result.status === 'claim_opened') {
         return { claim_id: result.claim_id };
+      }
+      return undefined;
+    },
+    onEquivocation: async (equivocation) => {
+      const result = await equivocationClaimAdapter.openSlashForEquivocation(equivocation);
+      if (result.status === 'reserved' || result.status === 'no_bond_found') {
+        return { claim_id: result.slash_intent_id };
       }
       return undefined;
     },
