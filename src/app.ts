@@ -573,7 +573,32 @@ export function createApp() {
   // off, the daily root is computed and persisted so any party that ingests
   // the root via /api/aeps/anchor/:day_utc can verify inclusion.
   const dailyMerkleAnchorRepo = new DailyMerkleAnchorRepository(pool);
-  const operatorPubkeyHex = signerService.publicKeyHex() ?? 'unknown';
+  // Audit fix HIGH-4 (2026-05-07) — fail-safe operator pubkey validation.
+  // When SATRANK_SIGNING_PK is not configured, operatorPubkeyHex was the
+  // string 'unknown' which propagated through buildOpReturnPayload and was
+  // rejected at op8.length !== 8. The error was caught + logged generically.
+  // Now we validate explicitly at boot : if no signing key is configured,
+  // the L1 broadcast path is structurally disabled (the broadcast service
+  // checks the macaroon — which is a separate gate — but the canonical
+  // operator pubkey itself MUST be a 64-char hex string for downstream
+  // consumers to verify the OP_RETURN payload.)
+  const rawOperatorPubkey = signerService.publicKeyHex();
+  const operatorPubkeyHex = rawOperatorPubkey ?? 'unknown';
+  if (rawOperatorPubkey === null) {
+    logger.warn(
+      {},
+      'AEPS §8: SATRANK_SIGNING_PK not configured — operator_pubkey defaulting to "unknown"; daily anchor will compute but every L1 broadcast attempt will fail at payload construction. To enable L1 anchoring, generate Ed25519 keypair (cf. Phase 8) and set both SK + PK env vars.',
+    );
+  } else if (!/^[0-9a-f]{64}$/.test(rawOperatorPubkey)) {
+    // Defense-in-depth : signerService should already enforce 64-hex but if
+    // a future refactor weakens that contract we'd silently produce broken
+    // OP_RETURN payloads. Crash-fast at boot instead.
+    logger.fatal(
+      { rawOperatorPubkey: rawOperatorPubkey.slice(0, 16) + '…' },
+      'AEPS §8: SATRANK_SIGNING_PK is set but does NOT match /^[0-9a-f]{64}$/. Refusing to boot — fix the env var.',
+    );
+    process.exit(1);
+  }
   const dailyMerkleAnchorService = new DailyMerkleAnchorService({
     repo: dailyMerkleAnchorRepo,
     operatorPubkeyHex,
@@ -1570,12 +1595,25 @@ export function createApp() {
     keyGenerator: (req) => {
       const auth = req.headers.authorization;
       if (auth && auth.toLowerCase().startsWith('nostr ')) {
-        // Sim 11 Fix 4 follow-up — base64-encoded NIP-98 events share
-        // a long deterministic prefix ({"kind":27235,"created_at":...),
-        // so slicing the first N chars puts every agent in the same
-        // bucket. SHA256 the whole header so per-pubkey signatures
-        // produce distinct keys.
-        return `nostr:${createHash('sha256').update(auth).digest('hex').slice(0, 32)}`;
+        // Phase 12A audit fix MED-1 (2026-05-07) — key on parsed pubkey,
+        // not raw header hash. Hashing the raw Authorization header lets a
+        // single agent generate distinct rate-limit buckets by varying
+        // whitespace, base64 padding, or capitalization in their NIP-98
+        // envelope without changing the underlying pubkey. Parsing the
+        // pubkey synchronously (no signature verification — that's the
+        // controller's job) gives a stable per-pubkey key.
+        try {
+          const b64 = auth.slice(6).trim();
+          const json = Buffer.from(b64, 'base64').toString('utf8');
+          const obj = JSON.parse(json) as { pubkey?: string };
+          if (typeof obj.pubkey === 'string' && /^[0-9a-f]{64}$/i.test(obj.pubkey)) {
+            return `nostr:${obj.pubkey.toLowerCase()}`;
+          }
+        } catch {
+          // Malformed header → fall through to header-hash fallback.
+        }
+        // Defense-in-depth fallback for malformed Authorization headers.
+        return `nostr-malformed:${createHash('sha256').update(auth).digest('hex').slice(0, 32)}`;
       }
       return req.ip ?? '0.0.0.0';
     },

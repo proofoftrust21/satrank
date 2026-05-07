@@ -307,7 +307,12 @@ export class FulfillService {
   private autoIssueEvidence(jobId: string, agentPubkey: string): void {
     if (!this.deps.evidenceService) return;
     const svc = this.deps.evidenceService;
-    void (async () => {
+    // Phase 12A audit fix LOW-2 — outer .catch() guards against the rare
+    // synchronous throw in the async IIFE before its first await (e.g.
+    // wiring bug where deps.fulfillJobRepo is null). Without it, `void`
+    // suppresses Node 18+ unhandledRejection crash while still losing the
+    // signal entirely.
+    const promise = (async () => {
       try {
         const job = await this.deps.fulfillJobRepo.findById(jobId);
         if (!job) return;
@@ -332,6 +337,12 @@ export class FulfillService {
         );
       }
     })();
+    promise.catch((err) => {
+      logger.warn(
+        { jobId, error: err instanceof Error ? err.message : String(err) },
+        'Fulfill: evidence auto-issue outer IIFE threw — non-fatal',
+      );
+    });
   }
 
   async fulfill(req: FulfillRequest): Promise<FulfillResult> {

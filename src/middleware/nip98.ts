@@ -229,3 +229,28 @@ export async function verifyNip98(
 
   return { valid: true, pubkey: event.pubkey, event_id: event.id, reason: null };
 }
+
+/** Phase 12A audit fix (HIGH-2 2026-05-07) — canonical NIP-98 URL builder.
+ *
+ *  Previously every controller did
+ *  `${req.protocol}://${req.get('host')}${req.originalUrl}` which trusts the
+ *  client-supplied Host header. An attacker behind a co-operating proxy
+ *  could craft a NIP-98 envelope binding the signature to one URL while
+ *  reaching a different one at the same path.
+ *
+ *  The canonical URL is now derived from `config.SATRANK_API_BASE` (an
+ *  immutable, server-side constant) plus `req.originalUrl`. The
+ *  `req.protocol` / `req.get('host')` path is never consulted, so a
+ *  malicious Host header has no effect on the URL the verifier checks.
+ *
+ *  The agent's NIP-98 signing must use the SAME canonical URL ; the SDK
+ *  helper `sr.fulfillEndpoint()` resolves it from the configured api_base
+ *  so this is wire-compatible with existing clients. */
+export function buildCanonicalNip98Url(
+  req: { originalUrl: string },
+  apiBase: string,
+): string {
+  const base = apiBase.replace(/\/$/, '');
+  const path = req.originalUrl.startsWith('/') ? req.originalUrl : `/${req.originalUrl}`;
+  return `${base}${path}`;
+}

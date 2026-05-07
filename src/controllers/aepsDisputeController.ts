@@ -15,7 +15,8 @@
 //   Returns dispute state + counts of attestations per outcome.
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { verifyNip98 } from '../middleware/nip98';
+import { verifyNip98, buildCanonicalNip98Url } from '../middleware/nip98';
+import { config } from '../config';
 import { sendError } from '../errors/errorEnvelope';
 import {
   type DisputeService,
@@ -52,7 +53,8 @@ export class AepsDisputeController {
   constructor(private readonly deps: AepsDisputeControllerDeps) {}
 
   private fullUrl(req: Request): string {
-    return `${req.protocol}://${req.get('host') ?? ''}${req.originalUrl}`;
+    // Phase 12A audit fix HIGH-2 — see fulfillController for rationale.
+    return buildCanonicalNip98Url(req, config.SATRANK_API_BASE);
   }
 
   open = async (req: Request, res: Response, next: NextFunction): Promise<void> => {

@@ -30,7 +30,14 @@ import type { FulfillJobRepository } from '../repositories/fulfillJobRepository'
 import type { EvidenceReceiptRepository, EvidenceReceipt } from '../repositories/evidenceReceiptRepository';
 import { SignerService, canonicalJson } from './signerService';
 
-const RECEIPT_VERSION = 'phase8.3';
+// Phase 12A audit fix MED-3 (2026-05-07) — schema bumped from 'phase8.3'
+// to 'phase12a' because the `preimage` field was removed from the signed
+// payload. Including the HTLC preimage in a publicly-retrievable receipt
+// leaked payment-identity information across receipts sharing an operator,
+// without serving any §8 verification purpose. Pre-12A receipts (none in
+// prod — receipt_count=0 confirmed 2026-05-07) carried preimage ; new
+// receipts do not.
+const RECEIPT_VERSION = 'phase12a';
 
 export type EvidenceIssueResult =
   | { status: 'ok'; receipt: EvidenceReceipt }
@@ -91,7 +98,7 @@ export class EvidenceService {
       intent_hash: job.intent_hash,
       job_id: job.job_id,
       operator_pubkey: attempt.operator_pubkey ?? null,
-      preimage: attempt.preimage ?? '',
+      // preimage intentionally omitted — Phase 12A audit fix MED-3.
       sats_paid: attempt.sats_paid,
       satrank_version: RECEIPT_VERSION,
       ts_finished: attempt.ts_finished,

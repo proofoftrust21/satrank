@@ -42,7 +42,7 @@ class StubSlashRepo {
 }
 
 class StubBondRepo {
-  bonds: Map<number, { committed: number; pending: number; slashed: number }> = new Map();
+  bonds: Map<number, { committed: number; pending: number; slashed: number; operator_pubkey: string }> = new Map();
   commitResults: boolean[] = [];
 
   async commitSlash(bondId: number, sats: number, _settledAt: number): Promise<boolean> {
@@ -54,6 +54,25 @@ class StubBondRepo {
     b.pending -= sats;
     b.slashed += sats;
     return true;
+  }
+
+  // Phase 12A audit fix MED-6 — bond ownership cross-check.
+  async findById(bondId: number): Promise<{
+    bond_id: number;
+    operator_pubkey: string;
+    bond_committed_sats: number;
+    bond_pending_sats: number;
+    bond_slashed_sats: number;
+  } | null> {
+    const b = this.bonds.get(bondId);
+    if (!b) return null;
+    return {
+      bond_id: bondId,
+      operator_pubkey: b.operator_pubkey,
+      bond_committed_sats: b.committed,
+      bond_pending_sats: b.pending,
+      bond_slashed_sats: b.slashed,
+    };
   }
 }
 
@@ -128,7 +147,7 @@ describe('AEPS §10 — EquivocationSlashCron.runCycle', () => {
   it('executes intent past grace, moves bond pending → slashed', async () => {
     const { cron, slashRepo, bondRepo } = newCron(1_000_200);
     slashRepo.intents.push(fakeIntent());
-    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 250_000, slashed: 0 });
+    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 250_000, slashed: 0, operator_pubkey: 'aa'.repeat(32) });
     const r = await cron.runCycle();
     expect(r.considered).toBe(1);
     expect(r.executed).toBe(1);
@@ -143,7 +162,7 @@ describe('AEPS §10 — EquivocationSlashCron.runCycle', () => {
   it('records §7.2 payout shares on executed intent', async () => {
     const { cron, slashRepo, bondRepo } = newCron(1_000_200);
     slashRepo.intents.push(fakeIntent({ slash_sats: 100_000 }));
-    bondRepo.bonds.set(7, { committed: 200_000, pending: 100_000, slashed: 0 });
+    bondRepo.bonds.set(7, { committed: 200_000, pending: 100_000, slashed: 0, operator_pubkey: 'aa'.repeat(32) });
     await cron.runCycle();
     const i = slashRepo.intents[0];
     expect(i.payout_disputant_sats).toBe(80_000);
@@ -156,7 +175,7 @@ describe('AEPS §10 — EquivocationSlashCron.runCycle', () => {
     // findReservedReady returns intents with bond_id null too in some
     // edge cases (e.g. test fixtures) — cron handles gracefully.
     slashRepo.intents.push(fakeIntent({ bond_id: null }));
-    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 0, slashed: 0 });
+    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 0, slashed: 0, operator_pubkey: 'aa'.repeat(32) });
     const r = await cron.runCycle();
     expect(r.considered).toBe(1);
     expect(r.skipped_no_bond).toBe(1);
@@ -166,7 +185,7 @@ describe('AEPS §10 — EquivocationSlashCron.runCycle', () => {
   it('skips when commitSlash returns false (race)', async () => {
     const { cron, slashRepo, bondRepo } = newCron(1_000_200);
     slashRepo.intents.push(fakeIntent());
-    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 250_000, slashed: 0 });
+    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 250_000, slashed: 0, operator_pubkey: 'aa'.repeat(32) });
     bondRepo.commitResults = [false];
     const r = await cron.runCycle();
     expect(r.skipped_pending_too_low).toBe(1);
@@ -178,8 +197,8 @@ describe('AEPS §10 — EquivocationSlashCron.runCycle', () => {
     const { cron, slashRepo, bondRepo } = newCron(1_000_200);
     slashRepo.intents.push(fakeIntent({ slash_intent_id: 1, equivocation_id: 1, bond_id: 7 }));
     slashRepo.intents.push(fakeIntent({ slash_intent_id: 2, equivocation_id: 2, bond_id: 8, oracle_pubkey: 'bb'.repeat(32) }));
-    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 250_000, slashed: 0 });
-    bondRepo.bonds.set(8, { committed: 1_000_000, pending: 250_000, slashed: 0 });
+    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 250_000, slashed: 0, operator_pubkey: 'aa'.repeat(32) });
+    bondRepo.bonds.set(8, { committed: 1_000_000, pending: 250_000, slashed: 0, operator_pubkey: 'bb'.repeat(32) });
     const r = await cron.runCycle();
     expect(r.executed).toBe(2);
   });
@@ -187,7 +206,7 @@ describe('AEPS §10 — EquivocationSlashCron.runCycle', () => {
   it('does not double-execute already-executed intent', async () => {
     const { cron, slashRepo, bondRepo } = newCron(1_000_200);
     slashRepo.intents.push(fakeIntent({ state: 'executed' }));
-    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 0, slashed: 250_000 });
+    bondRepo.bonds.set(7, { committed: 1_000_000, pending: 0, slashed: 250_000, operator_pubkey: 'aa'.repeat(32) });
     const r = await cron.runCycle();
     expect(r.considered).toBe(0);
     expect(r.executed).toBe(0);

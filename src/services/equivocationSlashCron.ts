@@ -103,6 +103,35 @@ export class EquivocationSlashCron {
       return;
     }
 
+    // Phase 12A audit fix MED-6 (2026-05-07) — bond ownership cross-check.
+    // Defense-in-depth : the EquivocationClaimAdapter is supposed to associate
+    // the right `bond_id` with each oracle pubkey, but if the adapter has a
+    // bug or the DB has been tampered with we'd silently slash the WRONG
+    // operator's bond. Crash the cycle for THIS intent (errors+1) rather
+    // than slash a bond that doesn't belong to the equivocating oracle.
+    const bond = await this.deps.bondRepo.findById(intent.bond_id);
+    if (!bond) {
+      result.errors += 1;
+      logger.error(
+        { slash_intent_id: intent.slash_intent_id, bond_id: intent.bond_id },
+        'AEPS §10: bond_id not found at slash time — refusing to commit, manual investigation required',
+      );
+      return;
+    }
+    if (bond.operator_pubkey.toLowerCase() !== intent.oracle_pubkey.toLowerCase()) {
+      result.errors += 1;
+      logger.error(
+        {
+          slash_intent_id: intent.slash_intent_id,
+          bond_id: intent.bond_id,
+          bond_operator: bond.operator_pubkey.slice(0, 12),
+          intent_oracle: intent.oracle_pubkey.slice(0, 12),
+        },
+        'AEPS §10: bond.operator_pubkey ≠ intent.oracle_pubkey — refusing to slash WRONG operator. Adapter bug suspected.',
+      );
+      return;
+    }
+
     // Atomic move : bond_pending_sats -= slash_sats, bond_slashed_sats += slash_sats.
     // Returns false if pending was reduced below slash_sats by another path.
     const committed = await this.deps.bondRepo.commitSlash(

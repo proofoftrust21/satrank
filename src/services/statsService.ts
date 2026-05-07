@@ -70,7 +70,8 @@ const NETWORK_STATS_TTL_MS = CRITICAL_CACHE_TTL_MS;
 // AEPS §10  : v80 (aeps_disputes + aeps_dispute_attestations, BIP-340 Schnorr threshold).
 // AEPS §10  : v81 (aeps_oracle_equivocations + equivocated flag, publicly slashable evidence).
 // AEPS §10  : v82 (aeps_oracle_slash_intents, 5× equivocation slashing tracker).
-const EXPECTED_SCHEMA_VERSION = 82;
+// Audit fix Phase 12A : v83 (fulfill_jobs success+created_at partial index).
+const EXPECTED_SCHEMA_VERSION = 83;
 
 // H1: if no new score_snapshots in 2h, the crawler has stopped scoring.
 // Crawler's LND graph interval is 1h and bulk scoring follows; 2h = 2× that

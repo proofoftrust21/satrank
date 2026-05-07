@@ -13,7 +13,8 @@
 //   Agent-initiated freeze (no new slashes accepted). Owner-only.
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { verifyNip98 } from '../middleware/nip98';
+import { verifyNip98, buildCanonicalNip98Url } from '../middleware/nip98';
+import { config } from '../config';
 import { logger } from '../logger';
 import { sendError } from '../errors/errorEnvelope';
 import type { AgentBondService } from '../services/agentBondService';
@@ -36,7 +37,8 @@ export class AgentBondController {
   constructor(private readonly deps: AgentBondControllerDeps) {}
 
   private fullUrl(req: Request): string {
-    return `${req.protocol}://${req.get('host') ?? ''}${req.originalUrl}`;
+    // Phase 12A audit fix HIGH-2 — canonical URL from config, no Host trust.
+    return buildCanonicalNip98Url(req, config.SATRANK_API_BASE);
   }
 
   deposit = async (req: Request, res: Response, next: NextFunction): Promise<void> => {

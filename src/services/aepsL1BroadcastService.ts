@@ -173,12 +173,30 @@ export class AepsL1BroadcastService {
     // Step 5 — persist.
     const broadcastAt = this.now();
     try {
-      await this.deps.repo.recordL1Broadcast(anchor.anchor_id, {
+      const persistResult = await this.deps.repo.recordL1Broadcast(anchor.anchor_id, {
         l1_txid: txid,
         l1_op_return_hex: opReturnPayload.toString('hex'),
         l1_broadcast_at: broadcastAt,
         l1_block_height: null, // filled later by confirmation watcher
       });
+      if (!persistResult.recorded) {
+        // Audit fix HIGH-1 — concurrent broadcast race detected. The other
+        // tick already wrote a (potentially different) txid. We've already
+        // spent on-chain sats with `txid` ; flag for manual reconciliation.
+        logger.error(
+          {
+            day_utc: anchor.day_utc,
+            anchor_id: anchor.anchor_id,
+            our_txid: txid,
+            sat_per_vbyte: satPerVByte,
+          },
+          'AEPS L1 broadcast: race detected — another tick wrote l1_txid first ; ON-CHAIN SATS DOUBLE-SPENT, manual reconciliation required (mempool.space lookup of both txids ; CPFP/RBF if needed)',
+        );
+        return {
+          status: 'error',
+          reason: `race_detected_another_tick_recorded_first txid=${txid}`,
+        };
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.error(
@@ -224,7 +242,11 @@ export class AepsL1BroadcastService {
       throw new Error(`fee API status ${resp.status}`);
     }
     const raw = (await resp.json()) as Partial<MempoolFeeResponse>;
-    if (typeof raw.hourFee !== 'number' || raw.hourFee < 0) {
+    // Audit fix HIGH-6 (2026-05-07) — Number.isFinite filters NaN/Infinity ;
+    // the previous `< 0` predicate left NaN through (typeof NaN === 'number'
+    // and NaN < 0 is false), so a malformed fee API response would propagate
+    // satPerVByte = NaN to LND, get rejected, but bypass the cap logic.
+    if (typeof raw.hourFee !== 'number' || !Number.isFinite(raw.hourFee) || raw.hourFee < 0) {
       throw new Error(`fee API returned invalid hourFee: ${JSON.stringify(raw)}`);
     }
     return Math.round(raw.hourFee);

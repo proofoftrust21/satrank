@@ -89,9 +89,11 @@ function makeFakeFetch(impl: {
   }) as typeof fetch;
 }
 
-function makeRepoMock(): DailyMerkleAnchorRepository {
+function makeRepoMock(opts?: { recorded?: boolean }): DailyMerkleAnchorRepository {
+  // Phase 12A audit fix HIGH-1 — recordL1Broadcast now returns
+  // { recorded: boolean } so the service can detect concurrent broadcasts.
   return {
-    recordL1Broadcast: vi.fn(async () => undefined),
+    recordL1Broadcast: vi.fn(async () => ({ recorded: opts?.recorded ?? true })),
   } as unknown as DailyMerkleAnchorRepository;
 }
 

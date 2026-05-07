@@ -138,6 +138,20 @@ export class DisputeService {
     if (dedupedOracles.length !== input.oracle_pubkeys.length) {
       return { status: 'invalid_input', reason: 'oracle_pubkeys must be unique' };
     }
+    // Phase 12A audit fix MED-2 (2026-05-07) — reject self-attestation.
+    // Without this, a disputant could open a dispute where they are also
+    // one of the oracles ; with oracle_threshold=1, they could then sign
+    // their own `disputant_wins` outcome and reach threshold without any
+    // independent attestation. The dispute mechanism only has anti-fraud
+    // value if every oracle is a third party w.r.t. both parties.
+    const disputantLc = input.disputant_pubkey.toLowerCase();
+    const respondentLc = input.respondent_pubkey.toLowerCase();
+    if (dedupedOracles.includes(disputantLc) || dedupedOracles.includes(respondentLc)) {
+      return {
+        status: 'invalid_input',
+        reason: 'oracle_pubkeys must not include disputant or respondent',
+      };
+    }
     if (
       !Number.isInteger(input.oracle_threshold) ||
       input.oracle_threshold < 1 ||

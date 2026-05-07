@@ -122,7 +122,10 @@ describe('EvidenceService (Phase 8.3)', () => {
     const decoded = JSON.parse(r.receipt.payload_canonical_json);
     expect(decoded.job_id).toBe(jobId);
     expect(decoded.body_sha256).toBe('bodyH');
-    expect(decoded.preimage).toBe('pre');
+    // Phase 12A audit fix MED-3 — preimage no longer leaks into the
+    // signed payload. See evidenceService.ts comment for rationale.
+    expect(decoded.preimage).toBeUndefined();
+    expect(decoded.satrank_version).toBe('phase12a');
     expect(decoded.operator_pubkey).toBe('op-pk');
     // Verify the canonical JSON is sorted (keys alphabetical).
     const keys = Object.keys(decoded);

@@ -4,13 +4,16 @@
 // triggers fork detection when a 2nd distinct root is recorded for the
 // same (operator, day), and the routes return correct shapes.
 //
-// Disputes + multi-hop routes need NIP-98 auth + bond setup ; integration
-// coverage for those is a follow-up. The observer routes are
-// permissionless so this file exercises them without auth scaffolding.
+// Phase 12A audit fix CRIT-1 (2026-05-07) — POST /api/aeps/observation now
+// requires NIP-98. Tests construct signed envelopes via a local helper.
+// External callers can submit only `manual`, `nostr`, `http` sources ;
+// `self` and `l1` are reserved for internal writers.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestPool, teardownTestPool, truncateAll, type TestDb } from './helpers/testDatabase';
 import request from 'supertest';
 import express from 'express';
+import crypto from 'node:crypto';
+import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { AepsObserverRepository } from '../repositories/aepsObserverRepository';
 import { ForkDetectionService } from '../services/forkDetectionService';
 import { AepsObserverController } from '../controllers/aepsObserverController';
@@ -19,6 +22,27 @@ import { DailyMerkleAnchorRepository } from '../repositories/dailyMerkleAnchorRe
 import { DailyMerkleAnchorService } from '../services/dailyMerkleAnchorService';
 import { AepsEvidenceController } from '../controllers/aepsEvidenceController';
 import { createAepsEvidenceRoutes } from '../routes/aepsEvidence';
+
+const BASE_URL = process.env.SATRANK_API_BASE ?? 'http://127.0.0.1:80';
+
+function signNip98(url: string, method: string, body: string): { auth: string; pubkey: string } {
+  const sk = generateSecretKey();
+  const pubkey = getPublicKey(sk);
+  const tags: string[][] = [
+    ['u', url],
+    ['method', method],
+  ];
+  if (body.length > 0) {
+    const hash = crypto.createHash('sha256').update(body, 'utf8').digest('hex');
+    tags.push(['payload', hash]);
+  }
+  const event = finalizeEvent(
+    { kind: 27235, created_at: Math.floor(Date.now() / 1000), tags, content: '' },
+    sk,
+  );
+  const auth = 'Nostr ' + Buffer.from(JSON.stringify(event)).toString('base64');
+  return { auth, pubkey };
+}
 
 let testDb: TestDb;
 
@@ -53,7 +77,14 @@ async function buildAepsApp() {
   });
 
   const app = express();
-  app.use(express.json());
+  // Phase 12A audit fix — NIP-98 needs rawBody to verify the payload tag
+  // binds to actual request bytes. Mirrors the production capture pattern
+  // in app.ts.
+  app.use(express.json({
+    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+      req.rawBody = Buffer.from(buf);
+    },
+  }));
   const api = express.Router();
   api.use('/aeps', createAepsObserverRoutes(observerController));
   api.use('/aeps', createAepsEvidenceRoutes(evidenceController));
@@ -80,8 +111,21 @@ describe('AEPS HTTP routes — integration', () => {
     await truncateAll(testDb.pool);
   });
 
+  // Helper that posts with a fresh NIP-98 envelope every call.
+  async function postObservation(body: Record<string, unknown>) {
+    const url = `${BASE_URL}/api/aeps/observation`;
+    const bodyStr = JSON.stringify(body);
+    const { auth } = signNip98(url, 'POST', bodyStr);
+    return request(app)
+      .post('/api/aeps/observation')
+      .set('Authorization', auth)
+      .set('Content-Type', 'application/json')
+      .send(bodyStr);
+  }
+
   describe('POST /api/aeps/observation', () => {
-    it('records observation and returns 201 with fork_detected=false on first observation', async () => {
+    it('rejects unauthenticated request with 401', async () => {
+      // Phase 12A audit fix CRIT-1 — must not slash bonds via anonymous POST.
       const res = await request(app)
         .post('/api/aeps/observation')
         .send({
@@ -90,6 +134,16 @@ describe('AEPS HTTP routes — integration', () => {
           root_hex: ROOT_X,
           source: 'manual',
         });
+      expect(res.status).toBe(401);
+    });
+
+    it('records observation and returns 201 with fork_detected=false on first observation', async () => {
+      const res = await postObservation({
+        operator_pubkey: OPERATOR_A,
+        day_utc: '2026-05-08',
+        root_hex: ROOT_X,
+        source: 'manual',
+      });
       expect(res.status).toBe(201);
       expect(res.body.data.fork_detected).toBe(false);
       expect(res.body.data.observation_id).toBeGreaterThan(0);
@@ -97,64 +151,68 @@ describe('AEPS HTTP routes — integration', () => {
     });
 
     it('rejects malformed operator_pubkey with 400', async () => {
-      const res = await request(app)
-        .post('/api/aeps/observation')
-        .send({
-          operator_pubkey: 'too-short',
-          day_utc: '2026-05-08',
-          root_hex: ROOT_X,
-          source: 'manual',
-        });
+      const res = await postObservation({
+        operator_pubkey: 'too-short',
+        day_utc: '2026-05-08',
+        root_hex: ROOT_X,
+        source: 'manual',
+      });
       expect(res.status).toBe(400);
     });
 
     it('rejects malformed day_utc', async () => {
-      const res = await request(app)
-        .post('/api/aeps/observation')
-        .send({
-          operator_pubkey: OPERATOR_A,
-          day_utc: '2026-5-8',
-          root_hex: ROOT_X,
-          source: 'manual',
-        });
+      const res = await postObservation({
+        operator_pubkey: OPERATOR_A,
+        day_utc: '2026-5-8',
+        root_hex: ROOT_X,
+        source: 'manual',
+      });
       expect(res.status).toBe(400);
     });
 
     it('rejects unknown source', async () => {
-      const res = await request(app)
-        .post('/api/aeps/observation')
-        .send({
-          operator_pubkey: OPERATOR_A,
-          day_utc: '2026-05-08',
-          root_hex: ROOT_X,
-          source: 'made-up',
-        });
+      const res = await postObservation({
+        operator_pubkey: OPERATOR_A,
+        day_utc: '2026-05-08',
+        root_hex: ROOT_X,
+        source: 'made-up',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects internal sources (`self`, `l1`) from external callers', async () => {
+      // Phase 12A audit fix CRIT-1 — the `self` source is reserved for
+      // DailyMerkleAnchorService writes ; `l1` for the L1 confirmation
+      // watcher. Anonymous HTTP callers must not be able to pollute the
+      // fork-detection trail with fake "self" entries.
+      const res = await postObservation({
+        operator_pubkey: OPERATOR_A,
+        day_utc: '2026-05-08',
+        root_hex: ROOT_X,
+        source: 'self',
+      });
       expect(res.status).toBe(400);
     });
 
     it('triggers fork detection when 2nd distinct root recorded for same operator+day', async () => {
-      // First observation : ROOT_X via 'self'
-      const r1 = await request(app)
-        .post('/api/aeps/observation')
-        .send({
-          operator_pubkey: OPERATOR_A,
-          day_utc: '2026-05-08',
-          root_hex: ROOT_X,
-          source: 'self',
-        });
+      // First observation : ROOT_X via 'manual'
+      const r1 = await postObservation({
+        operator_pubkey: OPERATOR_A,
+        day_utc: '2026-05-08',
+        root_hex: ROOT_X,
+        source: 'manual',
+      });
       expect(r1.status).toBe(201);
       expect(r1.body.data.fork_detected).toBe(false);
 
-      // Second observation : ROOT_Y via 'l1' source — same op+day, different root → FORK
-      const r2 = await request(app)
-        .post('/api/aeps/observation')
-        .send({
-          operator_pubkey: OPERATOR_A,
-          day_utc: '2026-05-08',
-          root_hex: ROOT_Y,
-          source: 'l1',
-          source_ref: 'tx_abc',
-        });
+      // Second observation : ROOT_Y via 'nostr' — same op+day, different root → FORK
+      const r2 = await postObservation({
+        operator_pubkey: OPERATOR_A,
+        day_utc: '2026-05-08',
+        root_hex: ROOT_Y,
+        source: 'nostr',
+        source_ref: 'event_abc',
+      });
       expect(r2.status).toBe(201);
       expect(r2.body.data.fork_detected).toBe(true);
       expect(r2.body.data.fork_event_id).toBeGreaterThan(0);
@@ -169,11 +227,11 @@ describe('AEPS HTTP routes — integration', () => {
         operator_pubkey: OPERATOR_A,
         day_utc: '2026-05-08',
         root_hex: ROOT_X,
-        source: 'self' as const,
+        source: 'manual' as const,
         source_ref: 'fixed_ref',
       };
-      const r1 = await request(app).post('/api/aeps/observation').send(obs);
-      const r2 = await request(app).post('/api/aeps/observation').send(obs);
+      const r1 = await postObservation(obs);
+      const r2 = await postObservation(obs);
       expect(r1.body.data.observation_id).toBe(r2.body.data.observation_id);
     });
   });
@@ -187,11 +245,11 @@ describe('AEPS HTTP routes — integration', () => {
     });
 
     it('returns detected forks after equivocation', async () => {
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'self',
+      await postObservation({
+        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'manual',
       });
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_Y, source: 'l1', source_ref: 'tx',
+      await postObservation({
+        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_Y, source: 'nostr', source_ref: 'tx',
       });
 
       const res = await request(app).get('/api/aeps/forks');
@@ -206,17 +264,17 @@ describe('AEPS HTTP routes — integration', () => {
 
     it('filters by operator_pubkey query param', async () => {
       // Setup : fork on OPERATOR_A and on OPERATOR_B
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'self',
+      await postObservation({
+        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'manual',
       });
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_Y, source: 'l1', source_ref: 'a',
+      await postObservation({
+        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_Y, source: 'nostr', source_ref: 'a',
       });
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_B, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'self',
+      await postObservation({
+        operator_pubkey: OPERATOR_B, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'manual',
       });
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_B, day_utc: '2026-05-08', root_hex: ROOT_Z, source: 'l1', source_ref: 'b',
+      await postObservation({
+        operator_pubkey: OPERATOR_B, day_utc: '2026-05-08', root_hex: ROOT_Z, source: 'nostr', source_ref: 'b',
       });
 
       const all = await request(app).get('/api/aeps/forks');
@@ -230,11 +288,11 @@ describe('AEPS HTTP routes — integration', () => {
 
   describe('GET /api/aeps/observations/:operator_pubkey/:day_utc', () => {
     it('returns observations grouped by root', async () => {
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'self',
+      await postObservation({
+        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_X, source: 'manual',
       });
-      await request(app).post('/api/aeps/observation').send({
-        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_Y, source: 'l1', source_ref: 'tx',
+      await postObservation({
+        operator_pubkey: OPERATOR_A, day_utc: '2026-05-08', root_hex: ROOT_Y, source: 'nostr', source_ref: 'tx',
       });
       const res = await request(app).get(`/api/aeps/observations/${OPERATOR_A}/2026-05-08`);
       expect(res.status).toBe(200);

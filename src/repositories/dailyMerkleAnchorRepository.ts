@@ -85,7 +85,18 @@ export class DailyMerkleAnchorRepository {
     return rows.map(rowToAnchor);
   }
 
-  /** Update L1 broadcast outcome (txid, block, op_return payload). */
+  /** Update L1 broadcast outcome (txid, block, op_return payload).
+   *
+   *  Phase 12A audit fix HIGH-1 (2026-05-07) — idempotency guard.
+   *  Without `AND l1_txid IS NULL`, two concurrent cron ticks racing to
+   *  broadcast the same anchor would both pass the in-memory pre-check
+   *  (anchor.l1_txid was null when read), both call LND SendOutputs,
+   *  both spend on-chain sats, and the second write would silently
+   *  overwrite the first txid in the DB — destroying the proof link
+   *  and double-spending the daily fee.
+   *
+   *  Returns `{ recorded: false }` when the row already had a txid (race
+   *  detected) ; the caller should log + skip the duplicate broadcast. */
   async recordL1Broadcast(
     anchorId: number,
     update: {
@@ -94,16 +105,18 @@ export class DailyMerkleAnchorRepository {
       l1_broadcast_at: number;
       l1_block_height?: number | null;
     },
-  ): Promise<void> {
-    await this.db.query(
+  ): Promise<{ recorded: boolean }> {
+    const { rowCount } = await this.db.query(
       `UPDATE daily_merkle_anchors
        SET l1_txid = $2,
            l1_op_return_hex = $3,
            l1_broadcast_at = $4,
            l1_block_height = COALESCE($5, l1_block_height)
-       WHERE anchor_id = $1`,
+       WHERE anchor_id = $1
+         AND l1_txid IS NULL`,
       [anchorId, update.l1_txid, update.l1_op_return_hex, update.l1_broadcast_at, update.l1_block_height ?? null],
     );
+    return { recorded: (rowCount ?? 0) === 1 };
   }
 
   async recordNostrPublish(

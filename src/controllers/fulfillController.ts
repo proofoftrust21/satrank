@@ -17,7 +17,8 @@
 //   503 — feature disabled
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { verifyNip98 } from '../middleware/nip98';
+import { verifyNip98, buildCanonicalNip98Url } from '../middleware/nip98';
+import { config } from '../config';
 import { logger } from '../logger';
 import { ValidationError } from '../errors';
 import { sendError, fulfillOutcomeToErrorCode, reasonToNextAction } from '../errors/errorEnvelope';
@@ -302,7 +303,11 @@ export class FulfillController {
 
   /** Build the absolute URL the NIP-98 client should have signed. */
   private fullUrl(req: Request): string {
-    return `${req.protocol}://${req.get('host') ?? ''}${req.originalUrl}`;
+    // Phase 12A audit fix HIGH-2 — canonical URL from SATRANK_API_BASE,
+    // not from the client-supplied Host header. Prevents Host-trust replay
+    // where an attacker behind a co-operating proxy crafts a NIP-98 envelope
+    // bound to one URL while the request lands at a different one.
+    return buildCanonicalNip98Url(req, config.SATRANK_API_BASE);
   }
 
   /** Phase 11B.5 — tier-aware rate-limit. Bucket size + refill rate scale

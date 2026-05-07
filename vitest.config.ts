@@ -8,6 +8,10 @@ export default defineConfig({
     // `satrank_test_template` exists with schema v41 + deposit_tiers seed.
     // Each test file clones it into `satrank_test_<uuid>` for isolation.
     globalSetup: './src/tests/helpers/globalSetup.ts',
+    // Phase 12A audit fix — set SATRANK_API_BASE before config import so the
+    // NIP-98 canonical URL helper (`buildCanonicalNip98Url`) matches the
+    // BASE_URL the test files use to construct signed NIP-98 envelopes.
+    setupFiles: ['./src/tests/helpers/testEnvSetup.ts'],
     // Phase 12C — src/tests/archive/ contient les fichiers SQLite-era
     // conservés pour référence mais non portés au client pg. Vitest doit
     // les ignorer (imports relatifs cassés par le git mv) ; un éventuel
