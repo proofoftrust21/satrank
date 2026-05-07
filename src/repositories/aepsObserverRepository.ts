@@ -209,7 +209,15 @@ interface ForkEventRow {
 }
 
 function dayOnly(d: string | Date): string {
-  return typeof d === 'string' ? d.slice(0, 10) : d.toISOString().slice(0, 10);
+  if (typeof d === 'string') return d.slice(0, 10);
+  // pg returns DATE as a JS Date at LOCAL midnight (no TZ semantics).
+  // toISOString() converts to UTC which shifts the calendar date in
+  // non-UTC time zones — use local-component getters instead so the
+  // returned YYYY-MM-DD matches what the row was stored as.
+  const y = d.getFullYear().toString().padStart(4, '0');
+  const m = (d.getMonth() + 1).toString().padStart(2, '0');
+  const dd = d.getDate().toString().padStart(2, '0');
+  return `${y}-${m}-${dd}`;
 }
 
 function rowToObservation(r: ObservationRow): ObservedAnchor {

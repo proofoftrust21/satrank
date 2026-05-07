@@ -178,10 +178,30 @@ interface DailyMerkleAnchorRow {
   computed_at: string | number;
 }
 
+function dayOnlyUtc(d: string | Date): string {
+  if (typeof d === 'string') return d.slice(0, 10);
+  // pg's DATE → JS Date represents midnight in local timezone. Format
+  // explicitly via UTC components so the returned string matches the
+  // stored DATE without timezone shift.
+  const yyyy = d.getUTCFullYear().toString().padStart(4, '0');
+  const mm = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+  const dd = d.getUTCDate().toString().padStart(2, '0');
+  // For DATE columns, pg returns a Date set to midnight LOCAL ; we need
+  // the LOCAL-date components, not UTC, because YYYY-MM-DD has no
+  // timezone meaning here — it's a calendar date label.
+  const yLocal = d.getFullYear().toString().padStart(4, '0');
+  const mLocal = (d.getMonth() + 1).toString().padStart(2, '0');
+  const dLocal = d.getDate().toString().padStart(2, '0');
+  // Prefer the local-date components since pg stores DATE without TZ
+  // and creates Date(YYYY, MM, DD) on the JS side at LOCAL midnight.
+  void yyyy; void mm; void dd;  // kept for future UTC-source variants
+  return `${yLocal}-${mLocal}-${dLocal}`;
+}
+
 function rowToAnchor(r: DailyMerkleAnchorRow): DailyMerkleAnchor {
   return {
     anchor_id: Number(r.anchor_id),
-    day_utc: typeof r.day_utc === 'string' ? r.day_utc.slice(0, 10) : r.day_utc.toISOString().slice(0, 10),
+    day_utc: dayOnlyUtc(r.day_utc),
     operator_pubkey: r.operator_pubkey,
     root_hex: r.root_hex,
     receipt_count: Number(r.receipt_count),
