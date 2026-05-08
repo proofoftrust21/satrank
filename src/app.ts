@@ -1089,40 +1089,44 @@ export function createApp() {
       // (createDeposit creates the bond LOCKED so phantom bonds without
       // payment grant zero tier benefit). On CANCELED/EXPIRED leaves the
       // bond locked and marks the deposit settled-as-failed.
-      try {
-        await agentBondService.runSettlementCycle();
-      } catch (err) {
-        logger.error(
-          { error: err instanceof Error ? err.message : String(err) },
-          'AgentBondService: settlement cycle threw',
-        );
-      }
-      // Phase 11B.4 (2026-05-04) — agent slashing pass. Pulls a narrow set
-      // of red-flag candidates from the reputation table (score < 0.1 AND
-      // ≥10 observations AND profile updated in the past 7 days) and feeds
-      // them to AgentSlashingService.runSlashingPass. The service handles
-      // its own per-agent 24h cool-down + bond presence check ; this cron
-      // tick is just the discovery loop.
-      try {
-        const SLASH_LOOKBACK_SEC = 7 * 86400;
-        const candidates = await agentReputationRepo.findCandidatesForSlashing(
-          0.1, // SLASH_TRIGGER_SCORE
-          10,  // SLASH_MIN_OBSERVATIONS
-          Math.floor(Date.now() / 1000) - SLASH_LOOKBACK_SEC,
-          50,  // narrow limit so a single cron tick stays cheap
-        );
-        if (candidates.length > 0) {
-          const outcomes = await agentSlashingService.runSlashingPass(candidates);
-          const slashed = outcomes.filter(o => o.status === 'slashed').length;
-          if (slashed > 0) {
-            logger.warn({ slashed, evaluated: candidates.length }, 'AgentSlashingService: cron pass slashed agents');
-          }
+      // V2 (2026-05-08) : agent bond settlement + slashing crons skipped
+      // when config.AGENT_BONDS_ENABLED=false.
+      if (config.AGENT_BONDS_ENABLED) {
+        try {
+          await agentBondService.runSettlementCycle();
+        } catch (err) {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'AgentBondService: settlement cycle threw',
+          );
         }
-      } catch (err) {
-        logger.error(
-          { error: err instanceof Error ? err.message : String(err) },
-          'AgentSlashingService: cron tick threw',
-        );
+        // Phase 11B.4 (2026-05-04) — agent slashing pass. Pulls a narrow set
+        // of red-flag candidates from the reputation table (score < 0.1 AND
+        // ≥10 observations AND profile updated in the past 7 days) and feeds
+        // them to AgentSlashingService.runSlashingPass. The service handles
+        // its own per-agent 24h cool-down + bond presence check ; this cron
+        // tick is just the discovery loop.
+        try {
+          const SLASH_LOOKBACK_SEC = 7 * 86400;
+          const candidates = await agentReputationRepo.findCandidatesForSlashing(
+            0.1, // SLASH_TRIGGER_SCORE
+            10,  // SLASH_MIN_OBSERVATIONS
+            Math.floor(Date.now() / 1000) - SLASH_LOOKBACK_SEC,
+            50,  // narrow limit so a single cron tick stays cheap
+          );
+          if (candidates.length > 0) {
+            const outcomes = await agentSlashingService.runSlashingPass(candidates);
+            const slashed = outcomes.filter(o => o.status === 'slashed').length;
+            if (slashed > 0) {
+              logger.warn({ slashed, evaluated: candidates.length }, 'AgentSlashingService: cron pass slashed agents');
+            }
+          }
+        } catch (err) {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'AgentSlashingService: cron tick threw',
+          );
+        }
       }
     } catch (err) {
       logger.error(
@@ -1787,11 +1791,14 @@ export function createApp() {
   api.post('/operator/register-endpoint', discoveryRateLimit, operatorRegistrationController.register);
   api.get('/operator/:pubkey/dashboard', discoveryRateLimit, operatorRegistrationController.dashboard);
   // Phase 11B.1 (2026-05-04) — Agent bonds : symmetric to operator_bonds.
-  api.post('/agent/bond/deposit', discoveryRateLimit, agentBondController.deposit);
-  api.get('/agent/bond', discoveryRateLimit, agentBondController.status);
-  api.post('/agent/bond/:bond_id/freeze', discoveryRateLimit, agentBondController.freeze);
-  // Phase 11B.2 (2026-05-04) — Agent reputation : public read keyed by pubkey.
-  api.get('/agent/:pubkey/reputation', discoveryRateLimit, agentReputationController.show);
+  // V2 (2026-05-08) : 4 routes gated behind config.AGENT_BONDS_ENABLED.
+  if (config.AGENT_BONDS_ENABLED) {
+    api.post('/agent/bond/deposit', discoveryRateLimit, agentBondController.deposit);
+    api.get('/agent/bond', discoveryRateLimit, agentBondController.status);
+    api.post('/agent/bond/:bond_id/freeze', discoveryRateLimit, agentBondController.freeze);
+    // Phase 11B.2 (2026-05-04) — Agent reputation : public read keyed by pubkey.
+    api.get('/agent/:pubkey/reputation', discoveryRateLimit, agentReputationController.show);
+  }
   // Phase 8.3 — evidence receipt for compliance/regulator agents.
   api.get('/fulfill/:job_id/evidence', discoveryRateLimit, evidenceController.show);
   // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator
