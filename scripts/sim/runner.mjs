@@ -24,7 +24,7 @@ const PER_TURN_TOKENS = Number(process.env.SIM_PER_TURN_TOKENS ?? 8192);
 const SIM_NUM = process.env.SIM_NUM ?? '13';
 
 const runDir = path.join(__dirname, 'runs', runId);
-const personasFile = path.join(__dirname, 'personas.json');
+const personasFile = path.join(__dirname, process.env.SIM_PERSONAS ?? 'personas.json');
 const { agents: AGENTS } = JSON.parse(fs.readFileSync(personasFile, 'utf8'));
 
 const SYSTEM_PROMPT = `You are a Sim ${SIM_NUM} evaluation agent for SatRank, a Bitcoin Lightning trust oracle for AI agents. Your role is to evaluate **honestly** whether SatRank is **indispensable** for an AI agent matching your persona.

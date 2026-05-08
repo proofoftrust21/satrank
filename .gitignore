@@ -16,6 +16,9 @@ sdk/*.tgz
 # MCP publish bundle — built via scripts/build-mcp-pkg.sh, never commit
 mcp-pkg/
 
+# Local secrets (MCP registry DNS keypair, etc.)
+.secrets/
+
 # Local development tooling — not meant to ship in the public repo
 .claude/
 CLAUDE.md

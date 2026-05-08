@@ -1,29 +1,31 @@
 # SatRank MCP server
 
-Trust + audit + commerce primitives for AI agents on Bitcoin Lightning.
+Trust oracle for AI agents on Bitcoin Lightning.
 
-The SatRank MCP server exposes 27 tools that let any MCP-compatible AI agent
-(Claude Code, Cursor, Codex, n8n, Claude Desktop, etc.) discover L402 endpoints,
-score their trust posterior, pay them through SatRank's fulfill proxy, retrieve
-the cryptographically-signed evidence, and verify the AEPS Bitcoin L1 anchor.
+`satrank-mcp` v2.0 ships a **3-tool minimal surface** focused on the agent
+consumer parcours: pre-pay discovery, individual endpoint score lookup, and
+offline assertion verification. Installable in any MCP-compatible AI agent
+(Claude Code, Cursor, Codex, n8n, Claude Desktop, etc.).
 
-This is the **Bitcoin-pure trust + audit layer** that sits ON TOP of the
-payment commodity (`lnget`, `aperture`, NWC). Agents pay with whatever Lightning
-wallet they're configured with ; SatRank decides what's worth paying for, holds
-the post-pay evidence trail, and exposes a regulator-grade attestation that
-maps cleanly to EU AI Act Article 12 + 13 requirements.
+This is the **Bitcoin-pure trust layer** that sits BEFORE the payment hop.
+Agents pay with whatever Lightning wallet they're configured with (`lnget`,
+`aperture`, NWC) ; SatRank decides what's worth paying for, exposes the
+posterior, and ships the offline-verifiable assertion event for downstream
+oracle aggregation.
 
-## What you get with one install
+## What you get with one install (V2 — 3 tools)
 
-| Layer | Tools |
+| Tool | Purpose |
 |---|---|
-| Discovery | `intent`, `get_endpoint_score`, `get_top_agents`, `search_agents`, `get_top_movers`, `get_network_stats` |
-| Decision | `decide`, `get_verdict`, `get_batch_verdicts`, `get_profile`, `get_agent_score` |
-| Commerce | `fulfill`, `fulfill_evidence`, `mini_llm_classify`, `mini_llm_summarize`, `mini_llm_translate` |
-| Audit | `aeps.daily_anchor`, `aeps.recent_anchors`, `aeps.inclusion_proof`, `aeps.evidence_receipt`, `verify_assertion` |
-| Disputes | `aeps.get_dispute`, `aeps.list_forks`, `aeps.get_observations` |
-| Reporting | `report`, `submit_attestation`, `ping` |
-| Multi-hop | `aeps.get_multihop` |
+| `intent` | Resolve a category + keywords + budget + SLA into a ranked list of L402 candidates. Returns Bayesian p_success + ci95 + 5-stage breakdown per candidate. Free to call ; pass `fresh: true` for a 2-sat sync probe. |
+| `get_endpoint_score` | Read the public scoring snapshot for a specific URL (sha256). Same posteriors + freshness status, scoped to one endpoint. |
+| `verify_assertion` | Verify offline a SatRank Nostr trust assertion (kind 30782) or oracle calibration (kind 30783). No network call. Compose oracle output across agents without re-querying. |
+
+**Self-hosters** running the full repo (`src/mcp/server.ts`) keep access to
+the extended surface — fulfill proxy, mini-LLM L402 endpoints, AEPS daily
+anchor / inclusion-proof / dispute / observer / multi-hop tools — gated by
+feature flags (`FULFILL_ENABLED`, `MINI_LLM_ENABLED`, `CLAIM_ENGINE_ENABLED`,
+`AGENT_BONDS_ENABLED`, `AEPS_DISPUTE_ENABLED`, `FORK_DETECTION_ENABLED`).
 
 ## Install
 

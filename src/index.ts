@@ -1,70 +1,36 @@
-// SatRank entry point — Phase 12B pg bootstrap.
-import { config } from './config';
-import { logger } from './logger';
-import { createApp } from './app';
-import { getPool, closePools } from './database/connection';
-import { runMigrations } from './database/migrations';
-import { runWarmup } from './warmup';
+// SatRank V3 — entry point.
+//
+// Boots the HTTP server, applies the schema, schedules the crawler,
+// installs signal handlers. ~30 lines of orchestration.
 
-// Global safety net for unhandled promise rejections and uncaught
-// exceptions. Node 22+ crashes the process by default on unhandled
-// rejections; a single orphan promise in a third-party library (e.g.
-// nostr-tools when a relay WebSocket drops mid-publish) would take down
-// the API container and interrupt every in-flight request. These
-// handlers log the failure and keep the process alive.
-process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
-  const msg = reason instanceof Error ? reason.message : String(reason);
-  logger.warn({ err: msg, promise: String(promise).slice(0, 80) }, 'Unhandled promise rejection — swallowed to keep api alive');
-});
-process.on('uncaughtException', (err: Error) => {
-  logger.error({ err: err.message, stack: err.stack?.split('\n').slice(0, 5) }, 'Uncaught exception — swallowed to keep api alive');
-});
+import { config } from './config.js';
+import { logger } from './logger.js';
+import { bootstrapSchema, closePool } from './db.js';
+import { buildApp } from './api.js';
+import { scheduleCrawler } from './crawler.js';
 
-async function main(): Promise<void> {
-  // One-shot bootstrap: apply consolidated schema if version < target. Idempotent.
-  const pool = getPool();
-  await runMigrations(pool);
+async function main() {
+  await bootstrapSchema();
 
-  // Phase 12B B6.1 — warm pg pool + JIT + planner cache on the cold /api/intent
-  // path so the first user doesn't pay the ~2.3 s cold penalty (see A7-NOTES).
-  await runWarmup(pool);
-
-  const app = createApp();
-
-  const server = app.listen(config.PORT, config.HOST, () => {
-    logger.info({ port: config.PORT, host: config.HOST, env: config.NODE_ENV }, 'SatRank started');
+  const app = buildApp();
+  const server = app.listen(config.PORT, () => {
+    logger.info({ port: config.PORT }, 'satrank: listening');
   });
 
-  // Graceful shutdown — stop accepting connections, drain in-flight requests, force exit after 10s
-  let poolsClosed = false;
-  async function safeClosePools(): Promise<void> {
-    if (!poolsClosed) {
-      poolsClosed = true;
-      await closePools();
-    }
-  }
+  const crawlerTimer = scheduleCrawler();
 
-  function shutdown(): void {
-    logger.info('Shutting down — stopping new connections...');
-    server.close(async () => {
-      await safeClosePools();
-      logger.info('SatRank stopped gracefully');
-      process.exit(0);
-    });
-
-    setTimeout(async () => {
-      logger.warn('Forced shutdown — connections did not close within 10s');
-      await safeClosePools();
-      process.exit(1);
-    }, 10_000).unref();
-  }
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  const shutdown = async (signal: string) => {
+    logger.info({ signal }, 'satrank: shutting down');
+    clearInterval(crawlerTimer);
+    server.close();
+    await closePool();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-main().catch((err: unknown) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  logger.error({ err: msg }, 'Fatal boot error');
+main().catch((err) => {
+  logger.error({ err: (err as Error).message, stack: (err as Error).stack }, 'satrank: fatal boot error');
   process.exit(1);
 });
