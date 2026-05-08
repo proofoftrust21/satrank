@@ -83,10 +83,11 @@ describe('MiniLlmService.run', () => {
       options: { max_words: 10 },
     });
     expect(client.messages.create).toHaveBeenCalledTimes(1);
-    const call = client.messages.create.mock.calls[0][0] as {
-      system: string;
-      messages: Array<{ role: string; content: string }>;
-    };
+    // vi.fn().mock.calls is typed as [][] by default ; double-cast through
+    // unknown to surface the actual call shape we're asserting against.
+    const call = (client.messages.create.mock.calls as unknown as Array<[
+      { system: string; messages: Array<{ role: string; content: string }> },
+    ]>)[0][0];
     expect(call.system).toContain('plain prose');
     expect(call.messages[0].content).toContain('chat dort');
   });
