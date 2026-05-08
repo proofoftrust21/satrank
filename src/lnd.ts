@@ -84,11 +84,15 @@ export interface AddInvoiceResult {
 }
 
 export async function addInvoice(value_sats: number, memo: string, expiry_sec = 600): Promise<AddInvoiceResult> {
-  return await call<AddInvoiceResult>('POST', '/v1/invoices', {
-    value: String(value_sats),
-    memo,
-    expiry: String(expiry_sec),
-  });
+  // LND v0.18+ returns the invoice hash as `r_hash` (base64-encoded 32 bytes),
+  // not as `payment_hash` hex. Normalise here so callers always see hex.
+  const raw = await call<{ payment_request: string; r_hash?: string; payment_hash?: string; add_index: string }>(
+    'POST', '/v1/invoices', { value: String(value_sats), memo, expiry: String(expiry_sec) },
+  );
+  const payment_hash = raw.payment_hash
+    ?? (raw.r_hash ? Buffer.from(raw.r_hash, 'base64').toString('hex') : '');
+  if (!payment_hash) throw new Error('LND addInvoice: response missing both payment_hash and r_hash');
+  return { payment_request: raw.payment_request, payment_hash, add_index: raw.add_index };
 }
 
 export interface PayInvoiceResult {
