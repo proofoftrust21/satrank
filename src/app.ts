@@ -151,10 +151,6 @@ import { RegistryCrawler } from './crawler/registryCrawler';
 import { createBalanceAuth } from './middleware/balanceAuth';
 import { createL402Native } from './middleware/l402Native';
 import { OracleBudgetService } from './services/oracleBudgetService';
-import { TrustAssertionRepository } from './repositories/trustAssertionRepository';
-import { OraclePeerRepository } from './repositories/oracleFederationRepository';
-import { PeerCalibrationRepository } from './repositories/peerCalibrationRepository';
-import { CalibrationRepository } from './repositories/calibrationRepository';
 import { createReportAuth, safeEqual } from './middleware/auth';
 import { ServiceEndpointRepository } from './repositories/serviceEndpointRepository';
 import { EndpointStagePosteriorsRepository } from './repositories/endpointStagePosteriorsRepository';
@@ -1306,10 +1302,10 @@ export function createApp() {
   api.get('/services', discoveryRateLimit, serviceController.search);
   api.get('/services/best', discoveryRateLimit, serviceController.best);
   api.get('/services/categories', discoveryRateLimit, serviceController.categories);
-  // Phase 5 — alias under the /services namespace. Sim 3 agents instinctively
-  // hit /api/services/:hash with the endpoint_hash returned by /api/intent
-  // and got 404; the canonical route is /api/endpoint/:url_hash, but exposing
-  // both makes the discovery flow forgiving without a doc lookup.
+  // Sim 3 (2026-04) established /api/services/:url_hash as the canonical
+  // endpoint detail route — it's the first URL agents try after reading
+  // endpoint_hash from /api/intent. The legacy alias /api/endpoint/:url_hash
+  // was retired in V2.
   api.get('/services/:url_hash', discoveryRateLimit, endpointController.show);
 
   // Pricing Mix A+D (2026-04-26) — agent + attestation reads moved to free
@@ -1339,7 +1335,6 @@ export function createApp() {
     });
   };
   api.post('/intent', discoveryRateLimit, conditionalIntentPaidGate, intentController.resolve);
-  api.get('/intent/categories', discoveryRateLimit, intentController.categories);
   // Phase 1 (2026-05-01) — POST /api/fulfill. Strategic pivot endpoint.
   // NIP-98 auth (handled inside the controller, not via balanceAuth, because
   // the agent_pubkey is signed identity here, not an L402 macaroon). Same
@@ -1444,7 +1439,6 @@ export function createApp() {
   api.post('/operator/register', discoveryRateLimit, operatorController.register);
   api.get('/operators', discoveryRateLimit, operatorController.list);
   api.get('/operator/:id', discoveryRateLimit, operatorController.show);
-  api.get('/endpoint/:url_hash', discoveryRateLimit, endpointController.show);
   api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
   api.get('/stats/reports', discoveryRateLimit, reportStatsController.getStats);
@@ -1461,168 +1455,6 @@ export function createApp() {
     }
   });
 
-  // Phase 6.3 — /api/oracle/assertion/:url_hash : metadata de la kind 30782
-  // trust assertion publiée par l'oracle pour un endpoint donné. Permet
-  // aux operators de retrouver l'event_id à embarquer dans leur BOLT12
-  // offer (TLV custom) et aux agents de fetch directement depuis les
-  // relays sans passer par /api/intent.
-  //
-  // Hint BOLT12 TLV : convention proposée
-  //   type 65537 → event_id (32 bytes raw, hex on the wire)
-  //   type 65538 → oracle_pubkey (32 bytes raw)
-  // Le BOLT12 builder côté operator (FewSats, Alby toolkit, etc.) lit ces
-  // valeurs et les ajoute aux TLV custom. Pas de standard IETF —
-  // proposition à valider avec les écosystèmes.
-  const trustAssertionRepoApi = new TrustAssertionRepository(pool);
-  // Phase 7.1 — /api/oracle/peers : list des autres oracles SatRank-
-  // compatible découverts via les kind 30784 ingérés sur les relays.
-  // Format inclut oracle_pubkey, lnd_pubkey, catalogue_size, latest
-  // calibration/assertion event ids, last_seen — l'agent SDK filtre
-  // côté client par calibration_error / age / catalogue_size selon ses
-  // critères. Pas de filtering trust côté serveur (sovereignty).
-  const oraclePeerRepoApi = new OraclePeerRepository(pool);
-  api.get('/oracle/peers', discoveryRateLimit, async (req, res, next) => {
-    try {
-      const limit = Math.min(Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50), 200);
-      const peers = await oraclePeerRepoApi.list(limit);
-      const nowSec = Math.floor(Date.now() / 1000);
-      res.json({
-        data: {
-          peers: peers.map((p) => ({
-            oracle_pubkey: p.oracle_pubkey,
-            lnd_pubkey: p.lnd_pubkey,
-            catalogue_size: p.catalogue_size,
-            calibration_event_id: p.calibration_event_id,
-            last_assertion_event_id: p.last_assertion_event_id,
-            contact: p.contact,
-            onboarding_url: p.onboarding_url,
-            last_seen: p.last_seen,
-            first_seen: p.first_seen,
-            age_sec: nowSec - p.first_seen,
-            stale_sec: nowSec - p.last_seen,
-            latest_announcement_event_id: p.latest_announcement_event_id,
-          })),
-          count: peers.length,
-          limit,
-        },
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  // Phase 9.1 — /api/oracle/peers/:pubkey/calibrations : historique des
-  // kind 30783 calibration events publiés par un peer SatRank-compatible.
-  // Permet aux clients de vérifier la calibration history d'un peer
-  // avant de l'inclure dans une aggregation. Cross-oracle meta-confidence.
-  //
-  // Audit 2026-04-29 fix — when the requested pubkey is OUR oracle, the
-  // peer-calibrations ingestor skips self events (anti-loop) so the peer
-  // table is always empty for our own pubkey. Fall back to oracle_calibration_runs
-  // (the table we write before publishing) so /api/oracle/peers/<self>/calibrations
-  // returns our own calibration history instead of a misleading empty list.
-  const peerCalibrationRepoApi = new PeerCalibrationRepository(pool);
-  const ownCalibrationRepoApi = new CalibrationRepository(pool);
-  // Compute self oracle pubkey once at boot if NOSTR_PRIVATE_KEY is set.
-  // Lazy import — keeps the dependency outside the cold path when no key is
-  // configured (dev/test).
-  let selfOraclePubkeyApi: string | null = null;
-  if (config.NOSTR_PRIVATE_KEY) {
-    try {
-      const { getPublicKey: getPubkey } = require('nostr-tools/pure');
-      const { hexToBytes: h2b } = require('@noble/hashes/utils');
-      selfOraclePubkeyApi = getPubkey(h2b(config.NOSTR_PRIVATE_KEY));
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ error: msg }, 'Failed to derive self oracle pubkey for /oracle/peers/<self>/calibrations fallback');
-    }
-  }
-  api.get('/oracle/peers/:pubkey/calibrations', discoveryRateLimit, async (req, res, next) => {
-    try {
-      const pubkey = String(req.params.pubkey);
-      if (!/^[a-f0-9]{64}$/.test(pubkey)) {
-        return res.status(400).json({ error: { code: 'INVALID_PUBKEY', message: 'pubkey must be a 64-char hex Schnorr key' } });
-      }
-      const limit = Math.min(Math.max(1, parseInt(String(req.query.limit ?? '20'), 10) || 20), 100);
-      const isSelf = selfOraclePubkeyApi !== null && pubkey === selfOraclePubkeyApi;
-      const calibrationsPayload = isSelf
-        ? (await ownCalibrationRepoApi.listRuns(limit)).map((r) => ({
-            event_id: r.published_event_id,
-            window_start: r.window_start,
-            window_end: r.window_end,
-            window_days: Math.round((r.window_end - r.window_start) / 86400),
-            delta_mean: r.delta_mean,
-            delta_median: r.delta_median,
-            delta_p95: r.delta_p95,
-            n_endpoints: r.n_endpoints,
-            n_outcomes: r.n_outcomes,
-            observed_at: r.created_at,
-          }))
-        : (await peerCalibrationRepoApi.listByPeer(pubkey, limit)).map((c) => ({
-            event_id: c.event_id,
-            window_start: c.window_start,
-            window_end: c.window_end,
-            window_days: Math.round((c.window_end - c.window_start) / 86400),
-            delta_mean: c.delta_mean,
-            delta_median: c.delta_median,
-            delta_p95: c.delta_p95,
-            n_endpoints: c.n_endpoints,
-            n_outcomes: c.n_outcomes,
-            observed_at: c.observed_at,
-          }));
-      res.json({
-        data: {
-          peer_pubkey: pubkey,
-          is_self: isSelf,
-          calibrations: calibrationsPayload,
-          count: calibrationsPayload.length,
-          limit,
-        },
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  api.get('/oracle/assertion/:url_hash', discoveryRateLimit, async (req, res, next) => {
-    try {
-      const urlHash = String(req.params.url_hash);
-      if (!/^[a-f0-9]{64}$/.test(urlHash)) {
-        return res.status(400).json({ error: { code: 'INVALID_URL_HASH', message: 'url_hash must be a 64-char hex SHA256' } });
-      }
-      const record = await trustAssertionRepoApi.findByUrlHash(urlHash);
-      if (!record) {
-        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No trust assertion published yet for this endpoint. Wait for the next cron tick (≤ 7 days) or check that the endpoint has meaningful stage posteriors.' } });
-      }
-      const nowSec = Math.floor(Date.now() / 1000);
-      const expiresInSec = record.valid_until - nowSec;
-      res.json({
-        data: {
-          endpoint_url_hash: record.endpoint_url_hash,
-          kind: 30782,
-          event_id: record.event_id,
-          oracle_pubkey: record.oracle_pubkey,
-          valid_until: record.valid_until,
-          expires_in_sec: expiresInSec,
-          expired: expiresInSec < 0,
-          p_e2e: record.p_e2e,
-          meaningful_stages_count: record.meaningful_stages_count,
-          calibration_proof_event_id: record.calibration_proof_event_id,
-          published_at: record.published_at,
-          relays: record.relays,
-          bolt12_tlv_hint: {
-            note: 'Proposed convention for embedding the trust assertion in a BOLT12 offer. Type IDs not yet IETF-standardized — operators should track future BLIPs.',
-            type_event_id: 65537,
-            type_oracle_pubkey: 65538,
-            event_id_hex: record.event_id,
-            oracle_pubkey_hex: record.oracle_pubkey,
-          },
-        },
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
   api.get('/openapi.json', (_req, res) => res.json(openapiSpec));
   api.get('/docs', (_req, res) => {
     res.setHeader('Content-Type', 'text/html');
