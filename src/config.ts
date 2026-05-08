@@ -128,6 +128,23 @@ const configSchema = z.object({
   // cap the day's anchor is skipped (re-attempted on the next cron tick).
   // The minimum relay fee floor of 1 sat/vB is enforced server-side.
   AEPS_L1_BROADCAST_ENABLED: z.coerce.boolean().default(false),
+  // --- V2 recentrage flags (2026-05-08) ---
+  // Per /tmp/satrank-simplification-report.md, these subsystems are
+  // reclassified ADJACENT or HORS-PARCOURS for the agent consumer parcours.
+  // Defaults preserve current behaviour (true) ; flip to false in env to
+  // disable the corresponding surface area without removing code.
+  /** /api/fulfill + RefundEngine + token_balance auto-flow. ADJACENT. */
+  FULFILL_ENABLED: z.coerce.boolean().default(true),
+  /** ClaimEngine + operator_bonds + dispute path (Phase 7). HORS-PARCOURS. */
+  CLAIM_ENGINE_ENABLED: z.coerce.boolean().default(true),
+  /** agent_bonds + reputation tiers + tier-aware rate limit (Phase 11B). HORS-PARCOURS. */
+  AGENT_BONDS_ENABLED: z.coerce.boolean().default(true),
+  /** AEPS dispute oracle Schnorr threshold (A1+A2). HORS-PARCOURS. */
+  AEPS_DISPUTE_ENABLED: z.coerce.boolean().default(true),
+  /** Fork detection observer (AEPS). HORS-PARCOURS. */
+  FORK_DETECTION_ENABLED: z.coerce.boolean().default(true),
+  /** mini-LLM L402 self-hosted endpoints (Phase 12.14). HORS-PARCOURS — concurrent du catalogue. */
+  MINI_LLM_ENABLED: z.coerce.boolean().default(true),
   AEPS_L1_MAX_FEE_RATE_SAT_VBYTE: z.coerce.number().int().positive().default(5),
   AEPS_L1_FEE_API_URL: z.string().url().default('https://mempool.space/api/v1/fees/recommended'),
   /** Path to LND macaroon with `onchain:write` permission. Bake via
