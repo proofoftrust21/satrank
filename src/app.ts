@@ -987,16 +987,19 @@ export function createApp() {
       }
       // Phase 7.5 — claim payout cron. Pending claims past 24h dispute window
       // → commit bond slash + credit agent token_balance + transition `paid`.
-      try {
-        const out = await claimEngine.payoutReadyClaims();
-        if (out.paid > 0 || out.failed > 0) {
-          logger.info(out, 'ClaimEngine: payout cycle complete');
+      // V2 (2026-05-08) : skipped when config.CLAIM_ENGINE_ENABLED=false.
+      if (config.CLAIM_ENGINE_ENABLED) {
+        try {
+          const out = await claimEngine.payoutReadyClaims();
+          if (out.paid > 0 || out.failed > 0) {
+            logger.info(out, 'ClaimEngine: payout cycle complete');
+          }
+        } catch (err) {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'ClaimEngine: payout cron threw — will retry',
+          );
         }
-      } catch (err) {
-        logger.error(
-          { error: err instanceof Error ? err.message : String(err) },
-          'ClaimEngine: payout cron threw — will retry',
-        );
       }
       // AEPS §10 — equivocation slash settlement cron. Reserved intents
       // past the grace period (default 1h, AEPS_EQUIVOCATION_GRACE_SEC env)
@@ -1755,12 +1758,15 @@ export function createApp() {
   // Phase 2 — operator NIP-98 dispute against Tier 2 refund classifications.
   // Same discoveryRateLimit ceiling. Owner verification + uniqueness +
   // disputability check happen inside the controller.
-  api.post('/dispute/:ledger_id', discoveryRateLimit, disputeController.open);
-  api.get('/dispute/:dispute_id', discoveryRateLimit, disputeController.show);
-  // Phase 7.5 (2026-05-01) — claim dispute (operator-side) + public stats.
-  // POST is NIP-98 by the operator owning the bond.
-  api.post('/operator/claim/:claim_id/dispute', discoveryRateLimit, claimController.fileDispute);
-  api.get('/oracle/claims', discoveryRateLimit, claimController.oracleClaims);
+  // V2 (2026-05-08) : 4 routes gated behind config.CLAIM_ENGINE_ENABLED.
+  if (config.CLAIM_ENGINE_ENABLED) {
+    api.post('/dispute/:ledger_id', discoveryRateLimit, disputeController.open);
+    api.get('/dispute/:dispute_id', discoveryRateLimit, disputeController.show);
+    // Phase 7.5 (2026-05-01) — claim dispute (operator-side) + public stats.
+    // POST is NIP-98 by the operator owning the bond.
+    api.post('/operator/claim/:claim_id/dispute', discoveryRateLimit, claimController.fileDispute);
+    api.get('/oracle/claims', discoveryRateLimit, claimController.oracleClaims);
+  }
   // Phase 12.5 (2026-05-05) — Golden canary status (public read).
   // Returns the last canary measurement so ops can monitor ranker
   // recall@K from outside the box. 404 when canary is not enabled
