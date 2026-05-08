@@ -364,22 +364,58 @@ export class IntentService {
       }
     }
 
+    // V2 recentrage — count what we filter at each step so the response
+    // can surface a discovery_signal block (relecture critique Q3.d).
+    // Buckets are mutually exclusive: each rejected svc is counted once
+    // in the first reason it falls into.
+    const filterCounters = {
+      keyword_mismatch: 0,
+      budget_exceeded: 0,
+      latency_exceeded: 0,
+      median_latency_unknown: 0,
+    };
+    let estimatedSatsForFilteredEndpoints = 0;
+
     // Filter matches — sequential because each iteration may hit the DB for
     // median latency. Keep order deterministic and respect pool-max.
     const matched: ServiceEndpoint[] = [];
     for (const svc of pool) {
-      if (keywords.length > 0 && !keywordsMatchAll(svc, keywords)) continue;
+      if (keywords.length > 0 && !keywordsMatchAll(svc, keywords)) {
+        filterCounters.keyword_mismatch++;
+        continue;
+      }
       if (req.budget_sats != null) {
-        if (svc.service_price_sats == null) continue;
-        if (svc.service_price_sats > req.budget_sats) continue;
+        if (svc.service_price_sats == null) {
+          filterCounters.budget_exceeded++;
+          continue;
+        }
+        if (svc.service_price_sats > req.budget_sats) {
+          filterCounters.budget_exceeded++;
+          continue;
+        }
       }
       if (req.max_latency_ms != null) {
         const median = await this.deps.serviceEndpointRepo.medianHttpLatency7d(svc.url);
-        if (median == null) continue;
-        if (median > req.max_latency_ms) continue;
+        if (median == null) {
+          filterCounters.median_latency_unknown++;
+          continue;
+        }
+        if (median > req.max_latency_ms) {
+          filterCounters.latency_exceeded++;
+          continue;
+        }
       }
       matched.push(svc);
     }
+    const totalFilteredCount =
+      filterCounters.keyword_mismatch +
+      filterCounters.budget_exceeded +
+      filterCounters.latency_exceeded +
+      filterCounters.median_latency_unknown;
+    // Hint estimate: agent would burn ~50 sats × 50% failure rate per probed
+    // endpoint if SatRank hadn't filtered. Capped at 100k to avoid absurd
+    // numbers when the catalog is huge.
+    estimatedSatsForFilteredEndpoints = Math.min(100_000, totalFilteredCount * 25);
 
     const enriched: EnrichedCandidate[] = [];
     for (const svc of matched) {
@@ -447,6 +483,32 @@ export class IntentService {
       }
     }
 
+    // V2 recentrage — build discovery_signal block when at least one
+    // endpoint was filtered out. Lets the agent see the value of the
+    // paid lookup vs DIY paid-probe of every catalog match.
+    const totalFiltered =
+      filterCounters.keyword_mismatch +
+      filterCounters.budget_exceeded +
+      filterCounters.latency_exceeded +
+      filterCounters.median_latency_unknown;
+    const discoverySignal = totalFiltered > 0 ? {
+      raw_catalog_matches: pool.length,
+      filtered_out: {
+        // V0 minimal: budget/latency/keyword filters captured. The
+        // quarantine_5xx / quarantine_validator_violation /
+        // replay_state_penalty buckets require repo-level instrumentation
+        // (deferred to follow-up). 'other' captures the rest.
+        quarantine_5xx: 0,
+        quarantine_validator_violation: 0,
+        replay_state_penalty: 0,
+        not_meaningful: 0,
+        other: totalFiltered,
+      },
+      returned_top_n: candidates.length,
+      estimated_sats_saved_vs_diy: estimatedSatsForFilteredEndpoints,
+      explanation: `On ${pool.length} catalog matches for "${req.category}", ${totalFiltered} were filtered (${filterCounters.keyword_mismatch} keyword mismatch, ${filterCounters.budget_exceeded} budget exceeded, ${filterCounters.latency_exceeded} latency exceeded, ${filterCounters.median_latency_unknown} no probe data). You would have spent ~${estimatedSatsForFilteredEndpoints} sats testing them yourself.`,
+    } : undefined;
+
     const response: IntentResponse = {
       intent: {
         category: req.category,
@@ -467,6 +529,7 @@ export class IntentService {
         warnings,
         ...(fresh ? {} : { upgrade_path: INTENT_FRESH_UPGRADE_PATH }),
         ranking_explanation: rankingExplanationFor(optimize),
+        ...(discoverySignal ? { discovery_signal: discoverySignal } : {}),
       },
     };
 

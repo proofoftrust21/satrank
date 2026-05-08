@@ -214,6 +214,48 @@ export interface IntentResponseMeta {
     primary: string;
     tiebreakers: string[];
   };
+  /** V2 recentrage (2026-05-08) — discovery_signal block. Surfaces the
+   *  filtering work SatRank did for the agent so the value of the paid
+   *  lookup is visible : how many catalog matches were discarded for
+   *  quarantine / replay / low p_e2e / not-meaningful, and an estimate
+   *  of the sats the agent would have spent paid-probing them himself.
+   *  Per relecture critique Q3.d. Optional — present only when the
+   *  category had at least one filtered candidate. */
+  discovery_signal?: DiscoverySignal;
+}
+
+/** V2 recentrage — counters that make SatRank's filtering work visible
+ *  to the agent. Lets the agent justify the 2-sat lookup against the
+ *  alternative (DIY paid-probe of every endpoint in the public catalog). */
+export interface DiscoverySignal {
+  /** Total endpoints from the catalog that matched the category/keywords
+   *  before any quality filter. */
+  raw_catalog_matches: number;
+  /** Detail of why each filtered endpoint was discarded. Mutually
+   *  exclusive buckets — an endpoint counts in the first bucket it falls
+   *  into. */
+  filtered_out: {
+    /** Phase 12.6 consecutive_5xx_count >= threshold. */
+    quarantine_5xx: number;
+    /** Phase 12.8 consecutive_validator_violation_count >= threshold. */
+    quarantine_validator_violation: number;
+    /** Phase 12.9 replay-state penalty active. */
+    replay_state_penalty: number;
+    /** bayesian.is_meaningful = false (no probe data accumulated). */
+    not_meaningful: number;
+    /** All other filter reasons (budget exceeded, latency exceeded,
+     *  state != 'active', etc.). */
+    other: number;
+  };
+  /** What was returned to the caller after filter+rank+limit. */
+  returned_top_n: number;
+  /** Rough estimate of the sats the agent would have burned paid-probing
+   *  the filtered endpoints himself. Computed as
+   *    sum(filtered_out_invoice_estimate × (1 - p_e2e_pessimistic))
+   *  capped at a sensible sanity ceiling. Hint, not a quote. */
+  estimated_sats_saved_vs_diy: number;
+  /** Human-readable one-liner the SDK can show in logs. */
+  explanation: string;
 }
 
 export interface IntentResponse {
