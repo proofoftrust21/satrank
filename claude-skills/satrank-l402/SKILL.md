@@ -1,8 +1,8 @@
 ---
 name: satrank-l402
-description: Discover, score, and pay L402 endpoints on Bitcoin Lightning with cryptographic audit trails. Use when an agent needs to call a paid API and wants Bayesian trust scoring + Ed25519-signed evidence + AEPS L1 anchor verification. Bitcoin-pure, no x402/EVM.
+description: Discover and score L402 endpoints on Bitcoin Lightning before paying. Use when an agent needs to call a paid API and wants a Bayesian trust posterior + offline-verifiable Nostr assertion. Self-hosters can opt into the full audit/fulfill/AEPS surface. Bitcoin-pure, no x402/EVM.
 license: MIT
-version: 1.0.0
+version: 2.0.0
 ---
 
 # SatRank — L402 trust + audit skill
@@ -134,9 +134,10 @@ Add SatRank MCP to Claude Code with one command :
 claude mcp add satrank -- npx -y satrank-mcp
 ```
 
-Then the 27 tools are callable natively : `satrank.intent`, `satrank.fulfill`,
-`satrank.aeps.evidence_receipt`, etc. No `curl`, no manual NIP-98 — the agent
-runtime handles it.
+Then the 3 V2 tools are callable natively : `satrank.intent`,
+`satrank.get_endpoint_score`, `satrank.verify_assertion`. The fulfill /
+mini-llm / aeps.* surfaces stay reachable via direct HTTP for self-hosters
+running the full repo (`src/mcp/server.ts`).
 
 ## SatRank costs
 

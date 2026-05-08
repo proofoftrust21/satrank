@@ -19,7 +19,7 @@ The federation primitives ship with the oracle. Any operator can run a SatRank-c
 
 Three agent-native protocols in parallel:
 - **HTTP REST** — the canonical API at `https://satrank.dev/api/*`
-- **MCP server** — `intent` + `verify_assertion` tools for Claude Code, ChatGPT, Cursor, Alby Agent Toolkit
+- **MCP server** — 3 tools (`intent`, `get_endpoint_score`, `verify_assertion`) for Claude Code, ChatGPT, Cursor, Alby Agent Toolkit. Install : `claude mcp add satrank -- npx -y satrank-mcp`
 - **Nostr DVM** (NIP-90 kind 5900/6900) — sovereign agents who never touch HTTP
 
 The product exposes `POST /api/intent`: it takes a natural-language intent and returns the top-ranked L402 candidates, each with its full Bayesian posterior + 5-stage decomposition + http_method. Settlement happens client-side. The SDK helper `sr.fulfill(intent, budget)` calls `/api/intent`, selects a candidate, and performs the L402 payment flow directly against the provider's endpoint. SatRank never custodies sats and never sees the preimage.
