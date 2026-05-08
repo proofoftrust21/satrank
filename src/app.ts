@@ -117,8 +117,6 @@ import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
 // AEPS §8.3 (2026-05-07) — Nostr publication of daily anchors.
 import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsAnchorPublisher';
 import { AepsL1BroadcastService } from './services/aepsL1BroadcastService';
-import { MiniLlmService, SELF_HOSTED_MINI_LLM_ENDPOINTS } from './services/miniLlmService';
-import { MiniLlmController } from './controllers/miniLlmController';
 import { Kind31403Consumer } from './nostr/kind31403Consumer';
 // AEPS §8.5 (2026-05-08) — Nostr publication of detected fork events.
 import { buildAndSignForkEvent } from './services/aepsForkPublisher';
@@ -1522,60 +1520,6 @@ export function createApp() {
   // Phase 12.14 (2026-05-08) — self-hosted L402 mini-AI gateway. The
   // backend is Claude Haiku 4.5 via Anthropic SDK ; we charge 10 sats
   // per call which covers the upstream cost with a 25-100% margin.
-  // Auto-registered into service_endpoints at boot so /api/intent +
-  // BM25 ranker surface them under the canonical ai/* taxonomy. The
-  // service is only constructed when ANTHROPIC_API_KEY is configured ;
-  // without it we silently skip the routes (logged at boot). V2 (2026-05-08):
-  // gated behind config.MINI_LLM_ENABLED — flip false to slim the surface.
-  let miniLlmController: MiniLlmController | null = null;
-  if (!config.MINI_LLM_ENABLED) {
-    logger.info({ event: 'mini_llm_disabled' }, 'mini-llm endpoints disabled via MINI_LLM_ENABLED=false');
-  } else if (process.env.ANTHROPIC_API_KEY) {
-    const anthropic = new AnthropicSdk({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const miniLlmService = new MiniLlmService({ client: anthropic as unknown as InstanceType<typeof AnthropicSdk> });
-    miniLlmController = new MiniLlmController({ service: miniLlmService });
-    // Catalog auto-registration : upsert the three endpoints into
-    // service_endpoints with category=ai/* and price_sats=10. Idempotent.
-    void (async () => {
-      try {
-        const apiBase = config.SATRANK_API_BASE;
-        const specs = SELF_HOSTED_MINI_LLM_ENDPOINTS(apiBase);
-        const now = Math.floor(Date.now() / 1000);
-        for (const s of specs) {
-          await pool.query(
-            `INSERT INTO service_endpoints (
-               agent_hash, url, last_http_status, last_latency_ms, last_checked_at,
-               check_count, success_count, created_at, source, sources,
-               name, description, service_price_sats, http_method, category
-             ) VALUES (
-               NULL, $1, 402, 100, $2, 1, 0, $2, 'self_hosted', ARRAY['self_hosted']::text[],
-               $3, $4, $5, $6, $7
-             )
-             ON CONFLICT (url) DO UPDATE SET
-               name = EXCLUDED.name,
-               description = EXCLUDED.description,
-               service_price_sats = EXCLUDED.service_price_sats,
-               http_method = EXCLUDED.http_method,
-               category = EXCLUDED.category,
-               source = 'self_hosted',
-               sources = ARRAY['self_hosted']::text[],
-               deprecated = FALSE`,
-            [s.url, now, s.name, s.description, s.price_sats, s.http_method, s.category],
-          );
-        }
-        logger.info({ count: specs.length }, 'Phase 12.14 — mini-LLM endpoints registered into catalog');
-      } catch (err) {
-        logger.warn(
-          { error: err instanceof Error ? err.message : String(err) },
-          'Phase 12.14 — mini-LLM catalog auto-register failed (non-fatal)',
-        );
-      }
-    })();
-    logger.info({ model: 'claude-haiku-4-5-20251001' }, 'Phase 12.14 — mini-LLM gateway enabled');
-  } else {
-    logger.warn({}, 'Phase 12.14 — ANTHROPIC_API_KEY missing, mini-LLM gateway disabled');
-  }
-
   // L402 native gate — all paid endpoints go through createL402Native.
   // Pricing Mix A+D (2026-04-26): /agent/:publicKeyHash and its sub-routes
   // moved to free discovery, so they are no longer in the pricingMap.
@@ -1593,11 +1537,6 @@ export function createApp() {
       '/verdicts': 1,
       '/profile/:id': 1,
       '/intent': 2,
-      // Phase 12.14 — SatRank self-hosted mini-AI gateway. 10 sats covers
-      // Anthropic Haiku 4.5 backend cost (~$0.001-0.003) with 25-100% margin.
-      '/mini-llm/classify': 10,
-      '/mini-llm/summarize': 10,
-      '/mini-llm/translate': 10,
     },
     operatorSecret: config.OPERATOR_BYPASS_SECRET,
     onPaidCallSettled: async (route, priceSats, paymentHash) => {
@@ -1820,14 +1759,6 @@ export function createApp() {
   api.post('/schemas', discoveryRateLimit, schemaController.register);
   api.get('/schemas', discoveryRateLimit, schemaController.list);
   api.get('/schemas/:hash', discoveryRateLimit, schemaController.show);
-  // Phase 12.14 (2026-05-08) — SatRank self-hosted L402 mini-AI gateway.
-  // Three primitives priced at 10 sats each. paidGate's pricingMap above
-  // is updated alongside this block to gate them via L402 macaroons.
-  if (miniLlmController) {
-    api.post('/mini-llm/classify', paidGate, miniLlmController.classify);
-    api.post('/mini-llm/summarize', paidGate, miniLlmController.summarize);
-    api.post('/mini-llm/translate', paidGate, miniLlmController.translate);
-  }
   // Phase 1 (2026-05-01) — public observability of the fulfill proxy.
   // Privacy-first: the response only carries aggregate counters, never
   // agent_pubkey or per-job payloads. Agents can use it to confirm the

@@ -227,18 +227,6 @@ const fulfillArgs = z.object({
 const fulfillEvidenceArgs = z.object({
   job_id: z.string().min(1).max(128),
 });
-const miniLlmTextArgs = z.object({
-  text: z.string().min(1).max(8000),
-});
-const miniLlmClassifyArgs = miniLlmTextArgs.extend({
-  labels: z.array(z.string()).optional(),
-});
-const miniLlmSummarizeArgs = miniLlmTextArgs.extend({
-  max_words: z.number().int().min(10).max(800).optional(),
-});
-const miniLlmTranslateArgs = miniLlmTextArgs.extend({
-  target: z.string().min(1).max(64),
-});
 const getEndpointScoreArgs = z.object({
   url_hash: z.string().regex(/^[0-9a-f]{64}$/, 'url_hash must be 64-char hex'),
 });
@@ -700,42 +688,6 @@ async function main() {
         },
       },
       {
-        name: 'mini_llm_classify',
-        description: 'Phase 12.14 — SatRank-operated L402 endpoint : single-best-label classification (10 sats). POST text + optional `labels` array, get back the label. Powered by Claude Haiku 4.5 server-side ; Lightning-pure on the wire. Use this when you need cheap classification within an agent flow and the public AI catalogue is over-priced (>30 sats/req).',
-        inputSchema: {
-          type: 'object' as const,
-          properties: {
-            text: { type: 'string', minLength: 1, maxLength: 8000, description: 'Text to classify' },
-            labels: { type: 'array', items: { type: 'string' }, description: 'Optional : list of allowed labels' },
-          },
-          required: ['text'],
-        },
-      },
-      {
-        name: 'mini_llm_summarize',
-        description: 'Phase 12.14 — SatRank-operated L402 endpoint : plain-prose summarization (10 sats). POST text + optional `max_words`, get back the summary. Powered by Claude Haiku 4.5 server-side. Use when the public AI catalogue prices summarization above your sats budget.',
-        inputSchema: {
-          type: 'object' as const,
-          properties: {
-            text: { type: 'string', minLength: 1, maxLength: 8000, description: 'Text to summarize' },
-            max_words: { type: 'integer', minimum: 10, maximum: 800, description: 'Optional : length cap (default 60)' },
-          },
-          required: ['text'],
-        },
-      },
-      {
-        name: 'mini_llm_translate',
-        description: 'Phase 12.14 — SatRank-operated L402 endpoint : translation (10 sats). POST text + `target` language code, get back the translated text only.',
-        inputSchema: {
-          type: 'object' as const,
-          properties: {
-            text: { type: 'string', minLength: 1, maxLength: 8000, description: 'Text to translate' },
-            target: { type: 'string', description: 'Target language (e.g. "en", "spanish", "japanese")' },
-          },
-          required: ['text', 'target'],
-        },
-      },
-      {
         name: 'get_endpoint_score',
         description: 'Read the public scoring snapshot for a specific L402 endpoint URL. Returns Bayesian p_success + ci95, 5-stage breakdown (challenge/invoice/payment/delivery/quality), median_latency_ms, last_probe_age_sec, freshness_status, source attribution. Use this BEFORE calling fulfill on a specific URL to verify its trust signal independently of the ranking.',
         inputSchema: {
@@ -1144,43 +1096,6 @@ async function main() {
           // path-encode the job_id so weird chars can't escape the URL
           const safeId = encodeURIComponent(parsed.data.job_id);
           return await proxyAepsGet(`${SATRANK_API_BASE}/api/fulfill/${safeId}/evidence`);
-        }
-
-        case 'mini_llm_classify':
-        case 'mini_llm_summarize':
-        case 'mini_llm_translate': {
-          // Path mapping : tool name → API route. The mini-LLM endpoints are
-          // L402-gated (10 sats each) ; the MCP forwards the body and the
-          // upstream client supplies the L402 macaroon header. SatRank
-          // returns 402 when unauthenticated, which the agent runtime can
-          // pay via lnget / Alby NWC, and re-call with the L402 token.
-          const route = name === 'mini_llm_classify'
-            ? '/api/mini-llm/classify'
-            : name === 'mini_llm_summarize'
-              ? '/api/mini-llm/summarize'
-              : '/api/mini-llm/translate';
-          const schema = name === 'mini_llm_classify'
-            ? miniLlmClassifyArgs
-            : name === 'mini_llm_summarize'
-              ? miniLlmSummarizeArgs
-              : miniLlmTranslateArgs;
-          const parsed = schema.safeParse(args);
-          if (!parsed.success) {
-            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
-          }
-          const { text, ...rest } = parsed.data;
-          const body = { text, options: rest };
-          const resp = await fetchWithCap(
-            `${SATRANK_API_BASE}${route}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'User-Agent': 'SatRank-MCP/1.0' },
-              body: JSON.stringify(body),
-            },
-            MAX_INTENT_RESPONSE_BYTES,
-            INTENT_FETCH_TIMEOUT_MS * 2,
-          );
-          return { content: [{ type: 'text', text: resp.body }], isError: !resp.ok };
         }
 
         case 'get_endpoint_score': {

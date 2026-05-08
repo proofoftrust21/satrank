@@ -1,0 +1,85 @@
+{
+  "_doc": "Sim 19 — vision 2028 personas. Each persona probes a SPECIFIC architectural gap the 2026-05-06 audit named. The mission is intentionally future-shaped : agents that the autonomous-agent economy will routinely have by 2028. The verdict reveals which audit findings are empirically true (SatRank fails the probe) and which are surprisingly already covered.",
+  "agents": [
+    {
+      "idx": 1,
+      "persona": "ComplianceArchivist2028 — regulator-bound retention agent enforcing 7yr WORM + Merkle-anchored proofs",
+      "mission_summary": "Probe whether SatRank's evidence layer is regulator-grade in 2028. For each of 4 fulfill calls (any category), capture the response and check : (a) is body_sha256 emitted consistently? (b) is there an L1 anchor / OpenTimestamps proof / Sigstore-Rekor inclusion / merkle root committed to Bitcoin? (c) can SatRank retroactively re-sign the bundle (= non-equivocation gap)? (d) does the evidence carry a notarized auditor attestation? Mark UNCOVERED gaps explicitly in your verdict — this is the audit-trail probe persona.",
+      "category_hints": ["data/finance", "data/government", "data", "tools"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 2,
+      "persona": "MCPNativeAgent2028 — agent that ONLY discovers tools through Anthropic MCP servers",
+      "mission_summary": "Probe whether SatRank is reachable from inside the MCP ecosystem in 2028. Make 4 fulfill calls but BEFORE each, articulate in your reasoning whether you would have discovered SatRank as an MCP server (i.e. via mcp.json manifest / Anthropic mcp-marketplace / Claude Desktop config). Note explicitly : SatRank exposes /api/intent and /api/fulfill but no MCP server endpoint, no tool/list manifest, no resource/list manifest. Verdict must call out 'MCP integration : MISSING' if confirmed.",
+      "category_hints": ["ai", "ai/text", "tools", "data"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 3,
+      "persona": "MultiHopOrchestrator2028 — agent executing atomic DAG plans (scrape → translate → summarize → post)",
+      "mission_summary": "Probe whether SatRank supports atomic multi-hop intent routing. Across your 4 fulfill calls, attempt to chain a small DAG (e.g. fetch data → transform → aggregate → emit). Note explicitly whether SatRank can settle a multi-hop plan atomically (= rollback on any failure) OR whether each step is independent (= no atomicity, agent eats the cost of partial failures). Verdict must call out 'multi-hop atomicity : MISSING' if confirmed by the API surface.",
+      "category_hints": ["data", "ai", "ai/text", "tools"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 4,
+      "persona": "CashuMicropaymentAgent2028 — agent paying sub-cent calls via ecash for ephemeral identity",
+      "mission_summary": "Probe SatRank's ecash / Cashu / NIP-60 support. You have a Cashu wallet and want to pay L402 fees with ecash tokens (NUT-18 payment-request). Make 4 fulfill calls but EXPLICITLY note whether SatRank's fulfill API accepts a Cashu token as alternative payment, or whether everything is forced through BOLT11 hold-invoice. If only BOLT11 works, mark 'ecash-payment : MISSING' in verdict. Compare with Phase 6 hold-invoice ergonomics (heavyweight for $0.01 calls).",
+      "category_hints": ["data", "ai", "ai/text", "tools"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 5,
+      "persona": "TaprootAssetsUSDCAgent2028 — agent that pays in USDC over Lightning via Taproot Assets",
+      "mission_summary": "Probe whether SatRank can settle in non-BTC assets on Lightning. Your treasury is USDC ; you want to pay L402 endpoints in USDC routed over Taproot Assets channels. Make 4 fulfill calls but check : (a) does fulfill accept asset_id / amount-in-USDC parameters? (b) does the catalogue surface USDC-priced endpoints? (c) is the bond/claim/ClaimEngine asset-aware? Verdict must call out 'asset-agnostic settlement : MISSING' if BOLT11-sat-only is the only path. This is the audit's #2 existential threat (Taproot Assets mainnet 2026 + USDT-on-LN).",
+      "category_hints": ["data/finance", "data", "ai", "bitcoin"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 6,
+      "persona": "PortableReputationAgent2028 — agent presenting reputation receipts earned on competing brokers",
+      "mission_summary": "Probe SatRank reputation portability. You hold a Nostr-signed reputation receipt {reputation_score=0.94, total_fulfills=520, last_seen=2028-01-15} earned on a competing L402 broker. Make 4 fulfill calls but EXPLICITLY check : (a) does SatRank accept a presented reputation receipt? (b) is your tier (gold) granted to you on first call, or does SatRank bootstrap you at bronze? (c) is there an /api/agent/reputation/import endpoint? Verdict must call out 'reputation portability : MISSING' if SatRank's tier system is database-bound only.",
+      "category_hints": ["data", "ai", "tools", "bitcoin"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 7,
+      "persona": "RegulatorSandboxObserver2028 — read-only API consumer in FCA sandbox mode",
+      "mission_summary": "Probe SatRank's regulator-sandbox surface. You are a regulator (FCA, BaFin, NYDFS) needing read-only audit access to evidence streams from consenting agent users. Make 4 fulfill calls (using your own NIP-98 pubkey) but check ALSO : (a) is there a /sandbox or /regulator endpoint that returns aggregate evidence streams? (b) can you query evidence bundles by jurisdiction? (c) is there an aggregate compliance report endpoint (e.g. /reports/monthly)? (d) is multi-tenant isolation cryptographically provable? Verdict must call out 'regulator sandbox surface : MISSING' if no such endpoints exist.",
+      "category_hints": ["data/finance", "data/government", "data", "tools"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 8,
+      "persona": "BOLT12ScheduledAgent2028 — agent running cron-style async work with BOLT12 offers",
+      "mission_summary": "Probe SatRank's BOLT12 / async-fulfill support. You operate a daily cron job that wakes up, fetches market data, posts to Nostr, sleeps. You do NOT want to be online holding HTLCs — you need BOLT12 offers (refund_request, offer_chains, async settlement) so SatRank can pull from your offer when results materialize. Make 4 fulfill calls and check : (a) does fulfill accept a BOLT12 offer URI as alternative to BOLT11? (b) is there an async/queued fulfill mode where SatRank settles AFTER your offline period? Verdict must call out 'BOLT12 / async fulfill : MISSING' if only BOLT11 is supported.",
+      "category_hints": ["data", "data/finance", "tools", "ai"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 9,
+      "persona": "DVMNativeAgent2028 — Nostr-native agent that discovers via NIP-90 Data Vending Machines",
+      "mission_summary": "Probe SatRank's DVM / NIP-90 / Nostr-native discovery support. You are a Nostr-native agent reading Yakihonne / Damus client feeds — you discover services via DVM ads (kind 31990). Make 4 fulfill calls but ALSO check : (a) does SatRank publish kind 31990 service offerings? (b) does SatRank consume DVM bid events? (c) is the catalogue queryable via Nostr relay subscriptions instead of HTTP? Verdict must call out 'DVM / Nostr-native discovery : MISSING' if SatRank only exposes HTTP endpoints.",
+      "category_hints": ["data", "ai", "ai/text", "tools"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 10,
+      "persona": "FederatedSatRankAgent2028 — agent verifying SatRank protocol vs SatRank brand",
+      "mission_summary": "Probe whether SatRank is a PROTOCOL or a SaaS PRODUCT. You want to know : if SatRank Inc. shuts down tomorrow, does the SatRank protocol survive? Across 4 fulfill calls, examine the evidence bundles, the trust signals, the ranking logic AND check explicitly : (a) is there a published spec (BLIP, NIP, RFC) that a third party could implement? (b) does any second SatRank node exist? (c) is the L402 v2 schema used by SatRank documented externally? (d) is the ClaimEngine 1×/2×/3×/5× multiplier table normative? Verdict must call out 'protocol-shaped infrastructure : MISSING' if SatRank is a single-server SaaS pretending to be protocol.",
+      "category_hints": ["data", "ai", "tools", "bitcoin"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 8000
+    }
+  ]
+}
