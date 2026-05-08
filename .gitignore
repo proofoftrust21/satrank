@@ -13,6 +13,9 @@ build-info.json
 # SDK build artifacts — built via `npm run sdk:build && npm pack`, never commit
 sdk/*.tgz
 
+# MCP publish bundle — built via scripts/build-mcp-pkg.sh, never commit
+mcp-pkg/
+
 # Local development tooling — not meant to ship in the public repo
 .claude/
 CLAUDE.md
