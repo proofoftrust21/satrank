@@ -100,11 +100,6 @@ import { EndpointSchemaRepository } from './repositories/endpointSchemaRepositor
 import { SchemaController } from './controllers/schemaController';
 import { PoolAccountingService } from './services/poolAccountingService';
 import { LndHoldInvoiceService } from './services/lndHoldInvoiceService';
-import { OperatorBondRepository } from './repositories/operatorBondRepository';
-import { AgentClaimRepository } from './repositories/agentClaimRepository';
-import { OperatorBondService } from './services/operatorBondService';
-import { ClaimEngine } from './services/claimEngine';
-import { ClaimController } from './controllers/claimController';
 import { SignerService } from './services/signerService';
 import { EvidenceReceiptRepository } from './repositories/evidenceReceiptRepository';
 import { EvidenceService } from './services/evidenceService';
@@ -507,20 +502,6 @@ export function createApp() {
     restUrl: config.LND_REST_URL,
     adminMacaroonPath: config.LND_ADMIN_MACAROON_PATH,
   });
-  // Phase 7 (2026-05-01) — Operator bond + agent claims. ClaimEngine opens
-  // pending claims on Tier-2 delivery outcomes ; cron pays out after 24h
-  // dispute window. See project_indispensability_audit_20260501.md.
-  const operatorBondRepo = new OperatorBondRepository(pool);
-  const agentClaimRepo = new AgentClaimRepository(pool);
-  const operatorBondService = new OperatorBondService({
-    bondRepo: operatorBondRepo,
-    holdInvoiceService,
-  });
-  const claimEngine = new ClaimEngine({
-    pool,
-    claimRepo: agentClaimRepo,
-    bondRepo: operatorBondRepo,
-  });
   // Phase 9.4 — agent credit line.
   const agentCreditRepo = new AgentCreditRepository(pool);
   // Phase 9.3 — intent-keyed result cache.
@@ -670,7 +651,6 @@ export function createApp() {
     endpointSchemaRepo,
     poolAccounting,
     holdInvoiceService,
-    claimEngine,
     agentCreditRepo,
     intentCacheRepo,
     signer: signerService,
@@ -692,11 +672,6 @@ export function createApp() {
     capabilityTokens,
     reputationService: agentReputationService,
     bondService: agentBondService,
-  });
-  const claimController = new ClaimController({
-    claimRepo: agentClaimRepo,
-    bondRepo: operatorBondRepo,
-    enabled: config.FULFILL_ENABLED,
   });
   // Phase 2 — operator dispute surface against Tier 2 refund classifications.
   const disputeController = new DisputeController({
@@ -804,22 +779,6 @@ export function createApp() {
           );
         }
       }
-      // Phase 7.5 — claim payout cron. Pending claims past 24h dispute window
-      // → commit bond slash + credit agent token_balance + transition `paid`.
-      // V2 (2026-05-08) : skipped when config.CLAIM_ENGINE_ENABLED=false.
-      if (config.CLAIM_ENGINE_ENABLED) {
-        try {
-          const out = await claimEngine.payoutReadyClaims();
-          if (out.paid > 0 || out.failed > 0) {
-            logger.info(out, 'ClaimEngine: payout cycle complete');
-          }
-        } catch (err) {
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err) },
-            'ClaimEngine: payout cron threw — will retry',
-          );
-        }
-      }
       // Phase 9.2 — capability token in-memory cache prune.
       try {
         const dropped = capabilityTokens.pruneExpired();
@@ -871,19 +830,6 @@ export function createApp() {
         logger.error(
           { error: err instanceof Error ? err.message : String(err) },
           'OperatorEndpointRegistrationService: verification cycle threw',
-        );
-      }
-      // Phase 7.5 — surface underfunded operators (logging only for v1 ; the
-      // catalogue ranking integration is a Phase 7.5.1 follow-up).
-      try {
-        const underfunded = await operatorBondService.findUnderfundedOperators();
-        if (underfunded.length > 0) {
-          logger.warn({ underfunded_count: underfunded.length }, 'OperatorBondService: operators below floor — should be deprioritized in catalogue');
-        }
-      } catch (err) {
-        logger.error(
-          { error: err instanceof Error ? err.message : String(err) },
-          'OperatorBondService: findUnderfundedOperators threw',
         );
       }
       // Phase 11B.6 (2026-05-05) — agent bond settlement watcher. Polls
@@ -1492,16 +1438,10 @@ export function createApp() {
   api.post('/fulfill/session', discoveryRateLimit, fulfillController.issueSession);
   // Phase 2 — operator NIP-98 dispute against Tier 2 refund classifications.
   // Same discoveryRateLimit ceiling. Owner verification + uniqueness +
-  // disputability check happen inside the controller.
-  // V2 (2026-05-08) : 4 routes gated behind config.CLAIM_ENGINE_ENABLED.
-  if (config.CLAIM_ENGINE_ENABLED) {
-    api.post('/dispute/:ledger_id', discoveryRateLimit, disputeController.open);
-    api.get('/dispute/:dispute_id', discoveryRateLimit, disputeController.show);
-    // Phase 7.5 (2026-05-01) — claim dispute (operator-side) + public stats.
-    // POST is NIP-98 by the operator owning the bond.
-    api.post('/operator/claim/:claim_id/dispute', discoveryRateLimit, claimController.fileDispute);
-    api.get('/oracle/claims', discoveryRateLimit, claimController.oracleClaims);
-  }
+  // disputability check happen inside the controller. (refund dispute,
+  // separate from AEPS §10 dispute which was removed in V2.)
+  api.post('/dispute/:ledger_id', discoveryRateLimit, disputeController.open);
+  api.get('/dispute/:dispute_id', discoveryRateLimit, disputeController.show);
   // Phase 12.5 (2026-05-05) — Golden canary status (public read).
   // Returns the last canary measurement so ops can monitor ranker
   // recall@K from outside the box. 404 when canary is not enabled

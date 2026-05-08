@@ -35,7 +35,6 @@ import type {
   FulfillAttempt,
 } from '../repositories/fulfillJobRepository';
 import type { RefundEngine } from './refundEngine';
-import type { ClaimEngine } from './claimEngine';
 import type { AgentCreditRepository } from '../repositories/agentCreditRepository';
 import type { IntentResultCacheRepository } from '../repositories/intentResultCacheRepository';
 import type { SignerService } from './signerService';
@@ -220,9 +219,6 @@ export interface FulfillServiceDeps {
    *  Optional for back-compat with the Phase 1 tests; production wiring
    *  always passes a real instance. */
   refundEngine?: RefundEngine;
-  /** Phase 7.3 — opens agent_claims on Tier-2 outcomes against operator
-   *  bonds. Optional ; absent means no claims (Phase 1-6 behavior). */
-  claimEngine?: ClaimEngine;
   /** Phase 9.4 — reputation credit line. +1 sat per delivery_ok ;
    *  borrowable against future fulfills. Optional. */
   agentCreditRepo?: AgentCreditRepository;
@@ -1097,27 +1093,6 @@ export class FulfillService {
               );
             }
           }
-          // Phase 7.3 — open an agent_claims row against the operator bond,
-          // if claimEngine is wired and operator has an active bond. Idempotent
-          // on (job_id, attempt_index). Failure is non-fatal — the orchestrator
-          // continues to the next candidate regardless.
-          if (this.deps.claimEngine) {
-            try {
-              const job = await this.deps.fulfillJobRepo.findById(jobId);
-              if (job) {
-                await this.deps.claimEngine.openClaimForAttempt({
-                  job,
-                  attempt_index: attempts.length - 1,  // we just pushed this attempt
-                  attempt,
-                });
-              }
-            } catch (err) {
-              logger.error(
-                { jobId, candidate: cand.endpoint_url, error: err instanceof Error ? err.message : String(err) },
-                'Fulfill: claim engine openClaim failed (Phase 7.3 — non-fatal)',
-              );
-            }
-          }
           logger.info(
             {
               jobId,
@@ -1422,21 +1397,6 @@ export class FulfillService {
             logger.error(
               { jobId: job.job_id, error: err instanceof Error ? err.message : String(err) },
               'Fulfill: refund ledger write failed (hold mode) — continuing',
-            );
-          }
-        }
-        // Phase 7.3 — claim engine hook for hold mode.
-        if (attempt.payment_outcome === 'pay_ok' && this.deps.claimEngine) {
-          try {
-            await this.deps.claimEngine.openClaimForAttempt({
-              job,
-              attempt_index: attempts.length - 1,
-              attempt,
-            });
-          } catch (err) {
-            logger.error(
-              { jobId: job.job_id, error: err instanceof Error ? err.message : String(err) },
-              'Fulfill: claim engine openClaim failed (hold mode, Phase 7.3 — non-fatal)',
             );
           }
         }

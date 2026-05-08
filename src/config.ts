@@ -138,8 +138,6 @@ const configSchema = z.object({
   /** /api/fulfill + RefundEngine + token_balance auto-flow. ADJACENT.
    *  Default false matches legacy process.env.FULFILL_ENABLED behaviour. */
   FULFILL_ENABLED: z.coerce.boolean().default(false),
-  /** ClaimEngine + operator_bonds + dispute path (Phase 7). HORS-PARCOURS. */
-  CLAIM_ENGINE_ENABLED: z.coerce.boolean().default(true),
   /** agent_bonds + reputation tiers + tier-aware rate limit (Phase 11B). HORS-PARCOURS. */
   AGENT_BONDS_ENABLED: z.coerce.boolean().default(true),
   AEPS_L1_MAX_FEE_RATE_SAT_VBYTE: z.coerce.number().int().positive().default(5),
