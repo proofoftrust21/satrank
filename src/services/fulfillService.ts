@@ -270,8 +270,6 @@ export interface FulfillServiceDeps {
    *  audit-target is "bronze: no credit ; silver: cap≤bond/2 ; gold:
    *  cap≤bond" — bond is already the tier ceiling so the gate is just
    *  on tier. Both deps are optional (back-compat with Phase 9 tests). */
-  reputationService?: import('./agentReputationService').AgentReputationService;
-  bondService?: import('./agentBondService').AgentBondService;
   /** Phase 12A (2026-05-07) — auto-issue an Ed25519 evidence receipt on
    *  every successful settle. Without this, evidence receipts are only
    *  populated when an agent explicitly calls
@@ -641,22 +639,9 @@ export class FulfillService {
       // accumulate ≥5 successful fulfills (silver floor in P11B.2).
       let borrowed = false;
       if (this.deps.agentCreditRepo) {
-        let tier: 'bronze' | 'silver' | 'gold' = 'silver';
-        if (this.deps.reputationService && this.deps.bondService) {
-          const [profile, bond] = await Promise.all([
-            this.deps.reputationService.getProfile(req.agent_pubkey),
-            this.deps.bondService.availableForAgent(req.agent_pubkey),
-          ]);
-          tier = this.deps.reputationService.effectiveTier(profile, bond);
-        }
-        if (tier === 'bronze') {
-          logger.info(
-            { agent_pubkey: req.agent_pubkey.slice(0, 12), tier, deficit },
-            'Fulfill: bronze tier blocked from credit-line borrow (Phase 11B.5)',
-          );
-        } else {
-          borrowed = await this.deps.agentCreditRepo.borrow(req.agent_pubkey, deficit, this.now());
-        }
+        // V2 (2026-05-08) — agent_bonds removed, default credit-line policy
+        // is silver-equivalent (allow borrow). Bronze tier gating dropped.
+        borrowed = await this.deps.agentCreditRepo.borrow(req.agent_pubkey, deficit, this.now());
       }
       if (!borrowed) {
         return {

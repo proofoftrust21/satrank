@@ -155,13 +155,6 @@ export interface FulfillControllerDeps {
   /** Phase 9.2 — capability token service for Bearer-token bypass of the
    *  per-call NIP-98 round-trip. Optional ; absent = NIP-98 only. */
   capabilityTokens?: import('../services/capabilityTokenService').CapabilityTokenService;
-  /** Phase 11B.2 — record terminal status into the agent's reputation
-   *  profile. Optional so existing tests don't have to mount a repo. */
-  reputationService?: import('../services/agentReputationService').AgentReputationService;
-  /** Phase 11B.5 — bond service for the effective-tier rate-limit gate.
-   *  Optional ; without it the rate-limit defaults to silver-tier params
-   *  (matches pre-P11B.5 behaviour). */
-  bondService?: import('../services/agentBondService').AgentBondService;
 }
 
 export class FulfillController {
@@ -171,8 +164,6 @@ export class FulfillController {
   private readonly refillPerSec: number;
   private readonly buckets = new Map<string, RateBucketState>();
   private readonly capabilityTokens?: import('../services/capabilityTokenService').CapabilityTokenService;
-  private readonly reputationService?: import('../services/agentReputationService').AgentReputationService;
-  private readonly bondService?: import('../services/agentBondService').AgentBondService;
 
   constructor(deps: FulfillControllerDeps) {
     this.fulfillService = deps.fulfillService;
@@ -180,73 +171,6 @@ export class FulfillController {
     this.bucketSize = deps.rateBucketSize ?? envInt('FULFILL_RATE_BUCKET', 5);
     this.refillPerSec = deps.rateRefillPerSec ?? envFloat('FULFILL_RATE_REFILL_PER_SEC', 0.5);
     this.capabilityTokens = deps.capabilityTokens;
-    this.reputationService = deps.reputationService;
-    this.bondService = deps.bondService;
-  }
-
-  /** Phase 11B.5 — effective-tier cache. Avoids a DB roundtrip on every
-   *  fulfill call. The cache is keyed by agent_pubkey, expires after
-   *  TIER_CACHE_TTL_MS, and refreshes lazily on miss/expiry. Reputation
-   *  + bond changes propagate within the TTL window — sufficient since
-   *  the profile only changes at terminal status (1+ second granularity)
-   *  and the bond changes only at deposit/slash time. */
-  private readonly tierCache = new Map<string, { tier: import('../services/agentReputationService').ReputationTier; expiresAt: number }>();
-  private static readonly TIER_CACHE_TTL_MS = 60_000;
-
-  private async resolveEffectiveTier(agentPubkey: string): Promise<'bronze' | 'silver' | 'gold'> {
-    // Back-compat : without reputation+bond deps the tier system isn't
-    // wired, so we fall through to silver (matches the pre-P11B.5
-    // behaviour where every agent had the same rate-limit). Once the
-    // operator opts in to the tier gate by passing both services, we
-    // start enforcing bronze for new pubkeys without bond/reputation.
-    if (!this.reputationService || !this.bondService) return 'silver';
-    const cached = this.tierCache.get(agentPubkey);
-    const now = Date.now();
-    if (cached && cached.expiresAt > now) return cached.tier;
-    const [profile, bondAvail] = await Promise.all([
-      this.reputationService.getProfile(agentPubkey),
-      this.bondService.availableForAgent(agentPubkey),
-    ]);
-    const tier = this.reputationService.effectiveTier(profile, bondAvail);
-    this.tierCache.set(agentPubkey, { tier, expiresAt: now + FulfillController.TIER_CACHE_TTL_MS });
-    return tier;
-  }
-
-  /** Per-tier bucket dimensions. Targets from autonomy audit P11B.5 :
-   *    bronze : 5/min   (untrusted / unbonded)
-   *    silver : 30/min  (matches existing default — bonded ≥1000 sats)
-   *    gold   : 300/min (high-trust + bonded ≥10000 sats)
-   *  Refill rate = throughput, bucket size = burst capacity. */
-  private bucketParamsFor(tier: 'bronze' | 'silver' | 'gold'): { bucketSize: number; refillPerSec: number } {
-    if (tier === 'gold') return { bucketSize: 30, refillPerSec: 5 };
-    if (tier === 'silver') return { bucketSize: this.bucketSize, refillPerSec: this.refillPerSec };
-    return { bucketSize: 1, refillPerSec: 5 / 60 };
-  }
-
-  /** Phase 11B.2 — record the terminal outcome into the agent profile.
-   *  Best-effort, non-blocking : reputation observability never blocks a
-   *  fulfill response. Validator violations are detected from the
-   *  attempts array (any attempt with delivery_validator_violation flips
-   *  the bucket from 'refunded' to 'validator_violation'). */
-  private async recordReputation(
-    agentPubkey: string,
-    status: 'success' | 'refunded',
-    attempts: Array<{ delivery_outcome?: string | null }> | undefined,
-  ): Promise<void> {
-    if (!this.reputationService) return;
-    let bucket: 'success' | 'refunded' | 'validator_violation' = status;
-    if (status === 'refunded' && attempts) {
-      const hasViolation = attempts.some(a => a.delivery_outcome === 'delivery_validator_violation');
-      if (hasViolation) bucket = 'validator_violation';
-    }
-    try {
-      await this.reputationService.recordFulfillOutcome(agentPubkey, bucket);
-    } catch (err) {
-      logger.warn(
-        { agent: agentPubkey.slice(0, 12), error: err instanceof Error ? err.message : String(err) },
-        'FulfillController: reputation record failed (non-blocking)',
-      );
-    }
   }
 
   /** Phase 9.2 — Bearer token alternative to NIP-98 ; resolves the
@@ -318,8 +242,8 @@ export class FulfillController {
    *  so a downgrade (slash drains bond, demotion to bronze) immediately
    *  clamps the burst capacity. */
   private async consumeRateToken(agentPubkey: string): Promise<boolean> {
-    const tier = await this.resolveEffectiveTier(agentPubkey);
-    const { bucketSize, refillPerSec } = this.bucketParamsFor(tier);
+    const bucketSize = this.bucketSize;
+    const refillPerSec = this.refillPerSec;
     const now = Date.now() / 1000;
     let state = this.buckets.get(agentPubkey);
     if (!state) {
@@ -558,8 +482,6 @@ export class FulfillController {
 
       switch (result.status) {
         case 'success':
-          // Phase 11B.2 — record success in the reputation ledger.
-          void this.recordReputation(agentPubkey, 'success', result.attempts);
           res.status(200).json({
             status: 'success',
             job_id: result.job_id,
@@ -577,8 +499,6 @@ export class FulfillController {
         case 'refunded':
           // Phase 11A.2 — additive next_action hint without breaking the
           // existing { status:'refunded', job_id, attempts, reason } shape.
-          // Phase 11B.2 — record refund/violation in reputation ledger.
-          void this.recordReputation(agentPubkey, 'refunded', result.attempts);
           res.status(502).json({
             status: 'refunded',
             job_id: result.job_id,

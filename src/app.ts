@@ -117,13 +117,6 @@ import { OperatorAttestationService } from './services/operatorAttestationServic
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
 import { OperatorEndpointRegistrationService } from './services/operatorEndpointRegistrationService';
 import { OperatorRegistrationController } from './controllers/operatorRegistrationController';
-import { AgentBondRepository } from './repositories/agentBondRepository';
-import { AgentBondService } from './services/agentBondService';
-import { AgentBondController } from './controllers/agentBondController';
-import { AgentReputationRepository } from './repositories/agentReputationRepository';
-import { AgentReputationService } from './services/agentReputationService';
-import { AgentReputationController } from './controllers/agentReputationController';
-import { AgentSlashingService } from './services/agentSlashingService';
 import { AgentCreditRepository } from './repositories/agentCreditRepository';
 import { IntentResultCacheRepository } from './repositories/intentResultCacheRepository';
 import { CapabilityTokenService } from './services/capabilityTokenService';
@@ -612,31 +605,6 @@ export function createApp() {
     serviceEndpointRepo,
   });
 
-  // Phase 11B.1 (2026-05-04) — agent bonds (symmetric to operator_bonds).
-  const agentBondRepo = new AgentBondRepository(pool);
-  const agentBondService = new AgentBondService({
-    bondRepo: agentBondRepo,
-    holdInvoiceService,
-  });
-  const agentBondController = new AgentBondController({
-    service: agentBondService,
-    enabled: config.FULFILL_ENABLED,
-  });
-
-  // Phase 11B.2 (2026-05-04) — agent reputation ledger.
-  const agentReputationRepo = new AgentReputationRepository(pool);
-  const agentReputationService = new AgentReputationService({ repo: agentReputationRepo });
-  const agentReputationController = new AgentReputationController({
-    service: agentReputationService,
-    bondService: agentBondService,
-  });
-
-  // Phase 11B.3 (2026-05-04) — agent slashing primitive.
-  // Phase 11B.4 (2026-05-04) — wired into the 60s reconcile cron below.
-  const agentSlashingService = new AgentSlashingService({
-    reputationService: agentReputationService,
-    bondRepo: agentBondRepo,
-  });
   const operatorRegistrationController = new OperatorRegistrationController({
     service: operatorEndpointRegistrationService,
     repo: operatorEndpointRegistrationRepo,
@@ -655,9 +623,6 @@ export function createApp() {
     intentCacheRepo,
     signer: signerService,
     operatorEndpointRegistrationRepo,
-    // Phase 11B.5 — tier-gated credit-line.
-    reputationService: agentReputationService,
-    bondService: agentBondService,
     // Phase 12.8 — quarantine endpoints with consecutive validator violations.
     serviceEndpointRepo,
     // Phase 12.9 — shared replay-state with the IntentRanker.
@@ -670,8 +635,6 @@ export function createApp() {
     fulfillService,
     enabled: config.FULFILL_ENABLED,
     capabilityTokens,
-    reputationService: agentReputationService,
-    bondService: agentBondService,
   });
   // Phase 2 — operator dispute surface against Tier 2 refund classifications.
   const disputeController = new DisputeController({
@@ -831,51 +794,6 @@ export function createApp() {
           { error: err instanceof Error ? err.message : String(err) },
           'OperatorEndpointRegistrationService: verification cycle threw',
         );
-      }
-      // Phase 11B.6 (2026-05-05) — agent bond settlement watcher. Polls
-      // LND for pending deposit invoices ; on ACCEPTED reveals the
-      // preimage to claim the HTLC + unlocks the bond_pending_sats lock
-      // (createDeposit creates the bond LOCKED so phantom bonds without
-      // payment grant zero tier benefit). On CANCELED/EXPIRED leaves the
-      // bond locked and marks the deposit settled-as-failed.
-      // V2 (2026-05-08) : agent bond settlement + slashing crons skipped
-      // when config.AGENT_BONDS_ENABLED=false.
-      if (config.AGENT_BONDS_ENABLED) {
-        try {
-          await agentBondService.runSettlementCycle();
-        } catch (err) {
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err) },
-            'AgentBondService: settlement cycle threw',
-          );
-        }
-        // Phase 11B.4 (2026-05-04) — agent slashing pass. Pulls a narrow set
-        // of red-flag candidates from the reputation table (score < 0.1 AND
-        // ≥10 observations AND profile updated in the past 7 days) and feeds
-        // them to AgentSlashingService.runSlashingPass. The service handles
-        // its own per-agent 24h cool-down + bond presence check ; this cron
-        // tick is just the discovery loop.
-        try {
-          const SLASH_LOOKBACK_SEC = 7 * 86400;
-          const candidates = await agentReputationRepo.findCandidatesForSlashing(
-            0.1, // SLASH_TRIGGER_SCORE
-            10,  // SLASH_MIN_OBSERVATIONS
-            Math.floor(Date.now() / 1000) - SLASH_LOOKBACK_SEC,
-            50,  // narrow limit so a single cron tick stays cheap
-          );
-          if (candidates.length > 0) {
-            const outcomes = await agentSlashingService.runSlashingPass(candidates);
-            const slashed = outcomes.filter(o => o.status === 'slashed').length;
-            if (slashed > 0) {
-              logger.warn({ slashed, evaluated: candidates.length }, 'AgentSlashingService: cron pass slashed agents');
-            }
-          }
-        } catch (err) {
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err) },
-            'AgentSlashingService: cron tick threw',
-          );
-        }
       }
     } catch (err) {
       logger.error(
@@ -1461,15 +1379,6 @@ export function createApp() {
   // Phase 10 (2026-05-04) — Operator-side SDK self-registration + dashboard.
   api.post('/operator/register-endpoint', discoveryRateLimit, operatorRegistrationController.register);
   api.get('/operator/:pubkey/dashboard', discoveryRateLimit, operatorRegistrationController.dashboard);
-  // Phase 11B.1 (2026-05-04) — Agent bonds : symmetric to operator_bonds.
-  // V2 (2026-05-08) : 4 routes gated behind config.AGENT_BONDS_ENABLED.
-  if (config.AGENT_BONDS_ENABLED) {
-    api.post('/agent/bond/deposit', discoveryRateLimit, agentBondController.deposit);
-    api.get('/agent/bond', discoveryRateLimit, agentBondController.status);
-    api.post('/agent/bond/:bond_id/freeze', discoveryRateLimit, agentBondController.freeze);
-    // Phase 11B.2 (2026-05-04) — Agent reputation : public read keyed by pubkey.
-    api.get('/agent/:pubkey/reputation', discoveryRateLimit, agentReputationController.show);
-  }
   // Phase 8.3 — evidence receipt for compliance/regulator agents.
   api.get('/fulfill/:job_id/evidence', discoveryRateLimit, evidenceController.show);
   // Phase 3 — JSON Schema registry. POST is NIP-98-gated (operator

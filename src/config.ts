@@ -128,18 +128,11 @@ const configSchema = z.object({
   // cap the day's anchor is skipped (re-attempted on the next cron tick).
   // The minimum relay fee floor of 1 sat/vB is enforced server-side.
   AEPS_L1_BROADCAST_ENABLED: z.coerce.boolean().default(false),
-  // --- V2 recentrage flags (2026-05-08) ---
-  // Per docs/restructure/V2-RECENTERED-REPORT.md, these subsystems are
-  // reclassified ADJACENT or HORS-PARCOURS for the agent consumer parcours.
-  // Defaults preserve current production behaviour: FULFILL is opt-in
-  // (matches the legacy process.env.FULFILL_ENABLED === 'true' check) ; the
-  // others run unconditionally today and stay default-on, but operators can
-  // flip to false via env to slim the surface without removing code.
+  // --- V2 recentrage flag (2026-05-08) ---
+  // Per docs/restructure/V2-RECENTERED-REPORT.md.
   /** /api/fulfill + RefundEngine + token_balance auto-flow. ADJACENT.
    *  Default false matches legacy process.env.FULFILL_ENABLED behaviour. */
   FULFILL_ENABLED: z.coerce.boolean().default(false),
-  /** agent_bonds + reputation tiers + tier-aware rate limit (Phase 11B). HORS-PARCOURS. */
-  AGENT_BONDS_ENABLED: z.coerce.boolean().default(true),
   AEPS_L1_MAX_FEE_RATE_SAT_VBYTE: z.coerce.number().int().positive().default(5),
   AEPS_L1_FEE_API_URL: z.string().url().default('https://mempool.space/api/v1/fees/recommended'),
   /** Path to LND macaroon with `onchain:write` permission. Bake via
