@@ -207,6 +207,41 @@ const reportArgs = z.object({
   (data) => !data.preimage || !!data.paymentHash,
   { message: 'preimage requires paymentHash', path: ['preimage'] },
 );
+
+// Phase 12.16 (2026-05-08) — Zod schemas for the agent-commerce tool surface.
+// Each one mirrors its HTTP-route body / params shape ; the MCP handlers below
+// proxy through the SatRank API. Keeping the schemas server-side keeps the
+// MCP surface invariant when API field names evolve.
+const fulfillArgs = z.object({
+  intent: z.object({
+    category: z.string().min(1).max(64),
+    keywords: z.array(z.string()).optional(),
+  }),
+  max_sats: z.number().int().min(1).max(10_000),
+  max_latency_ms: z.number().int().min(100).max(60_000),
+  recall_body: z.string().max(4096).optional(),
+  recall_headers: z.record(z.string()).optional(),
+  mode: z.enum(['deposit', 'hold']).optional(),
+  refund_bolt11: z.string().optional(),
+});
+const fulfillEvidenceArgs = z.object({
+  job_id: z.string().min(1).max(128),
+});
+const miniLlmTextArgs = z.object({
+  text: z.string().min(1).max(8000),
+});
+const miniLlmClassifyArgs = miniLlmTextArgs.extend({
+  labels: z.array(z.string()).optional(),
+});
+const miniLlmSummarizeArgs = miniLlmTextArgs.extend({
+  max_words: z.number().int().min(10).max(800).optional(),
+});
+const miniLlmTranslateArgs = miniLlmTextArgs.extend({
+  target: z.string().min(1).max(64),
+});
+const getEndpointScoreArgs = z.object({
+  url_hash: z.string().regex(/^[0-9a-f]{64}$/, 'url_hash must be 64-char hex'),
+});
 const getProfileArgs = z.object({
   id: identifierSchema,
 });
@@ -623,6 +658,94 @@ async function main() {
           required: ['event'],
         },
       },
+      // Phase 12.16 (2026-05-08) — agent commerce tools wrapping the
+      // SatRank execution layer. These are the indispensable primitives
+      // the agent calls between `intent` (discovery) and `aeps.evidence_receipt`
+      // (audit). Distribution-ready : every tool maps 1:1 to an HTTP route
+      // already in production, so the MCP server stays a thin proxy.
+      {
+        name: 'fulfill',
+        description: 'Phase 6+8 — Pay an L402 endpoint via SatRank fulfill proxy with hold-invoice + auto-issued evidence receipt. Agent supplies intent (category + keywords), max_sats budget, max_latency_ms SLA ; SatRank picks the best candidate, settles the L402 payment, returns the body + body_sha256 + preimage + operator_pubkey + premium_sats. Refund on candidate failure. Use this when `intent` returned a candidate you want to call AND you want SatRank to also write the post-pay evidence trail (Phase 8 Ed25519-signed receipt). NIP-98 auth required ; agent must have a token_balance via /api/deposit OR a bond via /api/agent/bond/deposit.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            intent: {
+              type: 'object',
+              description: 'Same shape as the `intent` tool input',
+              properties: {
+                category: { type: 'string', minLength: 1 },
+                keywords: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['category'],
+            },
+            max_sats: { type: 'integer', minimum: 1, maximum: 10000, description: 'Hard cap per fulfill ; refunded if no candidate delivers under this' },
+            max_latency_ms: { type: 'integer', minimum: 100, maximum: 60000, description: 'Total wall-clock budget for the fulfill cycle' },
+            recall_body: { type: 'string', maxLength: 4096, description: 'Optional : raw body for parameterised L402 endpoints (e.g. `{"text":"..."}` for ai/classify)' },
+            recall_headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'Optional : extra recall-step headers (Authorization/Host/transport blocked server-side)' },
+            mode: { type: 'string', enum: ['deposit', 'hold'], description: 'deposit (default) = custodial token_balance ; hold = non-custodial Lightning hold-invoice (BOLT11 returned ; agent pays then calls fulfill/:job_id/execute)' },
+            refund_bolt11: { type: 'string', description: 'Optional : open-amount BOLT11 to receive residue refund when the chosen candidate costs less than the reserve (mode=hold only)' },
+          },
+          required: ['intent', 'max_sats', 'max_latency_ms'],
+        },
+      },
+      {
+        name: 'fulfill_evidence',
+        description: 'Phase 8 — Fetch the public evidence receipt for a fulfill_jobs row by job_id. Returns canonical_json + Ed25519 signature + body_sha256 + operator_pubkey + ts_started/ts_finished + sats_paid. Same content as `aeps.evidence_receipt` but addressable directly by the `job_id` returned from a `fulfill` call (no NIP-98 needed for read).',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            job_id: { type: 'string', minLength: 1, maxLength: 128, description: 'fulfill_jobs.job_id from a prior fulfill() response' },
+          },
+          required: ['job_id'],
+        },
+      },
+      {
+        name: 'mini_llm_classify',
+        description: 'Phase 12.14 — SatRank-operated L402 endpoint : single-best-label classification (10 sats). POST text + optional `labels` array, get back the label. Powered by Claude Haiku 4.5 server-side ; Lightning-pure on the wire. Use this when you need cheap classification within an agent flow and the public AI catalogue is over-priced (>30 sats/req).',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            text: { type: 'string', minLength: 1, maxLength: 8000, description: 'Text to classify' },
+            labels: { type: 'array', items: { type: 'string' }, description: 'Optional : list of allowed labels' },
+          },
+          required: ['text'],
+        },
+      },
+      {
+        name: 'mini_llm_summarize',
+        description: 'Phase 12.14 — SatRank-operated L402 endpoint : plain-prose summarization (10 sats). POST text + optional `max_words`, get back the summary. Powered by Claude Haiku 4.5 server-side. Use when the public AI catalogue prices summarization above your sats budget.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            text: { type: 'string', minLength: 1, maxLength: 8000, description: 'Text to summarize' },
+            max_words: { type: 'integer', minimum: 10, maximum: 800, description: 'Optional : length cap (default 60)' },
+          },
+          required: ['text'],
+        },
+      },
+      {
+        name: 'mini_llm_translate',
+        description: 'Phase 12.14 — SatRank-operated L402 endpoint : translation (10 sats). POST text + `target` language code, get back the translated text only.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            text: { type: 'string', minLength: 1, maxLength: 8000, description: 'Text to translate' },
+            target: { type: 'string', description: 'Target language (e.g. "en", "spanish", "japanese")' },
+          },
+          required: ['text', 'target'],
+        },
+      },
+      {
+        name: 'get_endpoint_score',
+        description: 'Read the public scoring snapshot for a specific L402 endpoint URL. Returns Bayesian p_success + ci95, 5-stage breakdown (challenge/invoice/payment/delivery/quality), median_latency_ms, last_probe_age_sec, freshness_status, source attribution. Use this BEFORE calling fulfill on a specific URL to verify its trust signal independently of the ranking.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            url_hash: { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'sha256 of the endpoint URL' },
+          },
+          required: ['url_hash'],
+        },
+      },
     ],
   }));
 
@@ -982,6 +1105,91 @@ async function main() {
             now_sec: parsed.data.now_sec,
           });
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // Phase 12.16 — agent commerce tools.
+        case 'fulfill': {
+          const parsed = fulfillArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          // The MCP server is a stdio-only proxy. NIP-98 must be supplied
+          // by the upstream client (Claude Code / Cursor / agent runtime) ;
+          // we forward unauthenticated and let SatRank reply 401 if needed.
+          // The agent's wallet stack (Alby NWC, lnd-grpc, lnget skill) is
+          // expected to handle the auth attachment ; this tool's value is
+          // the schema-aware request shape and the response normalisation.
+          const url = `${SATRANK_API_BASE}/api/fulfill`;
+          const resp = await fetchWithCap(
+            url,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'User-Agent': 'SatRank-MCP/1.0' },
+              body: JSON.stringify(parsed.data),
+            },
+            MAX_INTENT_RESPONSE_BYTES,
+            INTENT_FETCH_TIMEOUT_MS * 4, // fulfill end-to-end can be slow
+          );
+          if (resp.truncated) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: 'response_too_large', max_bytes: MAX_INTENT_RESPONSE_BYTES }, null, 2) }], isError: true };
+          }
+          return { content: [{ type: 'text', text: resp.body }], isError: !resp.ok };
+        }
+
+        case 'fulfill_evidence': {
+          const parsed = fulfillEvidenceArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          // path-encode the job_id so weird chars can't escape the URL
+          const safeId = encodeURIComponent(parsed.data.job_id);
+          return await proxyAepsGet(`${SATRANK_API_BASE}/api/fulfill/${safeId}/evidence`);
+        }
+
+        case 'mini_llm_classify':
+        case 'mini_llm_summarize':
+        case 'mini_llm_translate': {
+          // Path mapping : tool name → API route. The mini-LLM endpoints are
+          // L402-gated (10 sats each) ; the MCP forwards the body and the
+          // upstream client supplies the L402 macaroon header. SatRank
+          // returns 402 when unauthenticated, which the agent runtime can
+          // pay via lnget / Alby NWC, and re-call with the L402 token.
+          const route = name === 'mini_llm_classify'
+            ? '/api/mini-llm/classify'
+            : name === 'mini_llm_summarize'
+              ? '/api/mini-llm/summarize'
+              : '/api/mini-llm/translate';
+          const schema = name === 'mini_llm_classify'
+            ? miniLlmClassifyArgs
+            : name === 'mini_llm_summarize'
+              ? miniLlmSummarizeArgs
+              : miniLlmTranslateArgs;
+          const parsed = schema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          const { text, ...rest } = parsed.data;
+          const body = { text, options: rest };
+          const resp = await fetchWithCap(
+            `${SATRANK_API_BASE}${route}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'User-Agent': 'SatRank-MCP/1.0' },
+              body: JSON.stringify(body),
+            },
+            MAX_INTENT_RESPONSE_BYTES,
+            INTENT_FETCH_TIMEOUT_MS * 2,
+          );
+          return { content: [{ type: 'text', text: resp.body }], isError: !resp.ok };
+        }
+
+        case 'get_endpoint_score': {
+          const parsed = getEndpointScoreArgs.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
+          }
+          // Reuse the existing /api/services/:url_hash route.
+          return await proxyAepsGet(`${SATRANK_API_BASE}/api/services/${parsed.data.url_hash}`);
         }
 
         default:

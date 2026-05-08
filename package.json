@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Score de confiance pour agents autonomes sur Bitcoin Lightning",
   "main": "dist/index.js",
+  "bin": {
+    "satrank-mcp": "dist/mcp/server.js"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc && cp src/database/postgres-schema.sql dist/database/postgres-schema.sql && mkdir -p dist/database/migrations && cp src/database/migrations/*.sql dist/database/migrations/",
