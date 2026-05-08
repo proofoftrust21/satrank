@@ -154,6 +154,31 @@ npm publish           # 1.0.0 → 2.0.0 (BREAKING : surface 16→3)
 # Smithery + MCP registry : update via CLI/UI propres
 ```
 
+## Phase audit + simplification (commits 5b26edb → c64e5af)
+
+Après les retraits massifs des 6 sous-systèmes V2, audit interne pour identifier dead code, single-use modules, et routes redundantes.
+
+### Cleanup additionnels
+
+- **5b26edb** — Remove 7 dead files (utils/confidence + 6 orphan scripts) — 1221 LOC
+- **38fdbf3** — Inline scoring util + remove legacyGoneController + dead Prometheus metric — 223 LOC
+- **d9fa463** — Remove full mcp/server.ts + DecideService + tests/archive/ + Dockerfile.mcp + bin script — 5097 LOC
+- **c64e5af** — Remove federation peers routes (3) + duplicate routes (2) — 250 LOC
+
+Le slim `mcp-pkg/server-public.ts` (3 outils) reste le MCP officiel publié sur npm.
+Self-hosters utilisent l'API HTTP REST `satrank.dev` directement.
+
+### Total sur la branche
+
+- **24 commits** atomiques
+- **~19 711 LOC retirées** dans src/ (19411 deletions, 299 inserts)
+- **44 → 39 routes HTTP** publiques
+- **6 sous-systèmes V2** complètement archivés
+- **14 tables** droppées (v84/v85/v86)
+- **6 archive branches** + 1 snapshot `pre-v2-recentrage-20260508` préservés sur origin
+- Build green à chaque commit
+- mcp-pkg V2.0.0 tarball prêt pour `npm publish` manuel
+
 ## Réversibilité
 
 Tout commit de cette branche est :
