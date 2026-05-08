@@ -122,10 +122,6 @@ import { Kind31403Consumer } from './nostr/kind31403Consumer';
 import { buildAndSignForkEvent } from './services/aepsForkPublisher';
 import { Kind31410Consumer } from './nostr/kind31410Consumer';
 // AEPS §6.3 (2026-05-08) — Multi-hop HTLC chain HTTP surface.
-import { MultiHopChainRepository } from './repositories/multiHopChainRepository';
-import { MultiHopChainService } from './services/multiHopChainService';
-import { AepsMultiHopController } from './controllers/aepsMultiHopController';
-import { createAepsMultiHopRoutes } from './routes/aepsMultiHop';
 // AEPS §8.5 + §10 (2026-05-07) — fork detection + DLC dispute resolution.
 import { AepsObserverRepository } from './repositories/aepsObserverRepository';
 import { ForkDetectionService } from './services/forkDetectionService';
@@ -737,14 +733,6 @@ export function createApp() {
   const aepsObserverController = new AepsObserverController({
     forkService: forkDetectionService,
     observerRepo: aepsObserverRepo,
-  });
-
-  // AEPS §6.3 (2026-05-08) — Multi-hop HTLC chain orchestrator.
-  const multiHopChainRepo = new MultiHopChainRepository(pool);
-  const multiHopChainService = new MultiHopChainService({ repo: multiHopChainRepo });
-  const aepsMultiHopController = new AepsMultiHopController({
-    service: multiHopChainService,
-    repo: multiHopChainRepo,
   });
 
   // AEPS §8.5 (2026-05-07) — kind 31403 consumer ingests peer operators'
@@ -1672,13 +1660,6 @@ export function createApp() {
   if (config.FORK_DETECTION_ENABLED) {
     api.use('/aeps', createAepsObserverRoutes(aepsObserverController));
   }
-  // AEPS §6.3 (2026-05-08) — multi-hop HTLC chain plan/lock/reveal/
-  // settle/abort/get. Owner = agent_pubkey from NIP-98 on plan, enforced
-  // on subsequent calls. GET is public.
-  if (config.AEPS_DISPUTE_ENABLED) {
-    api.use('/aeps', createAepsMultiHopRoutes(aepsMultiHopController));
-  }
-
   // /api/intent — Mix A+D conditional gate. Default path = free directory
   // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
   // → paidGate + balanceAuth so the resolver can run a synchronous probe of

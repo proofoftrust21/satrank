@@ -261,9 +261,6 @@ const aepsGetObservationsArgs = z.object({
   operator_pubkey: z.string().regex(/^[0-9a-f]{64}$/),
   day_utc: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
-const aepsGetMultihopArgs = z.object({
-  chain_id: z.string().regex(/^mhc_[0-9a-f]{32}$/),
-});
 const submitAttestationArgs = z.object({
   txId: z.string().uuid('txId must be a valid UUID'),
   attesterHash: hashSchema,
@@ -607,17 +604,6 @@ async function main() {
             day_utc: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'UTC day in YYYY-MM-DD format' },
           },
           required: ['operator_pubkey', 'day_utc'],
-        },
-      },
-      {
-        name: 'aeps.get_multihop',
-        description: 'AEPS §6.3 — Read multi-hop HTLC chain state (public, no auth). Returns chain_id, agent_pubkey, preimage_hash, preimage_revealed (only after reveal step), n_legs, total_amount_msat, state (planning/locked/settling/complete/aborted), per-leg state (planned/locked/settled/aborted) + htlc_ref + amount_msat + request/response sha256 hashes. Use this to monitor a chain lifecycle, verify atomic settlement, or check why a chain aborted.',
-        inputSchema: {
-          type: 'object' as const,
-          properties: {
-            chain_id: { type: 'string', pattern: '^mhc_[0-9a-f]{32}$', description: 'AEPS multi-hop chain identifier (returned by openMultihopChain)' },
-          },
-          required: ['chain_id'],
         },
       },
       {
@@ -1032,15 +1018,6 @@ async function main() {
             `/api/aeps/observations/${encodeURIComponent(parsed.data.operator_pubkey)}/${encodeURIComponent(parsed.data.day_utc)}`,
             SATRANK_API_BASE,
           );
-          return await proxyAepsGet(url.toString());
-        }
-
-        case 'aeps.get_multihop': {
-          const parsed = aepsGetMultihopArgs.safeParse(args);
-          if (!parsed.success) {
-            return { content: [{ type: 'text', text: `Invalid parameters: ${parsed.error.errors.map(e => e.message).join(', ')}` }], isError: true };
-          }
-          const url = new URL(`/api/aeps/multihop/${encodeURIComponent(parsed.data.chain_id)}`, SATRANK_API_BASE);
           return await proxyAepsGet(url.toString());
         }
 
