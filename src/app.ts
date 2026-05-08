@@ -1006,16 +1006,19 @@ export function createApp() {
       // get committed : bond_pending → bond_slashed + §7.2 payout shares
       // recorded. Disbursement to disputant/observer wallets is a v0.2
       // follow-up ; v0.1 records the shares.
-      try {
-        const out = await equivocationSlashCron.runCycle();
-        if (out.executed > 0 || out.errors > 0) {
-          logger.info(out, 'AEPS §10: equivocation slash cron cycle complete');
+      // V2 (2026-05-08) : skipped when config.AEPS_DISPUTE_ENABLED=false.
+      if (config.AEPS_DISPUTE_ENABLED) {
+        try {
+          const out = await equivocationSlashCron.runCycle();
+          if (out.executed > 0 || out.errors > 0) {
+            logger.info(out, 'AEPS §10: equivocation slash cron cycle complete');
+          }
+        } catch (err) {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'AEPS §10: equivocation slash cron threw — will retry',
+          );
         }
-      } catch (err) {
-        logger.error(
-          { error: err instanceof Error ? err.message : String(err) },
-          'AEPS §10: equivocation slash cron threw — will retry',
-        );
       }
       // Phase 9.2 — capability token in-memory cache prune.
       try {
@@ -1717,16 +1720,25 @@ export function createApp() {
   api.use('/aeps', createAepsEvidenceRoutes(aepsEvidenceController));
   // AEPS §10 (2026-05-07) — dispute open/attest/get. NIP-98 enforced by
   // the controller for write paths; GET is public.
-  api.use('/aeps', createAepsDisputeRoutes(aepsDisputeController));
+  // V2 (2026-05-08) : AEPS dispute + multi-hop gated behind
+  // config.AEPS_DISPUTE_ENABLED ; observer routes gated behind
+  // config.FORK_DETECTION_ENABLED. Evidence routes (trust root) always on.
+  if (config.AEPS_DISPUTE_ENABLED) {
+    api.use('/aeps', createAepsDisputeRoutes(aepsDisputeController));
+  }
   // AEPS §8.5 (2026-05-07) — permissionless observer routes. POST anchor
   // observation (no auth — observer gets 15% slashing reward via the
   // observed_anchors row regardless of caller identity), GET forks +
   // observations bucket.
-  api.use('/aeps', createAepsObserverRoutes(aepsObserverController));
+  if (config.FORK_DETECTION_ENABLED) {
+    api.use('/aeps', createAepsObserverRoutes(aepsObserverController));
+  }
   // AEPS §6.3 (2026-05-08) — multi-hop HTLC chain plan/lock/reveal/
   // settle/abort/get. Owner = agent_pubkey from NIP-98 on plan, enforced
   // on subsequent calls. GET is public.
-  api.use('/aeps', createAepsMultiHopRoutes(aepsMultiHopController));
+  if (config.AEPS_DISPUTE_ENABLED) {
+    api.use('/aeps', createAepsMultiHopRoutes(aepsMultiHopController));
+  }
 
   // /api/intent — Mix A+D conditional gate. Default path = free directory
   // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
