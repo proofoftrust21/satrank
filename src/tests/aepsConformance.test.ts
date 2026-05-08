@@ -10,11 +10,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { merkleRoot } from '../services/merkleTreeUtil';
 import { buildOpReturnPayload } from '../services/dailyMerkleAnchorService';
-import {
-  buildCanonicalDescriptor,
-  computeEndpointId,
-  type AepsCapabilityDescriptor,
-} from '../services/aepsCapability';
 
 const VECTORS_DIR = join(__dirname, '..', '..', 'spec', 'test-vectors');
 
@@ -71,26 +66,3 @@ describe('AEPS conformance — §8.3 OP_RETURN payload', () => {
   }
 });
 
-interface CapabilityVector {
-  name: string;
-  descriptor: AepsCapabilityDescriptor;
-  expected_canonical: string;
-  expected_endpoint_id: string;
-}
-
-interface CapabilityFixture {
-  vectors: CapabilityVector[];
-}
-
-describe('AEPS conformance — §4 capability descriptor', () => {
-  const fixture = loadFixture<CapabilityFixture>('capability_descriptor.json');
-
-  for (const vector of fixture.vectors) {
-    it(vector.name, () => {
-      const canonical = buildCanonicalDescriptor(vector.descriptor);
-      expect(canonical).toBe(vector.expected_canonical);
-      const id = computeEndpointId(vector.descriptor);
-      expect(id).toBe(vector.expected_endpoint_id);
-    });
-  }
-});

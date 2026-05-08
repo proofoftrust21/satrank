@@ -129,7 +129,6 @@ import {
   OperatorOwnershipRepository,
 } from './repositories/operatorRepository';
 import { EndpointController } from './controllers/endpointController';
-import { WatchlistController } from './controllers/watchlistController';
 import { ReportStatsController } from './controllers/reportStatsController';
 import { BayesianScoringService } from './services/bayesianScoringService';
 import { BayesianVerdictService } from './services/bayesianVerdictService';
@@ -452,7 +451,6 @@ export function createApp() {
     logger.info({ pairs: GOLDEN_PAIRS.length, intervalMs }, 'GoldenCanary: enabled (Phase 12.5)');
   }
   const endpointController = new EndpointController(bayesianVerdictService, serviceEndpointRepo, agentRepo, operatorService);
-  const watchlistController = new WatchlistController(agentRepo, snapshotRepo, agentService);
   const reportStatsController = new ReportStatsController(pool, reportBonusRepo, () => reportBonusService.isEnabled());
 
   // Self-registration — uses LND BOLT11 decoder if available
@@ -1439,7 +1437,6 @@ export function createApp() {
   api.post('/operator/register', discoveryRateLimit, operatorController.register);
   api.get('/operators', discoveryRateLimit, operatorController.list);
   api.get('/operator/:id', discoveryRateLimit, operatorController.show);
-  api.get('/watchlist', discoveryRateLimit, watchlistController.getChanges);
   // /api/stats/reports — 30-day report-adoption dashboard. Cached 5 min, free.
   api.get('/stats/reports', discoveryRateLimit, reportStatsController.getStats);
   // Phase 6.4 — /api/oracle/budget : public observability du self-funding

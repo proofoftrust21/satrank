@@ -205,16 +205,6 @@ export const depositPhaseTotal = new client.Counter({
   registers: [metricsRegistry],
 });
 
-/** Watchlist cycle output — how many agents reported as changed per call
- *  (by direction). Useful to detect a threshold calibration regression that
- *  suddenly produces zero or too many events. */
-export const watchlistChanges = new client.Counter({
-  name: 'satrank_watchlist_changes_total',
-  help: 'Agents whose scores crossed the watchlist thresholds, labelled by direction',
-  labelNames: ['direction'] as const,
-  registers: [metricsRegistry],
-});
-
 // --- Reports (monitoring the Tier 1 badge + Tier 2 bonus) ---
 
 /** Report submissions counter. `verified` label = "1" when preimage matched,
