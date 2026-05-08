@@ -55,10 +55,14 @@ Items du rapport de simplification non encore implémentés sur cette branche :
 - `archive/htlc-multihop` — code retiré, ~500 LOC + 1 table droppée v84
 - 13 outils MCP non-utilisés — déjà retirés du `server-public.ts` (commit 2df57e7), restent dans `server.ts` pour self-hosters
 
-### DÉSACTIVE — câblage des checks
-- Wire `if (!config.FULFILL_ENABLED)` dans `FulfillController` → `503 Service Unavailable`
-- Idem pour `CLAIM_ENGINE_ENABLED`, `AGENT_BONDS_ENABLED`, `AEPS_DISPUTE_ENABLED`, `FORK_DETECTION_ENABLED`, `MINI_LLM_ENABLED`
-- Tests à mettre à jour pour skip les routes désactivées
+### DÉSACTIVE — câblage des checks ✅ DONE (commits ea10cff → 413ec07)
+
+- ✅ `config.FULFILL_ENABLED` (commit ea10cff) — process.env migration + default false
+- ✅ `config.MINI_LLM_ENABLED` (commit 251619e) — controller construction gated
+- ✅ `config.CLAIM_ENGINE_ENABLED` (commit 9e40506) — 4 routes + payout cron gated
+- ✅ `config.AGENT_BONDS_ENABLED` (commit 7082cb3) — 4 routes + 2 crons gated
+- ✅ `config.AEPS_DISPUTE_ENABLED` (commit 413ec07) — dispute + multi-hop routes + slash cron gated
+- ✅ `config.FORK_DETECTION_ENABLED` (commit 413ec07) — observer routes gated
 
 ### Phase 10 inversée
 - Renommer `POST /api/operator/register-endpoint` → `POST /api/operator/claim-listing`
@@ -85,14 +89,39 @@ Items du rapport de simplification non encore implémentés sur cette branche :
 
 | Métrique | Cible V2 | État après cette branche |
 |---|---|---|
-| LOC TypeScript | ~3 000 | ~12 000 (réduction côté slim public seulement) |
-| Tables actives | 8 | ~80 (flags off mais tables conservées) |
-| Endpoints HTTP | 5 | ~30 (flags non câblés) |
-| Outils MCP exposés (slim public) | 3 | ✅ **3** |
+| LOC TypeScript | ~3 000 | ~12 000 (slim public + flags câblés ; archive branches deferred) |
+| Tables actives | 8 | ~80 (flags off désactivent surface, tables conservées) |
+| Endpoints HTTP exposés (par défaut prod) | 5 | ~25 (FULFILL stays opt-in ; flag-on autres surfaces ≈ legacy) |
+| Outils MCP exposés (slim public V2.0) | 3 | ✅ **3** |
+| Feature flags câblés (commits ea10cff, 251619e, 9e40506, 7082cb3, 413ec07) | 6 | ✅ **6/6** |
 
-La branche actuelle ship la **moitié visible** du recentrage : surface MCP slim + observability discovery_signal + flags pour désactivation future.
+La branche actuelle ship :
+- la **surface MCP slim V2** (commit 2df57e7)
+- l'**observability discovery_signal** (commit fb788f1)
+- les **6 feature flags V2 câblés** dans app.ts (commits ea10cff → 413ec07)
+- la **doc alignée V2** (commit c7065fd)
 
-L'autre moitié (DÉSACTIVE câblage + Phase 10 inversée + ARCHIVE branches + retraits massifs) demande une session de refacto dédiée avec validation au merge — pas safe en autonomie complète sans casser des tests.
+Reste deferred (refacto plus profonde, demande validation au merge) :
+- Branches `archive/dns-txt-attestation`, `archive/mini-llm-l402`, `archive/htlc-multihop` + retrait code (~5000 LOC)
+- Phase 10 inversée (claim Schnorr LN-pubkey allégé, drop NIP-98 mandatory)
+- V1 discovery_signal raffinement (compteurs précis quarantine_5xx)
+
+## Distribution V2.0.0
+
+`mcp-pkg/` (gitignored, build artifact) prêt pour publication :
+- `mcp-pkg/package.json` bumpé `1.0.1 → 2.0.0`
+- `mcp-pkg/manifest.json` + `mcp-pkg/server.json` bumpés `1.0.1 → 2.0.0`
+- `mcp-pkg/dist/mcp/server-public.js` rebuild depuis `src/mcp/server-public.ts`
+- `mcp-pkg/satrank-mcp-2.0.0.tgz` packed (10.3 kB, 6 files)
+- Smoke `tools/list` retourne exactement 3 entries
+
+Manuel à exécuter par Romain (npm token absent du shell Claude Code) :
+```bash
+cd /Users/lochju/satrank/mcp-pkg
+npm whoami            # vérifier auth
+npm publish           # 1.0.0 → 2.0.0 (BREAKING : surface 16→3)
+# Smithery + MCP registry : update via CLI/UI propres
+```
 
 ## Réversibilité
 
