@@ -144,8 +144,6 @@ const configSchema = z.object({
   AGENT_BONDS_ENABLED: z.coerce.boolean().default(true),
   /** AEPS dispute oracle Schnorr threshold (A1+A2). HORS-PARCOURS. */
   AEPS_DISPUTE_ENABLED: z.coerce.boolean().default(true),
-  /** Fork detection observer (AEPS). HORS-PARCOURS. */
-  FORK_DETECTION_ENABLED: z.coerce.boolean().default(true),
   AEPS_L1_MAX_FEE_RATE_SAT_VBYTE: z.coerce.number().int().positive().default(5),
   AEPS_L1_FEE_API_URL: z.string().url().default('https://mempool.space/api/v1/fees/recommended'),
   /** Path to LND macaroon with `onchain:write` permission. Bake via

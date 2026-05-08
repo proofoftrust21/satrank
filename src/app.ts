@@ -117,21 +117,12 @@ import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
 // AEPS §8.3 (2026-05-07) — Nostr publication of daily anchors.
 import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsAnchorPublisher';
 import { AepsL1BroadcastService } from './services/aepsL1BroadcastService';
-import { Kind31403Consumer } from './nostr/kind31403Consumer';
-// AEPS §8.5 (2026-05-08) — Nostr publication of detected fork events.
-import { buildAndSignForkEvent } from './services/aepsForkPublisher';
-import { Kind31410Consumer } from './nostr/kind31410Consumer';
-// AEPS §6.3 (2026-05-08) — Multi-hop HTLC chain HTTP surface.
-// AEPS §8.5 + §10 (2026-05-07) — fork detection + DLC dispute resolution.
-import { AepsObserverRepository } from './repositories/aepsObserverRepository';
-import { ForkDetectionService } from './services/forkDetectionService';
+// AEPS §10 (2026-05-07) — DLC dispute resolution.
 import { AepsDisputeRepository } from './repositories/aepsDisputeRepository';
 import { DisputeService } from './services/disputeService';
 import { buildDisputeClaim } from './services/disputeClaimAdapter';
 import { AepsDisputeController } from './controllers/aepsDisputeController';
 import { createAepsDisputeRoutes } from './routes/aepsDispute';
-import { AepsObserverController } from './controllers/aepsObserverController';
-import { createAepsObserverRoutes } from './routes/aepsObserver';
 // AEPS §10 equivocation slashing.
 import { AepsOracleSlashRepository } from './repositories/aepsOracleSlashRepository';
 import { EquivocationClaimAdapter } from './services/equivocationClaimAdapter';
@@ -638,61 +629,10 @@ export function createApp() {
     operatorPubkeyHex,
   });
 
-  // AEPS §8.5 + §10 (2026-05-07) — fork detection + dispute resolution.
-  // ForkDetectionService scans observed_anchors for ≥2 distinct roots same
-  // (operator, day) and emits a slashable fork_event.
+  // AEPS §10 (2026-05-07) — dispute resolution.
   // DisputeService resolves §10 disputes via BIP-340 Schnorr threshold ;
   // when resolved_disputant + receipt-based, the buildDisputeClaim adapter
   // opens a ClaimEngine slashing claim against the operator's bond.
-  const aepsObserverRepo = new AepsObserverRepository(pool);
-  const forkDetectionService = new ForkDetectionService({
-    repo: aepsObserverRepo,
-    // AEPS §8.5 — auto-publish detected forks as kind 31410 to relays.
-    // Best-effort : failures persist the fork locally but log + continue.
-    onForkDetected: async (fork) => {
-      if (!config.NOSTR_PRIVATE_KEY) return;
-      try {
-        const signed = await buildAndSignForkEvent(
-          fork,
-          Math.floor(Date.now() / 1000),
-          config.NOSTR_PRIVATE_KEY,
-        );
-        const relays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(Boolean);
-        const pub = await publishAnchorToRelays(signed, relays, (msg, meta) =>
-          logger.warn(meta ?? {}, msg),
-        );
-        if (pub.relays_acked > 0) {
-          await aepsObserverRepo.recordForkNostrPublish(
-            fork.fork_event_id,
-            pub.event_id,
-            Math.floor(Date.now() / 1000),
-          );
-          logger.info(
-            {
-              fork_event_id: fork.fork_event_id,
-              event_id_first8: pub.event_id.slice(0, 8),
-              relays_acked: pub.relays_acked,
-              relays_attempted: pub.relays_attempted,
-            },
-            'AEPS §8.5: fork event published to Nostr (kind 31410)',
-          );
-        } else {
-          logger.warn(
-            { fork_event_id: fork.fork_event_id, ...pub },
-            'AEPS §8.5: zero relays acked fork publish',
-          );
-        }
-      } catch (err) {
-        logger.warn(
-          {
-            fork_event_id: fork.fork_event_id,
-            error: err instanceof Error ? err.message : String(err),
-          },
-          'AEPS §8.5: fork Nostr publish threw',
-        );
-      }
-    },
-  });
   const aepsDisputeRepo = new AepsDisputeRepository(pool);
   // AEPS §10 — oracle slash intent storage + adapter + settlement cron.
   const aepsOracleSlashRepo = new AepsOracleSlashRepository(pool);
@@ -730,62 +670,7 @@ export function createApp() {
     disputeService,
     disputeRepo: aepsDisputeRepo,
   });
-  const aepsObserverController = new AepsObserverController({
-    forkService: forkDetectionService,
-    observerRepo: aepsObserverRepo,
-  });
 
-  // AEPS §8.5 (2026-05-07) — kind 31403 consumer ingests peer operators'
-  // daily anchors over Nostr. Each ingestion calls
-  // forkDetectionService.recordObservation, which scans the (operator, day)
-  // bucket and emits a fork_event when ≥2 distinct roots are now seen.
-  // Disabled when AEPS_31403_CONSUMER_ENABLED=false (default on).
-  if (process.env.AEPS_31403_CONSUMER_ENABLED !== 'false') {
-    void (async () => {
-      try {
-        // @ts-expect-error nostr-tools is ESM, dynamic import works at runtime
-        const { verifyEvent: verifyEventFn } = await import('nostr-tools/pure');
-        const aepsRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(Boolean);
-        const consumer = new Kind31403Consumer({
-          forkService: forkDetectionService,
-          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
-          relays: aepsRelays.length > 0 ? aepsRelays : undefined,
-        });
-        await consumer.start();
-        logger.info({ relays: aepsRelays.length }, 'AEPS §8.5: kind 31403 consumer started');
-      } catch (err) {
-        logger.warn(
-          { error: err instanceof Error ? err.message : String(err) },
-          'AEPS §8.5: kind 31403 consumer failed to start (will retry next boot)',
-        );
-      }
-    })();
-  }
-
-  // AEPS §8.5 (2026-05-08) — kind 31410 consumer ingests peer fork events.
-  // Each event records BOTH roots as observations on our side, which
-  // cascades into a local fork_event linking to OUR observation IDs.
-  if (process.env.AEPS_31410_CONSUMER_ENABLED !== 'false') {
-    void (async () => {
-      try {
-        // @ts-expect-error nostr-tools is ESM, dynamic import works at runtime
-        const { verifyEvent: verifyEventFn } = await import('nostr-tools/pure');
-        const aepsRelays = config.NOSTR_RELAYS.split(',').map(r => r.trim()).filter(Boolean);
-        const consumer = new Kind31410Consumer({
-          forkService: forkDetectionService,
-          verifyEvent: (event) => verifyEventFn(event as unknown as Parameters<typeof verifyEventFn>[0]),
-          relays: aepsRelays.length > 0 ? aepsRelays : undefined,
-        });
-        await consumer.start();
-        logger.info({ relays: aepsRelays.length }, 'AEPS §8.5: kind 31410 consumer started');
-      } catch (err) {
-        logger.warn(
-          { error: err instanceof Error ? err.message : String(err) },
-          'AEPS §8.5: kind 31410 consumer failed to start (will retry next boot)',
-        );
-      }
-    })();
-  }
   // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
   const operatorAttestationRepo = new OperatorAttestationRepository(pool);
   const operatorAttestationService = new OperatorAttestationService({
@@ -1647,18 +1532,10 @@ export function createApp() {
   api.use('/aeps', createAepsEvidenceRoutes(aepsEvidenceController));
   // AEPS §10 (2026-05-07) — dispute open/attest/get. NIP-98 enforced by
   // the controller for write paths; GET is public.
-  // V2 (2026-05-08) : AEPS dispute + multi-hop gated behind
-  // config.AEPS_DISPUTE_ENABLED ; observer routes gated behind
-  // config.FORK_DETECTION_ENABLED. Evidence routes (trust root) always on.
+  // V2 (2026-05-08) : AEPS dispute gated behind config.AEPS_DISPUTE_ENABLED.
+  // Evidence routes (trust root) always on.
   if (config.AEPS_DISPUTE_ENABLED) {
     api.use('/aeps', createAepsDisputeRoutes(aepsDisputeController));
-  }
-  // AEPS §8.5 (2026-05-07) — permissionless observer routes. POST anchor
-  // observation (no auth — observer gets 15% slashing reward via the
-  // observed_anchors row regardless of caller identity), GET forks +
-  // observations bucket.
-  if (config.FORK_DETECTION_ENABLED) {
-    api.use('/aeps', createAepsObserverRoutes(aepsObserverController));
   }
   // /api/intent — Mix A+D conditional gate. Default path = free directory
   // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
