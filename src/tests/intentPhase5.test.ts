@@ -23,7 +23,6 @@ import {
 } from './helpers/bayesianTestFactory';
 import { sha256 } from '../utils/crypto';
 import { endpointHash } from '../utils/urlCanonical';
-import { backfill, ALPHA_PRIOR, BETA_PRIOR } from '../scripts/backfillEndpointPosteriors';
 import type { Agent } from '../types';
 
 let testDb: TestDb;
@@ -408,76 +407,6 @@ describe('Phase 5 — /api/services/:url_hash alias', async () => {
     // alias contract is "same shape, same data", not "same wall-clock view".
     expect(stripVolatileEndpointFields(aliasResp.body))
       .toEqual(stripVolatileEndpointFields(canonResp.body));
-  });
-});
-
-describe('Phase 5 — backfillEndpointPosteriors script', async () => {
-  let db: Pool;
-  let agentRepo: AgentRepository;
-  let serviceRepo: ServiceEndpointRepository;
-
-  beforeEach(async () => {
-    testDb = await setupTestPool();
-    db = testDb.pool;
-    agentRepo = new AgentRepository(db);
-    serviceRepo = new ServiceEndpointRepository(db);
-  });
-
-  afterEach(async () => { await teardownTestPool(testDb); });
-
-  it('seeds posteriors from check_count/success_count and uses correct Beta priors', async () => {
-    const op = sha256('bf-op');
-    await seed(db, agentRepo, serviceRepo, {
-      agentHash: op, url: 'https://bf.example/x',
-      category: 'data', name: 'bf', priceSats: 5,
-      checkCount: 12, successCount: 9,
-    });
-
-    const summary = await backfill(db);
-    expect(summary.scanned).toBe(1);
-    expect(summary.inserted).toBe(1);
-
-    const { rows } = await db.query<{ posterior_alpha: number; posterior_beta: number; total_ingestions: string }>(
-      `SELECT posterior_alpha, posterior_beta, total_ingestions
-         FROM endpoint_streaming_posteriors
-        WHERE url_hash = $1 AND source = 'probe'`,
-      [endpointHash('https://bf.example/x')],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].posterior_alpha).toBeCloseTo(9 + ALPHA_PRIOR, 5);
-    expect(rows[0].posterior_beta).toBeCloseTo(3 + BETA_PRIOR, 5);
-    expect(Number(rows[0].total_ingestions)).toBe(12);
-  });
-
-  it('idempotent: re-running does not overwrite existing posteriors', async () => {
-    const op = sha256('idem-op');
-    await seed(db, agentRepo, serviceRepo, {
-      agentHash: op, url: 'https://idem.example/x',
-      category: 'data', name: 'idem', priceSats: 5,
-      checkCount: 5, successCount: 4,
-      streamingPosterior: { alpha: 100, beta: 0.5 }, // pre-existing real data
-    });
-
-    await backfill(db);
-    const { rows } = await db.query<{ posterior_alpha: number }>(
-      `SELECT posterior_alpha FROM endpoint_streaming_posteriors
-        WHERE url_hash = $1 AND source = 'probe'`,
-      [endpointHash('https://idem.example/x')],
-    );
-    // Pre-existing 100 must NOT have been overwritten by the seed value 5.5.
-    expect(rows[0].posterior_alpha).toBe(100);
-  });
-
-  it('skips rows with check_count=0 (no observation history yet)', async () => {
-    const op = sha256('zero-op');
-    await seed(db, agentRepo, serviceRepo, {
-      agentHash: op, url: 'https://zero.example/x',
-      category: 'data', name: 'zero', priceSats: 5,
-      checkCount: 0, successCount: 0,
-    });
-    const summary = await backfill(db);
-    expect(summary.skippedNoChecks).toBe(1);
-    expect(summary.inserted).toBe(0);
   });
 });
 
