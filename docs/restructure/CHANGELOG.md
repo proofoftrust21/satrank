@@ -49,7 +49,7 @@ Optional — apparaît seulement quand ≥ 1 endpoint a été filtré. Backwards
 
 Items du rapport de simplification non encore implémentés sur cette branche :
 
-### ARCHIVE ✅ DONE (commits bc7d27a → 11c4cc4)
+### ARCHIVE ✅ DONE (commits bc7d27a → b4b78d0)
 
 6 archive branches créées depuis `origin/main` HEAD, pushed origin :
 - `archive/pre-v2-recentrage-20260508` — snapshot complet pré-restructure
@@ -64,18 +64,27 @@ Sous-systèmes retirés du main de la branche restructure :
 - ✅ **AEPS multi-hop HTLC** (commit b86b383) — 1747 LOC + 4 imports + route mount + MCP tool
 - ✅ **AEPS observer + fork detection** (commit c21167e) — 2489 LOC + 7 imports + Kind31403/31410 consumers + 2 MCP tools
 - ✅ **AEPS dispute** (commit 11c4cc4) — 3579 LOC + 9 imports + DisputeService/Equivocation* + cron + MCP tool
+- ✅ **ClaimEngine + operator_bonds** (commit 3cd7537) — 1031 LOC + 5 imports + 2 routes + 2 crons + fulfill hook
+- ✅ **AgentBonds + tier-aware rate-limit** (commit b4b78d0) — 2677 LOC + 7 imports + 4 routes + 2 crons + tier gating
 
-Total retiré : ~**8189 LOC** + 7 outils MCP (server.ts) + 3 feature flags (orphans : MINI_LLM_ENABLED, FORK_DETECTION_ENABLED, AEPS_DISPUTE_ENABLED).
+Total retiré : ~**12 446 LOC** dans src/ + 7 outils MCP (server.ts) + 6 feature flags (tous orphans retirés).
 
-### Migration v84 ✅ DONE (commit b9a6d8c)
+### Migration v84 + v85 + v86 ✅ DONE
 
-Drops 8 tables pour les sous-systèmes archivés :
+**v84 (commit b9a6d8c)** — drop 8 AEPS tables :
 - `aeps_multihop_chain_legs`, `aeps_multihop_chains`
 - `aeps_fork_events`, `aeps_observed_anchors`
 - `aeps_dispute_attestations`, `aeps_disputes`
 - `aeps_oracle_slash_intents`, `aeps_oracle_equivocations`
 
-Migrations originales v78-v82 préservées (restauration via archive + replay).
+**v85 (commit 3cd7537)** — drop 2 ClaimEngine tables :
+- `agent_claims`, `operator_bonds`
+
+**v86 (commit b4b78d0)** — drop 4 AgentBonds tables :
+- `agent_bonds`, `agent_reputation_profiles`
+- `agent_reputation_observations`, `agent_slashing_events`
+
+**14 tables au total** droppées par les migrations V2. Migrations originales v63, v71, v72, v78-v82 préservées (restauration via archive + replay).
 
 ### DÉSACTIVE — câblage des checks ✅ DONE (commits ea10cff → 413ec07)
 
