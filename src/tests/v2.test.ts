@@ -17,7 +17,6 @@ import { RiskService } from '../services/riskService';
 import { DecideService } from '../services/decideService';
 import { ReportService } from '../services/reportService';
 import { V2Controller } from '../controllers/v2Controller';
-import { createGoneHandler } from '../controllers/legacyGoneController';
 import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
 // createV2Routes not imported — routes mounted directly to avoid IP rate limiter in tests
 import { errorHandler } from '../middleware/errorHandler';
@@ -97,19 +96,6 @@ agentRepo = new AgentRepository(db);
   // Mount controller handlers directly — skip IP rate limiter to avoid
   // cross-test 429s. Business-level rate limiting is tested via ReportService.
   const v2 = Router();
-  // Phase 10 — /api/decide and /api/best-route retired (410 Gone). See legacyGoneController.
-  v2.post('/decide', createGoneHandler({
-    from: '/api/decide',
-    to: '/api/intent',
-    removedOn: '2026-04-20',
-    docs: 'https://satrank.dev/docs/migration-to-1.0',
-  }));
-  v2.post('/best-route', createGoneHandler({
-    from: '/api/best-route',
-    to: '/api/intent',
-    removedOn: '2026-04-20',
-    docs: 'https://satrank.dev/docs/migration-to-1.0',
-  }));
   v2.post('/report', v2Controller.report);
   v2.get('/profile/:id', v2Controller.profile);
   app.use('/api', v2);
