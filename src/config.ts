@@ -17,6 +17,10 @@ const schema = z.object({
   // --- LND (REST) ---
   LND_REST_URL: z.string().url().optional(),
   LND_MACAROON_HEX: z.string().optional(),
+  /** Alternative to LND_MACAROON_HEX: path to a binary macaroon file ;
+   *  read once at boot and converted to hex. Lets ops keep macaroons on
+   *  disk (lncli bakemacaroon → file) instead of pasting hex into env. */
+  LND_MACAROON_PATH: z.string().optional(),
   LND_TLS_CERT_PATH: z.string().optional(),
 
   // --- Nostr (kind 30782 trust assertions) ---

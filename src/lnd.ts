@@ -9,7 +9,22 @@ import { Agent } from 'node:https';
 import { config } from './config.js';
 import { logger } from './logger.js';
 
-const enabled = !!(config.LND_REST_URL && config.LND_MACAROON_HEX);
+/** Resolve the macaroon: either LND_MACAROON_HEX (preferred) or read the
+ *  binary file at LND_MACAROON_PATH and hex-encode it. Returns null when
+ *  neither is set or the file is unreadable. */
+function resolveMacaroonHex(): string | null {
+  if (config.LND_MACAROON_HEX) return config.LND_MACAROON_HEX;
+  if (!config.LND_MACAROON_PATH) return null;
+  try {
+    return readFileSync(config.LND_MACAROON_PATH).toString('hex');
+  } catch (err: unknown) {
+    logger.warn({ err: (err as Error).message, path: config.LND_MACAROON_PATH }, 'lnd: failed to read macaroon file');
+    return null;
+  }
+}
+
+const macaroonHex = resolveMacaroonHex();
+const enabled = !!(config.LND_REST_URL && macaroonHex);
 
 let httpsAgent: Agent | undefined;
 if (enabled && config.LND_TLS_CERT_PATH) {
@@ -30,7 +45,7 @@ async function call<T>(method: 'GET' | 'POST', path: string, body?: object): Pro
   const init: RequestInit = {
     method,
     headers: {
-      'Grpc-Metadata-macaroon': config.LND_MACAROON_HEX!,
+      'Grpc-Metadata-macaroon': macaroonHex!,
       'Content-Type': 'application/json',
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
