@@ -49,11 +49,33 @@ Optional — apparaît seulement quand ≥ 1 endpoint a été filtré. Backwards
 
 Items du rapport de simplification non encore implémentés sur cette branche :
 
-### ARCHIVE
-- `archive/dns-txt-attestation` — code retiré de main, ~200 LOC
-- `archive/mini-llm-l402` — code retiré, ~600 LOC + 1 table
-- `archive/htlc-multihop` — code retiré, ~500 LOC + 1 table droppée v84
-- 13 outils MCP non-utilisés — déjà retirés du `server-public.ts` (commit 2df57e7), restent dans `server.ts` pour self-hosters
+### ARCHIVE ✅ DONE (commits bc7d27a → 11c4cc4)
+
+6 archive branches créées depuis `origin/main` HEAD, pushed origin :
+- `archive/pre-v2-recentrage-20260508` — snapshot complet pré-restructure
+- `archive/mini-llm-l402` — réf code mini-LLM
+- `archive/htlc-multihop` — réf code multi-hop
+- `archive/aeps-dispute-fork-detection` — réf code dispute + fork
+- `archive/claim-engine-operator-bonds` — réf code claim engine (encore actif sur restructure/)
+- `archive/agent-bonds-tier-aware` — réf code agent bonds (encore actif sur restructure/)
+
+Sous-systèmes retirés du main de la branche restructure :
+- ✅ **mini-llm** (commit bc7d27a) — 374 LOC + 9 imports + 3 routes + 3 MCP tools
+- ✅ **AEPS multi-hop HTLC** (commit b86b383) — 1747 LOC + 4 imports + route mount + MCP tool
+- ✅ **AEPS observer + fork detection** (commit c21167e) — 2489 LOC + 7 imports + Kind31403/31410 consumers + 2 MCP tools
+- ✅ **AEPS dispute** (commit 11c4cc4) — 3579 LOC + 9 imports + DisputeService/Equivocation* + cron + MCP tool
+
+Total retiré : ~**8189 LOC** + 7 outils MCP (server.ts) + 3 feature flags (orphans : MINI_LLM_ENABLED, FORK_DETECTION_ENABLED, AEPS_DISPUTE_ENABLED).
+
+### Migration v84 ✅ DONE (commit b9a6d8c)
+
+Drops 8 tables pour les sous-systèmes archivés :
+- `aeps_multihop_chain_legs`, `aeps_multihop_chains`
+- `aeps_fork_events`, `aeps_observed_anchors`
+- `aeps_dispute_attestations`, `aeps_disputes`
+- `aeps_oracle_slash_intents`, `aeps_oracle_equivocations`
+
+Migrations originales v78-v82 préservées (restauration via archive + replay).
 
 ### DÉSACTIVE — câblage des checks ✅ DONE (commits ea10cff → 413ec07)
 
