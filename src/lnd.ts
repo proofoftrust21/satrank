@@ -54,7 +54,13 @@ async function call<T>(method: 'GET' | 'POST', path: string, body?: object): Pro
     agent: httpsAgent,
   };
   const res = await fetch(url, init);
-  if (!res.ok) throw new Error(`LND ${method} ${path}: ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    // Redact the body to a 200-char excerpt to limit log-aggregator exposure
+    // of any payment/channel internals LND might surface in error responses.
+    const raw = await res.text().catch(() => '[unreadable]');
+    const excerpt = raw.length > 200 ? raw.slice(0, 200) + '…' : raw;
+    throw new Error(`LND ${method} ${path}: HTTP ${res.status} — ${excerpt}`);
+  }
   return await res.json() as T;
 }
 

@@ -7,6 +7,7 @@
 // 5. GET  /api/oracle/budget       — last 24h revenue + paid-probe spend
 
 import express, { type Request, type Response, type NextFunction } from 'express';
+import rateLimit from 'express-rate-limit';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { config } from './config.js';
@@ -46,7 +47,13 @@ function verifyMacaroon(macaroon: string): L402Token | null {
     if (lastDot < 0) return null;
     const payload = decoded.slice(0, lastDot);
     const sig = decoded.slice(lastDot + 1);
-    if (l402Hmac(payload) !== sig) return null;
+    // Constant-time compare — naive `!==` short-circuits on the first
+    // differing character, leaking byte-by-byte timing info to a remote
+    // attacker. `timingSafeEqual` requires equal-length Buffers.
+    const expected = Buffer.from(l402Hmac(payload), 'hex');
+    const actual = Buffer.from(sig, 'hex');
+    if (expected.length !== actual.length) return null;
+    if (!crypto.timingSafeEqual(expected, actual)) return null;
     const [payment_hash, expiresStr] = payload.split(':');
     const expires_at = Number(expiresStr);
     if (!payment_hash || !expires_at || expires_at < Math.floor(Date.now() / 1000)) return null;
@@ -70,14 +77,27 @@ function paidGate(price_sats: number) {
       const preimage = m[2];
       const ph = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
       if (tok && tok.payment_hash === ph) {
-        // Confirm preimage settles the invoice. We don't re-query LND on every
-        // request — payment_hash binding is enough since the preimage came in
-        // and we can re-derive sha256(preimage) ourselves.
-        await pool.query(
-          `INSERT INTO revenue_log (payment_hash, route, sats_received, received_at)
-           VALUES ($1, $2, $3, $4) ON CONFLICT (payment_hash) DO NOTHING`,
-          [ph, req.path, price_sats, Math.floor(Date.now() / 1000)],
-        );
+        // L402 single-use enforcement: revenue_log has UNIQUE(payment_hash).
+        // The first redemption inserts the row (rowCount === 1) ; subsequent
+        // attempts hit the ON CONFLICT branch (rowCount === 0) and are
+        // rejected as replay. Without this, a paying client could replay
+        // (macaroon, preimage) for the macaroon's full TTL.
+        try {
+          const { rowCount } = await pool.query(
+            `INSERT INTO revenue_log (payment_hash, route, sats_received, received_at)
+             VALUES ($1, $2, $3, $4) ON CONFLICT (payment_hash) DO NOTHING`,
+            [ph, req.path, price_sats, Math.floor(Date.now() / 1000)],
+          );
+          if ((rowCount ?? 0) === 0) {
+            return res.status(402).json({
+              error: { code: 'PAYMENT_ALREADY_USED', message: 'this preimage was already redeemed; pay a fresh invoice' },
+            });
+          }
+        } catch (dbErr: unknown) {
+          // Rather than silently grant access on DB failure, fail closed.
+          logger.error({ err: (dbErr as Error).message }, 'l402: revenue_log insert failed');
+          return res.status(503).json({ error: { code: 'INTERNAL_ERROR', message: 'database unavailable' } });
+        }
         (req as Request & { l402?: { payment_hash: string } }).l402 = { payment_hash: ph };
         return next();
       }
@@ -85,7 +105,10 @@ function paidGate(price_sats: number) {
     // Mint a fresh invoice + macaroon.
     try {
       const inv = await addInvoice(price_sats, `SatRank ${req.path}`, 600);
-      const expires_at = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
+      // Macaroon TTL = invoice TTL. The macaroon is single-use against
+      // revenue_log, but bounding its lifetime to the invoice's removes
+      // the long-lived bearer token surface entirely.
+      const expires_at = Math.floor(Date.now() / 1000) + 600;
       const macaroon = buildMacaroon(inv.payment_hash, expires_at);
       res.set('WWW-Authenticate', `L402 macaroon="${macaroon}", invoice="${inv.payment_request}"`);
       res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: `${price_sats} sats` } });
@@ -140,11 +163,46 @@ async function hydrate(c: IntentCandidate): Promise<IntentCandidate> {
   return c;
 }
 
+// --- Rate limiters ----------------------------------------------------------
+//
+// nginx fronts the API on 127.0.0.1:3000 — only one trusted proxy hop. With
+// `trust proxy = 1`, req.ip resolves to the real client IP via X-Forwarded-For
+// instead of the loopback. Without it, every limiter would bucket the entire
+// world as 127.0.0.1.
+
+const globalLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED' } },
+});
+
+const intentLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED' } },
+});
+
+// --- /services/best response cache -----------------------------------------
+//
+// /services/best is unauthenticated and free, but a single call fans out
+// into ≤ 30 000 DB queries (50 categories × 200 candidates × 3 queries
+// each). 5-minute cache caps the actual DB cost at 12 / hour regardless
+// of HTTP traffic.
+
+const BEST_CACHE_TTL_MS = 5 * 60 * 1000;
+let bestCache: { data: Record<string, IntentCandidate[]>; ts: number } | null = null;
+
 // --- Routes -----------------------------------------------------------------
 
 export function buildApp(): express.Express {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '64kb' }));
+  app.use(globalLimiter);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   app.get('/.well-known/satrank-key', (_req, res) => {
@@ -155,7 +213,7 @@ export function buildApp(): express.Express {
   const api = express.Router();
 
   // 1. POST /api/intent — paid 2 sats.
-  api.post('/intent', paidGate(config.L402_INTENT_PRICE_SATS), async (req, res, next) => {
+  api.post('/intent', intentLimiter, paidGate(config.L402_INTENT_PRICE_SATS), async (req, res, next) => {
     try {
       const parse = intentSchema.safeParse(req.body);
       if (!parse.success) return res.status(400).json({ error: { code: 'INVALID_PAYLOAD', issues: parse.error.issues } });
@@ -194,6 +252,9 @@ export function buildApp(): express.Express {
   //  first ; otherwise `best` would be parsed as a url_hash param.)
   api.get('/services/best', async (_req, res, next) => {
     try {
+      if (bestCache && Date.now() - bestCache.ts < BEST_CACHE_TTL_MS) {
+        return res.json({ data: bestCache.data });
+      }
       const { rows } = await pool.query<{ category: string }>(
         `SELECT DISTINCT category FROM service_endpoints LIMIT 50`,
       );
@@ -202,6 +263,7 @@ export function buildApp(): express.Express {
         const ranked = await rank({ category: r.category, limit: 3 });
         out[r.category] = await Promise.all(ranked.map((s) => hydrate(toCandidate(s))));
       }
+      bestCache = { data: out, ts: Date.now() };
       res.json({ data: out });
     } catch (err) {
       next(err);

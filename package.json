@@ -12,12 +12,21 @@
     "lint": "tsc --noEmit",
     "lint:tests": "tsc --noEmit -p tsconfig.tests.json"
   },
-  "keywords": ["lightning", "l402", "trust-oracle", "bitcoin", "agents", "mcp", "nostr"],
+  "keywords": [
+    "lightning",
+    "l402",
+    "trust-oracle",
+    "bitcoin",
+    "agents",
+    "mcp",
+    "nostr"
+  ],
   "license": "AGPL-3.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@noble/hashes": "^1.8.0",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.5.1",
     "nostr-tools": "^2.23.3",
     "pg": "^8.20.0",
     "zod": "^3.24.2"

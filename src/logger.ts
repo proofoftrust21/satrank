@@ -5,7 +5,12 @@
 const levels = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 type Level = keyof typeof levels;
 
-const min: Level = (process.env.LOG_LEVEL as Level) ?? 'info';
+// LOG_LEVEL is also validated by config.ts (zod), but logger.ts is imported
+// before config.ts on the cold path, so we re-validate here defensively. An
+// invalid env value previously silently fell back to undefined → suppressed
+// all logging.
+const RAW = process.env.LOG_LEVEL;
+const min: Level = RAW === 'debug' || RAW === 'info' || RAW === 'warn' || RAW === 'error' ? RAW : 'info';
 
 function emit(level: Level, msg: string, ctx: object = {}) {
   if (levels[level] < levels[min]) return;

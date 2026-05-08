@@ -11,9 +11,13 @@ import { logger } from './logger.js';
 import { ingestObservation } from './scoring.js';
 import { lndEnabled, decodePayReq, payInvoice } from './lnd.js';
 import { pool } from './db.js';
+import { assertSafeUrl, SsrfBlockedError } from './ssrf.js';
 import type { Observation } from './types.js';
 
 const TIMEOUT_MS = config.PROBE_FETCH_TIMEOUT_MS;
+/** Cap response body size: a malicious endpoint streaming 10 GB would OOM
+ *  the container. 256 KB is enough for any L402 JSON / text reply. */
+const MAX_BODY_BYTES = 256 * 1024;
 
 function urlHash(url: string): string {
   return crypto.createHash('sha256').update(url).digest('hex');
@@ -36,7 +40,24 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Fe
   const t0 = Date.now();
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
-    const body = await res.text();
+    // Stream-read the body up to MAX_BODY_BYTES, then stop. Prevents a
+    // streaming-response OOM from a malicious endpoint.
+    const reader = res.body?.getReader();
+    let body = '';
+    if (reader) {
+      const decoder = new TextDecoder();
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > MAX_BODY_BYTES) {
+          await reader.cancel();
+          break;
+        }
+        body += decoder.decode(value, { stream: true });
+      }
+    }
     return { status: res.status, headers: res.headers, body, latency_ms: Date.now() - t0 };
   } finally {
     clearTimeout(timer);
@@ -72,9 +93,14 @@ export async function probe(url: string, http_method: 'GET' | 'POST' = 'GET'): P
 
   let r: FetchResult;
   try {
+    await assertSafeUrl(url);
     r = await fetchWithTimeout(url, { method: http_method });
   } catch (err: unknown) {
-    logger.debug({ url, err: (err as Error).message }, 'probe: fetch failed');
+    if (err instanceof SsrfBlockedError) {
+      logger.warn({ url, err: err.message }, 'probe: SSRF guard blocked URL');
+    } else {
+      logger.debug({ url, err: (err as Error).message }, 'probe: fetch failed');
+    }
     obs.latency_ms = TIMEOUT_MS;
     return obs;
   }

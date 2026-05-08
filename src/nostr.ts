@@ -55,7 +55,15 @@ export async function publish(event: NostrEvent): Promise<{ acked: number; attem
   let acked = 0;
   await Promise.all(relayUrls.map(async (url) => {
     try {
-      const relay = await Relay.connect(url);
+      // nostr-tools' Relay.connect doesn't expose a connect timeout — wrap
+      // it so a misconfigured / slow relay can't block publish for the OS
+      // TCP timeout (~75s).
+      const relay = await Promise.race([
+        Relay.connect(url),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('relay connect timeout')), 8_000),
+        ),
+      ]);
       try {
         await relay.publish(event);
         acked++;

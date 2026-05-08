@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS service_endpoints (
   category      TEXT NOT NULL,
   name          TEXT NOT NULL,
   description   TEXT NOT NULL DEFAULT '',
-  http_method   TEXT NOT NULL DEFAULT 'GET',
+  http_method   TEXT NOT NULL DEFAULT 'GET' CHECK (http_method IN ('GET', 'POST', 'PUT', 'DELETE')),
   price_sats    INTEGER NOT NULL DEFAULT 0,
   source        TEXT NOT NULL,                             -- 'l402_directory' | 'rss' | 'dns' | 'manual'
   added_at      BIGINT NOT NULL,

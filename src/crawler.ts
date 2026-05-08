@@ -14,10 +14,18 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { pool } from './db.js';
 import { probeAndIngest } from './probe.js';
+import { isHttpsUrl } from './ssrf.js';
 import type { Endpoint } from './types.js';
+
+const ALLOWED_METHODS: ReadonlyArray<Endpoint['http_method']> = ['GET', 'POST', 'PUT', 'DELETE'];
 
 function urlHash(url: string): string {
   return crypto.createHash('sha256').update(url).digest('hex');
+}
+
+function safeMethod(raw: string | undefined): Endpoint['http_method'] {
+  const upper = raw?.toUpperCase() as Endpoint['http_method'];
+  return ALLOWED_METHODS.includes(upper) ? upper : 'GET';
 }
 
 async function fetchJson<T>(url: string, timeoutMs = 15_000): Promise<T | null> {
@@ -54,13 +62,15 @@ async function fromL402Directory(): Promise<Endpoint[]> {
   );
   if (!data?.entries) return [];
   const now = Math.floor(Date.now() / 1000);
-  return data.entries.map((e) => ({
+  // Reject anything that isn't a syntactically valid https:// URL up front ;
+  // the runtime SSRF guard runs again at probe time on the resolved IP.
+  return data.entries.filter((e) => isHttpsUrl(e.url)).map((e) => ({
     url: e.url,
     url_hash: urlHash(e.url),
     category: e.category ?? 'other',
     name: e.name ?? new URL(e.url).hostname,
     description: e.description ?? '',
-    http_method: (e.http_method?.toUpperCase() as Endpoint['http_method']) ?? 'GET',
+    http_method: safeMethod(e.http_method),
     price_sats: e.price_sats ?? 0,
     source: 'l402_directory',
     added_at: now,
@@ -83,8 +93,9 @@ async function fromL402Rss(): Promise<Endpoint[]> {
       const items = xml.match(/<item>([\s\S]*?)<\/item>/g) ?? [];
       const now = Math.floor(Date.now() / 1000);
       return items.flatMap((item) => {
-        const url = item.match(/<link>([^<]+)<\/link>/)?.[1];
-        if (!url) return [];
+        const raw = item.match(/<link>([^<]+)<\/link>/)?.[1]?.trim();
+        if (!raw || !isHttpsUrl(raw)) return [];
+        const url = raw;
         const title = item.match(/<title>([^<]+)<\/title>/)?.[1] ?? new URL(url).hostname;
         const category = item.match(/<category>([^<]+)<\/category>/)?.[1] ?? 'other';
         return [{
