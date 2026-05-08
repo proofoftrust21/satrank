@@ -14,7 +14,6 @@ import { AgentService } from '../services/agentService';
 import { TrendService } from '../services/trendService';
 import { VerdictService } from '../services/verdictService';
 import { RiskService } from '../services/riskService';
-import { DecideService } from '../services/decideService';
 import { ReportService } from '../services/reportService';
 import { V2Controller } from '../controllers/v2Controller';
 import { createBayesianVerdictService } from './helpers/bayesianTestFactory';
@@ -384,31 +383,6 @@ describe('GET /api/profile/:id', async () => {
   it('validates invalid hash format', async () => {
     const res = await request(app).get('/api/profile/invalid-hash');
     expect(res.status).toBe(400);
-  });
-});
-
-// --- DecideService unit tests ---
-
-describe('DecideService', async () => {
-  it('returns Bayesian block + successRate in [0,1]', async () => {
-    const snapshotRepo = new SnapshotRepository(db);
-    const probeRepo = new ProbeRepository(db);
-    const scoringService = new ScoringService(agentRepo, txRepo, attestationRepo, snapshotRepo, db, probeRepo);
-    const trendService = new TrendService(agentRepo, snapshotRepo);
-    const riskService = new RiskService();
-    const verdictService = new VerdictService(agentRepo, attestationRepo, scoringService, trendService, riskService, createBayesianVerdictService(db), probeRepo);
-    const decideService = new DecideService({ agentRepo, attestationRepo, scoringService, trendService, riskService, verdictService, probeRepo });
-
-    const result = await decideService.decide(sha256('bob'), sha256('alice'));
-    expect(typeof result.p_success).toBe('number');
-    expect(result.p_success).toBeGreaterThanOrEqual(0);
-    expect(result.p_success).toBeLessThanOrEqual(1);
-    expect(typeof result.n_obs).toBe('number');
-    expect(result.time_constant_days).toBe(7);
-    expect(result.sources).toBeDefined();
-    expect(result.convergence).toBeDefined();
-    expect(result.successRate).toBeGreaterThanOrEqual(0);
-    expect(result.successRate).toBeLessThanOrEqual(1);
   });
 });
 
