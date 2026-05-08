@@ -179,6 +179,29 @@ Self-hosters utilisent l'API HTTP REST `satrank.dev` directement.
 - Build green à chaque commit
 - mcp-pkg V2.0.0 tarball prêt pour `npm publish` manuel
 
+## Phase audit interne (commits de50bb2 → 22d0eaf, 2026-05-08)
+
+Audit ciblé : dead code restant + single-use modules + features V1 hors-parcours.
+
+### Retraits additionnels
+
+- **de50bb2** — 7 orphan modules (tokenQueryLogTimeoutWorker + 4 one-shot scripts + capabilityInferenceLogRepository) — 970 LOC + migration v87 DROP capability_inference_log
+- **c35a532** — fix tests orphans (3 fichiers) — 529 LOC
+- **f41fc59** — watchlistController + cacheProvider + aepsCapability — 330 LOC + drop watchlistChanges metric
+- **22d0eaf** — inline goldenSetData into goldenCanaryService — 41 LOC
+
+### État final post-audit
+
+- **29 commits** atomiques sur `restructure/v2-recentered`
+- **~50 934 LOC** src/ TypeScript (vs ~63 000 pré-V2 = **−19%**)
+- **38 routes HTTP** publiques (vs 44)
+- **3 outils MCP** publics (vs 16)
+- **1 build MCP** (slim) — full server.ts retiré
+- **15 tables** droppées au total (v84-v87)
+- **6 archive branches** + 1 snapshot pré-V2 préservés
+
+Build green à chaque commit. mcp-pkg/satrank-mcp-2.0.0.tgz prêt pour `npm publish` manuel.
+
 ## Réversibilité
 
 Tout commit de cette branche est :
