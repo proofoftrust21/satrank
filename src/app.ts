@@ -566,7 +566,7 @@ export function createApp() {
   const evidenceController = new EvidenceController({
     evidenceService,
     fulfillJobRepo,
-    enabled: process.env.FULFILL_ENABLED === 'true',
+    enabled: config.FULFILL_ENABLED,
   });
 
   // AEPS §8 (2026-05-07) — daily Merkle anchor of evidence_receipts to
@@ -820,7 +820,7 @@ export function createApp() {
   });
   const agentBondController = new AgentBondController({
     service: agentBondService,
-    enabled: process.env.FULFILL_ENABLED === 'true',
+    enabled: config.FULFILL_ENABLED,
   });
 
   // Phase 11B.2 (2026-05-04) — agent reputation ledger.
@@ -840,7 +840,7 @@ export function createApp() {
   const operatorRegistrationController = new OperatorRegistrationController({
     service: operatorEndpointRegistrationService,
     repo: operatorEndpointRegistrationRepo,
-    enabled: process.env.FULFILL_ENABLED === 'true',
+    enabled: config.FULFILL_ENABLED,
   });
   const fulfillService = new FulfillService({
     pool,
@@ -869,7 +869,7 @@ export function createApp() {
   });
   const fulfillController = new FulfillController({
     fulfillService,
-    enabled: process.env.FULFILL_ENABLED === 'true',
+    enabled: config.FULFILL_ENABLED,
     capabilityTokens,
     reputationService: agentReputationService,
     bondService: agentBondService,
@@ -877,7 +877,7 @@ export function createApp() {
   const claimController = new ClaimController({
     claimRepo: agentClaimRepo,
     bondRepo: operatorBondRepo,
-    enabled: process.env.FULFILL_ENABLED === 'true',
+    enabled: config.FULFILL_ENABLED,
   });
   // Phase 2 — operator dispute surface against Tier 2 refund classifications.
   const disputeController = new DisputeController({
@@ -1816,7 +1816,7 @@ export function createApp() {
       const refund_rate = stats.total > 0 ? Math.round((stats.refunded / stats.total) * 1000) / 1000 : null;
       res.json({
         data: {
-          enabled: process.env.FULFILL_ENABLED === 'true',
+          enabled: config.FULFILL_ENABLED,
           window_sec: 86400,
           // Phase 4 — solvency snapshot. circuit_breaker_open flag tells
           // agents whether new /api/fulfill calls are currently accepted.

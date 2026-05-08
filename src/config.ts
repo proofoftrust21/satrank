@@ -129,12 +129,15 @@ const configSchema = z.object({
   // The minimum relay fee floor of 1 sat/vB is enforced server-side.
   AEPS_L1_BROADCAST_ENABLED: z.coerce.boolean().default(false),
   // --- V2 recentrage flags (2026-05-08) ---
-  // Per /tmp/satrank-simplification-report.md, these subsystems are
+  // Per docs/restructure/V2-RECENTERED-REPORT.md, these subsystems are
   // reclassified ADJACENT or HORS-PARCOURS for the agent consumer parcours.
-  // Defaults preserve current behaviour (true) ; flip to false in env to
-  // disable the corresponding surface area without removing code.
-  /** /api/fulfill + RefundEngine + token_balance auto-flow. ADJACENT. */
-  FULFILL_ENABLED: z.coerce.boolean().default(true),
+  // Defaults preserve current production behaviour: FULFILL is opt-in
+  // (matches the legacy process.env.FULFILL_ENABLED === 'true' check) ; the
+  // others run unconditionally today and stay default-on, but operators can
+  // flip to false via env to slim the surface without removing code.
+  /** /api/fulfill + RefundEngine + token_balance auto-flow. ADJACENT.
+   *  Default false matches legacy process.env.FULFILL_ENABLED behaviour. */
+  FULFILL_ENABLED: z.coerce.boolean().default(false),
   /** ClaimEngine + operator_bonds + dispute path (Phase 7). HORS-PARCOURS. */
   CLAIM_ENGINE_ENABLED: z.coerce.boolean().default(true),
   /** agent_bonds + reputation tiers + tier-aware rate limit (Phase 11B). HORS-PARCOURS. */
