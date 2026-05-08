@@ -117,16 +117,6 @@ import { createAepsEvidenceRoutes } from './routes/aepsEvidence';
 // AEPS §8.3 (2026-05-07) — Nostr publication of daily anchors.
 import { buildAndSignAnchorEvent, publishAnchorToRelays } from './services/aepsAnchorPublisher';
 import { AepsL1BroadcastService } from './services/aepsL1BroadcastService';
-// AEPS §10 (2026-05-07) — DLC dispute resolution.
-import { AepsDisputeRepository } from './repositories/aepsDisputeRepository';
-import { DisputeService } from './services/disputeService';
-import { buildDisputeClaim } from './services/disputeClaimAdapter';
-import { AepsDisputeController } from './controllers/aepsDisputeController';
-import { createAepsDisputeRoutes } from './routes/aepsDispute';
-// AEPS §10 equivocation slashing.
-import { AepsOracleSlashRepository } from './repositories/aepsOracleSlashRepository';
-import { EquivocationClaimAdapter } from './services/equivocationClaimAdapter';
-import { EquivocationSlashCron } from './services/equivocationSlashCron';
 import { OperatorAttestationRepository } from './repositories/operatorAttestationRepository';
 import { OperatorAttestationService } from './services/operatorAttestationService';
 import { OperatorEndpointRegistrationRepository } from './repositories/operatorEndpointRegistrationRepository';
@@ -629,48 +619,6 @@ export function createApp() {
     operatorPubkeyHex,
   });
 
-  // AEPS §10 (2026-05-07) — dispute resolution.
-  // DisputeService resolves §10 disputes via BIP-340 Schnorr threshold ;
-  // when resolved_disputant + receipt-based, the buildDisputeClaim adapter
-  // opens a ClaimEngine slashing claim against the operator's bond.
-  const aepsDisputeRepo = new AepsDisputeRepository(pool);
-  // AEPS §10 — oracle slash intent storage + adapter + settlement cron.
-  const aepsOracleSlashRepo = new AepsOracleSlashRepository(pool);
-  const equivocationClaimAdapter = new EquivocationClaimAdapter({
-    bondRepo: operatorBondRepo,
-    slashRepo: aepsOracleSlashRepo,
-  });
-  const equivocationSlashCron = new EquivocationSlashCron({
-    slashRepo: aepsOracleSlashRepo,
-    bondRepo: operatorBondRepo,
-    graceSec: Number(process.env.AEPS_EQUIVOCATION_GRACE_SEC ?? 3600),
-  });
-  const disputeService = new DisputeService({
-    repo: aepsDisputeRepo,
-    onResolved: async (dispute) => {
-      const result = await buildDisputeClaim(dispute, {
-        fulfillJobRepo,
-        evidenceReceiptRepo,
-        claimEngine,
-      });
-      if (result.status === 'claim_opened') {
-        return { claim_id: result.claim_id };
-      }
-      return undefined;
-    },
-    onEquivocation: async (equivocation) => {
-      const result = await equivocationClaimAdapter.openSlashForEquivocation(equivocation);
-      if (result.status === 'reserved' || result.status === 'no_bond_found') {
-        return { claim_id: result.slash_intent_id };
-      }
-      return undefined;
-    },
-  });
-  const aepsDisputeController = new AepsDisputeController({
-    disputeService,
-    disputeRepo: aepsDisputeRepo,
-  });
-
   // Phase 8.4 — operator attestation. Crawler tick in the reconcile loop.
   const operatorAttestationRepo = new OperatorAttestationRepository(pool);
   const operatorAttestationService = new OperatorAttestationService({
@@ -869,25 +817,6 @@ export function createApp() {
           logger.error(
             { error: err instanceof Error ? err.message : String(err) },
             'ClaimEngine: payout cron threw — will retry',
-          );
-        }
-      }
-      // AEPS §10 — equivocation slash settlement cron. Reserved intents
-      // past the grace period (default 1h, AEPS_EQUIVOCATION_GRACE_SEC env)
-      // get committed : bond_pending → bond_slashed + §7.2 payout shares
-      // recorded. Disbursement to disputant/observer wallets is a v0.2
-      // follow-up ; v0.1 records the shares.
-      // V2 (2026-05-08) : skipped when config.AEPS_DISPUTE_ENABLED=false.
-      if (config.AEPS_DISPUTE_ENABLED) {
-        try {
-          const out = await equivocationSlashCron.runCycle();
-          if (out.executed > 0 || out.errors > 0) {
-            logger.info(out, 'AEPS §10: equivocation slash cron cycle complete');
-          }
-        } catch (err) {
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err) },
-            'AEPS §10: equivocation slash cron threw — will retry',
           );
         }
       }
@@ -1530,13 +1459,6 @@ export function createApp() {
   // global Express middleware. The L1 anchor + signed receipts are the trust
   // root; transparency is the whole point.
   api.use('/aeps', createAepsEvidenceRoutes(aepsEvidenceController));
-  // AEPS §10 (2026-05-07) — dispute open/attest/get. NIP-98 enforced by
-  // the controller for write paths; GET is public.
-  // V2 (2026-05-08) : AEPS dispute gated behind config.AEPS_DISPUTE_ENABLED.
-  // Evidence routes (trust root) always on.
-  if (config.AEPS_DISPUTE_ENABLED) {
-    api.use('/aeps', createAepsDisputeRoutes(aepsDisputeController));
-  }
   // /api/intent — Mix A+D conditional gate. Default path = free directory
   // read with staleness disclaimer. ?fresh=true (or { fresh: true } in body)
   // → paidGate + balanceAuth so the resolver can run a synchronous probe of
