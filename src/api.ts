@@ -174,23 +174,9 @@ export function buildApp(): express.Express {
     }
   });
 
-  // 2. GET /api/services/:url_hash — score snapshot.
-  api.get('/services/:url_hash', async (req, res, next) => {
-    try {
-      const url_hash = String(req.params.url_hash);
-      if (!/^[a-f0-9]{64}$/.test(url_hash)) {
-        return res.status(400).json({ error: { code: 'INVALID_URL_HASH' } });
-      }
-      const score = await scoreEndpoint(url_hash);
-      if (!score) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
-      const c = await hydrate(toCandidate(score));
-      res.json({ data: c });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  // 3. GET /api/services/categories — list categories from the catalogue.
+  // 2. GET /api/services/categories — list categories from the catalogue.
+  // (Mounted before /services/:url_hash so Express matches the literal path
+  //  first ; otherwise `categories` would be parsed as a url_hash param.)
   api.get('/services/categories', async (_req, res, next) => {
     try {
       const { rows } = await pool.query<{ category: string; count: number }>(
@@ -203,7 +189,9 @@ export function buildApp(): express.Express {
     }
   });
 
-  // 4. GET /api/services/best — top 3 per category, free read.
+  // 3. GET /api/services/best — top 3 per category, free read.
+  // (Mounted before /services/:url_hash so Express matches the literal path
+  //  first ; otherwise `best` would be parsed as a url_hash param.)
   api.get('/services/best', async (_req, res, next) => {
     try {
       const { rows } = await pool.query<{ category: string }>(
@@ -215,6 +203,22 @@ export function buildApp(): express.Express {
         out[r.category] = await Promise.all(ranked.map((s) => hydrate(toCandidate(s))));
       }
       res.json({ data: out });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // 4. GET /api/services/:url_hash — score snapshot.
+  api.get('/services/:url_hash', async (req, res, next) => {
+    try {
+      const url_hash = String(req.params.url_hash);
+      if (!/^[a-f0-9]{64}$/.test(url_hash)) {
+        return res.status(400).json({ error: { code: 'INVALID_URL_HASH' } });
+      }
+      const score = await scoreEndpoint(url_hash);
+      if (!score) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+      const c = await hydrate(toCandidate(score));
+      res.json({ data: c });
     } catch (err) {
       next(err);
     }
