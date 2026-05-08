@@ -65,8 +65,7 @@ import {
   type IntentRanker,
 } from './services/intentRanker';
 import { OperatorReplayStateService } from './services/operatorReplayStateService';
-import { GoldenCanaryService } from './services/goldenCanaryService';
-import { GOLDEN_PAIRS } from './services/goldenSetData';
+import { GoldenCanaryService, GOLDEN_PAIRS } from './services/goldenCanaryService';
 
 /** Phase 12.4 — populate the in-memory BM25 inverted index from the
  *  current catalogue. Run once at boot and on a 5min cron tick.
