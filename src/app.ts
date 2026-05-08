@@ -1515,9 +1515,12 @@ export function createApp() {
   // Auto-registered into service_endpoints at boot so /api/intent +
   // BM25 ranker surface them under the canonical ai/* taxonomy. The
   // service is only constructed when ANTHROPIC_API_KEY is configured ;
-  // without it we silently skip the routes (logged at boot).
+  // without it we silently skip the routes (logged at boot). V2 (2026-05-08):
+  // gated behind config.MINI_LLM_ENABLED — flip false to slim the surface.
   let miniLlmController: MiniLlmController | null = null;
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (!config.MINI_LLM_ENABLED) {
+    logger.info({ event: 'mini_llm_disabled' }, 'mini-llm endpoints disabled via MINI_LLM_ENABLED=false');
+  } else if (process.env.ANTHROPIC_API_KEY) {
     const anthropic = new AnthropicSdk({ apiKey: process.env.ANTHROPIC_API_KEY });
     const miniLlmService = new MiniLlmService({ client: anthropic as unknown as InstanceType<typeof AnthropicSdk> });
     miniLlmController = new MiniLlmController({ service: miniLlmService });
