@@ -7,6 +7,15 @@ thing currently maintained or supported.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.0.1-mcp] — 2026-05-09
+
+### Changed
+- `satrank-mcp` npm package republished as `3.0.1`. The previously-published
+  `3.0.0` shipped the V2-era README (claimed 27 tools, mentioned fulfill /
+  AEPS / mini-LLM). `3.0.1` ships the correct V3 README (3 tools: intent,
+  get_endpoint_score, verify_assertion). No code change vs 3.0.0 — bump
+  forced by npm's no-republish-same-version rule.
+
 ## [3.0.3] — 2026-05-09
 
 ### Added

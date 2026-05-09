@@ -17,7 +17,7 @@ import { verifyEvent } from 'nostr-tools/pure';
 
 const API_BASE = process.env.SATRANK_API_BASE ?? 'https://satrank.dev';
 
-const server = new Server({ name: 'satrank-mcp', version: '3.0.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'satrank-mcp', version: '3.0.1' }, { capabilities: { tools: {} } });
 
 // --- Tool schemas -----------------------------------------------------------
 
