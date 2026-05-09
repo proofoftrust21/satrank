@@ -306,6 +306,8 @@ export function buildApp(): express.Express {
     res.set('Cache-Control', 'public, max-age=300');
     res.send(methodologyHtml);
   });
+  // V1 URL had a `.html` extension. Redirect for any external link in the wild.
+  app.get('/methodology.html', (_req, res) => res.redirect(301, '/methodology'));
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   app.get('/.well-known/satrank-key', (_req, res) => {
