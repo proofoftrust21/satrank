@@ -1,31 +1,28 @@
 # SatRank MCP server
 
-Trust oracle for AI agents on Bitcoin Lightning.
+Lightning trust oracle for AI agents on L402. Bitcoin-pure.
 
-`satrank-mcp` v2.0 ships a **3-tool minimal surface** focused on the agent
+`satrank-mcp@3.0` ships a **3-tool minimal surface** focused on the agent
 consumer parcours: pre-pay discovery, individual endpoint score lookup, and
 offline assertion verification. Installable in any MCP-compatible AI agent
 (Claude Code, Cursor, Codex, n8n, Claude Desktop, etc.).
 
 This is the **Bitcoin-pure trust layer** that sits BEFORE the payment hop.
 Agents pay with whatever Lightning wallet they're configured with (`lnget`,
-`aperture`, NWC) ; SatRank decides what's worth paying for, exposes the
-posterior, and ships the offline-verifiable assertion event for downstream
-oracle aggregation.
+NWC, Wallet of Satoshi, Phoenix). SatRank decides what's worth paying for
+and exposes the Bayesian posterior + the offline-verifiable Nostr trust
+assertion.
 
-## What you get with one install (V2 — 3 tools)
+## What you get with one install
 
 | Tool | Purpose |
 |---|---|
-| `intent` | Resolve a category + keywords + budget + SLA into a ranked list of L402 candidates. Returns Bayesian p_success + ci95 + 5-stage breakdown per candidate. Free to call ; pass `fresh: true` for a 2-sat sync probe. |
-| `get_endpoint_score` | Read the public scoring snapshot for a specific URL (sha256). Same posteriors + freshness status, scoped to one endpoint. |
-| `verify_assertion` | Verify offline a SatRank Nostr trust assertion (kind 30782) or oracle calibration (kind 30783). No network call. Compose oracle output across agents without re-querying. |
+| `intent` | Resolve a category + budget + SLA into a ranked list of L402 candidates. Returns Bayesian p_e2e + ci95 + 5-stage breakdown per candidate. **Paid** — 2 sats per call via L402, settled by the agent's wallet. |
+| `get_endpoint_score` | Read the public scoring snapshot for a specific URL (sha256). Same posteriors + freshness status, scoped to one endpoint. **Free.** |
+| `verify_assertion` | Verify offline a SatRank Nostr trust assertion (kind 30782). No network call. Compose oracle output across agents without re-querying. **Free.** |
 
-**Self-hosters** running the full repo (`src/mcp/server.ts`) keep access to
-the extended surface — fulfill proxy, mini-LLM L402 endpoints, AEPS daily
-anchor / inclusion-proof / dispute / observer / multi-hop tools — gated by
-feature flags (`FULFILL_ENABLED`, `MINI_LLM_ENABLED`, `CLAIM_ENGINE_ENABLED`,
-`AGENT_BONDS_ENABLED`, `AEPS_DISPUTE_ENABLED`, `FORK_DETECTION_ENABLED`).
+That's the entire surface. No fulfill proxy, no AEPS audit chain, no LLM
+gateway — V3 is the Bitcoin-pure trust layer, nothing more.
 
 ## Install
 
@@ -48,18 +45,9 @@ Or via the configuration file (`~/.config/claude/mcp.json`):
 }
 ```
 
-### Cursor / Codex / any MCP client
+### Cursor / Codex / n8n / any MCP client
 
 Same idea — point your MCP client at `npx -y satrank-mcp`. Stdio transport.
-
-### Docker
-
-```bash
-docker run --rm -i \
-  -e SATRANK_API_BASE=https://satrank.dev \
-  -e DATABASE_URL=postgres://satrank:satrank@host:5432/satrank \
-  ghcr.io/proofoftrust21/satrank-mcp:latest
-```
 
 ### From source
 
@@ -68,68 +56,76 @@ git clone https://github.com/proofoftrust21/satrank
 cd satrank
 npm install
 npm run build
-node dist/mcp/server.js
+node dist/mcp.js
 ```
 
 ## Environment
 
-The MCP server reads configuration from environment variables :
+The MCP server reads configuration from environment variables:
 
 | Var | Required | Default | What |
 |---|---|---|---|
-| `SATRANK_API_BASE` | yes | `https://satrank.dev` | The HTTP API the MCP proxies to (use `http://localhost:3000` for self-hosted) |
-| `DATABASE_URL` | yes | none | Postgres connection (used for the offline tools that don't go through HTTP) |
-| `LND_REST_URL` | optional | none | Local LND node for routing queries (only required if you run a local SatRank instance) |
+| `SATRANK_API_BASE` | no | `https://satrank.dev` | The HTTP API the MCP proxies to. Override with `http://localhost:3000` for self-hosted. |
+
+That's it. The MCP package is HTTP-only — it doesn't talk to Postgres or
+LND directly. To run a self-hosted SatRank, see the root README.
 
 ## Example agent flow
 
 ```
-1. agent → satrank.intent(category="data/finance", keywords=["price", "stock"])
-   → returns 3 ranked candidates with bayesian.p_success, ci95, stage_posteriors
+1. agent → satrank.intent(category="data", budget_sats=20, optimize="latency")
+   → returns 3 ranked candidates with p_e2e, ci95, stage_posteriors,
+     median_latency_ms, price_sats. The agent pays 2 sats once via L402.
 
-2. agent → satrank.get_endpoint_score(url_hash="...")
-   → independent verification of the candidate's Bayesian trust posterior
+2. agent → satrank.get_endpoint_score(url_hash="<sha256>")
+   → independent verification of one candidate's posterior. Free.
 
-3. agent → satrank.fulfill(intent={...}, max_sats=20, max_latency_ms=5000)
-   → SatRank pays the L402 endpoint, returns body + body_sha256 + preimage
-   → fulfill writes a signed evidence_receipt automatically
+3. agent calls the L402 endpoint directly with its own wallet.
+   SatRank is not in the payment path.
 
-4. agent → satrank.fulfill_evidence(job_id="...")
-   → returns the Ed25519-signed audit trail for compliance reporting
-
-5. (optional) agent → satrank.aeps.inclusion_proof(receipt_id=...)
-   → returns the Merkle audit path against the daily L1 anchor on Bitcoin
+4. (optional) agent → satrank.verify_assertion(event=<nostr_kind_30782>)
+   → offline Schnorr verify. Useful when caching trust assertions for
+     later replay without re-querying SatRank.
 ```
 
-## Why this is indispensable (vs alternatives)
+## Multi-call discovery (deposit credits)
 
-| Capability | SatRank MCP | `lightning-agent-tools` | x402 stack | Compliance frameworks (MS AGT, Asqav) |
-|---|---|---|---|---|
-| Discover L402 endpoints | ✓ ranked by Bayesian p_success | ✗ no discovery | ✗ EVM-only | ✗ |
-| Pay an L402 endpoint | ✓ via fulfill proxy | ✓ via lnget | ✓ via x402 | ✗ |
-| Cryptographic evidence per call | ✓ Ed25519 + L1 anchor | ✗ | ✗ | ✗ self-signed only |
-| Sign third-party API responses | ✓ unique | ✗ | ✗ | ✗ only own actions |
-| Bitcoin-pure | ✓ | ✓ | ✗ EVM | partial |
-| Cross-framework agent reputation | ✓ | ✗ | partial | ✗ |
-| Slashable operator bonds | ✓ | ✗ | partial | ✗ |
+For agents that will make many `intent` calls in a window, the underlying
+HTTP API supports a deposit primitive: pre-pay N sats once, spend across
+many calls without a Lightning round-trip per call. The MCP tool stays
+single-shot ; deposit is exposed at the HTTP layer:
+
+```bash
+# 1. Mint a 100-sat deposit macaroon (free to call)
+curl -s -X POST https://satrank.dev/api/deposit \
+  -H 'Content-Type: application/json' \
+  -d '{"sats":100}'
+# → returns {macaroon: "deposit_<id>", invoice: "lnbc...", payment_hash: "..."}
+
+# 2. Pay the BOLT11 invoice with any Lightning wallet.
+
+# 3. Subsequent /api/intent calls use the deposit as a bearer:
+curl -s -X POST https://satrank.dev/api/intent \
+  -H 'Authorization: L402 deposit_<id>:<preimage_hex>' \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"data"}'
+```
 
 ## Lightning-pure stance
 
-SatRank MCP only emits and consumes Lightning Network sats and Lightning-routed
-Taproot Assets (USDT-LN). No x402, no Base, no EVM. This is doctrine, not
-configuration.
+SatRank only emits and consumes Lightning sats. No x402, no Base, no EVM.
+This is doctrine, not configuration. The trust layer settles in the same
+currency the payment layer does.
 
-## Distribution registries
+## Distribution
 
-- npm : `npm install -g satrank-mcp`
-- MCP registry : https://registry.modelcontextprotocol.io/satrank
-- Smithery : https://smithery.ai/server/proofoftrust21/satrank
-- Glama : https://glama.ai/mcp/servers/proofoftrust21/satrank
-- Source : https://github.com/proofoftrust21/satrank
+- npm: `npm install -g satrank-mcp`
+- MCP registry: `dev.satrank/mcp`
+- Source: https://github.com/proofoftrust21/satrank
 
 ## Spec conformance
 
-- MCP protocol version : 2024-11-05 + 2025-03-26 (negotiated by client)
-- Transport : stdio
-- Tool count : 27 (16 read-only, 11 write/commerce)
-- License : MIT
+- MCP protocol version: negotiated by client (2024-11-05 + 2025-03-26)
+- Transport: stdio
+- Tool count: 3
+- License: MIT (MCP server), AGPL-3.0 (root oracle implementation)

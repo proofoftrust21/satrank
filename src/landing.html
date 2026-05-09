@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SatRank — Lightning trust oracle for AI agents</title>
+<meta name="description" content="Bayesian trust posteriors for L402 endpoints on Bitcoin Lightning. Bitcoin-pure. Three MCP tools, nine HTTP routes.">
+<style>
+  :root {
+    --bg: #0a0c10;
+    --fg: #d8dce5;
+    --fg-dim: #8b93a3;
+    --accent: #f7931a;
+    --accent-dim: #b46813;
+    --code-bg: #11141a;
+    --border: #1f242d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 64px 24px 96px; }
+  header { margin-bottom: 48px; }
+  h1 { font-size: 24px; margin: 0 0 4px; color: var(--accent); font-weight: 600; }
+  .tag { color: var(--fg-dim); font-size: 13px; }
+  h2 { font-size: 14px; color: var(--accent); margin: 36px 0 12px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+  p { margin: 8px 0; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+  a:hover { border-bottom-color: var(--accent); }
+  pre, code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  code { padding: 1px 6px; font-size: 13px; }
+  pre { padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 8px 0 16px; }
+  pre code { padding: 0; border: 0; background: transparent; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0 16px; }
+  td, th { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px dotted var(--border); vertical-align: top; }
+  th { color: var(--fg-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  td:first-child { color: var(--accent); white-space: nowrap; }
+  td:nth-child(2) { color: var(--fg-dim); white-space: nowrap; padding-right: 16px; }
+  ul { padding-left: 18px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  .pill { display: inline-block; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--fg-dim); margin-right: 6px; }
+  .ok { color: #6fbf73; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>SatRank</h1>
+  <div class="tag">Lightning trust oracle for AI agents on L402. Bitcoin-pure.</div>
+  <div style="margin-top: 12px;">
+    <span class="pill">v3.0</span>
+    <span class="pill">9 HTTP routes</span>
+    <span class="pill">3 MCP tools</span>
+    <span class="pill">~1600 LOC</span>
+    <span class="pill ok">live</span>
+  </div>
+</header>
+
+<p>SatRank crawls the L402 endpoint ecosystem (l402.directory + RSS + DNS), probes each endpoint across <strong>five stages</strong> (challenge / invoice / payment / delivery / quality), and maintains a streaming <strong>Beta(α,β)</strong> posterior per (endpoint, stage). Agents query a category + budget + SLA and get back the top-K candidates with a full Bayesian breakdown.</p>
+
+<p>End-to-end success probability is the product of stage means. Every candidate ships a 95% credibility interval. The oracle's signed Nostr trust assertions (kind 30782) are <strong>offline-verifiable</strong> — agents cache them once and re-check without a network round-trip.</p>
+
+<h2>HTTP API</h2>
+<table>
+<tr><th>Route</th><th>Auth</th><th>What</th></tr>
+<tr><td>POST /api/intent</td><td>L402 paid</td><td>2 sats. Returns ranked candidates filtered by category / budget / max_latency_ms / optimize.</td></tr>
+<tr><td>POST /api/deposit</td><td>free</td><td>Mint a multi-use deposit macaroon. Pre-pay 10–10000 sats once; spend across many /api/intent calls without a Lightning round-trip per call. 30-day TTL.</td></tr>
+<tr><td>GET /api/deposit/:id</td><td>free</td><td>Read remaining balance + activation status of a deposit macaroon.</td></tr>
+<tr><td>GET /api/services/:url_hash</td><td>free</td><td>Per-endpoint score snapshot.</td></tr>
+<tr><td>GET /api/services/categories</td><td>free</td><td>List active catalogue categories.</td></tr>
+<tr><td>GET /api/services/best</td><td>free</td><td>Top-3 per category (5-min cache).</td></tr>
+<tr><td>GET /api/oracle/budget</td><td>free</td><td>Last 24h revenue + paid-probe spend. Net budget.</td></tr>
+<tr><td>GET /health</td><td>free</td><td>Liveness probe.</td></tr>
+<tr><td>GET /.well-known/satrank-key</td><td>free</td><td>Oracle Schnorr pubkey for offline assertion verify.</td></tr>
+</table>
+
+<h2>Quickstart</h2>
+
+<p>Single-shot 2-sat call (server replies 402 with a BOLT11 invoice ; pay it with any LN wallet, replay with the preimage as bearer token):</p>
+
+<pre><code>curl -i -X POST https://satrank.dev/api/intent \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"data","budget_sats":20,"optimize":"latency","limit":3}'</code></pre>
+
+<p>Multi-call deposit (one payment, ~50 calls at 2 sats each):</p>
+
+<pre><code># 1. Mint a 100-sat deposit macaroon
+curl -s -X POST https://satrank.dev/api/deposit \
+  -H 'Content-Type: application/json' \
+  -d '{"sats":100}'
+# → returns {macaroon: "deposit_<id>", invoice: "lnbc...", payment_hash: "..."}
+
+# 2. Pay the invoice with any LN wallet (Wallet of Satoshi, Phoenix, …)
+
+# 3. Use the preimage your wallet returns to authenticate /api/intent
+curl -s -X POST https://satrank.dev/api/intent \
+  -H 'Authorization: L402 deposit_&lt;id&gt;:&lt;preimage_hex&gt;' \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"finance","limit":3}'
+
+# 4. Check remaining balance any time
+curl -s https://satrank.dev/api/deposit/&lt;id&gt;</code></pre>
+
+<h2>MCP server</h2>
+
+<p>Three tools for any MCP-compatible AI runtime (Claude Code, Cursor, Codex, n8n, Claude Desktop):</p>
+
+<table>
+<tr><th>Tool</th><th>What</th></tr>
+<tr><td>intent</td><td>Forwards POST /api/intent. Paid via L402.</td></tr>
+<tr><td>get_endpoint_score</td><td>Forwards GET /api/services/:url_hash. Free.</td></tr>
+<tr><td>verify_assertion</td><td>Offline Schnorr verify of a Nostr kind 30782 trust assertion. No network.</td></tr>
+</table>
+
+<p>Install in Claude Code:</p>
+
+<pre><code>claude mcp add satrank -- npx -y satrank-mcp</code></pre>
+
+<p>Self-hosters point <code>SATRANK_API_BASE</code> at their own deployment.</p>
+
+<h2>Scoring math</h2>
+
+<p>For each (endpoint, stage), maintain a Beta(α, β) posterior with α₀ = β₀ = 1 (uniform prior). On every observation:</p>
+<ul>
+  <li>success → α += 1</li>
+  <li>failure → β += 1</li>
+</ul>
+<p>p_stage = α / (α + β). End-to-end p_e2e = ∏ p_stage. 95% credibility interval via Wilson's closed-form approximation. Ranking by p_e2e (default), latency, or cost — agents pick their objective.</p>
+
+<h2>Lightning-pure</h2>
+
+<p>SatRank only emits and consumes <strong>Lightning sats</strong>. No x402, no Base, no EVM. This is doctrine, not configuration. The trust layer is the same currency the payment layer settles in.</p>
+
+<footer>
+  <div>
+    <a href="https://github.com/proofoftrust21/satrank">github</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.npmjs.com/package/satrank-mcp">npm</a>
+    &nbsp;·&nbsp;
+    <a href="/.well-known/satrank-key">oracle key</a>
+    &nbsp;·&nbsp;
+    <a href="/api/oracle/budget">budget</a>
+  </div>
+  <div>AGPL-3.0 · 2026</div>
+</footer>
+
+</div>
+</body>
+</html>

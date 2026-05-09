@@ -1,14 +1,22 @@
-// SatRank V3 — HTTP API. Five routes.
+// SatRank V3 — HTTP API. Nine routes.
 //
-// 1. POST /api/intent              — paid (2 sats via L402) ; returns ranked candidates
-// 2. GET  /api/services/:url_hash  — endpoint score snapshot
-// 3. GET  /api/services/categories — list of known categories
-// 4. GET  /api/services/best       — top-3 per category
-// 5. GET  /api/oracle/budget       — last 24h revenue + paid-probe spend
+//  1. GET  /                          — landing page (static HTML, no JS)
+//  2. GET  /health                    — liveness
+//  3. GET  /.well-known/satrank-key   — oracle Schnorr pubkey
+//  4. POST /api/deposit               — mint multi-use deposit macaroon
+//  5. GET  /api/deposit/:macaroon_id  — read remaining balance
+//  6. POST /api/intent                — paid (2 sats via L402) ; ranked candidates
+//  7. GET  /api/services/:url_hash    — endpoint score snapshot
+//  8. GET  /api/services/categories   — list of known categories
+//  9. GET  /api/services/best         — top-3 per category
+// 10. GET  /api/oracle/budget         — last 24h revenue + paid-probe spend
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { config } from './config.js';
 import { logger } from './logger.js';
@@ -280,6 +288,17 @@ export function buildApp(): express.Express {
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '64kb' }));
   app.use(globalLimiter);
+
+  // Static landing page. Read once from disk at boot — sub-millisecond reply.
+  // The build script copies src/landing.html to dist/landing.html alongside
+  // the compiled JS, so the file resolves the same way in dev (tsx) and prod.
+  const landingPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'landing.html');
+  const landingHtml = fs.readFileSync(landingPath, 'utf8');
+  app.get('/', (_req, res) => {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=300');
+    res.send(landingHtml);
+  });
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   app.get('/.well-known/satrank-key', (_req, res) => {

@@ -1,4 +1,4 @@
--- SatRank V3 — minimal schema. 8 tables.
+-- SatRank V3 — minimal schema. 9 tables.
 --
 -- Run by db.ts on boot. CREATE TABLE IF NOT EXISTS so repeat runs are idempotent.
 -- No migrations folder: this file IS the schema. Older rows from V2 tables
