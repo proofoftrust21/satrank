@@ -63,8 +63,55 @@ function verifyMacaroon(macaroon: string): L402Token | null {
   }
 }
 
+/** Try to consume `price_sats` from a deposit credit identified by macaroon_id,
+ *  authenticated by the bearer preimage. Atomic single-statement decrement
+ *  via UPDATE … RETURNING avoids race conditions when an agent makes
+ *  concurrent calls. Returns:
+ *    - 'ok'              : decrement succeeded, agent should be granted access
+ *    - 'unknown'         : macaroon_id not found
+ *    - 'wrong_preimage'  : preimage doesn't match the issued payment_hash
+ *    - 'expired'         : macaroon TTL elapsed
+ *    - 'insufficient'    : sats_remaining < price
+ */
+async function consumeDeposit(macaroon_id: string, preimage_hex: string, price_sats: number): Promise<
+  'ok' | 'unknown' | 'wrong_preimage' | 'expired' | 'insufficient'
+> {
+  const ph = crypto.createHash('sha256').update(Buffer.from(preimage_hex, 'hex')).digest('hex');
+  const now = Math.floor(Date.now() / 1000);
+  // Atomic guard : the WHERE clause filters out unknown / wrong_preimage /
+  // expired / insufficient so the UPDATE is a no-op for those cases.
+  // RETURNING gives us the new sats_remaining for response shaping.
+  const { rows } = await pool.query<{ payment_hash: string; expires_at: number; sats_remaining: number }>(
+    `UPDATE agent_credits
+        SET sats_remaining = sats_remaining - $3,
+            activated_at = COALESCE(activated_at, $4)
+      WHERE macaroon_id = $1
+        AND payment_hash = $2
+        AND expires_at > $4
+        AND sats_remaining >= $3
+      RETURNING payment_hash, expires_at, sats_remaining`,
+    [macaroon_id, ph, price_sats, now],
+  );
+  if (rows.length > 0) return 'ok';
+  // Diagnostic : peek at the row to figure out which precondition failed.
+  // Cheap (one indexed lookup) and the deposit path is per-request, not hot.
+  const { rows: peek } = await pool.query<{ payment_hash: string; expires_at: number; sats_remaining: number }>(
+    `SELECT payment_hash, expires_at, sats_remaining FROM agent_credits WHERE macaroon_id = $1`,
+    [macaroon_id],
+  );
+  if (peek.length === 0) return 'unknown';
+  if (peek[0].payment_hash !== ph) return 'wrong_preimage';
+  if (peek[0].expires_at <= now) return 'expired';
+  return 'insufficient';
+}
+
 /** L402 paid-gate middleware. On miss → 402 with a fresh invoice. On hit →
- *  next() through with the verified payment_hash on req.l402. */
+ *  next() through with the verified payment_hash on req.l402.
+ *
+ *  Two auth shapes are accepted:
+ *    - L402 <macaroon>:<preimage>            (single-use, V3 default)
+ *    - L402 deposit_<id>:<preimage>          (multi-use deposit credit)
+ *  See POST /api/deposit for the deposit lifecycle. */
 function paidGate(price_sats: number) {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (!lndEnabled() || !config.L402_MACAROON_SECRET) {
@@ -73,15 +120,39 @@ function paidGate(price_sats: number) {
     const auth = req.header('authorization') ?? '';
     const m = auth.match(/^L402\s+([^:]+):([a-f0-9]{64})$/);
     if (m) {
-      const tok = verifyMacaroon(m[1]);
+      const macStr = m[1];
       const preimage = m[2];
+
+      // --- Path A : deposit credit (multi-use) ---
+      if (macStr.startsWith('deposit_')) {
+        const macaroon_id = macStr.slice('deposit_'.length);
+        if (!/^[a-f0-9]{64}$/.test(macaroon_id)) {
+          return res.status(401).json({ error: { code: 'INVALID_MACAROON_ID' } });
+        }
+        try {
+          const r = await consumeDeposit(macaroon_id, preimage, price_sats);
+          if (r === 'ok') {
+            (req as Request & { l402?: { macaroon_id: string } }).l402 = { macaroon_id };
+            return next();
+          }
+          if (r === 'unknown' || r === 'wrong_preimage') {
+            return res.status(401).json({ error: { code: 'DEPOSIT_AUTH_FAILED' } });
+          }
+          if (r === 'expired') {
+            return res.status(402).json({ error: { code: 'DEPOSIT_EXPIRED', message: 'top up at POST /api/deposit' } });
+          }
+          // insufficient
+          return res.status(402).json({ error: { code: 'DEPOSIT_INSUFFICIENT', message: `top up ; need ${price_sats} sats` } });
+        } catch (err: unknown) {
+          logger.error({ err: (err as Error).message }, 'l402: consumeDeposit threw');
+          return res.status(503).json({ error: { code: 'INTERNAL_ERROR' } });
+        }
+      }
+
+      // --- Path B : single-use L402 macaroon ---
+      const tok = verifyMacaroon(macStr);
       const ph = crypto.createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
       if (tok && tok.payment_hash === ph) {
-        // L402 single-use enforcement: revenue_log has UNIQUE(payment_hash).
-        // The first redemption inserts the row (rowCount === 1) ; subsequent
-        // attempts hit the ON CONFLICT branch (rowCount === 0) and are
-        // rejected as replay. Without this, a paying client could replay
-        // (macaroon, preimage) for the macaroon's full TTL.
         try {
           const { rowCount } = await pool.query(
             `INSERT INTO revenue_log (payment_hash, route, sats_received, received_at)
@@ -90,11 +161,10 @@ function paidGate(price_sats: number) {
           );
           if ((rowCount ?? 0) === 0) {
             return res.status(402).json({
-              error: { code: 'PAYMENT_ALREADY_USED', message: 'this preimage was already redeemed; pay a fresh invoice' },
+              error: { code: 'PAYMENT_ALREADY_USED', message: 'this preimage was already redeemed; pay a fresh invoice or use POST /api/deposit for multi-use credit' },
             });
           }
         } catch (dbErr: unknown) {
-          // Rather than silently grant access on DB failure, fail closed.
           logger.error({ err: (dbErr as Error).message }, 'l402: revenue_log insert failed');
           return res.status(503).json({ error: { code: 'INTERNAL_ERROR', message: 'database unavailable' } });
         }
@@ -102,15 +172,14 @@ function paidGate(price_sats: number) {
         return next();
       }
     }
-    // Mint a fresh invoice + macaroon.
+    // Mint a fresh single-use invoice + macaroon. Agents who want multi-use
+    // should hit POST /api/deposit instead — see the X-L402-Hint header.
     try {
       const inv = await addInvoice(price_sats, `SatRank ${req.path}`, 600);
-      // Macaroon TTL = invoice TTL. The macaroon is single-use against
-      // revenue_log, but bounding its lifetime to the invoice's removes
-      // the long-lived bearer token surface entirely.
       const expires_at = Math.floor(Date.now() / 1000) + 600;
       const macaroon = buildMacaroon(inv.payment_hash, expires_at);
       res.set('WWW-Authenticate', `L402 macaroon="${macaroon}", invoice="${inv.payment_request}"`);
+      res.set('X-L402-Hint', 'multi-use credit available at POST /api/deposit');
       res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: `${price_sats} sats` } });
     } catch (err: unknown) {
       logger.error({ err: (err as Error).message }, 'l402: addInvoice failed');
@@ -129,6 +198,14 @@ const intentSchema = z.object({
   optimize: z.enum(['p_success', 'latency', 'cost']).optional(),
   limit: z.number().int().min(1).max(20).optional(),
 });
+
+const depositSchema = z.object({
+  // Min 10 = at least 5 paid intent calls at the default 2-sat price.
+  // Max 10000 = pre-purchase ceiling that maps to ~5000 calls.
+  sats: z.number().int().min(10).max(10_000),
+});
+
+const DEPOSIT_TTL_SEC = 30 * 24 * 60 * 60; // 30 days
 
 // --- Helpers ----------------------------------------------------------------
 
@@ -211,6 +288,90 @@ export function buildApp(): express.Express {
   });
 
   const api = express.Router();
+
+  // 0. POST /api/deposit — pre-pay N sats once, get a multi-use macaroon.
+  // The macaroon authenticates subsequent /api/intent calls via
+  //   `Authorization: L402 deposit_<macaroon_id>:<preimage_hex>`
+  // until sats_remaining < intent_price or the 30-day TTL elapses.
+  // The route itself is free (no paidGate) ; the agent only "pays" when
+  // they settle the returned BOLT11 via their own wallet.
+  api.post('/deposit', async (req, res, next) => {
+    try {
+      if (!lndEnabled()) {
+        return res.status(503).json({ error: { code: 'L402_NOT_CONFIGURED' } });
+      }
+      const parse = depositSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ error: { code: 'INVALID_PAYLOAD', issues: parse.error.issues } });
+      }
+      const sats = parse.data.sats;
+      const issued_at = Math.floor(Date.now() / 1000);
+      const expires_at = issued_at + DEPOSIT_TTL_SEC;
+      const macaroon_id = crypto.randomBytes(32).toString('hex');
+      const inv = await addInvoice(sats, `SatRank deposit ${macaroon_id.slice(0, 8)}`, DEPOSIT_TTL_SEC);
+      try {
+        await pool.query(
+          `INSERT INTO agent_credits (macaroon_id, payment_hash, sats_initial, sats_remaining, issued_at, expires_at)
+           VALUES ($1, $2, $3, $3, $4, $5)`,
+          [macaroon_id, inv.payment_hash, sats, issued_at, expires_at],
+        );
+      } catch (dbErr: unknown) {
+        logger.error({ err: (dbErr as Error).message }, 'deposit: insert failed');
+        return res.status(503).json({ error: { code: 'INTERNAL_ERROR' } });
+      }
+      res.json({
+        data: {
+          macaroon: `deposit_${macaroon_id}`,
+          invoice: inv.payment_request,
+          payment_hash: inv.payment_hash,
+          sats,
+          expires_at,
+          ttl_sec: DEPOSIT_TTL_SEC,
+          usage_hint: `Pay the invoice with your Lightning wallet, then send subsequent /api/intent calls with header: Authorization: L402 deposit_${macaroon_id}:<preimage_hex>`,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // 0b. GET /api/deposit/:macaroon_id — public read of the credit's
+  //     activation + remaining balance + expiry. Doesn't expose the
+  //     payment_hash or any auth secret. Useful for the agent to know
+  //     "how many calls do I have left ?" without making an /intent call.
+  api.get('/deposit/:macaroon_id', async (req, res, next) => {
+    try {
+      const id = String(req.params.macaroon_id).replace(/^deposit_/, '');
+      if (!/^[a-f0-9]{64}$/.test(id)) {
+        return res.status(400).json({ error: { code: 'INVALID_MACAROON_ID' } });
+      }
+      const { rows } = await pool.query<{
+        sats_initial: number; sats_remaining: number; issued_at: number;
+        activated_at: number | null; expires_at: number;
+      }>(
+        `SELECT sats_initial, sats_remaining, issued_at, activated_at, expires_at
+           FROM agent_credits WHERE macaroon_id = $1`,
+        [id],
+      );
+      if (rows.length === 0) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+      const r = rows[0];
+      res.json({
+        data: {
+          macaroon_id: id,
+          sats_initial: r.sats_initial,
+          sats_remaining: r.sats_remaining,
+          issued_at: Number(r.issued_at),
+          activated_at: r.activated_at !== null ? Number(r.activated_at) : null,
+          expires_at: Number(r.expires_at),
+          // Agents read this to gauge fresh activation : true once the first
+          // /api/intent call has succeeded with the matching preimage.
+          activated: r.activated_at !== null,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   // 1. POST /api/intent — paid 2 sats.
   api.post('/intent', intentLimiter, paidGate(config.L402_INTENT_PRICE_SATS), async (req, res, next) => {

@@ -54,8 +54,8 @@ WHAT V3 DOES (relevant for your verdict):
 - Crawls L402 endpoints from l402.directory + DNS, probes them, maintains Beta(α,β) posteriors per (endpoint, stage).
 - POST /api/intent: paid 2 sats, returns ranked candidates filtered by your category/budget/SLA.
 - Bayesian decomposition: 5 stages (challenge, invoice, payment, delivery, quality). p_e2e = product.
-- This V3 catalog is FRESH: ~18 endpoints, 1 hour of probe history, n_obs=1 per endpoint typically. \`is_meaningful=false\` is expected for now.
-- **CATALOG STATE TODAY**: only the \`data\` category currently has endpoints (18). Calling other categories (\`ai\`, \`bitcoin\`, \`data/finance\`, \`finance\`, etc.) returns zero candidates — that's a real V3 limitation, not a sim error. Use \`data\` for any successful call ; report empty results honestly when you query other categories.
+- This V3 catalog is FRESH: ~18 endpoints, 1-3 hours of probe history, n_obs=1-3 per endpoint typically. \`is_meaningful=false\` may still appear.
+- **CATALOG STATE TODAY** (post sim 2 fix): five active categories live — \`data\` (18), \`analytics\` (14), \`finance\` (12), \`developer-tools\` (12), \`ai\` (4). Use any of these. Other categories (\`bitcoin\`, \`tools\`, etc.) still return 0.
 
 VERDICT FORMAT (return as your final response, exactly this shape):
 

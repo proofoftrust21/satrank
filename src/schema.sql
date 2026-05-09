@@ -140,3 +140,22 @@ CREATE TABLE IF NOT EXISTS agents (
   last_seen      BIGINT NOT NULL,
   query_count    INTEGER NOT NULL DEFAULT 0
 );
+
+-- 9. Deposit credits. Lets an agent pre-pay N sats once and consume it
+--    over many /api/intent calls without a Lightning round-trip per call.
+--    The L402 preimage doubles as a bearer secret : agents authenticate
+--    with `Authorization: L402 deposit_<macaroon_id>:<preimage>` for the
+--    full TTL of the macaroon (30 days). sats_remaining decrements
+--    atomically per call; when < price, the gate returns 402 with
+--    PAYMENT_INSUFFICIENT and the agent must top up.
+CREATE TABLE IF NOT EXISTS agent_credits (
+  macaroon_id     TEXT PRIMARY KEY,                        -- 32-byte hex, opaque
+  payment_hash    TEXT NOT NULL UNIQUE,                    -- sha256(preimage), from LND addInvoice
+  sats_initial    INTEGER NOT NULL,
+  sats_remaining  INTEGER NOT NULL,
+  issued_at       BIGINT NOT NULL,
+  activated_at    BIGINT,                                  -- first time the matching preimage was presented
+  expires_at      BIGINT NOT NULL                          -- issued_at + 30 days, regardless of activation
+);
+CREATE INDEX IF NOT EXISTS idx_agent_credits_expires ON agent_credits(expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_credits_payment_hash ON agent_credits(payment_hash);
