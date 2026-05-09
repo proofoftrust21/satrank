@@ -26,12 +26,13 @@ CREATE TABLE IF NOT EXISTS service_endpoints (
 );
 CREATE INDEX IF NOT EXISTS idx_service_endpoints_category ON service_endpoints(category);
 CREATE INDEX IF NOT EXISTS idx_service_endpoints_last_probe ON service_endpoints(last_probe_at);
-CREATE INDEX IF NOT EXISTS idx_service_endpoints_category_tags
-  ON service_endpoints USING GIN (category_tags);
 
--- The CHECK in CREATE TABLE only applies on first creation. For instances
--- that bootstrapped before 2026-05-09 (when the CHECK was added), apply it
--- via ALTER TABLE — guarded so repeat boots don't error.
+-- Retroactive migrations for instances that bootstrapped before 2026-05-09.
+-- IMPORTANT: these MUST run before any later statement that references the
+-- new columns/constraints — otherwise the bootstrap aborts before it can
+-- self-heal.
+
+-- (a) http_method CHECK constraint — added 2026-05-09.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -43,8 +44,8 @@ BEGIN
   END IF;
 END$$;
 
--- Same retroactive pattern for category_tags : pre-2026-05-09 instances
--- only have the singular `category`. Add the column + backfill from category.
+-- (b) category_tags column — added 2026-05-09. Backfill from singular
+--     `category` so existing rows match at least their primary tag.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -53,10 +54,12 @@ BEGIN
   ) THEN
     ALTER TABLE service_endpoints ADD COLUMN category_tags TEXT[] NOT NULL DEFAULT '{}'::text[];
     UPDATE service_endpoints SET category_tags = ARRAY[category] WHERE category_tags = '{}'::text[];
-    CREATE INDEX IF NOT EXISTS idx_service_endpoints_category_tags
-      ON service_endpoints USING GIN (category_tags);
   END IF;
 END$$;
+
+-- The GIN index references `category_tags`, so it MUST come after (b).
+CREATE INDEX IF NOT EXISTS idx_service_endpoints_category_tags
+  ON service_endpoints USING GIN (category_tags);
 
 -- 2. Per-(endpoint, stage) Bayesian posterior. Streaming Beta(α,β).
 CREATE TABLE IF NOT EXISTS endpoint_posteriors (
