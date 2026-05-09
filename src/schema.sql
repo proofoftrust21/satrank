@@ -20,6 +20,20 @@ CREATE TABLE IF NOT EXISTS service_endpoints (
 CREATE INDEX IF NOT EXISTS idx_service_endpoints_category ON service_endpoints(category);
 CREATE INDEX IF NOT EXISTS idx_service_endpoints_last_probe ON service_endpoints(last_probe_at);
 
+-- The CHECK in CREATE TABLE only applies on first creation. For instances
+-- that bootstrapped before 2026-05-09 (when the CHECK was added), apply it
+-- via ALTER TABLE — guarded so repeat boots don't error.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'http_method_check' AND conrelid = 'service_endpoints'::regclass
+  ) THEN
+    ALTER TABLE service_endpoints
+      ADD CONSTRAINT http_method_check CHECK (http_method IN ('GET','POST','PUT','DELETE'));
+  END IF;
+END$$;
+
 -- 2. Per-(endpoint, stage) Bayesian posterior. Streaming Beta(α,β).
 CREATE TABLE IF NOT EXISTS endpoint_posteriors (
   url_hash    TEXT NOT NULL,
