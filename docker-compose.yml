@@ -8,11 +8,9 @@ services:
     container_name: satrank-api
     restart: unless-stopped
     ports:
-      # Bind to loopback only — the public path is Internet → nginx → Express
-      # on 127.0.0.1:3000. Binding to 0.0.0.0 is a defense-in-depth failure:
-      # if the host firewall or cloud firewall ever drops its rules, port
-      # 3000 would be reachable directly and bypass nginx rate limits and
-      # the L402 native gate.
+      # Loopback only. Public path is Internet → nginx → Express on
+      # 127.0.0.1:3000. Binding to 0.0.0.0 would bypass nginx rate limits
+      # and the L402 native gate if the host firewall ever drops its rules.
       - "127.0.0.1:${PORT:-3000}:3000"
     env_file:
       - .env.production
@@ -21,34 +19,13 @@ services:
       - BUILD_DATE=${BUILD_DATE:-unknown}
     volumes:
       - satrank-data:/app/data
-      # Phase 1 dry_run shadow-log directory. Bind-mounted writable even under
-      # read_only:true (Docker leaves explicit mounts RW by default). Host dir
-      # must be owned by uid 1001 (satrank user in Dockerfile). If missing,
-      # DualWriteLogger falls back to /app/logs and WARNs at boot.
-      - /var/log/satrank:/var/log/satrank
-      # Phase 9 — scoped LND admin macaroon (offchain:read + offchain:write only,
-      # no channel open/close/onchain). Bound read-only. Path on host is
-      # ${REMOTE_DIR}/probe-pay.macaroon, baked out-of-band via:
-      #   lncli bakemacaroon --save_to <remote_dir>/probe-pay.macaroon \
-      #     offchain:read offchain:write
-      # Excluded from rsync (*.macaroon) so the file is per-host.
-      - ./probe-pay.macaroon:/app/macaroons/probe-pay.macaroon:ro
-      # Phase 6.1 — fulfill macaroon (offchain:* + invoices:* — needed for
-      # mode=hold addHoldInvoice/settle/cancel + outbound residue refund
-      # via payInvoice). Baked out-of-band via:
+      # LND macaroon for the L402 paid gate. Baked out-of-band:
       #   lncli bakemacaroon --save_to <remote_dir>/fulfill.macaroon \
       #     offchain:read offchain:write invoices:read invoices:write
-      # Optional — when missing, fulfill mode=hold returns clean 503
-      # hold_mode_unavailable rather than crashing.
+      # Set LND_MACAROON_PATH=/app/macaroons/fulfill.macaroon in .env.production.
+      # Excluded from rsync (*.macaroon in .rsync-exclude) so each host owns its own.
+      # Optional: when missing, /api/intent + /api/deposit return 503 L402_NOT_CONFIGURED.
       - ./fulfill.macaroon:/app/macaroons/fulfill.macaroon:ro
-      # Phase 12A — onchain macaroon (onchain:write only). Used by AEPS
-      # L1 anchor cron to broadcast the daily Merkle root in an OP_RETURN
-      # tx via WalletKit.SendOutputs. Baked out-of-band via:
-      #   lncli bakemacaroon --save_to <remote_dir>/onchain.macaroon \
-      #     onchain:write
-      # Optional — when missing, the broadcast service short-circuits
-      # with status='skipped_no_macaroon' (cron tick is a no-op).
-      - ./onchain.macaroon:/app/macaroons/onchain.macaroon:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -67,8 +44,6 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          # 1024M to cover memoryCache + warmup peak (observed ~200 MB steady,
-          # ~450 MB peak during cold stats rebuild). Prior 512M caused OOM kills.
           memory: 1024M
 
 volumes:
