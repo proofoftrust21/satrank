@@ -45,71 +45,58 @@ async function fetchJson<T>(url: string, timeoutMs = 15_000): Promise<T | null> 
   }
 }
 
-// --- Source 1: l402.directory ----------------------------------------------
+// --- Source 1: l402.directory v1.3 -----------------------------------------
+//
+// API shape (verified 2026-05-09):
+//   GET /api/services → { services: [{
+//     name, description, categories: string[], endpoints: [{
+//       url, method, description, pricing: { amount, currency, model }, ...
+//     }]
+//   }] }
+//
+// Each `service` declares N `endpoints` ; we flatten to one V3 Endpoint per
+// (service, endpoint) pair. URLs containing template placeholders (e.g.
+// `?q={query}`) aren't directly probable — skip them.
 
-interface L402DirectoryEntry {
-  url: string;
-  category?: string;
+interface L402DirectoryService {
   name?: string;
   description?: string;
-  http_method?: string;
-  price_sats?: number;
+  categories?: string[];
+  endpoints?: Array<{
+    url?: string;
+    method?: string;
+    description?: string;
+    pricing?: { amount?: number };
+  }>;
 }
 
 async function fromL402Directory(): Promise<Endpoint[]> {
-  const data = await fetchJson<{ entries?: L402DirectoryEntry[] }>(
-    'https://l402.directory/api/list',
+  const data = await fetchJson<{ services?: L402DirectoryService[] }>(
+    'https://l402.directory/api/services',
   );
-  if (!data?.entries) return [];
+  if (!data?.services) return [];
   const now = Math.floor(Date.now() / 1000);
-  // Reject anything that isn't a syntactically valid https:// URL up front ;
-  // the runtime SSRF guard runs again at probe time on the resolved IP.
-  return data.entries.filter((e) => isHttpsUrl(e.url)).map((e) => ({
-    url: e.url,
-    url_hash: urlHash(e.url),
-    category: e.category ?? 'other',
-    name: e.name ?? new URL(e.url).hostname,
-    description: e.description ?? '',
-    http_method: safeMethod(e.http_method),
-    price_sats: e.price_sats ?? 0,
-    source: 'l402_directory',
-    added_at: now,
-  }));
-}
-
-// --- Source 2: l402-index RSS ----------------------------------------------
-
-async function fromL402Rss(): Promise<Endpoint[]> {
-  // Best-effort RSS scrape. The format is intentionally simple : <link> tags
-  // contain the L402 endpoint URL ; <category> tags carry the category.
-  // No xml2js dependency — a quick regex pass is enough for this feed.
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15_000);
-    try {
-      const res = await fetch('https://l402.directory/index.rss', { signal: ctrl.signal });
-      if (!res.ok) return [];
-      const xml = await res.text();
-      const items = xml.match(/<item>([\s\S]*?)<\/item>/g) ?? [];
-      const now = Math.floor(Date.now() / 1000);
-      return items.flatMap((item) => {
-        const raw = item.match(/<link>([^<]+)<\/link>/)?.[1]?.trim();
-        if (!raw || !isHttpsUrl(raw)) return [];
-        const url = raw;
-        const title = item.match(/<title>([^<]+)<\/title>/)?.[1] ?? new URL(url).hostname;
-        const category = item.match(/<category>([^<]+)<\/category>/)?.[1] ?? 'other';
-        return [{
-          url, url_hash: urlHash(url), category, name: title, description: '',
-          http_method: 'GET' as const, price_sats: 0, source: 'rss', added_at: now,
-        }];
+  const out: Endpoint[] = [];
+  for (const svc of data.services) {
+    const category = svc.categories?.[0] ?? 'other';
+    for (const ep of svc.endpoints ?? []) {
+      if (!ep.url || !isHttpsUrl(ep.url)) continue;
+      // Template placeholders (e.g. {query}, :id) aren't probable as-is.
+      if (ep.url.includes('{') || ep.url.includes('}')) continue;
+      out.push({
+        url: ep.url,
+        url_hash: urlHash(ep.url),
+        category,
+        name: svc.name ?? new URL(ep.url).hostname,
+        description: ep.description ?? svc.description ?? '',
+        http_method: safeMethod(ep.method),
+        price_sats: ep.pricing?.amount ?? 0,
+        source: 'l402_directory',
+        added_at: now,
       });
-    } finally {
-      clearTimeout(timer);
     }
-  } catch (err: unknown) {
-    logger.debug({ err: (err as Error).message }, 'crawler: rss failed');
-    return [];
   }
+  return out;
 }
 
 // --- Source 3: DNS TXT ------------------------------------------------------
@@ -175,7 +162,7 @@ export interface CrawlReport {
  *  each endpoint that's stale (or new) once. */
 export async function crawl(): Promise<CrawlReport> {
   const report: CrawlReport = { fetched: 0, inserted: 0, probed: 0, errors: 0 };
-  const all = (await Promise.all([fromL402Directory(), fromL402Rss(), fromDns()])).flat();
+  const all = (await Promise.all([fromL402Directory(), fromDns()])).flat();
   // Dedup by url (cross-source). Keep the first source seen.
   const dedup = new Map<string, Endpoint>();
   for (const e of all) {
