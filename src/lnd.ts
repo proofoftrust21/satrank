@@ -108,9 +108,12 @@ export interface PayInvoiceResult {
 }
 
 export async function payInvoice(bolt11: string, max_fee_sats = 10): Promise<PayInvoiceResult> {
+  // Note: /v1/channels/transactions is the legacy synchronous-pay endpoint.
+  // Newer LND builds dropped the `timeout_seconds` field from this v1 schema
+  // (it lives only on /v2/router/send now). Keep the body minimal so we
+  // remain compatible across LND 0.17 → 0.20+.
   return await call<PayInvoiceResult>('POST', '/v1/channels/transactions', {
     payment_request: bolt11,
     fee_limit: { fixed: String(max_fee_sats) },
-    timeout_seconds: 30,
   });
 }
