@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SatRank · API reference</title>
+<meta name="description" content="HTTP API reference for SatRank V3. Ten routes, L402 paid gate on POST /api/intent and POST /api/deposit, free reads everywhere else. JSON envelope, OpenAPI 3.0 spec available at /openapi.json.">
+<meta name="theme-color" content="#0a0c10">
+<style>
+  :root {
+    --bg: #0a0c10;
+    --fg: #d8dce5;
+    --fg-dim: #8b93a3;
+    --accent: #f7931a;
+    --accent-dim: #b46813;
+    --code-bg: #11141a;
+    --border: #1f242d;
+    --get: #6fbf73;
+    --post: #6fb1ff;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.65;
+  }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+  a:hover { border-bottom-color: var(--accent); }
+  a.plain { border-bottom: 0; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10,12,16,0.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  }
+  .topbar a { font-size: 13px; }
+  .brand { color: var(--accent); font-weight: 600; }
+  .topbar-links a { margin-left: 16px; color: var(--fg-dim); border-bottom: 0; }
+  .topbar-links a:hover { color: var(--accent); }
+
+  .layout { max-width: 1100px; margin: 0 auto; padding: 24px; display: grid; grid-template-columns: 240px 1fr; gap: 32px; }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } .toc { position: static !important; max-height: none !important; } }
+
+  .toc {
+    position: sticky; top: 64px; align-self: start;
+    max-height: calc(100vh - 88px); overflow-y: auto;
+    font-size: 12px; line-height: 1.8;
+    padding-right: 8px;
+  }
+  .toc-heading { color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; margin: 16px 0 4px; }
+  .toc-heading:first-child { margin-top: 0; }
+  .toc a { display: block; color: var(--fg-dim); border-bottom: 0; padding: 1px 0; }
+  .toc a:hover { color: var(--accent); }
+  .toc .verb { display: inline-block; width: 38px; font-size: 9px; font-weight: 600; text-align: left; }
+  .toc .verb.GET { color: var(--get); }
+  .toc .verb.POST { color: var(--post); }
+
+  main { min-width: 0; }
+  header.doc { margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 24px; margin: 0 0 4px; color: var(--accent); font-weight: 600; }
+  .sub { color: var(--fg-dim); font-size: 13px; }
+  .pill { display: inline-block; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--fg-dim); margin-right: 6px; }
+
+  section { margin: 36px 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; color: var(--accent); font-weight: 600; padding-top: 8px; }
+  h3 { font-size: 13px; color: var(--fg-dim); margin: 16px 0 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+  p { margin: 8px 0; }
+
+  .endpoint h2 {
+    display: flex; align-items: baseline; gap: 12px;
+    font-family: inherit; font-size: 16px;
+    padding: 8px 0; margin-bottom: 8px;
+  }
+  .endpoint .verb {
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  .endpoint .verb.GET  { background: rgba(111,191,115,0.14); color: var(--get); border: 1px solid rgba(111,191,115,0.4); }
+  .endpoint .verb.POST { background: rgba(111,177,255,0.14); color: var(--post); border: 1px solid rgba(111,177,255,0.4); }
+  .endpoint .path { color: var(--fg); font-weight: 500; }
+  .endpoint .auth { font-size: 11px; color: var(--fg-dim); margin-left: auto; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; }
+  .endpoint .auth.paid { color: var(--accent); border-color: var(--accent-dim); }
+
+  pre, code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  code { padding: 1px 6px; font-size: 13px; }
+  pre { padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; margin: 8px 0 16px; }
+  pre code { padding: 0; border: 0; background: transparent; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 8px 0 16px; }
+  td, th { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px dotted var(--border); vertical-align: top; }
+  th { color: var(--fg-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  td.acc { color: var(--accent); white-space: nowrap; }
+  td.dim { color: var(--fg-dim); }
+  td.ok { color: var(--get); }
+
+  ul, ol { padding-left: 20px; margin: 8px 0; }
+  li { margin: 4px 0; }
+
+  footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="/" class="brand plain">SatRank</a>
+  <div class="topbar-links">
+    <a href="/">Home</a>
+    <a href="/methodology">Methodology</a>
+    <a href="/openapi.json">OpenAPI</a>
+    <a href="https://github.com/proofoftrust21/satrank" rel="noopener">GitHub</a>
+  </div>
+</div>
+
+<div class="layout">
+
+<aside class="toc" aria-label="Table of contents">
+  <div class="toc-heading">Conventions</div>
+  <a href="#base">Base URL</a>
+  <a href="#envelope">Response envelope</a>
+  <a href="#auth">Authentication</a>
+  <a href="#errors">Error codes</a>
+  <a href="#limits">Rate limits</a>
+
+  <div class="toc-heading">Discovery</div>
+  <a href="#post-intent"><span class="verb POST">POST</span>/api/intent</a>
+  <a href="#get-services-best"><span class="verb GET">GET</span>/api/services/best</a>
+  <a href="#get-services-categories"><span class="verb GET">GET</span>/api/services/categories</a>
+  <a href="#get-services-id"><span class="verb GET">GET</span>/api/services/:url_hash</a>
+
+  <div class="toc-heading">Credits</div>
+  <a href="#post-deposit"><span class="verb POST">POST</span>/api/deposit</a>
+  <a href="#get-deposit"><span class="verb GET">GET</span>/api/deposit/:id</a>
+
+  <div class="toc-heading">Transparency</div>
+  <a href="#get-budget"><span class="verb GET">GET</span>/api/oracle/budget</a>
+
+  <div class="toc-heading">Operational</div>
+  <a href="#get-health"><span class="verb GET">GET</span>/health</a>
+  <a href="#get-key"><span class="verb GET">GET</span>/.well-known/satrank-key</a>
+
+  <div class="toc-heading">Machine</div>
+  <a href="/openapi.json">OpenAPI 3.0 spec</a>
+</aside>
+
+<main>
+
+<header class="doc">
+  <h1>API reference</h1>
+  <div class="sub">Ten HTTP routes. Two paid via L402 (<code>POST /api/intent</code>, <code>POST /api/deposit</code>). Eight free reads. JSON envelope. Machine-readable spec at <a href="/openapi.json">/openapi.json</a>.</div>
+  <div style="margin-top: 12px;">
+    <span class="pill">v3.0</span>
+    <span class="pill">10 routes</span>
+    <span class="pill">JSON</span>
+    <span class="pill">L402</span>
+  </div>
+</header>
+
+<!-- ============================================================ -->
+<section id="base">
+  <h2>Base URL</h2>
+  <pre><code>https://satrank.dev</code></pre>
+  <p>Self-hosters can run their own deployment ; the MCP package proxies to whatever <code>SATRANK_API_BASE</code> resolves to.</p>
+</section>
+
+<section id="envelope">
+  <h2>Response envelope</h2>
+  <p>Every JSON response uses one of two shapes:</p>
+  <pre><code>// Success
+{ "data": { ... } }
+
+// Error
+{ "error": { "code": "&lt;CODE&gt;", "message": "&lt;optional human-readable&gt;" } }</code></pre>
+  <p>Some legacy endpoints (<code>/health</code>, <code>/.well-known/satrank-key</code>) return a flat object without the envelope — this is intentional. Everything under <code>/api/*</code> uses the envelope.</p>
+</section>
+
+<section id="auth">
+  <h2>Authentication</h2>
+  <p>Two authenticated endpoints, both via L402 :</p>
+  <table>
+    <tr><th>Header form</th><th>Used for</th></tr>
+    <tr><td class="acc">Authorization: L402 &lt;macaroon_b64&gt;:&lt;preimage_hex&gt;</td><td>Single-use 2-sat call. Macaroon comes from a 402 challenge ; preimage from paying the BOLT11 invoice in that same challenge. TTL 10 min.</td></tr>
+    <tr><td class="acc">Authorization: L402 deposit_&lt;id&gt;:&lt;preimage_hex&gt;</td><td>Multi-use deposit credit. <code>id</code> = 32-byte hex from <code>POST /api/deposit</code> ; <code>preimage_hex</code> = the preimage your wallet returned after paying the deposit BOLT11. TTL 30 days, decrements per call.</td></tr>
+  </table>
+  <p>Free endpoints take no auth.</p>
+</section>
+
+<section id="errors">
+  <h2>Error codes</h2>
+  <table>
+    <tr><th>HTTP</th><th>code</th><th>When</th></tr>
+    <tr><td>400</td><td class="acc">INVALID_PAYLOAD</td><td>Body fails Zod validation. <code>error.issues</code> contains the field-level details.</td></tr>
+    <tr><td>400</td><td class="acc">INVALID_URL_HASH</td><td><code>url_hash</code> path param isn't 64-char hex.</td></tr>
+    <tr><td>400</td><td class="acc">INVALID_MACAROON_ID</td><td><code>macaroon_id</code> path param isn't 64-char hex (after stripping <code>deposit_</code> prefix).</td></tr>
+    <tr><td>401</td><td class="acc">DEPOSIT_AUTH_FAILED</td><td>Bearer preimage doesn't match the deposit's payment_hash.</td></tr>
+    <tr><td>402</td><td class="acc">PAYMENT_REQUIRED</td><td>Single-use L402 challenge ; pay the BOLT11 in <code>WWW-Authenticate</code> and retry.</td></tr>
+    <tr><td>402</td><td class="acc">PAYMENT_ALREADY_USED</td><td>This preimage was already redeemed. Pay a fresh invoice or use a deposit credit.</td></tr>
+    <tr><td>402</td><td class="acc">DEPOSIT_INSUFFICIENT</td><td>Deposit balance &lt; price. Top up via <code>POST /api/deposit</code>.</td></tr>
+    <tr><td>402</td><td class="acc">DEPOSIT_EXPIRED</td><td>Deposit's 30-day TTL elapsed. Top up.</td></tr>
+    <tr><td>404</td><td class="acc">NOT_FOUND</td><td>Endpoint <code>url_hash</code> or deposit <code>macaroon_id</code> unknown.</td></tr>
+    <tr><td>429</td><td class="acc">RATE_LIMITED</td><td>Per-IP rate limit hit. See <a href="#limits">rate limits</a>.</td></tr>
+    <tr><td>503</td><td class="acc">L402_NOT_CONFIGURED</td><td>LND not connected on the server. Operational issue ; retry later.</td></tr>
+    <tr><td>503</td><td class="acc">INTERNAL_ERROR</td><td>Postgres unavailable or unexpected exception.</td></tr>
+  </table>
+</section>
+
+<section id="limits">
+  <h2>Rate limits</h2>
+  <table>
+    <tr><th>Scope</th><th>Limit</th><th>Headers exposed</th></tr>
+    <tr><td>Global (every route)</td><td>120 req / min / IP</td><td><code>RateLimit-Policy</code>, <code>RateLimit</code></td></tr>
+    <tr><td>POST /api/intent</td><td>30 req / min / IP</td><td>(in addition to global)</td></tr>
+  </table>
+  <p>Keys are derived from <code>X-Forwarded-For</code> (Express <code>trust proxy = 1</code>). Expect <code>429 RATE_LIMITED</code> with a clean JSON envelope when limits trip.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="post-intent" class="endpoint">
+  <h2><span class="verb POST">POST</span><span class="path">/api/intent</span><span class="auth paid">L402 paid · 2 sats</span></h2>
+  <p>Resolve a category + filters into a ranked list of L402 endpoint candidates with full Bayesian breakdown.</p>
+
+  <h3>Request body</h3>
+  <pre><code>{
+  "category":         string,                              // required, 1–64 chars
+  "keywords":         string[],                            // optional, ≤10 entries, ≤40 chars each
+  "budget_sats":      number,                              // optional, 1–10000 — drops endpoints priced higher
+  "max_latency_ms":   number,                              // optional, 1–60000 — drops endpoints whose median latency exceeds
+  "optimize":         "p_success" | "latency" | "cost",    // optional, default "p_success"
+  "limit":            number                               // optional, 1–20, default 10
+}</code></pre>
+
+  <h3>Response 200</h3>
+  <pre><code>{
+  "data": {
+    "candidates": [
+      {
+        "url":               string,
+        "url_hash":          string,                       // sha256(url) hex
+        "category":          string,
+        "name":              string,
+        "description":       string,
+        "http_method":       "GET" | "POST" | "PUT" | "DELETE",
+        "price_sats":        number,
+        "bayesian":          { "p_success": number, "ci95": [number, number], "n_obs": number },
+        "stages": {
+          "challenge":       { "p_success": number, "ci95": [number, number], "n": number },
+          "invoice":         { ...same shape... },
+          "payment":         { ...same shape... },
+          "delivery":        { ...same shape... },
+          "quality":         { ...same shape... }
+        },
+        "median_latency_ms": number | null,
+        "is_meaningful":     boolean
+      }
+      // … up to `limit` candidates
+    ],
+    "count": number
+  }
+}</code></pre>
+
+  <h3>Example — single-shot 2-sat call</h3>
+  <pre><code># 1. Trigger the L402 challenge.
+curl -i -X POST https://satrank.dev/api/intent \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"data","budget_sats":20,"optimize":"latency","limit":3}'
+# → HTTP 402 with WWW-Authenticate: L402 macaroon="…", invoice="lnbc…"
+
+# 2. Pay the BOLT11 with any LN wallet → wallet returns the preimage.
+
+# 3. Replay with the bearer.
+curl -X POST https://satrank.dev/api/intent \
+  -H 'Authorization: L402 &lt;macaroon&gt;:&lt;preimage_hex&gt;' \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"data","budget_sats":20,"optimize":"latency","limit":3}'</code></pre>
+
+  <h3>Example — deposit credit (multi-call)</h3>
+  <pre><code>curl -X POST https://satrank.dev/api/intent \
+  -H 'Authorization: L402 deposit_&lt;id&gt;:&lt;preimage_hex&gt;' \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"finance","optimize":"p_success"}'
+# Each call decrements `sats_remaining` atomically. See POST /api/deposit.</code></pre>
+
+  <h3>Errors</h3>
+  <p><code>400 INVALID_PAYLOAD</code>, <code>402 PAYMENT_REQUIRED</code>, <code>402 PAYMENT_ALREADY_USED</code>, <code>402 DEPOSIT_INSUFFICIENT</code>, <code>402 DEPOSIT_EXPIRED</code>, <code>401 DEPOSIT_AUTH_FAILED</code>, <code>429 RATE_LIMITED</code>, <code>503 L402_NOT_CONFIGURED</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="get-services-best" class="endpoint">
+  <h2><span class="verb GET">GET</span><span class="path">/api/services/best</span><span class="auth">free · cached 5 min</span></h2>
+  <p>Top-3 candidates per active category, ranked by <code>p_e2e</code>. Cached server-side for 5 minutes — agents can poll cheaply.</p>
+
+  <h3>Response 200</h3>
+  <pre><code>{
+  "data": {
+    "&lt;category&gt;": [ &lt;IntentCandidate&gt;, &lt;IntentCandidate&gt;, &lt;IntentCandidate&gt; ],
+    "&lt;category&gt;": [ … ],
+    …
+  }
+}</code></pre>
+  <p>Same <code>IntentCandidate</code> shape as <code>POST /api/intent</code>.</p>
+
+  <h3>Example</h3>
+  <pre><code>curl -s https://satrank.dev/api/services/best | jq 'keys'
+# → ["ai", "analytics", "data", "developer-tools", "finance"]</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="get-services-categories" class="endpoint">
+  <h2><span class="verb GET">GET</span><span class="path">/api/services/categories</span><span class="auth">free</span></h2>
+  <p>List of categories with at least one endpoint, with the count.</p>
+
+  <h3>Response 200</h3>
+  <pre><code>{
+  "data": [
+    { "category": string, "count": number },
+    …
+  ]
+}</code></pre>
+
+  <h3>Example</h3>
+  <pre><code>curl -s https://satrank.dev/api/services/categories
+# → {"data":[{"category":"data","count":18},{"category":"analytics","count":14},…]}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="get-services-id" class="endpoint">
+  <h2><span class="verb GET">GET</span><span class="path">/api/services/:url_hash</span><span class="auth">free</span></h2>
+  <p>Per-endpoint score snapshot — same Bayesian breakdown as in <code>/api/intent</code> candidates, scoped to one URL.</p>
+
+  <h3>Path</h3>
+  <table>
+    <tr><th>param</th><th>shape</th></tr>
+    <tr><td class="acc">url_hash</td><td>64-char hex (sha256 of the endpoint URL)</td></tr>
+  </table>
+
+  <h3>Response 200</h3>
+  <pre><code>{
+  "data": &lt;IntentCandidate&gt;
+}</code></pre>
+
+  <h3>Errors</h3>
+  <p><code>400 INVALID_URL_HASH</code>, <code>404 NOT_FOUND</code>.</p>
+
+  <h3>Example</h3>
+  <pre><code>curl -s "https://satrank.dev/api/services/568a921b2014a977a38f68d151402e740e3af7fa985bfbb2272252d35bee7ab6" \
+  | jq '.data.bayesian'
+# → {"p_success": 0.041, "ci95": [0, 1], "n_obs": 6}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="post-deposit" class="endpoint">
+  <h2><span class="verb POST">POST</span><span class="path">/api/deposit</span><span class="auth">free</span></h2>
+  <p>Mint a multi-use deposit macaroon. Pre-pay N sats once, spend across many <code>/api/intent</code> calls without a Lightning round-trip per call. The endpoint itself is free — payment happens when you settle the BOLT11 it returns.</p>
+
+  <h3>Request body</h3>
+  <pre><code>{
+  "sats": number      // required, 10–10000. 100 sats covers ~50 paid calls at 2 sats each.
+}</code></pre>
+
+  <h3>Response 200</h3>
+  <pre><code>{
+  "data": {
+    "macaroon":      string,    // "deposit_&lt;hex64&gt;"  — pass to /api/intent as bearer
+    "invoice":       string,    // BOLT11 to settle from your LN wallet
+    "payment_hash":  string,    // sha256(preimage), 64-char hex
+    "sats":          number,    // initial credit
+    "expires_at":    number,    // Unix seconds, 30 days from now
+    "ttl_sec":       number,    // 2592000
+    "usage_hint":    string
+  }
+}</code></pre>
+
+  <h3>Errors</h3>
+  <p><code>400 INVALID_PAYLOAD</code>, <code>503 L402_NOT_CONFIGURED</code>, <code>503 INTERNAL_ERROR</code>.</p>
+
+  <h3>Example</h3>
+  <pre><code>curl -s -X POST https://satrank.dev/api/deposit \
+  -H 'Content-Type: application/json' \
+  -d '{"sats":100}'
+# → {"data":{"macaroon":"deposit_d68a…","invoice":"lnbc1…","payment_hash":"35aef0…",…}}
+
+# Settle the invoice with any LN wallet → preimage returned.
+# Then on every subsequent /api/intent:
+#   Authorization: L402 deposit_d68a…:&lt;preimage_hex&gt;</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="get-deposit" class="endpoint">
+  <h2><span class="verb GET">GET</span><span class="path">/api/deposit/:macaroon_id</span><span class="auth">free</span></h2>
+  <p>Read remaining balance + activation status of a deposit macaroon. No auth — the <code>macaroon_id</code> is opaque enough to act as the read key.</p>
+
+  <h3>Path</h3>
+  <table>
+    <tr><th>param</th><th>shape</th></tr>
+    <tr><td class="acc">macaroon_id</td><td>64-char hex (or full <code>deposit_&lt;hex&gt;</code>; the prefix is stripped)</td></tr>
+  </table>
+
+  <h3>Response 200</h3>
+  <pre><code>{
+  "data": {
+    "macaroon_id":     string,
+    "sats_initial":    number,
+    "sats_remaining":  number,
+    "issued_at":       number,
+    "activated_at":    number | null,    // first call that succeeded
+    "expires_at":      number,
+    "activated":       boolean
+  }
+}</code></pre>
+
+  <h3>Errors</h3>
+  <p><code>400 INVALID_MACAROON_ID</code>, <code>404 NOT_FOUND</code>.</p>
+
+  <h3>Example</h3>
+  <pre><code>curl -s https://satrank.dev/api/deposit/d68a1fb9…
+# → {"data":{"sats_initial":100,"sats_remaining":80,"activated":true,…}}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="get-budget" class="endpoint">
+  <h2><span class="verb GET">GET</span><span class="path">/api/oracle/budget</span><span class="auth">free</span></h2>
+  <p>Last 24 hours of revenue (paid <code>/api/intent</code> + <code>/api/deposit</code> settlements) and paid-probe spend. Public transparency feed.</p>
+
+  <h3>Response 200</h3>
+  <pre><code>{
+  "data": {
+    "since":            number,    // Unix seconds, 24h ago
+    "revenue_sats":     number,
+    "probe_spend_sats": number,
+    "coverage_ratio":   number     // revenue / probe_spend, capped at 1.0 in the UI
+  }
+}</code></pre>
+
+  <h3>Example</h3>
+  <pre><code>curl -s https://satrank.dev/api/oracle/budget
+# → {"data":{"since":1778232492,"revenue_sats":116,"probe_spend_sats":1985,"coverage_ratio":0.058}}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="get-health" class="endpoint">
+  <h2><span class="verb GET">GET</span><span class="path">/health</span><span class="auth">free</span></h2>
+  <p>Liveness probe. Returns flat <code>{ "status": "ok" }</code> when the process is up. Used by Docker healthcheck.</p>
+
+  <h3>Response 200</h3>
+  <pre><code>{ "status": "ok" }</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="get-key" class="endpoint">
+  <h2><span class="verb GET">GET</span><span class="path">/.well-known/satrank-key</span><span class="auth">free</span></h2>
+  <p>Oracle's Schnorr public key. Use to verify Nostr kind 30782 trust assertions offline (no network round-trip needed once the key is cached).</p>
+
+  <h3>Response 200</h3>
+  <pre><code>{ "pubkey": "&lt;64-char hex Schnorr pubkey&gt;" }</code></pre>
+
+  <h3>Errors</h3>
+  <p><code>503</code> with <code>{"error":"oracle key not configured"}</code> if the operator hasn't set <code>NOSTR_PRIVATE_KEY</code>.</p>
+
+  <h3>Example</h3>
+  <pre><code>curl -s https://satrank.dev/.well-known/satrank-key
+# → {"pubkey":"5d11d46de1ba4d3295a33658df12eebb5384d6d6679f05b65fec3c86707de7d4"}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="machine">
+  <h2>Machine-readable spec</h2>
+  <p>OpenAPI 3.0 spec : <a href="/openapi.json">/openapi.json</a>. Drop into <code>openapi-typescript</code>, <code>oapi-codegen</code>, or any OpenAPI-aware client generator.</p>
+  <p>The spec covers all routes documented above with full request/response schemas. Servers list contains the production base URL ; override locally for self-hosters.</p>
+</section>
+
+<footer>
+  <div>
+    <a href="/">home</a>
+    &nbsp;·&nbsp;
+    <a href="/methodology">methodology</a>
+    &nbsp;·&nbsp;
+    <a href="/openapi.json">openapi</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/proofoftrust21/satrank" rel="noopener">github</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.npmjs.com/package/satrank-mcp" rel="noopener">npm</a>
+  </div>
+  <div>AGPL-3.0 · 2026</div>
+</footer>
+
+</main>
+</div>
+
+</body>
+</html>

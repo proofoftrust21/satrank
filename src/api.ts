@@ -1,16 +1,21 @@
-// SatRank V3 — HTTP API. Ten routes.
+// SatRank V3 — HTTP API. Twelve routes (3 doc + 9 functional).
 //
-//  1. GET  /                          — landing page (static HTML, no JS)
-//  2. GET  /methodology               — methodology page (static HTML, no JS)
-//  3. GET  /health                    — liveness
-//  4. GET  /.well-known/satrank-key   — oracle Schnorr pubkey
-//  5. POST /api/deposit               — mint multi-use deposit macaroon
-//  6. GET  /api/deposit/:macaroon_id  — read remaining balance
-//  7. POST /api/intent                — paid (2 sats via L402) ; ranked candidates
-//  8. GET  /api/services/:url_hash    — endpoint score snapshot
-//  9. GET  /api/services/categories   — list of known categories
-// 10. GET  /api/services/best         — top-3 per category
-// 11. GET  /api/oracle/budget         — last 24h revenue + paid-probe spend
+// Doc surface:
+//   GET  /                          — landing (static HTML)
+//   GET  /methodology               — methodology reference (static HTML)
+//   GET  /api                       — API reference (static HTML)
+//   GET  /openapi.json              — OpenAPI 3.0 spec (machine-readable)
+//
+// Functional surface:
+//   GET  /health                    — liveness
+//   GET  /.well-known/satrank-key   — oracle Schnorr pubkey
+//   POST /api/deposit               — mint multi-use deposit macaroon
+//   GET  /api/deposit/:macaroon_id  — read remaining balance
+//   POST /api/intent                — paid (2 sats via L402) ; ranked candidates
+//   GET  /api/services/:url_hash    — endpoint score snapshot
+//   GET  /api/services/categories   — list of known categories
+//   GET  /api/services/best         — top-3 per category (5-min cache)
+//   GET  /api/oracle/budget         — last 24h revenue + paid-probe spend
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -290,24 +295,38 @@ export function buildApp(): express.Express {
   app.use(express.json({ limit: '64kb' }));
   app.use(globalLimiter);
 
-  // Static pages. Read once from disk at boot — sub-millisecond reply.
-  // The build script copies src/*.html to dist/*.html alongside the compiled
-  // JS, so paths resolve the same way in dev (tsx) and prod.
+  // Static pages + machine spec. Read once from disk at boot — sub-millisecond
+  // reply. The build script copies src/*.html and src/openapi.json to dist/
+  // alongside the compiled JS, so paths resolve the same way in dev (tsx)
+  // and prod.
   const distDir = path.dirname(fileURLToPath(import.meta.url));
   const landingHtml = fs.readFileSync(path.join(distDir, 'landing.html'), 'utf8');
   const methodologyHtml = fs.readFileSync(path.join(distDir, 'methodology.html'), 'utf8');
-  app.get('/', (_req, res) => {
-    res.set('Content-Type', 'text/html; charset=utf-8');
+  const apiReferenceHtml = fs.readFileSync(path.join(distDir, 'api-reference.html'), 'utf8');
+  const openapiJson = fs.readFileSync(path.join(distDir, 'openapi.json'), 'utf8');
+
+  function serveHtml(html: string) {
+    return (_req: Request, res: Response): void => {
+      res.set('Content-Type', 'text/html; charset=utf-8');
+      res.set('Cache-Control', 'public, max-age=300');
+      res.send(html);
+    };
+  }
+
+  app.get('/', serveHtml(landingHtml));
+  app.get('/methodology', serveHtml(methodologyHtml));
+  app.get('/api', serveHtml(apiReferenceHtml));
+  app.get('/openapi.json', (_req, res) => {
+    res.set('Content-Type', 'application/json; charset=utf-8');
     res.set('Cache-Control', 'public, max-age=300');
-    res.send(landingHtml);
+    res.send(openapiJson);
   });
-  app.get('/methodology', (_req, res) => {
-    res.set('Content-Type', 'text/html; charset=utf-8');
-    res.set('Cache-Control', 'public, max-age=300');
-    res.send(methodologyHtml);
-  });
-  // V1 URL had a `.html` extension. Redirect for any external link in the wild.
+
+  // V1 URL aliases — keep external backlinks alive.
   app.get('/methodology.html', (_req, res) => res.redirect(301, '/methodology'));
+  app.get('/docs', (_req, res) => res.redirect(301, '/api'));
+  app.get('/docs.html', (_req, res) => res.redirect(301, '/api'));
+  app.get('/api/docs', (_req, res) => res.redirect(301, '/api'));
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   app.get('/.well-known/satrank-key', (_req, res) => {

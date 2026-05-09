@@ -1,0 +1,442 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "SatRank V3",
+    "version": "3.0.0",
+    "description": "Lightning trust oracle for AI agents on L402. Bitcoin-pure. Crawls L402 endpoints, probes them across 5 stages, maintains streaming Beta(α,β) posteriors, and ranks candidates on intent. Two paid routes via L402 (POST /api/intent, POST /api/deposit) ; eight free reads.",
+    "license": {
+      "name": "AGPL-3.0",
+      "url": "https://www.gnu.org/licenses/agpl-3.0.html"
+    },
+    "contact": {
+      "name": "SatRank",
+      "url": "https://satrank.dev"
+    }
+  },
+  "servers": [
+    { "url": "https://satrank.dev", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "discovery", "description": "Find L402 endpoints" },
+    { "name": "credits", "description": "Multi-use deposit credits" },
+    { "name": "transparency", "description": "Public oracle metrics" },
+    { "name": "operational", "description": "Liveness + identity" }
+  ],
+  "paths": {
+    "/api/intent": {
+      "post": {
+        "tags": ["discovery"],
+        "summary": "Resolve a category + filters into ranked L402 candidates",
+        "description": "Paid 2 sats via L402. Returns up to `limit` candidates with full Bayesian breakdown.",
+        "security": [{ "L402SingleUse": [] }, { "L402Deposit": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/IntentRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked candidates",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IntentResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidPayload" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/services/best": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "Top-3 candidates per active category (5-min cached)",
+        "responses": {
+          "200": {
+            "description": "Map of category → 3 IntentCandidate",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ServicesBestResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/services/categories": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "Active categories with counts",
+        "responses": {
+          "200": {
+            "description": "Categories list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CategoriesResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/services/{url_hash}": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "Per-endpoint Bayesian score snapshot",
+        "parameters": [
+          {
+            "name": "url_hash",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "description": "sha256(url) hex"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Endpoint score",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "data": { "$ref": "#/components/schemas/IntentCandidate" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidPayload" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/deposit": {
+      "post": {
+        "tags": ["credits"],
+        "summary": "Mint a multi-use deposit macaroon",
+        "description": "Pre-pay N sats once ; spend across many /api/intent calls without a Lightning round-trip per call. Returns a BOLT11 to settle.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DepositRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Deposit minted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DepositResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidPayload" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/deposit/{macaroon_id}": {
+      "get": {
+        "tags": ["credits"],
+        "summary": "Read deposit macaroon balance + activation",
+        "parameters": [
+          {
+            "name": "macaroon_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "64-char hex (with or without `deposit_` prefix — the prefix is stripped)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deposit state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DepositStateResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidPayload" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/oracle/budget": {
+      "get": {
+        "tags": ["transparency"],
+        "summary": "Last 24h revenue + paid-probe spend",
+        "responses": {
+          "200": {
+            "description": "Budget snapshot",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BudgetResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["operational"],
+        "summary": "Liveness probe",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "enum": ["ok"] } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/satrank-key": {
+      "get": {
+        "tags": ["operational"],
+        "summary": "Oracle Schnorr public key for offline assertion verify",
+        "responses": {
+          "200": {
+            "description": "Pubkey",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "pubkey": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+                }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "L402SingleUse": {
+        "type": "http",
+        "scheme": "L402",
+        "description": "Single-use bearer of shape `Authorization: L402 <macaroon_b64>:<preimage_hex>`. Macaroon comes from a 402 challenge ; preimage from paying the BOLT11 invoice in that challenge. TTL 10 min."
+      },
+      "L402Deposit": {
+        "type": "http",
+        "scheme": "L402",
+        "description": "Multi-use bearer of shape `Authorization: L402 deposit_<id>:<preimage_hex>`. Mint via POST /api/deposit. TTL 30 days, decrements per call."
+      }
+    },
+    "schemas": {
+      "IntentRequest": {
+        "type": "object",
+        "required": ["category"],
+        "properties": {
+          "category":       { "type": "string", "minLength": 1, "maxLength": 64 },
+          "keywords":       { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 40 }, "maxItems": 10 },
+          "budget_sats":    { "type": "integer", "minimum": 1, "maximum": 10000 },
+          "max_latency_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+          "optimize":       { "type": "string", "enum": ["p_success", "latency", "cost"], "default": "p_success" },
+          "limit":          { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }
+        }
+      },
+      "IntentResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "candidates": { "type": "array", "items": { "$ref": "#/components/schemas/IntentCandidate" } },
+              "count":      { "type": "integer" }
+            }
+          }
+        }
+      },
+      "IntentCandidate": {
+        "type": "object",
+        "properties": {
+          "url":               { "type": "string", "format": "uri" },
+          "url_hash":          { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "category":          { "type": "string" },
+          "name":              { "type": "string" },
+          "description":       { "type": "string" },
+          "http_method":       { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE"] },
+          "price_sats":        { "type": "integer", "minimum": 0 },
+          "bayesian":          { "$ref": "#/components/schemas/Posterior" },
+          "stages": {
+            "type": "object",
+            "properties": {
+              "challenge": { "$ref": "#/components/schemas/StagePosterior" },
+              "invoice":   { "$ref": "#/components/schemas/StagePosterior" },
+              "payment":   { "$ref": "#/components/schemas/StagePosterior" },
+              "delivery":  { "$ref": "#/components/schemas/StagePosterior" },
+              "quality":   { "$ref": "#/components/schemas/StagePosterior" }
+            }
+          },
+          "median_latency_ms": { "type": "integer", "nullable": true },
+          "is_meaningful":     { "type": "boolean" }
+        }
+      },
+      "Posterior": {
+        "type": "object",
+        "properties": {
+          "p_success": { "type": "number", "minimum": 0, "maximum": 1 },
+          "ci95":      { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+          "n_obs":     { "type": "integer", "minimum": 0 }
+        }
+      },
+      "StagePosterior": {
+        "type": "object",
+        "properties": {
+          "p_success": { "type": "number", "minimum": 0, "maximum": 1 },
+          "ci95":      { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+          "n":         { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ServicesBestResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": { "$ref": "#/components/schemas/IntentCandidate" },
+              "maxItems": 3
+            }
+          }
+        }
+      },
+      "CategoriesResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "category": { "type": "string" },
+                "count":    { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      },
+      "DepositRequest": {
+        "type": "object",
+        "required": ["sats"],
+        "properties": {
+          "sats": { "type": "integer", "minimum": 10, "maximum": 10000, "description": "Initial credit. 100 sats covers ~50 calls at 2 sats each." }
+        }
+      },
+      "DepositResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "macaroon":     { "type": "string", "description": "deposit_<hex64>" },
+              "invoice":      { "type": "string", "description": "BOLT11 to settle" },
+              "payment_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "sats":         { "type": "integer" },
+              "expires_at":   { "type": "integer", "description": "Unix seconds" },
+              "ttl_sec":      { "type": "integer", "example": 2592000 },
+              "usage_hint":   { "type": "string" }
+            }
+          }
+        }
+      },
+      "DepositStateResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "macaroon_id":    { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "sats_initial":   { "type": "integer" },
+              "sats_remaining": { "type": "integer" },
+              "issued_at":      { "type": "integer" },
+              "activated_at":   { "type": "integer", "nullable": true },
+              "expires_at":     { "type": "integer" },
+              "activated":      { "type": "boolean" }
+            }
+          }
+        }
+      },
+      "BudgetResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "since":            { "type": "integer", "description": "Unix seconds, 24h ago" },
+              "revenue_sats":     { "type": "integer" },
+              "probe_spend_sats": { "type": "integer" },
+              "coverage_ratio":   { "type": "number", "minimum": 0 }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" },
+              "issues":  { "type": "array", "items": { "type": "object" }, "description": "Zod issues for INVALID_PAYLOAD" }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "InvalidPayload": {
+        "description": "INVALID_PAYLOAD / INVALID_URL_HASH / INVALID_MACAROON_ID",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Unauthorized": {
+        "description": "DEPOSIT_AUTH_FAILED",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "PaymentRequired": {
+        "description": "PAYMENT_REQUIRED / PAYMENT_ALREADY_USED / DEPOSIT_INSUFFICIENT / DEPOSIT_EXPIRED",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "L402 challenge — only on PAYMENT_REQUIRED",
+            "schema": { "type": "string", "example": "L402 macaroon=\"<b64>\", invoice=\"lnbc...\"" }
+          },
+          "X-L402-Hint": {
+            "description": "Hint pointing to /api/deposit for multi-use credit",
+            "schema": { "type": "string" }
+          }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "NotFound": {
+        "description": "NOT_FOUND",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "RateLimited": {
+        "description": "RATE_LIMITED — global 120/min/IP, /api/intent additional 30/min/IP",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "ServiceUnavailable": {
+        "description": "L402_NOT_CONFIGURED / INTERNAL_ERROR",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    }
+  }
+}

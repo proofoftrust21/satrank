@@ -73,6 +73,7 @@
 <p>End-to-end success probability is the product of stage means. Every candidate ships a 95% credibility interval. The oracle's signed Nostr trust assertions (kind 30782) are <strong>offline-verifiable</strong> — agents cache them once and re-check without a network round-trip.</p>
 
 <h2>HTTP API</h2>
+<p>Full reference: <a href="/api">API page</a> · <a href="/openapi.json">OpenAPI 3.0 spec</a>.</p>
 <table>
 <tr><th>Route</th><th>Auth</th><th>What</th></tr>
 <tr><td>POST /api/intent</td><td>L402 paid</td><td>2 sats. Returns ranked candidates filtered by category / budget / max_latency_ms / optimize.</td></tr>
@@ -148,6 +149,10 @@ curl -s https://satrank.dev/api/deposit/&lt;id&gt;</code></pre>
 <footer>
   <div>
     <a href="/methodology">methodology</a>
+    &nbsp;·&nbsp;
+    <a href="/api">api</a>
+    &nbsp;·&nbsp;
+    <a href="/openapi.json">openapi</a>
     &nbsp;·&nbsp;
     <a href="https://github.com/proofoftrust21/satrank">github</a>
     &nbsp;·&nbsp;
