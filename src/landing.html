@@ -139,12 +139,16 @@ curl -s https://satrank.dev/api/deposit/&lt;id&gt;</code></pre>
 </ul>
 <p>p_stage = α / (α + β). End-to-end p_e2e = ∏ p_stage. 95% credibility interval via Wilson's closed-form approximation. Ranking by p_e2e (default), latency, or cost — agents pick their objective.</p>
 
+<p>Full technical reference: <a href="/methodology">methodology page</a> — catalog sources, five-stage decomposition, Bayesian update, Wilson interval, ranking filters, L402 paid gate, deposit credit atomicity, Nostr kind 30782, security hardening.</p>
+
 <h2>Lightning-pure</h2>
 
 <p>SatRank only emits and consumes <strong>Lightning sats</strong>. No x402, no Base, no EVM. This is doctrine, not configuration. The trust layer is the same currency the payment layer settles in.</p>
 
 <footer>
   <div>
+    <a href="/methodology">methodology</a>
+    &nbsp;·&nbsp;
     <a href="https://github.com/proofoftrust21/satrank">github</a>
     &nbsp;·&nbsp;
     <a href="https://www.npmjs.com/package/satrank-mcp">npm</a>

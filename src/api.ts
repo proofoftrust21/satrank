@@ -1,15 +1,16 @@
-// SatRank V3 — HTTP API. Nine routes.
+// SatRank V3 — HTTP API. Ten routes.
 //
 //  1. GET  /                          — landing page (static HTML, no JS)
-//  2. GET  /health                    — liveness
-//  3. GET  /.well-known/satrank-key   — oracle Schnorr pubkey
-//  4. POST /api/deposit               — mint multi-use deposit macaroon
-//  5. GET  /api/deposit/:macaroon_id  — read remaining balance
-//  6. POST /api/intent                — paid (2 sats via L402) ; ranked candidates
-//  7. GET  /api/services/:url_hash    — endpoint score snapshot
-//  8. GET  /api/services/categories   — list of known categories
-//  9. GET  /api/services/best         — top-3 per category
-// 10. GET  /api/oracle/budget         — last 24h revenue + paid-probe spend
+//  2. GET  /methodology               — methodology page (static HTML, no JS)
+//  3. GET  /health                    — liveness
+//  4. GET  /.well-known/satrank-key   — oracle Schnorr pubkey
+//  5. POST /api/deposit               — mint multi-use deposit macaroon
+//  6. GET  /api/deposit/:macaroon_id  — read remaining balance
+//  7. POST /api/intent                — paid (2 sats via L402) ; ranked candidates
+//  8. GET  /api/services/:url_hash    — endpoint score snapshot
+//  9. GET  /api/services/categories   — list of known categories
+// 10. GET  /api/services/best         — top-3 per category
+// 11. GET  /api/oracle/budget         — last 24h revenue + paid-probe spend
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -289,15 +290,21 @@ export function buildApp(): express.Express {
   app.use(express.json({ limit: '64kb' }));
   app.use(globalLimiter);
 
-  // Static landing page. Read once from disk at boot — sub-millisecond reply.
-  // The build script copies src/landing.html to dist/landing.html alongside
-  // the compiled JS, so the file resolves the same way in dev (tsx) and prod.
-  const landingPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'landing.html');
-  const landingHtml = fs.readFileSync(landingPath, 'utf8');
+  // Static pages. Read once from disk at boot — sub-millisecond reply.
+  // The build script copies src/*.html to dist/*.html alongside the compiled
+  // JS, so paths resolve the same way in dev (tsx) and prod.
+  const distDir = path.dirname(fileURLToPath(import.meta.url));
+  const landingHtml = fs.readFileSync(path.join(distDir, 'landing.html'), 'utf8');
+  const methodologyHtml = fs.readFileSync(path.join(distDir, 'methodology.html'), 'utf8');
   app.get('/', (_req, res) => {
     res.set('Content-Type', 'text/html; charset=utf-8');
     res.set('Cache-Control', 'public, max-age=300');
     res.send(landingHtml);
+  });
+  app.get('/methodology', (_req, res) => {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=300');
+    res.send(methodologyHtml);
   });
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));

@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SatRank · Methodology</title>
+<meta name="description" content="Technical reference for SatRank V3: how the oracle crawls, probes, scores, and ranks L402 endpoints. Bayesian Beta posteriors per stage, Wilson CI95, multiplicative end-to-end success.">
+<meta name="theme-color" content="#0a0c10">
+<style>
+  :root {
+    --bg: #0a0c10;
+    --fg: #d8dce5;
+    --fg-dim: #8b93a3;
+    --accent: #f7931a;
+    --accent-dim: #b46813;
+    --code-bg: #11141a;
+    --border: #1f242d;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.65;
+  }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+  a:hover { border-bottom-color: var(--accent); }
+  a.plain { border-bottom: 0; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10,12,16,0.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  }
+  .topbar a { font-size: 13px; }
+  .brand { color: var(--accent); font-weight: 600; }
+  .topbar-links a { margin-left: 16px; color: var(--fg-dim); border-bottom: 0; }
+  .topbar-links a:hover { color: var(--accent); }
+
+  .layout { max-width: 1100px; margin: 0 auto; padding: 24px; display: grid; grid-template-columns: 220px 1fr; gap: 32px; }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } .toc { position: static !important; max-height: none !important; } }
+
+  .toc {
+    position: sticky; top: 64px; align-self: start;
+    max-height: calc(100vh - 88px); overflow-y: auto;
+    font-size: 12px; line-height: 1.8;
+    padding-right: 8px;
+  }
+  .toc-heading { color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; margin: 16px 0 4px; }
+  .toc-heading:first-child { margin-top: 0; }
+  .toc a { display: block; color: var(--fg-dim); border-bottom: 0; padding: 1px 0; }
+  .toc a:hover { color: var(--accent); }
+
+  main { min-width: 0; }
+  header.doc { margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 24px; margin: 0 0 4px; color: var(--accent); font-weight: 600; }
+  .sub { color: var(--fg-dim); font-size: 13px; }
+  .pill { display: inline-block; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--fg-dim); margin-right: 6px; }
+
+  section { margin: 36px 0; }
+  h2 { font-size: 16px; margin: 0 0 12px; color: var(--accent); font-weight: 600; padding-top: 8px; }
+  h3 { font-size: 14px; color: var(--fg); margin: 24px 0 8px; font-weight: 600; }
+  p { margin: 8px 0; }
+
+  pre, code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  code { padding: 1px 6px; font-size: 13px; }
+  pre { padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 8px 0 16px; }
+  pre code { padding: 0; border: 0; background: transparent; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0 16px; }
+  td, th { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px dotted var(--border); vertical-align: top; }
+  th { color: var(--fg-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  td.acc { color: var(--accent); white-space: nowrap; }
+  td.dim { color: var(--fg-dim); }
+
+  ul, ol { padding-left: 20px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  .formula { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin: 8px 0; text-align: center; font-size: 14px; }
+
+  footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="/" class="brand plain">SatRank</a>
+  <div class="topbar-links">
+    <a href="/">Home</a>
+    <a href="https://github.com/proofoftrust21/satrank" rel="noopener">GitHub</a>
+    <a href="https://www.npmjs.com/package/satrank-mcp" rel="noopener">npm</a>
+  </div>
+</div>
+
+<div class="layout">
+
+<aside class="toc" aria-label="Table of contents">
+  <div class="toc-heading">Foundations</div>
+  <a href="#overview">1. Overview</a>
+  <a href="#anti-goals">2. Anti-goals</a>
+  <div class="toc-heading">Pipeline</div>
+  <a href="#catalog">3. Catalog</a>
+  <a href="#stages">4. Five-stage decomposition</a>
+  <a href="#probe">5. Probing</a>
+  <div class="toc-heading">Trust model</div>
+  <a href="#bayes">6. Bayesian scoring</a>
+  <a href="#wilson">7. Wilson interval</a>
+  <a href="#meaningful">8. Meaningfulness</a>
+  <div class="toc-heading">Surface</div>
+  <a href="#ranking">9. Ranking</a>
+  <a href="#api">10. HTTP API</a>
+  <a href="#l402">11. L402 paid gate</a>
+  <a href="#deposit">12. Deposit credits</a>
+  <div class="toc-heading">Distribution</div>
+  <a href="#nostr">13. Nostr assertions</a>
+  <a href="#mcp">14. MCP surface</a>
+  <div class="toc-heading">Integrity</div>
+  <a href="#hardening">15. Security hardening</a>
+  <a href="#limits">16. Known limitations</a>
+</aside>
+
+<main>
+
+<header class="doc">
+  <h1>Methodology</h1>
+  <div class="sub">How SatRank V3 crawls, probes, scores, and ranks L402 endpoints. Every formula and constant below is extracted from <code>github.com/proofoftrust21/satrank</code>. ~1600 LOC, 14 source files, 9 Postgres tables.</div>
+  <div style="margin-top: 12px;">
+    <span class="pill">v3.0</span>
+    <span class="pill">Beta(α,β) per stage</span>
+    <span class="pill">Wilson CI95</span>
+    <span class="pill">Bitcoin-pure</span>
+  </div>
+</header>
+
+<!-- ============================================================ -->
+<section id="overview">
+  <h2>1. Overview</h2>
+  <p>SatRank is a <strong>trust oracle</strong> for L402 endpoints on Bitcoin Lightning. It crawls a catalogue of paid HTTP services, probes each one across five conditional stages, and maintains a streaming Bayesian posterior per <code>(endpoint, stage)</code> pair. Agents query a category + budget + SLA and receive the top-K candidates ranked by end-to-end success probability, with per-stage breakdown and 95% credibility intervals.</p>
+  <p>The oracle does not pay endpoints on the agent's behalf. It does not custody funds. It does not maintain a bond pool, an audit chain, or a fulfill proxy. It is a <strong>discovery + scoring layer</strong> that sits BEFORE the payment hop.</p>
+</section>
+
+<section id="anti-goals">
+  <h2>2. Anti-goals</h2>
+  <p>V3 is a deliberate compression of earlier prototypes. The following capabilities, all present in V1 / V2, are <strong>not</strong> in V3:</p>
+  <ul>
+    <li><strong>No fulfill proxy.</strong> Agents pay endpoints with their own Lightning wallet.</li>
+    <li><strong>No operator hierarchy.</strong> The catalogue is unowned ; nobody claims endpoints.</li>
+    <li><strong>No federation.</strong> No peer-oracle discovery (kind 30784 dropped), no cross-oracle aggregation.</li>
+    <li><strong>No calibration history publication.</strong> kind 30783 dropped.</li>
+    <li><strong>No crowd reports.</strong> kind 7402 dropped — single source of truth is the oracle's own probes.</li>
+    <li><strong>No NIP-90 DVM surface.</strong> Three transports collapsed to one (HTTP) plus the MCP wrapper.</li>
+    <li><strong>No deterministic scoring version.</strong> The score is the streaming Beta posterior — there is no "v18" or "v26".</li>
+    <li><strong>No SDK packages.</strong> Three HTTP routes you can curl. The MCP package wraps them ; nothing else.</li>
+  </ul>
+  <p>What remains : <strong>a Bayesian probe ledger and a ranking endpoint</strong>. That is the entirety of V3.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="catalog">
+  <h2>3. Catalog</h2>
+  <p>The crawler ingests endpoints from three sources, deduplicated by <code>url_hash = sha256(url)</code>:</p>
+  <table>
+    <tr><th>Source</th><th>Shape</th><th>How</th></tr>
+    <tr><td class="acc">l402.directory</td><td>JSON</td><td><code>GET /api/services</code> — flattens services × endpoints into one row per (service, endpoint) pair. URLs containing <code>{template}</code> placeholders are skipped.</td></tr>
+    <tr><td class="acc">l402-index RSS</td><td>RSS feed</td><td>Aggregation feed published by the L402 community ; parsed for <code>&lt;link&gt;</code> + <code>&lt;category&gt;</code> tags.</td></tr>
+    <tr><td class="acc">DNS TXT</td><td><code>_l402.&lt;host&gt;</code></td><td>Operator self-publish. The TXT value carries a JSON descriptor (<code>name</code>, <code>category</code>, <code>price_sats</code>, <code>http_method</code>).</td></tr>
+  </table>
+
+  <h3>Storage shape</h3>
+  <pre><code>service_endpoints (
+  url_hash       TEXT PRIMARY KEY,
+  url            TEXT UNIQUE,
+  category       TEXT,                      -- primary tag (= category_tags[0])
+  category_tags  TEXT[] DEFAULT '{}',       -- multi-cat, GIN-indexed
+  name           TEXT,
+  description    TEXT,
+  http_method    TEXT CHECK (http_method IN ('GET','POST','PUT','DELETE')),
+  price_sats     INTEGER,
+  source         TEXT,                      -- 'l402_directory' | 'rss' | 'dns'
+  added_at       BIGINT,
+  last_probe_at  BIGINT
+)</code></pre>
+
+  <p>The <code>category_tags</code> array is GIN-indexed so the ranking query <code>$1 = ANY(category_tags)</code> stays O(log n). A service legitimately listed under <code>{video, streaming, content}</code> matches any of those in <code>/api/intent</code>.</p>
+
+  <h3>Cadence</h3>
+  <p>The crawler runs every <code>CRAWLER_INTERVAL_SEC</code> seconds (default <strong>900s</strong> = 15 min). Each tick probes endpoints whose <code>last_probe_at</code> is older than the interval, capped at <code>LIMIT 200</code>. At cadence 15 min, every endpoint reaches <code>n_obs ≈ 10</code> in 2.5 hours.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="stages">
+  <h2>4. Five-stage decomposition</h2>
+  <p>Every probe writes one row to <code>endpoint_observations</code>. The L402 contract decomposes into five conditional stages — each conditioned on the previous succeeding:</p>
+  <table>
+    <tr><th>#</th><th>Stage</th><th>What is observed</th></tr>
+    <tr><td class="dim">1</td><td class="acc">challenge</td><td>HTTP responds 402 with <code>WWW-Authenticate: L402 macaroon=&lt;b64&gt; invoice=&lt;bolt11&gt;</code>. Confirms the endpoint is L402-compliant and reachable.</td></tr>
+    <tr><td class="dim">2</td><td class="acc">invoice</td><td>The BOLT11 returned in the challenge decodes successfully and prices ≤ <code>PROBE_MAX_INVOICE_SATS</code> (default 1000 sats).</td></tr>
+    <tr><td class="dim">3</td><td class="acc">payment</td><td>The probe pays the invoice via local LND (paid probes only). HTLC settles within <code>PROBE_FETCH_TIMEOUT_MS</code> (default 15s).</td></tr>
+    <tr><td class="dim">4</td><td class="acc">delivery</td><td>The retry with the preimage as bearer returns 2xx with a non-empty body within budget.</td></tr>
+    <tr><td class="dim">5</td><td class="acc">quality</td><td>The body parses as expected (heuristic per content-type — JSON valid, etc.). Body size capped at 256 KB to prevent OOM from a malicious endpoint streaming GB.</td></tr>
+  </table>
+  <p>A probe stops at the first failed stage. A 401-without-challenge counts as <code>challenge_ok = false</code> only — no other stage is observed. A non-paying probe (free probe) records stages 1–2 only ; <code>payment_ok</code> / <code>delivery_ok</code> / <code>quality_ok</code> are <code>NULL</code> on that row.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="probe">
+  <h2>5. Probing</h2>
+  <p>Two probe modes coexist:</p>
+
+  <h3>5.1 Free probe (default)</h3>
+  <p>The probe poses a fresh GET / POST as configured in <code>http_method</code>, expects the L402 challenge, decodes the invoice, and stops. Records <code>challenge_ok</code> + <code>invoice_ok</code> only. Costs zero sats.</p>
+
+  <h3>5.2 Paid probe (opt-in)</h3>
+  <p>When <code>PAID_PROBE_ENABLED=true</code> AND a Lightning invoice is below <code>PROBE_MAX_INVOICE_SATS</code> AND the cumulative paid-probe spend in the current UTC day is under <code>PAID_PROBE_DAILY_BUDGET_SATS</code> (default 2000 sats), the probe pays the invoice via LND and continues through stages 3-4-5. Live spend visible at <code>/api/oracle/budget</code>.</p>
+
+  <h3>5.3 SSRF guard</h3>
+  <p>Every probe URL passes through <code>assertSafeUrl()</code> (<code>src/ssrf.ts</code>). Rejects:</p>
+  <ul>
+    <li>Non-HTTPS schemes (only <code>https://</code> is probed).</li>
+    <li>RFC1918 private ranges : <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code>.</li>
+    <li>Loopback : <code>127.0.0.0/8</code>, <code>::1</code>.</li>
+    <li>Link-local : <code>169.254.0.0/16</code>, <code>fe80::/10</code>.</li>
+    <li>IPv6 ULA : <code>fc00::/7</code> (fc, fd prefixes).</li>
+    <li>Multicast : <code>ff00::/8</code>.</li>
+  </ul>
+  <p>This stops a malicious catalog entry from pivoting probes into the host's internal network.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="bayes">
+  <h2>6. Bayesian scoring</h2>
+  <p>For each <code>(url_hash, stage)</code> pair, SatRank maintains a streaming Beta posterior with uniform prior <code>α₀ = β₀ = 1</code> (Beta(1,1) is the maximum-entropy prior on [0,1]).</p>
+  <p>On every observation:</p>
+  <div class="formula">success → α += 1 &nbsp;|&nbsp; failure → β += 1</div>
+  <p>Stage mean (point estimate of the success probability):</p>
+  <div class="formula">p<sub>stage</sub> = α / (α + β)</div>
+  <p>End-to-end success probability — multiplicative, assuming stage independence (true enough since stages are sequential and represent distinct failure modes):</p>
+  <div class="formula">p<sub>e2e</sub> = ∏<sub>s ∈ stages</sub> p<sub>s</sub></div>
+  <p>The independence assumption is conservative : in practice the stages are positively correlated (an endpoint that fails delivery also tends to fail quality), so the multiplicative bound is a slight under-estimate of the true joint success rate. We treat that as a feature : ranking by p_e2e gives bias-toward-evidence.</p>
+  <p>Storage shape:</p>
+  <pre><code>endpoint_posteriors (
+  url_hash    TEXT,
+  stage       TEXT,         -- 'challenge'|'invoice'|'payment'|'delivery'|'quality'
+  alpha       DOUBLE PRECISION DEFAULT 1.0,
+  beta        DOUBLE PRECISION DEFAULT 1.0,
+  n_obs       INTEGER DEFAULT 0,
+  PRIMARY KEY (url_hash, stage)
+)</code></pre>
+  <p>The update is one UPSERT per stage per observation, all wrapped in a transaction with the parent <code>endpoint_observations</code> row. n_obs reported back to consumers strips the prior : <code>n = round(α + β − 2)</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="wilson">
+  <h2>7. Wilson interval (CI95)</h2>
+  <p>Each per-stage posterior ships a 95% credibility interval. SatRank uses Wilson's closed-form approximation rather than the inverse-Beta CDF — no special functions, no GSL dependency, sub-microsecond evaluation:</p>
+  <div class="formula">
+    p̂ = α / (α + β) , &nbsp; n = α + β , &nbsp; z = 1.95996<br>
+    center = (p̂ + z²/2n) / (1 + z²/n)<br>
+    margin = z · √(p̂(1−p̂)/n + z²/4n²) / (1 + z²/n)<br>
+    CI<sub>95</sub> = [center − margin, center + margin] ∩ [0, 1]
+  </div>
+  <p>Wilson is preferred over the normal-approximation Wald interval because it stays inside [0, 1] for boundary cases (p̂ = 0 or p̂ = 1) without ad-hoc clamping. For α + β < 2 the function returns <code>[0, 1]</code> — total ignorance.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="meaningful">
+  <h2>8. Meaningfulness</h2>
+  <p>Every ranked candidate carries an <code>is_meaningful</code> flag. It is true iff the <strong>challenge</strong> stage has at least <code>MEANINGFUL_N_OBS_MIN</code> observations (default <strong>3</strong>).</p>
+  <p>The challenge stage is the only one observed on every probe (free or paid), so its n_obs converges fastest. Earlier versions of this rule required all five stages to clear the threshold ; that meant endpoints with broken delivery (very common in the wild) stayed marked unmeaningful even when SatRank had reliable evidence about their L402 surface. The current rule treats <code>is_meaningful</code> as <em>"we have enough challenge-stage evidence to say something about this endpoint"</em>. p_e2e remains the honest end-to-end product, separately.</p>
+  <p>Agents are advised to skip candidates with <code>is_meaningful=false</code> — their score is dominated by the prior, not data.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="ranking">
+  <h2>9. Ranking</h2>
+  <p>Input shape (Zod-validated):</p>
+  <pre><code>{
+  category:       string,                                  // required
+  budget_sats?:   number,                                  // filter price_sats ≤ budget
+  max_latency_ms?: number,                                 // filter median_latency ≤ max
+  optimize?:      'p_success' | 'latency' | 'cost',        // default 'p_success'
+  limit?:         number                                   // default 10, cap 50
+}</code></pre>
+
+  <h3>Filter</h3>
+  <ol>
+    <li>SQL pre-filter : <code>$1 = ANY(category_tags) AND price_sats ≤ budget_sats</code>, GIN-indexed, hard <code>LIMIT 200</code>.</li>
+    <li>Score each match via <code>scoreEndpoint(url_hash)</code> — loads all 5 posteriors + median latency.</li>
+    <li>Latency post-filter : drop candidates with <code>median_latency_ms &gt; max_latency_ms</code> (NULL latency passes through ; an endpoint never probed for latency is not penalized for it).</li>
+  </ol>
+
+  <h3>Sort</h3>
+  <table>
+    <tr><th>optimize=</th><th>Sort key</th></tr>
+    <tr><td class="acc">p_success</td><td>p_e2e descending (default)</td></tr>
+    <tr><td class="acc">latency</td><td>median_latency_ms ascending (NULL → +∞, i.e. last)</td></tr>
+    <tr><td class="acc">cost</td><td>price_sats ascending</td></tr>
+  </table>
+  <p>No composite score, no weighted blend. Agents pick one objective ; SatRank doesn't editorialize.</p>
+
+  <h3>Median latency</h3>
+  <p>Computed from the last 50 observations with <code>latency_ms &gt; 0</code>, sorted, middle value. A 50-sample median is cheap (single SQL query) and stable enough at the cadence the ranking endpoint serves.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="api">
+  <h2>10. HTTP API</h2>
+  <p>Nine routes. Express on a single port (3000), proxied through nginx (443) with TLS 1.2/1.3. <code>trust proxy = 1</code> so rate-limit keys honor <code>X-Forwarded-For</code>.</p>
+  <table>
+    <tr><th>Route</th><th>Auth</th><th>Rate</th></tr>
+    <tr><td class="acc">GET /</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">GET /health</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">GET /.well-known/satrank-key</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">GET /api/services/categories</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">GET /api/services/best</td><td class="dim">none, 5-min cache</td><td>120/min</td></tr>
+    <tr><td class="acc">GET /api/services/:url_hash</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">GET /api/oracle/budget</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">GET /api/deposit/:macaroon_id</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">POST /api/deposit</td><td class="dim">none</td><td>120/min</td></tr>
+    <tr><td class="acc">POST /api/intent</td><td class="dim">L402 paid 2 sats</td><td>30/min + 120/min</td></tr>
+  </table>
+  <p>Body cap : 64 KB at Express, 16 KB at nginx (defense-in-depth). Security headers : <code>HSTS</code> (max-age 1y), <code>X-Content-Type-Options: nosniff</code>, <code>X-Frame-Options: DENY</code>, <code>Referrer-Policy: no-referrer</code>, <code>Permissions-Policy: geolocation=() microphone=() camera=()</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="l402">
+  <h2>11. L402 paid gate (single-use)</h2>
+  <p>The native L402 middleware sits in front of <code>POST /api/intent</code>. No <code>Authorization</code> header → 402 challenge :</p>
+  <pre><code>HTTP/1.1 402 Payment Required
+WWW-Authenticate: L402 macaroon="&lt;base64url&gt;", invoice="lnbc20n1p..."
+X-L402-Hint: multi-use credit available at POST /api/deposit</code></pre>
+  <p>The macaroon is a HMAC-signed token of shape <code>base64url(payment_hash:expires_at.hmac_sha256_hex)</code>, secret = <code>L402_MACAROON_SECRET</code> (server-side, hex 64). Verification is constant-time via <code>crypto.timingSafeEqual</code> — leaking byte-by-byte timing on signature compare is the classic mistake we explicitly avoid.</p>
+  <p>The agent pays the BOLT11 with their wallet, then replays the request with:</p>
+  <pre><code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage_hex&gt;</code></pre>
+  <p>The gate verifies (in order):</p>
+  <ol>
+    <li>Macaroon HMAC matches.</li>
+    <li>TTL not expired (10-min default).</li>
+    <li><code>sha256(preimage) === payment_hash</code>.</li>
+    <li>Single-use : the <code>(payment_hash)</code> hasn't been settled yet in <code>revenue_log</code>. INSERT-on-success makes replay impossible.</li>
+  </ol>
+  <p>Successful settle writes one row to <code>revenue_log</code>. Live revenue at <code>/api/oracle/budget</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="deposit">
+  <h2>12. Deposit credits (multi-use)</h2>
+  <p>For agents that will make many <code>/api/intent</code> calls in a window, the deposit primitive trades one Lightning round-trip per call for one round-trip per N calls. The L402 preimage doubles as a bearer secret for the macaroon's TTL.</p>
+
+  <pre><code># 1. Mint a 100-sat deposit (≈ 50 calls at 2 sats each). Free to call.
+curl -s -X POST https://satrank.dev/api/deposit \
+  -H 'Content-Type: application/json' \
+  -d '{"sats":100}'
+# → {macaroon: "deposit_&lt;id&gt;", invoice: "lnbc...", payment_hash: "..."}
+
+# 2. Pay the BOLT11 with any LN wallet.
+
+# 3. The preimage your wallet returns becomes the bearer.
+curl -s -X POST https://satrank.dev/api/intent \
+  -H 'Authorization: L402 deposit_&lt;id&gt;:&lt;preimage_hex&gt;' \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"data"}'
+
+# 4. Check remaining balance any time.
+curl -s https://satrank.dev/api/deposit/&lt;id&gt;</code></pre>
+
+  <h3>Atomicity</h3>
+  <p>Concurrent <code>/api/intent</code> calls against the same deposit are linearized by a single-statement <code>UPDATE … RETURNING</code>:</p>
+  <pre><code>UPDATE agent_credits
+   SET sats_remaining = sats_remaining - $price,
+       activated_at = COALESCE(activated_at, $now)
+ WHERE macaroon_id = $id
+   AND payment_hash = $sha256_preimage
+   AND expires_at &gt; $now
+   AND sats_remaining &gt;= $price
+RETURNING sats_remaining;</code></pre>
+  <p>Returns 0 rows iff: macaroon unknown / wrong preimage / expired / insufficient balance. The single statement is the entire transaction — no race window between SELECT and UPDATE.</p>
+  <p>TTL is 30 days from <code>issued_at</code>, regardless of activation. Latency on a cache-warm path measures 234–277 ms end-to-end (vs 3–7 s for a single-shot call that round-trips Lightning).</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="nostr">
+  <h2>13. Nostr trust assertions (kind 30782)</h2>
+  <p>For each scored endpoint, SatRank publishes a signed Nostr event of kind <strong>30782</strong> (NIP-33 addressable replaceable). The d-tag is <code>url_hash</code>, so each endpoint has at most one current assertion at any time across all relays.</p>
+
+  <pre><code>{
+  "kind": 30782,
+  "created_at": &lt;unix&gt;,
+  "tags": [
+    ["d", "&lt;url_hash&gt;"],
+    ["url", "&lt;url&gt;"],
+    ["category", "&lt;primary_tag&gt;"],
+    ["p_e2e", "0.812345"],
+    ["n_obs", "12"],
+    ["valid_until", "&lt;unix&gt;"]
+  ],
+  "content": "&lt;JSON: {url, url_hash, p_e2e, stages:{...}, n_obs, median_latency_ms, valid_until}&gt;",
+  "sig": "&lt;Schnorr signature&gt;"
+}</code></pre>
+
+  <p>Relays : <code>wss://relay.damus.io, wss://nos.lol, wss://nostr.mom</code> by default (configurable via <code>NOSTR_RELAYS</code>). Each <code>publish()</code> call connects with an 8-second timeout per relay so a slow relay can't block the cron.</p>
+
+  <h3>Offline verification</h3>
+  <p>Any agent can verify an assertion without contacting SatRank — Schnorr verification is purely local. The MCP tool <code>verify_assertion</code> does exactly this : checks the signature, the <code>id</code> matches the canonical event hash, and the <code>pubkey</code> matches the oracle published at <code>/.well-known/satrank-key</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="mcp">
+  <h2>14. MCP surface</h2>
+  <p>Three tools, ships verbatim to npm as <code>satrank-mcp</code>. Stdio transport, no HTTP server in the package itself — the MCP wrapper proxies to <code>SATRANK_API_BASE</code> (default <code>https://satrank.dev</code>).</p>
+  <table>
+    <tr><th>Tool</th><th>What</th><th>Cost</th></tr>
+    <tr><td class="acc">intent</td><td>Forwards POST /api/intent</td><td>2 sats</td></tr>
+    <tr><td class="acc">get_endpoint_score</td><td>Forwards GET /api/services/:url_hash</td><td>0</td></tr>
+    <tr><td class="acc">verify_assertion</td><td>Local Schnorr verify of a kind 30782 event</td><td>0</td></tr>
+  </table>
+  <p>Install : <code>claude mcp add satrank -- npx -y satrank-mcp</code></p>
+</section>
+
+<!-- ============================================================ -->
+<section id="hardening">
+  <h2>15. Security hardening</h2>
+  <p>The hardened V3 surface (post-audit 2026-05-09, commit <code>f22235b</code>) :</p>
+  <ul>
+    <li><strong>SSRF block</strong> on every outbound URL (catalog ingest + probe). Private IP / link-local / IPv6 ULA / multicast all rejected.</li>
+    <li><strong>L402 single-use</strong> via <code>revenue_log</code> + 600-second macaroon TTL. Preimage replay impossible.</li>
+    <li><strong>Timing-safe HMAC compare</strong> (<code>crypto.timingSafeEqual</code>) on macaroon verification.</li>
+    <li><strong>Rate-limit</strong> 120/min global + 30/min on <code>/api/intent</code>, both keyed on <code>X-Forwarded-For</code>.</li>
+    <li><strong>Body cap</strong> 64 KB at Express, 16 KB at nginx.</li>
+    <li><strong>Probe body cap</strong> 256 KB — streams stop reading past that, protects against malicious GB-streaming endpoints.</li>
+    <li><strong>Security headers</strong> set at nginx : HSTS, X-Content-Type-Options, X-Frame-Options DENY, Referrer-Policy no-referrer, Permissions-Policy denying geolocation/microphone/camera.</li>
+    <li><strong>5-minute cache</strong> on <code>/api/services/best</code> (DB-heavy endpoint).</li>
+    <li><strong>Schema CHECK</strong> on <code>http_method</code> at the table level — no SQL-injection pivot can write a non-allowlisted method.</li>
+    <li><strong>Read-only filesystem</strong> in container, <code>cap_drop: ALL</code>, <code>no-new-privileges</code>, non-root user (uid 1001).</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="limits">
+  <h2>16. Known limitations</h2>
+  <ul>
+    <li><strong>Catalog size.</strong> ~18 endpoints across 5 categories at the time of writing. The crawler discovers what l402.directory + RSS + DNS surface ; it does not synthesize endpoints.</li>
+    <li><strong>Prior dominates with low n_obs.</strong> An endpoint with n_obs &lt; 3 carries a posterior close to the Beta(1,1) prior. <code>is_meaningful</code> flags this honestly. Resolves with cadence × time.</li>
+    <li><strong>Latency-only ranking degenerate on free endpoints.</strong> Most catalog endpoints today are 0-sat ; <code>optimize=cost</code> doesn't discriminate between them. Add a budget filter or use <code>optimize=p_success</code>.</li>
+    <li><strong>Single-oracle topology.</strong> No federation, no peer cross-attestation. The accuracy claim rests on the oracle's own probe history. For falsifiability across operators, expect a future spec.</li>
+    <li><strong>Lightning-only.</strong> No x402, no Base, no EVM. By design.</li>
+    <li><strong>Body quality is heuristic.</strong> Stage 5 (<code>quality_ok</code>) does light validation — content-type matches, JSON parses, body non-empty. Schema-strict validation is endpoint-specific and out of scope.</li>
+  </ul>
+</section>
+
+<footer>
+  <div>
+    <a href="/">home</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/proofoftrust21/satrank" rel="noopener">github</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.npmjs.com/package/satrank-mcp" rel="noopener">npm</a>
+    &nbsp;·&nbsp;
+    <a href="/.well-known/satrank-key">oracle key</a>
+    &nbsp;·&nbsp;
+    <a href="/api/oracle/budget">budget</a>
+  </div>
+  <div>AGPL-3.0 · 2026</div>
+</footer>
+
+</main>
+</div>
+
+</body>
+</html>
