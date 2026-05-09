@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SatRank · API reference</title>
-<meta name="description" content="HTTP API reference for SatRank V3. Ten routes, L402 paid gate on POST /api/intent and POST /api/deposit, free reads everywhere else. JSON envelope, OpenAPI 3.0 spec available at /openapi.json.">
+<meta name="description" content="HTTP API reference for SatRank V3. Nine routes. POST /api/intent is the only L402-gated route (2 sats); the other eight are unauthenticated. JSON envelope, OpenAPI 3.0 spec at /openapi.json.">
 <meta name="theme-color" content="#0a0c10">
 <style>
   :root {
@@ -161,10 +161,10 @@
 
 <header class="doc">
   <h1>API reference</h1>
-  <div class="sub">Ten HTTP routes. Two paid via L402 (<code>POST /api/intent</code>, <code>POST /api/deposit</code>). Eight free reads. JSON envelope. Machine-readable spec at <a href="/openapi.json">/openapi.json</a>.</div>
+  <div class="sub">Nine HTTP routes. <code>POST /api/intent</code> is the only L402-gated route (2 sats per call). The other eight are unauthenticated — including <code>POST /api/deposit</code>, which returns a BOLT11 to settle out-of-band. JSON envelope. Machine-readable spec at <a href="/openapi.json">/openapi.json</a>.</div>
   <div style="margin-top: 12px;">
     <span class="pill">v3.0</span>
-    <span class="pill">10 routes</span>
+    <span class="pill">9 routes</span>
     <span class="pill">JSON</span>
     <span class="pill">L402</span>
   </div>

@@ -3,7 +3,7 @@
   "info": {
     "title": "SatRank V3",
     "version": "3.0.0",
-    "description": "Lightning trust oracle for AI agents on L402. Bitcoin-pure. Crawls L402 endpoints, probes them across 5 stages, maintains streaming Beta(α,β) posteriors, and ranks candidates on intent. Two paid routes via L402 (POST /api/intent, POST /api/deposit) ; eight free reads.",
+    "description": "Lightning trust oracle for AI agents on L402. Bitcoin-pure. Crawls L402 endpoints, probes them across 5 stages, maintains streaming Beta(α,β) posteriors, and ranks candidates on intent. Nine routes; POST /api/intent is the only L402-gated route (2 sats). The other eight are unauthenticated, including POST /api/deposit (which returns a BOLT11 invoice to settle out-of-band).",
     "license": {
       "name": "AGPL-3.0",
       "url": "https://www.gnu.org/licenses/agpl-3.0.html"

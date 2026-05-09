@@ -1,21 +1,23 @@
-// SatRank V3 — HTTP API. Twelve routes (3 doc + 9 functional).
+// SatRank V3 — HTTP API. Nine functional routes + four doc surfaces.
 //
-// Doc surface:
-//   GET  /                          — landing (static HTML)
-//   GET  /methodology               — methodology reference (static HTML)
-//   GET  /api                       — API reference (static HTML)
-//   GET  /openapi.json              — OpenAPI 3.0 spec (machine-readable)
+// Doc surfaces (static, read once at boot):
+//   GET  /                          — landing (HTML)
+//   GET  /methodology               — methodology reference (HTML)
+//   GET  /api                       — API reference (HTML)
+//   GET  /openapi.json              — OpenAPI 3.0 spec
 //
-// Functional surface:
+// Functional surface (the API, exactly nine routes):
 //   GET  /health                    — liveness
 //   GET  /.well-known/satrank-key   — oracle Schnorr pubkey
-//   POST /api/deposit               — mint multi-use deposit macaroon
+//   POST /api/intent                — paid (2 sats via L402) ; ranked candidates  [the only L402-gated route]
+//   POST /api/deposit               — mint multi-use deposit macaroon (free; returns BOLT11)
 //   GET  /api/deposit/:macaroon_id  — read remaining balance
-//   POST /api/intent                — paid (2 sats via L402) ; ranked candidates
 //   GET  /api/services/:url_hash    — endpoint score snapshot
 //   GET  /api/services/categories   — list of known categories
 //   GET  /api/services/best         — top-3 per category (5-min cache)
 //   GET  /api/oracle/budget         — last 24h revenue + paid-probe spend
+//
+// Plus four V1 backlink redirects: /methodology.html, /docs, /docs.html, /api/docs.
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
