@@ -158,7 +158,15 @@ export async function scoreEndpoint(url_hash: string): Promise<EndpointScore | n
   const p_e2e = STAGES.reduce((acc, s) => acc * stages[s].mean, 1);
   const n_obs = Math.max(...STAGES.map((s) => stages[s].n));
   const min_n = config.MEANINGFUL_N_OBS_MIN;
-  const is_meaningful = STAGES.every((s) => stages[s].n >= min_n);
+  // Sim 3 finding: requiring every stage n ≥ min_n means is_meaningful
+  // stays false for endpoints with broken delivery/quality (very common
+  // in the wild) — even though we DO know reliably whether the endpoint
+  // L402-challenges and how often delivery breaks. The challenge stage
+  // is observed on every probe (free or paid), so its n_obs converges
+  // fastest. Treat is_meaningful as "we have enough challenge-stage
+  // evidence to say something about this endpoint" — p_e2e remains
+  // the honest end-to-end product separately.
+  const is_meaningful = stages.challenge.n >= min_n;
   return {
     url: rows[0].url,
     url_hash,
