@@ -78,7 +78,14 @@ async function fromL402Directory(): Promise<Endpoint[]> {
   const now = Math.floor(Date.now() / 1000);
   const out: Endpoint[] = [];
   for (const svc of data.services) {
-    const category = svc.categories?.[0] ?? 'other';
+    // Preserve every category the upstream lists. Sim 2 finding : taking
+    // only categories[0] collapsed all 5 services into one bucket because
+    // l402.directory tends to emit categories[0]='data' for everything.
+    // Multi-tag indexing lets a finance/ai/video query each match their
+    // share of the catalogue.
+    const tags = (svc.categories ?? []).filter((c) => typeof c === 'string' && c.length > 0);
+    const category_tags = tags.length > 0 ? tags : ['other'];
+    const category = category_tags[0];
     for (const ep of svc.endpoints ?? []) {
       if (!ep.url || !isHttpsUrl(ep.url)) continue;
       // Template placeholders (e.g. {query}, :id) aren't probable as-is.
@@ -87,6 +94,7 @@ async function fromL402Directory(): Promise<Endpoint[]> {
         url: ep.url,
         url_hash: urlHash(ep.url),
         category,
+        category_tags,
         name: svc.name ?? new URL(ep.url).hostname,
         description: ep.description ?? svc.description ?? '',
         http_method: safeMethod(ep.method),
@@ -119,7 +127,7 @@ async function fromDns(): Promise<Endpoint[]> {
         const url = r.join('');
         if (!url.startsWith('https://')) continue;
         out.push({
-          url, url_hash: urlHash(url), category: 'other',
+          url, url_hash: urlHash(url), category: 'other', category_tags: ['other'],
           name: host, description: `DNS TXT _l402.${host}`,
           http_method: 'GET', price_sats: 0, source: 'dns', added_at: now,
         });
@@ -137,16 +145,17 @@ async function fromDns(): Promise<Endpoint[]> {
 async function upsert(e: Endpoint): Promise<boolean> {
   const { rowCount } = await pool.query(
     `INSERT INTO service_endpoints
-       (url_hash, url, category, name, description, http_method, price_sats, source, added_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (url_hash, url, category, category_tags, name, description, http_method, price_sats, source, added_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (url_hash) DO UPDATE SET
        category = EXCLUDED.category,
+       category_tags = EXCLUDED.category_tags,
        name = EXCLUDED.name,
        description = EXCLUDED.description,
        http_method = EXCLUDED.http_method,
        price_sats = EXCLUDED.price_sats,
        source = EXCLUDED.source`,
-    [e.url_hash, e.url, e.category, e.name, e.description, e.http_method, e.price_sats, e.source, e.added_at],
+    [e.url_hash, e.url, e.category, e.category_tags, e.name, e.description, e.http_method, e.price_sats, e.source, e.added_at],
   );
   return rowCount === 1;
 }
@@ -180,14 +189,15 @@ export async function crawl(): Promise<CrawlReport> {
     }
   }
 
-  // Probe every endpoint that's been silent for >1h. Cap at 50/tick to keep
-  // crawler ticks short.
-  const cutoff = Math.floor(Date.now() / 1000) - 3600;
+  // Probe every endpoint that hasn't been probed within the crawler
+  // interval (so 15-min cadence at default settings probes every endpoint
+  // every tick when catalogue ≤ 200). Cap at 200/tick to keep ticks short.
+  const cutoff = Math.floor(Date.now() / 1000) - config.CRAWLER_INTERVAL_SEC;
   const { rows } = await pool.query<{ url: string; http_method: 'GET' | 'POST' }>(
     `SELECT url, http_method FROM service_endpoints
        WHERE last_probe_at IS NULL OR last_probe_at < $1
        ORDER BY last_probe_at NULLS FIRST
-       LIMIT 50`,
+       LIMIT 200`,
     [cutoff],
   );
   for (const r of rows) {

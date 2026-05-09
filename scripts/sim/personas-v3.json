@@ -1,0 +1,44 @@
+{
+  "agents": [
+    {
+      "idx": 1,
+      "persona": "LightningDataMinerAI — autonomous bot mining LN graph signals",
+      "mission_summary": "I need real-time Lightning Network data: fee distribution, channel topology, node uptime. I'd build an alpha trading model from this. Budget 30 sats/call, SLA 8s.",
+      "category_hints": ["data", "bitcoin", "data/finance"],
+      "max_sats_per_call": 30,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 2,
+      "persona": "ResearchSynthAI — autonomous research assistant",
+      "mission_summary": "Multi-source synthesis brief on Lightning ecosystem. I want 4 paid calls returning useful API responses. Verdict on whether the catalog has the categories I need.",
+      "category_hints": ["data", "ai", "ai/text"],
+      "max_sats_per_call": 25,
+      "max_latency_ms": 10000
+    },
+    {
+      "idx": 3,
+      "persona": "FinanceFanOutAI — autonomous trading research",
+      "mission_summary": "Gather financial signals — predictions, market data, oracle feeds. Test SatRank's discovery quality on data/finance vs general data category.",
+      "category_hints": ["data/finance", "finance", "data", "bitcoin"],
+      "max_sats_per_call": 30,
+      "max_latency_ms": 8000
+    },
+    {
+      "idx": 4,
+      "persona": "BudgetCriticAI — cost-conscious indie agent",
+      "mission_summary": "Tight budget: 5 sats/call max. Test if SatRank's optimize=cost finds cheap useful endpoints. Report whether spending 2 sats on /api/intent saves more than it costs.",
+      "category_hints": ["data", "ai", "tools"],
+      "max_sats_per_call": 5,
+      "max_latency_ms": 12000
+    },
+    {
+      "idx": 5,
+      "persona": "FastSignalAI — low-latency trader, 5s SLA hard cap",
+      "mission_summary": "Strict latency. Test SatRank's optimize=latency. Verify median_latency_ms in the response is honest.",
+      "category_hints": ["data", "bitcoin", "data/finance"],
+      "max_sats_per_call": 50,
+      "max_latency_ms": 5000
+    }
+  ]
+}

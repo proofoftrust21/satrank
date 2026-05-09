@@ -38,7 +38,11 @@ const schema = z.object({
   MEANINGFUL_N_OBS_MIN: z.coerce.number().int().positive().default(3),
 
   // --- Crawler ---
-  CRAWLER_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
+  // 15-minute default — every endpoint hits its 5-stage meaningful_n_obs
+  // threshold within ~1.5h of catalogue admission rather than ~5h at the
+  // old 1h interval. Sim 2 finding (n_obs=1 ranking degenerates to price/
+  // latency sort) drove the bump.
+  CRAWLER_INTERVAL_SEC: z.coerce.number().int().positive().default(900),
   PAID_PROBE_ENABLED: z.coerce.boolean().default(false),
   PAID_PROBE_DAILY_BUDGET_SATS: z.coerce.number().int().positive().default(2000),
 

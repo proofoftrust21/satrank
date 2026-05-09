@@ -56,7 +56,12 @@ export interface Observation {
 export interface Endpoint {
   url: string;
   url_hash: string;
+  /** Primary display category (= category_tags[0]). */
   category: string;
+  /** Full multi-category set this endpoint is listed under. /api/intent
+   *  filters by `req.category = ANY(category_tags)` so a service tagged
+   *  ['video','streaming','content'] surfaces for any of those queries. */
+  category_tags: string[];
   name: string;
   description: string;
   http_method: 'GET' | 'POST' | 'PUT' | 'DELETE';

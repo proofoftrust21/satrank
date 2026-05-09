@@ -184,9 +184,11 @@ export interface RankRequest {
 }
 
 export async function rank(req: RankRequest): Promise<EndpointScore[]> {
+  // Match against the full category_tags array (GIN-indexed) — a service
+  // tagged ['video','streaming','content'] surfaces for any of those queries.
   const { rows } = await pool.query<{ url_hash: string }>(
     `SELECT url_hash FROM service_endpoints
-       WHERE category = $1
+       WHERE $1 = ANY(category_tags)
          AND ($2::int IS NULL OR price_sats <= $2)
        LIMIT 200`,
     [req.category, req.budget_sats ?? null],

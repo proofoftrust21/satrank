@@ -237,9 +237,13 @@ export function buildApp(): express.Express {
   //  first ; otherwise `categories` would be parsed as a url_hash param.)
   api.get('/services/categories', async (_req, res, next) => {
     try {
+      // Unnest category_tags so a service listed under {video, streaming,
+      // content} appears in three buckets — agents see the full taxonomy
+      // they can query, not just the per-endpoint primary tag.
       const { rows } = await pool.query<{ category: string; count: number }>(
-        `SELECT category, COUNT(*)::int AS count
-           FROM service_endpoints GROUP BY category ORDER BY count DESC`,
+        `SELECT tag AS category, COUNT(*)::int AS count
+           FROM service_endpoints, unnest(category_tags) AS tag
+          GROUP BY tag ORDER BY count DESC`,
       );
       res.json({ data: rows });
     } catch (err) {
@@ -256,7 +260,8 @@ export function buildApp(): express.Express {
         return res.json({ data: bestCache.data });
       }
       const { rows } = await pool.query<{ category: string }>(
-        `SELECT DISTINCT category FROM service_endpoints LIMIT 50`,
+        `SELECT DISTINCT tag AS category
+           FROM service_endpoints, unnest(category_tags) AS tag LIMIT 50`,
       );
       const out: Record<string, IntentCandidate[]> = {};
       for (const r of rows) {

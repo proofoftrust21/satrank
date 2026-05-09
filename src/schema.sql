@@ -5,20 +5,29 @@
 -- can be carried over by inserting INTO V3 tables (out-of-band SQL script).
 
 -- 1. Catalogue. The crawler upserts here.
+--
+-- `category` is the primary display tag (= category_tags[0] for backward
+-- compat with API consumers reading a singular field). `category_tags` is
+-- the full multi-cat array used for filtering — a service legitimately
+-- listed under {video, streaming, content} matches any of those in
+-- /api/intent. GIN index makes `$1 = ANY(category_tags)` O(log n).
 CREATE TABLE IF NOT EXISTS service_endpoints (
-  url_hash      TEXT PRIMARY KEY,                          -- sha256(url) hex
-  url           TEXT NOT NULL UNIQUE,
-  category      TEXT NOT NULL,
-  name          TEXT NOT NULL,
-  description   TEXT NOT NULL DEFAULT '',
-  http_method   TEXT NOT NULL DEFAULT 'GET' CHECK (http_method IN ('GET', 'POST', 'PUT', 'DELETE')),
-  price_sats    INTEGER NOT NULL DEFAULT 0,
-  source        TEXT NOT NULL,                             -- 'l402_directory' | 'rss' | 'dns' | 'manual'
-  added_at      BIGINT NOT NULL,
-  last_probe_at BIGINT
+  url_hash       TEXT PRIMARY KEY,                          -- sha256(url) hex
+  url            TEXT NOT NULL UNIQUE,
+  category       TEXT NOT NULL,                             -- primary, equals category_tags[0]
+  category_tags  TEXT[] NOT NULL DEFAULT '{}'::text[],
+  name           TEXT NOT NULL,
+  description    TEXT NOT NULL DEFAULT '',
+  http_method    TEXT NOT NULL DEFAULT 'GET' CHECK (http_method IN ('GET', 'POST', 'PUT', 'DELETE')),
+  price_sats     INTEGER NOT NULL DEFAULT 0,
+  source         TEXT NOT NULL,                             -- 'l402_directory' | 'rss' | 'dns' | 'manual'
+  added_at       BIGINT NOT NULL,
+  last_probe_at  BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_service_endpoints_category ON service_endpoints(category);
 CREATE INDEX IF NOT EXISTS idx_service_endpoints_last_probe ON service_endpoints(last_probe_at);
+CREATE INDEX IF NOT EXISTS idx_service_endpoints_category_tags
+  ON service_endpoints USING GIN (category_tags);
 
 -- The CHECK in CREATE TABLE only applies on first creation. For instances
 -- that bootstrapped before 2026-05-09 (when the CHECK was added), apply it
@@ -31,6 +40,21 @@ BEGIN
   ) THEN
     ALTER TABLE service_endpoints
       ADD CONSTRAINT http_method_check CHECK (http_method IN ('GET','POST','PUT','DELETE'));
+  END IF;
+END$$;
+
+-- Same retroactive pattern for category_tags : pre-2026-05-09 instances
+-- only have the singular `category`. Add the column + backfill from category.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'service_endpoints' AND column_name = 'category_tags'
+  ) THEN
+    ALTER TABLE service_endpoints ADD COLUMN category_tags TEXT[] NOT NULL DEFAULT '{}'::text[];
+    UPDATE service_endpoints SET category_tags = ARRAY[category] WHERE category_tags = '{}'::text[];
+    CREATE INDEX IF NOT EXISTS idx_service_endpoints_category_tags
+      ON service_endpoints USING GIN (category_tags);
   END IF;
 END$$;
 
