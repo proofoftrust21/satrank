@@ -112,8 +112,39 @@ export async function payInvoice(bolt11: string, max_fee_sats = 10): Promise<Pay
   // Newer LND builds dropped the `timeout_seconds` field from this v1 schema
   // (it lives only on /v2/router/send now). Keep the body minimal so we
   // remain compatible across LND 0.17 → 0.20+.
-  return await call<PayInvoiceResult>('POST', '/v1/channels/transactions', {
+  //
+  // Encoding gotcha: LND REST returns `payment_preimage` and `payment_hash`
+  // base64-encoded by default (32 raw bytes → 44-char base64 string). The
+  // L402 protocol mandates the bearer header carries a 64-char hex string:
+  //
+  //     Authorization: L402 <macaroon_b64>:<preimage_hex>
+  //
+  // If we forward the base64 verbatim, every L402 endpoint rejects with
+  // 402 "Invalid preimage" because sha256(base64_string_bytes) ≠ payment_hash.
+  // Diagnosed 2026-05-09 via manual probe of l402.services/ln/search:
+  // 100% of paid probes had delivery_ok=false because of this single bug.
+  // We normalize to hex right here so callers can splice the value
+  // straight into the L402 header.
+  const raw = await call<PayInvoiceResult>('POST', '/v1/channels/transactions', {
     payment_request: bolt11,
     fee_limit: { fixed: String(max_fee_sats) },
   });
+  return {
+    payment_preimage: normaliseHex(raw.payment_preimage),
+    payment_error: raw.payment_error,
+    payment_hash: normaliseHex(raw.payment_hash),
+  };
+}
+
+/** LND REST returns 32-byte fields as base64 by default. If the value is
+ *  already valid 64-char hex, leave it alone. Otherwise treat it as base64
+ *  and decode it to hex. Empty string passes through unchanged. */
+function normaliseHex(value: string | undefined): string {
+  if (!value) return '';
+  if (/^[a-f0-9]{64}$/.test(value)) return value;
+  try {
+    return Buffer.from(value, 'base64').toString('hex');
+  } catch {
+    return value;
+  }
 }
