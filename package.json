@@ -24,7 +24,7 @@
   "license": "AGPL-3.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@noble/hashes": "^1.8.0",
+    "@noble/hashes": "^2.2.0",
     "express": "^4.21.2",
     "express-rate-limit": "^8.5.1",
     "nostr-tools": "^2.23.3",
